@@ -21,7 +21,8 @@ from music_assistant.providers.sonic_analysis import (
 
 
 def _make_provider() -> SonicAnalysisProvider:
-    """Construct a SonicAnalysisProvider with mocked MA infrastructure.
+    """
+    Construct a SonicAnalysisProvider with mocked MA infrastructure.
 
     Uses ``__new__`` to bypass ``__init__`` (no model downloads) and manually
     sets the attributes the load + start-analysis paths touch.
@@ -110,7 +111,8 @@ async def test_handle_async_init_populates_state_on_success() -> None:
 
 @pytest.mark.asyncio
 async def test_handle_async_init_propagates_load_failure() -> None:
-    """Synchronous load: failures must propagate, not be swallowed.
+    """
+    Synchronous load: failures must propagate, not be swallowed.
 
     The AudioAnalysisController gates work on ``provider.available``, which
     stays ``False`` if ``handle_async_init`` raises. Swallowing here would
@@ -160,7 +162,8 @@ async def test_handle_async_init_offloads_load_to_thread() -> None:
 
 @pytest.mark.asyncio
 async def test_start_analysis_returns_false_when_clap_not_loaded() -> None:
-    """``_start_analysis`` must decline tracks while CLAP is unavailable.
+    """
+    ``_start_analysis`` must decline tracks while CLAP is unavailable.
 
     Defensive: with synchronous loading + raise-on-failure, the normal path
     keeps ``_clap_model`` populated whenever the provider is available. This
@@ -202,7 +205,8 @@ async def test_start_analysis_proceeds_when_clap_loaded() -> None:
 async def test_start_analysis_returns_false_without_duration(
     duration: float | None,
 ) -> None:
-    """``_start_analysis`` must decline tracks without a usable duration.
+    """
+    ``_start_analysis`` must decline tracks without a usable duration.
 
     Without duration, CLAP windows can't be planned and the resulting record
     would be librosa-only. Rejecting at start keeps the retry path open for a

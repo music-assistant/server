@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import builtins
 import contextlib
 import logging
 import os
@@ -23,6 +24,7 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
     CoreConfig,
     PlayerConfig,
+    PlayerQueueConfig,
     ProviderConfig,
 )
 from music_assistant_models.constants import (
@@ -33,7 +35,9 @@ from music_assistant_models.constants import (
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset
 from music_assistant_models.enums import (
     ConfigEntryType,
+    CrossfadeMode,
     EventType,
+    PlaybackState,
     PlayerFeature,
     PlayerType,
     ProviderFeature,
@@ -55,6 +59,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_CORE,
+    CONF_CROSSFADE_MODE,
     CONF_ENABLED,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -89,34 +94,32 @@ from music_assistant.constants import (
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
-    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_MUTE_CONTROL,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_PRESETS,
+    CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_CATEGORY_PREFIX,
     CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
+    CONF_VOLUME_NORMALIZATION_TARGET,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
-)
-from music_assistant.controllers.streams.constants import (
-    CONF_BUFFER_SIZE,
-    CONF_BUFFER_SIZE_DEFAULT,
-    BufferSize,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
@@ -135,6 +138,9 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_SAVE_DELAY = 5
 
 BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
+
+# owner namespace for per-queue config entry strings (controllers/player_queues/strings.json)
+PLAYER_QUEUE_CONFIG_OWNER = "core.player_queues"
 
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
@@ -160,7 +166,9 @@ def _with_translation_owner(
     result: list[ConfigEntry] = []
     for entry in entries:
         # replace() returns a copy so we never mutate the shared (often module-level) entry defs.
-        copied = replace(entry, translation_owner=owner)
+        # An entry that already declares an owner (e.g. an injected protocol entry that belongs to
+        # its origin provider, not the host player) keeps it; everything else gets the passed owner.
+        copied = replace(entry, translation_owner=entry.translation_owner or owner)
         if populate and values is not None and copied.value is None:
             copied.value = values.get(copied.key, copied.default_value)
         result.append(copied)
@@ -472,50 +480,7 @@ class ConfigController:
         else:
             provider = None
             supported_features = getattr(prov_mod, "SUPPORTED_FEATURES", set())
-        extra_entries: list[ConfigEntry] = []
-        if manifest.type == ProviderType.MUSIC:
-            # library sync settings
-            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ARTISTS)
-            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUMS)
-                if (
-                    provider
-                    and isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider
-                ):
-                    extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS)
-            if ProviderFeature.LIBRARY_TRACKS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_TRACKS)
-            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS)
-                if (
-                    provider
-                    and isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider
-                ):
-                    extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS)
-            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS)
-            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
-            if ProviderFeature.LIBRARY_RADIOS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_RADIOS)
-            # sync export settings
-            if supported_features.intersection(
-                {
-                    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-                    ProviderFeature.LIBRARY_ALBUMS_EDIT,
-                    ProviderFeature.LIBRARY_TRACKS_EDIT,
-                    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-                    ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
-                    ProviderFeature.LIBRARY_PODCASTS_EDIT,
-                    ProviderFeature.LIBRARY_RADIOS_EDIT,
-                }
-            ):
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
-            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_DELETIONS)
+        extra_entries = self._build_sync_entries(manifest, supported_features, provider)
 
         all_entries = [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,
@@ -648,6 +613,13 @@ class ConfigController:
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             raw_conf = deepcopy(raw_conf)
+            # protocol-prefixed entries are virtual mirrors of the linked protocol player's own
+            # config (the canonical store). Drop any that linger in this player's persisted values
+            # so a stale copy can never shadow the protocol player's current value; the live values
+            # are merged back in from the protocol player(s) below.
+            if stored_values := raw_conf.get("values"):
+                for key in [key for key in stored_values if CONF_PROTOCOL_KEY_SPLITTER in key]:
+                    del stored_values[key]
             if player := self.mass.players.get_player(player_id, False):
                 raw_conf["default_name"] = player.state.name
                 raw_conf["provider"] = player.provider.instance_id
@@ -668,7 +640,16 @@ class ConfigController:
                 )
                 raw_conf.setdefault("player_id", player_id)
 
-            return cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
+            conf = cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
+            # parse() stamps every entry with this player's owner; injected protocol entries
+            # belong to their own protocol provider, so restore that owner for string resolution.
+            for entry in conf.values.values():
+                if CONF_PROTOCOL_KEY_SPLITTER not in entry.key:
+                    continue
+                protocol_player_id = entry.key.split(CONF_PROTOCOL_KEY_SPLITTER, 1)[0]
+                if protocol_player := self.mass.players.get_player(protocol_player_id, False):
+                    entry.translation_owner = protocol_player.translation_owner
+            return conf
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
 
@@ -875,6 +856,12 @@ class ConfigController:
         for key, value in existing_values.items():
             if key not in new_values and key not in config_entry_keys:
                 new_values[key] = value
+        # never persist protocol-prefixed (virtual) entries on this player; the linked protocol
+        # player is the canonical store (handled by _update_output_protocol_config). Storing a copy
+        # here would shadow the protocol player's value once it is reset back to its default.
+        new_values = {
+            key: value for key, value in new_values.items() if CONF_PROTOCOL_KEY_SPLITTER not in key
+        }
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)
         try:
@@ -977,6 +964,89 @@ class ConfigController:
             conf_key,
             default_conf_raw,
         )
+
+    @api_command("config/player_queues")
+    def get_player_queue_configs(self) -> list[PlayerQueueConfig]:
+        """Return all (stored) queue configurations."""
+        return [
+            self._parse_player_queue_config(queue_id, raw_conf)
+            for queue_id, raw_conf in list(self.get(CONF_PLAYER_QUEUES, {}).items())
+        ]
+
+    @api_command("config/player_queues/get")
+    def get_player_queue_config(self, queue_id: str) -> PlayerQueueConfig:
+        """Return (full) configuration for a single queue."""
+        raw_conf = self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}") or {"queue_id": queue_id}
+        return self._parse_player_queue_config(queue_id, raw_conf)
+
+    @api_command("config/player_queues/get_entries")
+    def get_player_queue_config_entries(
+        self,
+        queue_id: str,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """Return all Config Entries to configure a queue."""
+        entries = self.mass.player_queues.get_queue_config_entries()
+        return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER, action, values)
+
+    @api_command("config/player_queues/get_value")
+    def get_player_queue_config_value(self, queue_id: str, key: str) -> ConfigValueType:
+        """Return single config(entry) value for a queue."""
+        return self.get_player_queue_config(queue_id).get_value(key)
+
+    if TYPE_CHECKING:
+
+        @overload
+        def get_raw_player_queue_config_value(
+            self, queue_id: str, key: str, default: _ConfigValueT
+        ) -> _ConfigValueT: ...
+
+        @overload
+        def get_raw_player_queue_config_value(
+            self, queue_id: str, key: str, default: None = None
+        ) -> ConfigValueType | None: ...
+
+    def get_raw_player_queue_config_value(
+        self, queue_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return (raw) single config(entry) value for a queue.
+
+        Returns the stored value as-is (no validation), or the given default when not stored.
+        """
+        return cast(
+            "ConfigValueType",
+            self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}/values/{key}", default),
+        )
+
+    @api_command("config/player_queues/save", required_role="admin")
+    async def save_player_queue_config(
+        self, queue_id: str, values: dict[str, ConfigValueType]
+    ) -> PlayerQueueConfig:
+        """Save/update PlayerQueueConfig."""
+        config = self.get_player_queue_config(queue_id)
+        changed_keys = config.update(values)
+        conf_key = f"{CONF_PLAYER_QUEUES}/{queue_id}"
+        if not changed_keys and self.get(conf_key) is not None:
+            # no changes
+            return config
+        self.set(conf_key, config.to_raw())
+        if changed_keys and (queue := self.mass.player_queues.get(queue_id)):
+            # refresh derived queue state (e.g. the effective smart-fades indicator) and notify
+            # clients so they don't see a stale value until the next unrelated queue update
+            queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+            self.mass.player_queues.signal_update(queue_id)
+            # apply immediately: restart playback if a changed setting requires a reload
+            requires_restart = any(
+                v.requires_reload
+                for v in config.values.values()
+                if f"values/{v.key}" in changed_keys
+            )
+            if requires_restart and queue.state == PlaybackState.PLAYING:
+                await self.mass.player_queues.stop(queue_id)
+                self.mass.call_later(1, self.mass.player_queues.resume, queue_id, False)
+        return self.get_player_queue_config(queue_id)
 
     @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
@@ -1392,6 +1462,60 @@ class ConfigController:
             msg = "Password decryption failed"
             raise InvalidDataError(msg) from err
 
+    def _build_sync_entries(
+        self,
+        manifest: Any,
+        supported_features: builtins.set[ProviderFeature],
+        provider: Any,
+    ) -> list[ConfigEntry]:
+        """Build sync-related ConfigEntry list based on provider features."""
+        if manifest.type != ProviderType.MUSIC:
+            return []
+        extra_entries: list[ConfigEntry] = []
+        # library sync settings
+        if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ARTISTS)
+        if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUMS)
+            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS)
+        if ProviderFeature.LIBRARY_TRACKS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_TRACKS)
+        if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS)
+            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS)
+        if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS)
+        if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
+        if ProviderFeature.LIBRARY_RADIOS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_RADIOS)
+        # sync export settings
+        if supported_features.intersection(
+            {
+                ProviderFeature.LIBRARY_ARTISTS_EDIT,
+                ProviderFeature.LIBRARY_ALBUMS_EDIT,
+                ProviderFeature.LIBRARY_TRACKS_EDIT,
+                ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+                ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+                ProviderFeature.LIBRARY_PODCASTS_EDIT,
+                ProviderFeature.LIBRARY_RADIOS_EDIT,
+            }
+        ):
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
+        if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_DELETIONS)
+        return extra_entries
+
+    def _parse_player_queue_config(
+        self, queue_id: str, raw_conf: dict[str, Any]
+    ) -> PlayerQueueConfig:
+        """Parse a (raw) queue config dict into a PlayerQueueConfig with the current entries."""
+        raw_conf = {**raw_conf, "queue_id": queue_id}
+        entries = self.mass.player_queues.get_queue_config_entries()
+        return cast("PlayerQueueConfig", PlayerQueueConfig.parse(entries, raw_conf))
+
     async def _load(self) -> None:
         """Load data from persistent storage."""
         assert not self._data, "Already loaded"
@@ -1474,6 +1598,12 @@ class ConfigController:
                 )
                 changed = True
 
+        # Clear self-referential protocol links: a player whose protocol_parent_id or
+        # linked_protocol_ids pointed at its own id was hidden as its own protocol child.
+        # TODO: remove after 2.10 release
+        if self._migrate_self_referential_protocol_links():
+            changed = True
+
         # Drop the persisted schedule for the metadata maintenance tasks that were hardcoded
         # to run at 04:00 local. They are now registered under new ("_v2") task ids with a
         # randomized full-day schedule (to avoid spiking the shared MusicBrainz mirror), so the
@@ -1482,8 +1612,136 @@ class ConfigController:
         if self._migrate_metadata_maintenance_schedule():
             changed = True
 
+        # TODO: remove after 2.10 release
+        if self._migrate_volume_normalization_target():
+            changed = True
+
+        # Move queue-scoped settings (crossfade duration, volume normalization) from the per-player
+        # config to the new per-queue config (queue_id == player_id, so the id maps 1:1).
+        # TODO: remove after 2.11 release
+        if self._migrate_player_queue_settings():
+            changed = True
+
         if changed:
             await self._async_save()
+
+    def _migrate_player_queue_settings(self) -> bool:
+        """Move queue-scoped settings from the per-player config to the per-queue config."""
+        moved_keys = (
+            CONF_ENTRY_CROSSFADE_DURATION.key,
+            CONF_ENTRY_VOLUME_NORMALIZATION.key,
+        )
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return False
+        changed = False
+        for player_id, player_cfg in all_player_configs.items():
+            if not isinstance(player_cfg, dict):
+                continue
+            player_values = player_cfg.get("values")
+            if not isinstance(player_values, dict):
+                continue
+            to_move = {key: player_values[key] for key in moved_keys if key in player_values}
+            # the legacy smart_fades_mode encoded both on/off and standard-vs-smart; the on/off is
+            # now a runtime queue toggle, and standard/smart carries over to the crossfade_mode
+            # select ("disabled" just means crossfade is off -> nothing to carry). Consume the key.
+            legacy_mode = player_values.pop(CONF_SMART_FADES_MODE, None)
+            migrated_mode = (
+                legacy_mode
+                if legacy_mode in (CrossfadeMode.STANDARD_CROSSFADE, CrossfadeMode.SMART_CROSSFADE)
+                else None
+            )
+            if not to_move and legacy_mode is None:
+                continue
+            if to_move or migrated_mode is not None:
+                queue_cfg = self._data.setdefault(CONF_PLAYER_QUEUES, {}).setdefault(
+                    player_id, {"queue_id": player_id}
+                )
+                queue_values = queue_cfg.setdefault("values", {})
+                for key, value in to_move.items():
+                    # don't clobber an existing queue value if one was already stored
+                    queue_values.setdefault(key, value)
+                    del player_values[key]
+                if migrated_mode is not None:
+                    queue_values.setdefault(CONF_CROSSFADE_MODE, migrated_mode)
+            LOGGER.info("Migrated queue settings for %s", player_id)
+            changed = True
+        return changed
+
+    def _migrate_volume_normalization_target(self) -> bool:
+        """
+        Migrate volume_normalization_target from per-player to the global streams setting.
+
+        Collects all explicitly stored per-player values; if they all agree on a single value,
+        that value is promoted to the streams core config so the user's preference is preserved.
+        """
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return False
+        per_player_values: set[int] = set()
+        for player_cfg in all_player_configs.values():
+            if not isinstance(player_cfg, dict):
+                continue
+            values = player_cfg.get("values")
+            if not isinstance(values, dict):
+                continue
+            if CONF_VOLUME_NORMALIZATION_TARGET in values:
+                per_player_values.add(int(values[CONF_VOLUME_NORMALIZATION_TARGET]))
+
+        if not per_player_values:
+            return False
+
+        streams_core = self._data.setdefault(CONF_CORE, {}).setdefault("streams", {})
+        streams_values = streams_core.setdefault("values", {})
+        # only promote when not already globally configured
+        if CONF_VOLUME_NORMALIZATION_TARGET not in streams_values:
+            # single consistent value across all players → promote it; mixed → use new default
+            promoted = per_player_values.pop() if len(per_player_values) == 1 else None
+            if promoted is not None:
+                streams_values[CONF_VOLUME_NORMALIZATION_TARGET] = promoted
+                LOGGER.info(
+                    "Promoted volume_normalization_target %s LUFS to global streams setting",
+                    promoted,
+                )
+
+        for player_id, player_cfg in all_player_configs.items():
+            if not isinstance(player_cfg, dict):
+                continue
+            values = player_cfg.get("values")
+            if not isinstance(values, dict):
+                continue
+            if CONF_VOLUME_NORMALIZATION_TARGET in values:
+                del values[CONF_VOLUME_NORMALIZATION_TARGET]
+                LOGGER.info(
+                    "Removed per-player volume_normalization_target for player %s",
+                    player_id,
+                )
+        return True
+
+    def _migrate_self_referential_protocol_links(self) -> bool:
+        """Clear protocol links that point a player at its own id."""
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return False
+        changed = False
+        for player_id, player_cfg in all_player_configs.items():
+            if not isinstance(player_cfg, dict):
+                continue
+            values = player_cfg.get("values")
+            if not isinstance(values, dict):
+                continue
+            repaired = False
+            if values.get(CONF_PROTOCOL_PARENT_ID) == player_id:
+                values[CONF_PROTOCOL_PARENT_ID] = None
+                repaired = True
+            linked = values.get(CONF_LINKED_PROTOCOL_IDS)
+            if isinstance(linked, list) and player_id in linked:
+                values[CONF_LINKED_PROTOCOL_IDS] = [pid for pid in linked if pid != player_id]
+                repaired = True
+            if repaired:
+                LOGGER.warning("Repaired self-referential protocol link for %s", player_id)
+                changed = True
+        return changed
 
     def _migrate_metadata_maintenance_schedule(self) -> bool:
         """Remove the orphaned persisted state for the pre-randomization metadata task ids."""
@@ -1531,7 +1789,7 @@ class ConfigController:
                 continue
             try:
                 port = int(old_values.get("port") or 2323)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 port = 2323
             entry = host if port == 2323 else f"{host}:{port}"
             if entry not in ip_entries:
@@ -1798,43 +2056,11 @@ class ConfigController:
 
         # some base entries for all player types
         # note that these may NOT be playback/audio related
-        buffer_size = self.get_raw_core_config_value(
-            "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
-        )
-        # smart crossfade needs a larger buffer for beat analysis
-        smart_fades_options = [
-            ConfigValueOption("disabled"),
-            ConfigValueOption("standard_crossfade"),
-        ]
-        if buffer_size != BufferSize.MINIMAL:
-            smart_fades_options.insert(1, ConfigValueOption("smart_crossfade"))
-
-        entries.append(
-            ConfigEntry(
-                key=CONF_SMART_FADES_MODE,
-                type=ConfigEntryType.STRING,
-                options=smart_fades_options,
-                default_value="disabled",
-                category="playback",
-                requires_reload=True,
-            )
-        )
-        if buffer_size == BufferSize.MINIMAL:
-            entries.append(
-                ConfigEntry(
-                    key="smart_crossfade_unavailable",
-                    type=ConfigEntryType.ALERT,
-                    category="playback",
-                    required=False,
-                )
-            )
-
         entries += [
-            CONF_ENTRY_CROSSFADE_DURATION,
-            # we allow volume normalization/output limiter here as it is a per-queue(player) setting
-            CONF_ENTRY_VOLUME_NORMALIZATION,
+            # the output limiter is applied per-player in the output filter chain (DSP stage), so
+            # unlike the other playback settings (crossfade/volume normalization) which moved to the
+            # queue config, it stays a player setting
             CONF_ENTRY_OUTPUT_LIMITER,
-            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             CONF_ENTRY_TTS_PRE_ANNOUNCE,
             ConfigEntry(
                 key=CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -2069,14 +2295,14 @@ class ConfigController:
             protocol_prefix = f"{protocol.output_protocol_id}{CONF_PROTOCOL_KEY_SPLITTER}"
             protocol_enabled_key = f"{protocol_prefix}enabled"
             protocol_category = f"{CONF_PROTOCOL_CATEGORY_PREFIX}_{domain}"
-            category_translation_key = "config_categories.protocol_output_settings"
+            category_translation_key = "protocol_output_settings"
             if not protocol.is_native:
                 all_entries.append(
                     ConfigEntry(
                         key=protocol_enabled_key,
                         type=ConfigEntryType.BOOLEAN,
                         # the key is per-protocol (dynamic), so pin a static catalog key
-                        translation_key="config_entries.protocol_enable",
+                        translation_key="protocol_enable",
                         value=protocol_player_enabled,
                         default_value=True,
                         category=protocol_category,
@@ -2125,8 +2351,10 @@ class ConfigController:
                     entry.category_translation_key = category_translation_key
                     entry.category_translation_params = [protocol_name]
                     # the key gets prefixed below to avoid collisions; pin the catalog key to the
-                    # original so the label still resolves against config_entries.<original_key>
-                    entry.translation_key = entry.translation_key or f"config_entries.{entry.key}"
+                    # original (bare) slug and the protocol's own provider so the label still
+                    # resolves against provider.<domain>.config_entries.<original_key>
+                    entry.translation_key = entry.translation_key or entry.key
+                    entry.translation_owner = protocol_player.translation_owner
                     entry.key = f"{protocol_prefix}{entry.key}"
                     entry.depends_on = None if protocol.is_native else protocol_enabled_key
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None

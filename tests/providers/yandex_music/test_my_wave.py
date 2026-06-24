@@ -172,7 +172,8 @@ async def test_fetch_rotor_session_batch_works_with_track_seed_station() -> None
 
 @pytest.mark.asyncio
 async def test_get_rotor_station_tracks_wrapper_delegates_to_session_batch() -> None:
-    """Ynison-facing wrapper routes through _fetch_rotor_session_batch.
+    """
+    Ynison-facing wrapper routes through _fetch_rotor_session_batch.
 
     This keeps ynison on the session API (long-lived radioSessionId, shared
     wave state, prefetch) without any code change on its side — the
@@ -415,7 +416,8 @@ async def test_library_add_track_without_station_skips_rotor_feedback() -> None:
 
 
 def _preset_config(values: dict[str, str]) -> Mock:
-    """Build a config stub whose get_value looks up keys in the given dict.
+    """
+    Build a config stub whose get_value looks up keys in the given dict.
 
     Non-listed keys return None, matching MA's ``ConfigValueType | None`` contract.
     """
@@ -482,7 +484,8 @@ def test_get_user_wave_presets_skips_items_without_name() -> None:
 
 
 def test_get_user_wave_presets_drops_whitespace_only_values() -> None:
-    """Whitespace-only dropdown values (e.g. hand-edited JSON) are treated as empty.
+    """
+    Whitespace-only dropdown values (e.g. hand-edited JSON) are treated as empty.
 
     Yandex rejects ``settingDiversity:`` with a 4xx, so the parser must not
     propagate such values. Valid values are also stripped to their canonical
@@ -693,7 +696,8 @@ async def test_send_wave_feedback_uses_session_api_when_session_id_present() -> 
 
 @pytest.mark.asyncio
 async def test_send_wave_feedback_skips_silently_without_session() -> None:
-    """Without ``wave.session_id`` the call is a silent no-op returning False.
+    """
+    Without ``wave.session_id`` the call is a silent no-op returning False.
 
     The legacy stations-based feedback endpoint is gone (returns 404), so we
     can't usefully fall back there. Callers treat the False result as

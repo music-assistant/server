@@ -1,4 +1,5 @@
-"""Tag-filter middleware: hide tools / resources / prompts whose tags are disabled.
+"""
+Tag-filter middleware: hide tools / resources / prompts whose tags are disabled.
 
 FastMCP v3's built-in ``restrict_tag`` is scope-based authorization (token must
 carry a specific OAuth scope). What we need here is **config-driven visibility**:
@@ -22,7 +23,7 @@ permission set therefore cannot reach a now-disabled tool.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from fastmcp.exceptions import NotFoundError, PromptError, ResourceError, ToolError
 from fastmcp.server.middleware import Middleware
@@ -36,7 +37,8 @@ TagsLookup = Callable[[ComponentKind, str], Awaitable[set[str] | None]]
 
 
 class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
-    """Hide tools, resources, and prompts whose tags are not in ``allowed_tags``.
+    """
+    Hide tools, resources, and prompts whose tags are not in ``allowed_tags``.
 
     ``Middleware`` is typed as ``Any`` upstream; under
     ``disallow_subclassing_any`` we suppress the misc-rule on the class
@@ -48,7 +50,8 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
         allowed_tags_provider: Callable[[], set[str]],
         lookup_component_tags: TagsLookup,
     ) -> None:
-        """Initialise the middleware.
+        """
+        Initialise the middleware.
 
         :param allowed_tags_provider: zero-arg callable returning the *current*
             set of allowed tags. Wrapped in a callable so the operator can
@@ -135,7 +138,7 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
 
     # Error class chosen so the SDK reports the failure under the right RPC
     # method (tools/resources/prompts) rather than always as a tool error.
-    _ERROR_BY_KIND: dict[ComponentKind, type[Exception]] = {
+    _ERROR_BY_KIND: ClassVar[dict[ComponentKind, type[Exception]]] = {
         "tool": ToolError,
         "resource": ResourceError,
         "prompt": PromptError,

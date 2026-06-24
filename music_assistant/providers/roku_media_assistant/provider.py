@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
@@ -27,7 +27,7 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()
 class MediaAssistantprovider(PlayerProvider):
     """Media Assistant Player provider."""
 
-    roku_players: dict[str, MediaAssistantPlayer] = {}
+    roku_players: ClassVar[dict[str, MediaAssistantPlayer]] = {}
     lock: asyncio.Lock
 
     @property

@@ -1,4 +1,5 @@
-"""Gate SECURE_STRING config writes behind the orthogonal secret tag.
+"""
+Gate SECURE_STRING config writes behind the orthogonal secret tag.
 
 The provider performs NO encryption: plaintext is handed to MA's
 ``save_*_config``, which encrypts via ``Config.to_raw()`` before
@@ -20,7 +21,8 @@ if TYPE_CHECKING:
 
 
 def is_secret_key(entries: Mapping[str, ConfigEntry], key: str) -> bool:
-    """Return True iff ``key`` maps to a SECURE_STRING ConfigEntry.
+    """
+    Return True iff ``key`` maps to a SECURE_STRING ConfigEntry.
 
     :param entries: ConfigEntry definitions keyed by config key.
     :param key: The config key to test.
@@ -35,7 +37,8 @@ def gate_secret_writes(
     *,
     secret_tag_enabled: bool,
 ) -> None:
-    """Raise ``ToolError`` if ``values`` writes a SECURE_STRING key without the tag.
+    """
+    Raise ``ToolError`` if ``values`` writes a SECURE_STRING key without the tag.
 
     The check is atomic — the whole payload is rejected (the provider does
     not split it), naming the first offending secret key.

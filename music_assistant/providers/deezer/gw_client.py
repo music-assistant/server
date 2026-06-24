@@ -1,4 +1,5 @@
-"""A minimal client for the unofficial gw-API, which deezer is using on their website and app.
+"""
+A minimal client for the unofficial gw-API, which deezer is using on their website and app.
 
 Credits go out to RemixDev (https://gitlab.com/RemixDev) for figuring out, how to get the arl
 cookie based on the api_token.
@@ -7,14 +8,16 @@ cookie based on the api_token.
 import json
 from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiohttp import ClientSession, ClientTimeout
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
 from music_assistant.helpers.datetime import future_timestamp, utc_timestamp
+
+if TYPE_CHECKING:
+    from music_assistant_models.streamdetails import StreamDetails
 
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -38,7 +41,7 @@ class GWClient:
     _license_expiration_timestamp: int
     _user_id: int
     session: ClientSession
-    formats: list[dict[str, str]] = [
+    formats: ClassVar[list[dict[str, str]]] = [
         {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
     ]
     user_country: str
@@ -127,7 +130,8 @@ class GWClient:
         return cast("dict[str, Any]", result_json)
 
     async def get_user_radio(self, config_id: str) -> list[dict[str, Any]]:
-        """Get personalized Flow tracks for a specific mood or genre.
+        """
+        Get personalized Flow tracks for a specific mood or genre.
 
         :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
         """

@@ -80,7 +80,8 @@ def _patched_passport(client: mock.AsyncMock) -> mock._patch[mock.MagicMock]:
 
 
 def _patched_auth_helper() -> tuple[mock._patch[mock.MagicMock], mock.MagicMock]:
-    """Patch music_assistant.helpers.auth.AuthenticationHelper at its source.
+    """
+    Patch music_assistant.helpers.auth.AuthenticationHelper at its source.
 
     perform_qr_auth lazy-imports this symbol inside the function body, so the
     patch target is the original module path — not ``provider.auth.``.

@@ -31,10 +31,13 @@ from .const import (
     ITEM_KEY_ALBUM_ID,
     ITEM_KEY_ARTIST_ITEMS,
     ITEM_KEY_CAN_DOWNLOAD,
+    ITEM_KEY_CONTAINER,
     ITEM_KEY_ID,
     ITEM_KEY_IMAGE_TAGS,
     ITEM_KEY_MEDIA_CHANNELS,
     ITEM_KEY_MEDIA_CODEC,
+    ITEM_KEY_MEDIA_SOURCES,
+    ITEM_KEY_MEDIA_STREAM_TYPE,
     ITEM_KEY_MEDIA_STREAMS,
     ITEM_KEY_MUSICBRAINZ_ALBUM,
     ITEM_KEY_MUSICBRAINZ_ARTIST,
@@ -178,20 +181,25 @@ def parse_artist(
 
 def audio_format(track: JellyTrack) -> AudioFormat:
     """Build an AudioFormat model from a Jellyfin track."""
-    # Defensive: Handle missing or empty MediaStreams array
     streams = track.get(ITEM_KEY_MEDIA_STREAMS, [])
-    if not streams:
+    audio_stream = next((s for s in streams if s.get(ITEM_KEY_MEDIA_STREAM_TYPE) == "Audio"), None)
+    if audio_stream is None:
         return AudioFormat(content_type=ContentType.UNKNOWN)
 
-    stream = streams[0]
-    codec = stream.get(ITEM_KEY_MEDIA_CODEC)
+    # content_type must reflect the delivered container (e.g. wav), not the raw audio
+    # codec. Jellyfin serves the original container, so feeding ffmpeg the codec as the
+    # input format would make it read container/header bytes as headerless PCM (white noise).
+    sources = track.get(ITEM_KEY_MEDIA_SOURCES, [])
+    container = sources[0].get(ITEM_KEY_CONTAINER) if sources else None
+    codec = audio_stream.get(ITEM_KEY_MEDIA_CODEC)
 
     return AudioFormat(
-        content_type=(ContentType.try_parse(codec) if codec else ContentType.UNKNOWN),
-        channels=stream.get(ITEM_KEY_MEDIA_CHANNELS, 2),
-        sample_rate=stream.get("SampleRate", 44100),
-        bit_rate=stream.get("BitRate"),
-        bit_depth=stream.get("BitDepth", 16),
+        content_type=(ContentType.try_parse(container) if container else ContentType.UNKNOWN),
+        codec_type=(ContentType.try_parse(codec) if codec else ContentType.UNKNOWN),
+        channels=audio_stream.get(ITEM_KEY_MEDIA_CHANNELS, 2),
+        sample_rate=audio_stream.get("SampleRate", 44100),
+        bit_rate=audio_stream.get("BitRate"),
+        bit_depth=audio_stream.get("BitDepth", 16),
     )
 
 

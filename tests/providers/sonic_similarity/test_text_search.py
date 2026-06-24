@@ -27,7 +27,8 @@ def _make_tensor_chain(vector: np.ndarray) -> MagicMock:
 
 
 def _make_mock_encoder(*vectors: np.ndarray) -> MagicMock:
-    """Build a CLAP-like encoder returning one tensor chain per prompt.
+    """
+    Build a CLAP-like encoder returning one tensor chain per prompt.
 
     get_text_embeddings(prompts) yields a chain for each prompt, drawn in order
     from the supplied vectors, so multi-prompt calls (query + exclude) work.

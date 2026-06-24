@@ -445,27 +445,6 @@ class BuiltinProvider(MusicProvider):
                 break
         self.mass.config.set(key, stored_items)
 
-    @staticmethod
-    def _get_playlist_image_url(playlist: Playlist) -> str | None:
-        """Return the playlist-level image URL to persist in the M3U header."""
-        return playlist.image.path if playlist.image else None
-
-    async def _update_playlist_metadata(
-        self, playlist_id: str, new_name: str, image_url: str | None
-    ) -> None:
-        """Update the name and image of a playlist in its M3U file."""
-        if playlist_id in BUILTIN_PLAYLISTS:
-            # builtin playlists are not editable
-            return
-        m3u_data = await self._read_m3u_file(playlist_id)
-        if not m3u_data:
-            return
-        existing_items = parse_m3u(m3u_data)
-        try:
-            await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
-        except OSError as err:
-            self.logger.warning("Failed to update playlist metadata: %s", err)
-
     async def add_radio(self, url: str, name: str, image_url: str | None = None) -> Radio:
         """
         Add a radio station.
@@ -543,7 +522,7 @@ class BuiltinProvider(MusicProvider):
                     continue
                 try:
                     entry = await self._build_m3u_entry_from_uri(uri)
-                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError):
+                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
                     self.logger.warning("Can't add %s to playlist - item not found", uri)
                     continue
                 # check dedup against the newly built entry's providers too
@@ -582,7 +561,8 @@ class BuiltinProvider(MusicProvider):
             )
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a new playlist on provider with given name.
+        """
+        Create a new playlist on provider with given name.
 
         The playlist name is used as the filename (sanitized for filesystem safety).
         """
@@ -614,7 +594,8 @@ class BuiltinProvider(MusicProvider):
         return generate_m3u("Radio Stations", items)
 
     async def import_playlist(self, m3u_data: str) -> Playlist:
-        """Import a playlist from M3U8 format.
+        """
+        Import a playlist from M3U8 format.
 
         Creates a new playlist and populates it with items from the M3U data.
         Items with valid MA URIs are added directly. Plain URLs or unresolvable
@@ -644,7 +625,8 @@ class BuiltinProvider(MusicProvider):
         return await self.get_playlist(playlist.item_id)
 
     async def import_radios(self, m3u_data: str) -> int:
-        """Import radio stations from M3U8 format.
+        """
+        Import radio stations from M3U8 format.
 
         :param m3u_data: The M3U8 data as a string.
         """
@@ -676,7 +658,8 @@ class BuiltinProvider(MusicProvider):
         prov_playlist_id: str,
         match_providers: list[str] | None = None,
     ) -> None:
-        """Match imported playlist tracks against available providers.
+        """
+        Match imported playlist tracks against available providers.
 
         Iterates through playlist items whose provider is unavailable,
         searching other providers for matches using metadata stored in
@@ -742,190 +725,6 @@ class BuiltinProvider(MusicProvider):
             total,
         )
         update_current_task_progress_from_index(total, total, "Matching complete")
-
-    async def _match_track_by_metadata(
-        self,
-        item: PlaylistItem,
-        match_providers: list[str] | None = None,
-    ) -> str | None:
-        """Search providers for a track matching the given PlaylistItem metadata.
-
-        Uses ISRC/MusicBrainz ID for exact matching first, then falls back
-        to fuzzy title/artist/duration matching.
-
-        :param item: The PlaylistItem with metadata from the M3U file.
-        :param match_providers: Optional list of provider instance IDs or
-            domains to limit the search.
-        """
-        artist_name, track_name = parse_extinf_title(item.title)
-        if not track_name:
-            return None
-
-        search_query = f"{artist_name} - {track_name}" if artist_name else track_name
-
-        all_providers = self.mass.music.get_unique_providers()
-        if match_providers:
-            provider_domains: dict[str, str] = {}
-            for pid in all_providers:
-                prov = self.mass.get_provider(pid)
-                if prov:
-                    provider_domains[pid] = prov.domain
-            all_providers = [
-                pid
-                for pid in all_providers
-                if pid in match_providers or provider_domains.get(pid) in match_providers
-            ]
-
-        best_match: tuple[int, str] | None = None
-
-        for provider_id in all_providers:
-            try:
-                results = await self.mass.music.tracks.search(search_query, provider_id, limit=5)
-            except Exception:
-                self.logger.debug(
-                    "Search failed on provider %s for '%s'", provider_id, search_query
-                )
-                continue
-
-            for result in results:
-                if not result.uri:
-                    continue
-                score = self._score_track_match(result, item)
-                if score >= 10:
-                    self.logger.debug("Exact ID match for '%s' -> %s", search_query, result.uri)
-                    return result.uri
-                if score > 0 and (best_match is None or score > best_match[0]):
-                    best_match = (score, result.uri)
-
-        if best_match:
-            self.logger.debug(
-                "Matched '%s' -> %s (score=%d)",
-                search_query,
-                best_match[1],
-                best_match[0],
-            )
-            return best_match[1]
-
-        self.logger.info("No match found for '%s'", search_query)
-        return None
-
-    def _score_track_match(
-        self,
-        candidate: Track,
-        item: PlaylistItem,
-    ) -> int:
-        """Score how well a candidate track matches the PlaylistItem metadata.
-
-        Returns 0 for no match, higher scores for better matches.
-        ISRC or MusicBrainz Recording ID match returns 10 (maximum).
-
-        :param candidate: The track from search results.
-        :param item: The PlaylistItem with metadata from the M3U file.
-        """
-        metadata = item.metadata or {}
-        artist_name, track_name = parse_extinf_title(item.title)
-        if not track_name:
-            return 0
-
-        isrc = metadata.get("isrc")
-        mbid = metadata.get("mbid")
-
-        # exact ID matches (cross-provider definitive match)
-        if isrc:
-            candidate_isrc = candidate.get_external_id(ExternalID.ISRC)
-            if candidate_isrc and candidate_isrc.upper() == isrc.upper():
-                return 10
-        if mbid:
-            candidate_mbid = candidate.get_external_id(ExternalID.MB_RECORDING)
-            if candidate_mbid and candidate_mbid.lower() == mbid.lower():
-                return 10
-
-        # media type gate
-        if metadata.get("media_type"):
-            candidate_type = getattr(candidate, "media_type", None)
-            if candidate_type and candidate_type.value != metadata["media_type"]:
-                return 0
-
-        return self._score_fuzzy_metadata(candidate, artist_name, track_name, metadata, item)
-
-    def _score_fuzzy_metadata(
-        self,
-        candidate: Track,
-        artist_name: str | None,
-        track_name: str,
-        metadata: dict[str, str],
-        item: PlaylistItem,
-    ) -> int:
-        """Score fuzzy metadata fields (title, artist, album, duration, version).
-
-        :param candidate: The track from search results.
-        :param artist_name: Parsed artist name from EXTINF, or None.
-        :param track_name: Parsed track title from EXTINF.
-        :param metadata: The #EXTMA metadata dict.
-        :param item: The PlaylistItem (for duration from item.length).
-        """
-        if not compare_strings(candidate.name, track_name, strict=False):
-            return 0
-        score = 1
-
-        if artist_name:
-            candidate_artists = [a.name for a in candidate.artists] if candidate.artists else []
-            if not any(compare_strings(a, artist_name, strict=False) for a in candidate_artists):
-                return 0
-            score += 2
-
-        score += self._score_bonus_fields(candidate, metadata)
-        score += self._score_duration(candidate, item)
-        return score
-
-    @staticmethod
-    def _score_bonus_fields(candidate: Track, metadata: dict[str, str]) -> int:
-        """Score bonus metadata fields: podcast, authors, album, version."""
-        score = 0
-        if metadata.get("podcast"):
-            candidate_podcast = getattr(candidate, "podcast", None)
-            if candidate_podcast and hasattr(candidate_podcast, "name"):
-                if compare_strings(candidate_podcast.name, metadata["podcast"], strict=False):
-                    score += 2
-
-        if metadata.get("authors"):
-            candidate_authors = getattr(candidate, "authors", None)
-            if candidate_authors:
-                if compare_strings("; ".join(candidate_authors), metadata["authors"], strict=False):
-                    score += 2
-
-        if metadata.get("album"):
-            candidate_album = getattr(candidate, "album", None)
-            if candidate_album and hasattr(candidate_album, "name"):
-                if compare_strings(candidate_album.name, metadata["album"], strict=False):
-                    score += 1
-
-        if metadata.get("version"):
-            candidate_version = getattr(candidate, "version", None) or ""
-            if candidate_version and compare_strings(
-                candidate_version, metadata["version"], strict=False
-            ):
-                score += 1
-            elif candidate_version:
-                score -= 1
-
-        return score
-
-    @staticmethod
-    def _score_duration(candidate: Track, item: PlaylistItem) -> int:
-        """Score duration proximity between candidate and playlist item."""
-        try:
-            duration = int(item.length) if item.length else None
-        except ValueError:
-            return 0
-        if duration is None or duration <= 0 or candidate.duration <= 0:
-            return 0
-        diff = abs(candidate.duration - duration)
-        if diff <= 2:
-            return 2
-        if diff <= 5:
-            return 1
-        return 0
 
     async def parse_item(
         self,
@@ -1004,8 +803,237 @@ class BuiltinProvider(MusicProvider):
             return str(RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, icon_name))
         return path
 
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Get streamdetails for a track/radio."""
+        media_info = await self._get_media_info(item_id)
+        is_radio = media_info.get("icy-name") or not media_info.duration
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(media_info.format),
+                sample_rate=media_info.sample_rate,
+                bit_depth=media_info.bits_per_sample,
+                channels=media_info.channels,
+            ),
+            media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
+            stream_type=StreamType.HTTP,
+            path=item_id,
+            can_seek=not is_radio,
+            allow_seek=not is_radio,
+        )
+
+    @staticmethod
+    def _get_playlist_image_url(playlist: Playlist) -> str | None:
+        """Return the playlist-level image URL to persist in the M3U header."""
+        return playlist.image.path if playlist.image else None
+
+    async def _update_playlist_metadata(
+        self, playlist_id: str, new_name: str, image_url: str | None
+    ) -> None:
+        """Update the name and image of a playlist in its M3U file."""
+        if playlist_id in BUILTIN_PLAYLISTS:
+            # builtin playlists are not editable
+            return
+        m3u_data = await self._read_m3u_file(playlist_id)
+        if not m3u_data:
+            return
+        existing_items = parse_m3u(m3u_data)
+        try:
+            await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
+        except OSError as err:
+            self.logger.warning("Failed to update playlist metadata: %s", err)
+
+    async def _match_track_by_metadata(
+        self,
+        item: PlaylistItem,
+        match_providers: list[str] | None = None,
+    ) -> str | None:
+        """
+        Search providers for a track matching the given PlaylistItem metadata.
+
+        Uses ISRC/MusicBrainz ID for exact matching first, then falls back
+        to fuzzy title/artist/duration matching.
+
+        :param item: The PlaylistItem with metadata from the M3U file.
+        :param match_providers: Optional list of provider instance IDs or
+            domains to limit the search.
+        """
+        artist_name, track_name = parse_extinf_title(item.title)
+        if not track_name:
+            return None
+
+        search_query = f"{artist_name} - {track_name}" if artist_name else track_name
+
+        all_providers = self.mass.music.get_unique_providers()
+        if match_providers:
+            provider_domains: dict[str, str] = {}
+            for pid in all_providers:
+                prov = self.mass.get_provider(pid)
+                if prov:
+                    provider_domains[pid] = prov.domain
+            all_providers = [
+                pid
+                for pid in all_providers
+                if pid in match_providers or provider_domains.get(pid) in match_providers
+            ]
+
+        best_match: tuple[int, str] | None = None
+
+        for provider_id in all_providers:
+            try:
+                results = await self.mass.music.tracks.search(search_query, provider_id, limit=5)
+            except Exception:
+                self.logger.debug(
+                    "Search failed on provider %s for '%s'", provider_id, search_query
+                )
+                continue
+
+            for result in results:
+                if not result.uri:
+                    continue
+                score = self._score_track_match(result, item)
+                if score >= 10:
+                    self.logger.debug("Exact ID match for '%s' -> %s", search_query, result.uri)
+                    return result.uri
+                if score > 0 and (best_match is None or score > best_match[0]):
+                    best_match = (score, result.uri)
+
+        if best_match:
+            self.logger.debug(
+                "Matched '%s' -> %s (score=%d)",
+                search_query,
+                best_match[1],
+                best_match[0],
+            )
+            return best_match[1]
+
+        self.logger.info("No match found for '%s'", search_query)
+        return None
+
+    def _score_track_match(
+        self,
+        candidate: Track,
+        item: PlaylistItem,
+    ) -> int:
+        """
+        Score how well a candidate track matches the PlaylistItem metadata.
+
+        Returns 0 for no match, higher scores for better matches.
+        ISRC or MusicBrainz Recording ID match returns 10 (maximum).
+
+        :param candidate: The track from search results.
+        :param item: The PlaylistItem with metadata from the M3U file.
+        """
+        metadata = item.metadata or {}
+        artist_name, track_name = parse_extinf_title(item.title)
+        if not track_name:
+            return 0
+
+        isrc = metadata.get("isrc")
+        mbid = metadata.get("mbid")
+
+        # exact ID matches (cross-provider definitive match)
+        if isrc:
+            candidate_isrc = candidate.get_external_id(ExternalID.ISRC)
+            if candidate_isrc and candidate_isrc.upper() == isrc.upper():
+                return 10
+        if mbid:
+            candidate_mbid = candidate.get_external_id(ExternalID.MB_RECORDING)
+            if candidate_mbid and candidate_mbid.lower() == mbid.lower():
+                return 10
+
+        # media type gate
+        if metadata.get("media_type"):
+            candidate_type = getattr(candidate, "media_type", None)
+            if candidate_type and candidate_type.value != metadata["media_type"]:
+                return 0
+
+        return self._score_fuzzy_metadata(candidate, artist_name, track_name, metadata, item)
+
+    def _score_fuzzy_metadata(
+        self,
+        candidate: Track,
+        artist_name: str | None,
+        track_name: str,
+        metadata: dict[str, str],
+        item: PlaylistItem,
+    ) -> int:
+        """
+        Score fuzzy metadata fields (title, artist, album, duration, version).
+
+        :param candidate: The track from search results.
+        :param artist_name: Parsed artist name from EXTINF, or None.
+        :param track_name: Parsed track title from EXTINF.
+        :param metadata: The #EXTMA metadata dict.
+        :param item: The PlaylistItem (for duration from item.length).
+        """
+        if not compare_strings(candidate.name, track_name, strict=False):
+            return 0
+        score = 1
+
+        if artist_name:
+            candidate_artists = [a.name for a in candidate.artists] if candidate.artists else []
+            if not any(compare_strings(a, artist_name, strict=False) for a in candidate_artists):
+                return 0
+            score += 2
+
+        score += self._score_bonus_fields(candidate, metadata)
+        score += self._score_duration(candidate, item)
+        return score
+
+    @staticmethod
+    def _score_bonus_fields(candidate: Track, metadata: dict[str, str]) -> int:
+        """Score bonus metadata fields: podcast, authors, album, version."""
+        score = 0
+        if metadata.get("podcast"):
+            candidate_podcast = getattr(candidate, "podcast", None)
+            if candidate_podcast and hasattr(candidate_podcast, "name"):
+                if compare_strings(candidate_podcast.name, metadata["podcast"], strict=False):
+                    score += 2
+
+        if metadata.get("authors"):
+            candidate_authors = getattr(candidate, "authors", None)
+            if candidate_authors:
+                if compare_strings("; ".join(candidate_authors), metadata["authors"], strict=False):
+                    score += 2
+
+        if metadata.get("album"):
+            candidate_album = getattr(candidate, "album", None)
+            if candidate_album and hasattr(candidate_album, "name"):
+                if compare_strings(candidate_album.name, metadata["album"], strict=False):
+                    score += 1
+
+        if metadata.get("version"):
+            candidate_version = getattr(candidate, "version", None) or ""
+            if candidate_version and compare_strings(
+                candidate_version, metadata["version"], strict=False
+            ):
+                score += 1
+            elif candidate_version:
+                score -= 1
+
+        return score
+
+    @staticmethod
+    def _score_duration(candidate: Track, item: PlaylistItem) -> int:
+        """Score duration proximity between candidate and playlist item."""
+        try:
+            duration = int(item.length) if item.length else None
+        except ValueError:
+            return 0
+        if duration is None or duration <= 0 or candidate.duration <= 0:
+            return 0
+        diff = abs(candidate.duration - duration)
+        if diff <= 2:
+            return 2
+        if diff <= 5:
+            return 1
+        return 0
+
     async def _resolve_url(self, url: str) -> str:
-        """Resolve a URL to the actual stream URL.
+        """
+        Resolve a URL to the actual stream URL.
 
         ffprobe cannot analyze PLS/M3U files directly as it sees them as text.
         This method extracts the actual audio stream URL from playlist files.
@@ -1046,26 +1074,6 @@ class BuiltinProvider(MusicProvider):
             url, media_info.raw, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
         )
         return media_info
-
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a track/radio."""
-        media_info = await self._get_media_info(item_id)
-        is_radio = media_info.get("icy-name") or not media_info.duration
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=item_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                channels=media_info.channels,
-            ),
-            media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            stream_type=StreamType.HTTP,
-            path=item_id,
-            can_seek=not is_radio,
-            allow_seek=not is_radio,
-        )
 
     @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:
@@ -1255,7 +1263,7 @@ class BuiltinProvider(MusicProvider):
                 )
                 if library_item is not None:
                     return library_item
-            except (InvalidDataError, KeyError, NotImplementedError):
+            except InvalidDataError, KeyError, NotImplementedError:
                 continue
         # return unresolved media item so the entry still shows in the playlist
         return media_item
@@ -1383,7 +1391,7 @@ class BuiltinProvider(MusicProvider):
             for uri in uris:
                 try:
                     entries.append(await self._build_m3u_entry_from_uri(uri))
-                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError):
+                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
                     # parse URI for minimal provider info so the entry is resolvable later
                     entry = PlaylistItem(path=uri)
                     if "://" in uri:

@@ -1,4 +1,5 @@
-"""Music Assistant Snapcast source stream.
+"""
+Music Assistant Snapcast source stream.
 
 This module implements a Music Assistant-managed Snapcast stream that is exposed to the
 Snapcast server as a TCP source. The stream is produced by running an FFmpeg pipeline
@@ -33,7 +34,8 @@ if TYPE_CHECKING:
 
 
 class SnapcastMAStream:
-    """A Music Assistant-managed Snapcast stream.
+    """
+    A Music Assistant-managed Snapcast stream.
 
     The stream lifecycle is:
     - setup: ensure required server resources exist (Snapcast source, optional socket server)
@@ -55,7 +57,8 @@ class SnapcastMAStream:
         use_cntrl_script: bool = False,
         destroy_on_stop: bool = False,
     ) -> None:
-        """Initialize the stream.
+        """
+        Initialize the stream.
 
         Args:
             provider: The Snapcast provider instance.
@@ -114,7 +117,8 @@ class SnapcastMAStream:
 
     @property
     def playback_started_at(self) -> float | None:
-        """Return when the playback started at the clients.
+        """
+        Return when the playback started at the clients.
 
         return The (UTC) timestamp when the playback was started on the client
         or None if not started yet or not streaming.
@@ -129,7 +133,8 @@ class SnapcastMAStream:
         return self._streaming_started_at
 
     async def setup(self) -> None:
-        """Prepare the Snapcast stream resources.
+        """
+        Prepare the Snapcast stream resources.
 
         Ensures a Snapcast source exists on the server. If `cntrl_queue_id` is set,
         also starts the Unix socket server used by the control script.
@@ -149,7 +154,8 @@ class SnapcastMAStream:
             self._setup_done = True
 
     async def destroy(self) -> None:
-        """Stop streaming and tear down all resources.
+        """
+        Stop streaming and tear down all resources.
 
         This stops the streamer task (if running), removes the Snapcast source,
         and stops the optional control socket server.
@@ -165,7 +171,8 @@ class SnapcastMAStream:
         await self._stop_socket_server()
 
     async def start_stream(self, allow_restart: bool = False) -> None:
-        """Start streaming the configured media to the Snapcast source.
+        """
+        Start streaming the configured media to the Snapcast source.
 
         Raises:
             RuntimeError: If the streamer task is already running.
@@ -186,7 +193,8 @@ class SnapcastMAStream:
             self._streamer_task.add_done_callback(self._on_streamer_done)
 
     async def wait_for_started(self, timeout_sec: float | None = None) -> None:
-        """Wait until the streamer task signals it has started.
+        """
+        Wait until the streamer task signals it has started.
 
         Args:
             timeout_sec: Optional timeout in seconds.
@@ -221,7 +229,8 @@ class SnapcastMAStream:
             self._restart_if_running()
 
     def request_stop_stream(self) -> None:
-        """Request the streamer task to stop.
+        """
+        Request the streamer task to stop.
 
         This is cooperative: the streamer task will stop when it observes the stop event.
         Any pending inactivity stop timer is canceled.
@@ -235,7 +244,8 @@ class SnapcastMAStream:
             self._stop_timer.cancel()
 
     def set_in_use(self, in_use: bool) -> None:
-        """Mark the stream as in-use or idle.
+        """
+        Mark the stream as in-use or idle.
 
         When marked idle, a delayed stop is scheduled. When marked in-use, any pending
         delayed stop is canceled.
@@ -249,7 +259,8 @@ class SnapcastMAStream:
             self._stop_timer = self._mass.loop.call_later(60.0, self.request_stop_stream)
 
     async def wait_for_stopped(self, timeout_sec: float | None = None) -> None:
-        """Wait for the streamer task to finish.
+        """
+        Wait for the streamer task to finish.
 
         If the task does not finish within the timeout, it is canceled and awaited.
 
@@ -272,7 +283,8 @@ class SnapcastMAStream:
             await asyncio.gather(curr_task, return_exceptions=True)
 
     async def _streamer_task_impl(self) -> None:
-        """Streamer task implementation.
+        """
+        Streamer task implementation.
 
         Runs FFmpeg to push audio to the Snapcast TCP source until FFmpeg exits or a stop
         request is received. After exit, waits briefly for the Snapcast stream to report
@@ -596,7 +608,8 @@ class SnapcastMAStream:
             self._provider.poke_group_members(snap_group)
 
     async def _start_socket_server(self) -> str:
-        """Get or create a socket server for the given queue.
+        """
+        Get or create a socket server for the given queue.
 
         :return: The path to the Unix socket.
         """

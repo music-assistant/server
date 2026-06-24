@@ -7,7 +7,6 @@ import logging
 import random
 import uuid
 from collections.abc import AsyncGenerator, Sequence
-from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
@@ -42,14 +41,13 @@ from PIL import Image as PilImage
 from ya_passport_auth import SecretStr
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import YandexMusicClient
 from .auth import refresh_credentials_via_passport, refresh_music_token
 from .constants import (
     BROWSE_INITIAL_TRACKS,
-    BROWSE_NAMES_EN,
-    BROWSE_NAMES_RU,
     COLLECTION_FOLDER_ID,
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
@@ -125,9 +123,27 @@ _COLLECTION_SUB_FOLDERS: frozenset[str] = frozenset(
     {"tracks", "artists", "albums", "playlists", "audiobooks", "podcasts"}
 )
 
+# Collection sub-folder rows: (ProviderFeature, browse sub_id, strings.json label key,
+# is_playable). The sub_id ("tracks") and label key ("my_favorites") differ on purpose so the
+# Collection labels stay distinct from the core "media.folder.*" library labels.
+_COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, bool], ...] = (
+    (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", True),
+    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", True),
+    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", True),
+    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", True),
+    (ProviderFeature.LIBRARY_PODCASTS, "podcasts", "my_podcasts", False),
+    (ProviderFeature.LIBRARY_AUDIOBOOKS, "audiobooks", "my_audiobooks", False),
+)
+
+
+def _media_label_key(slug: str) -> str:
+    """Normalize a tag/category slug into its strings.json authoring key (spaces → underscores)."""
+    return slug.replace(" ", "_")
+
 
 def _split_wave_mode(station_id: str) -> tuple[str, dict[str, str]]:
-    """Split a wave-mode station key into its base station ID and preset settings.
+    """
+    Split a wave-mode station key into its base station ID and preset settings.
 
     Keys like ``user:onyourwave#discover`` encode a specific preset on top of
     the base rotor station. The part before ``#`` is the station ID that goes
@@ -147,7 +163,8 @@ def _split_wave_mode(station_id: str) -> tuple[str, dict[str, str]]:
 
 
 def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
-    """Extract track_id and optional station_id from provider item_id.
+    """
+    Extract track_id and optional station_id from provider item_id.
 
     My Wave tracks use item_id format 'track_id@station_id'. Other tracks use
     plain track_id.
@@ -162,7 +179,8 @@ def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
 
 
 def _extract_chapter_map_from_album(album: YandexAlbum) -> tuple[list[str], list[int]]:
-    """Flatten an audiobook album's volumes into (chapter_track_ids, chapter_durations_ms).
+    """
+    Flatten an audiobook album's volumes into (chapter_track_ids, chapter_durations_ms).
 
     Shared by ``_get_audiobook_stream_details`` and ``_resolve_audiobook_chapter_map``
     so the two code paths can't drift (e.g. when we later filter bad tracks).
@@ -177,7 +195,8 @@ def _extract_chapter_map_from_album(album: YandexAlbum) -> tuple[list[str], list
 
 
 class _WaveState:
-    """Per-station mutable state for rotor wave playback.
+    """
+    Per-station mutable state for rotor wave playback.
 
     Holds both the new session-based rotor identifiers (`session_id`) and the
     legacy stations-based ones (`batch_id`). Call sites prefer `session_id`
@@ -228,21 +247,31 @@ class YandexMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
-    def _get_browse_names(self) -> dict[str, str]:
-        """Get locale-based browse folder names."""
-        try:
-            locale = (self.mass.metadata.locale or "en_US").lower()
-            use_russian = locale.startswith("ru")
-            self.logger.debug("Locale detection: locale=%s, use_russian=%s", locale, use_russian)
-        except Exception as err:
-            self.logger.debug("Locale detection failed: %s", err)
-            use_russian = False
-        return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
+    def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
+        """
+        Resolve a media label to its English ``name`` and ``translation_key``.
+
+        The English source string lives in the provider's ``strings.json`` (the single source
+        of truth) and is localized for the connection locale at serialization via the returned
+        key. An unauthored key — e.g. a tag discovered from Yandex's landing API — returns
+        ``(fallback, None)`` so its already-localized name is kept verbatim.
+
+        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
+        :param key: Authoring key within the group; also the item's ``translation_key``.
+        :param fallback: English name to use when no string is authored for *key*.
+        """
+        authored = self.mass.translations.get_translation(
+            f"provider.{self.domain}.media.{group}.{key}.name"
+        )
+        if authored is None:
+            return fallback, None
+        return authored, key
 
     async def _reauth_via_refresh_token(
         self, x_token: str, refresh_token: str, base_url: str, original_err: Exception
     ) -> None:
-        """Silently re-issue full credentials when x_token refresh fails.
+        """
+        Silently re-issue full credentials when x_token refresh fails.
 
         Device-flow accounts have a refresh_token that can mint a new
         x_token + refresh_token + music_token without any user interaction.
@@ -375,7 +404,8 @@ class YandexMusicProvider(MusicProvider):
         self.logger.info("Successfully connected to Yandex Music")
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider.
+        """
+        Handle unload/close of the provider.
 
         :param is_removed: Whether the provider is being removed.
         """
@@ -391,7 +421,8 @@ class YandexMusicProvider(MusicProvider):
         await super().unload(is_removed)
 
     def get_item_mapping(self, media_type: MediaType | str, key: str, name: str) -> ItemMapping:
-        """Create a generic item mapping.
+        """
+        Create a generic item mapping.
 
         :param media_type: The media type.
         :param key: The item ID.
@@ -410,7 +441,8 @@ class YandexMusicProvider(MusicProvider):
     async def browse(  # noqa: PLR0911, PLR0915
         self, path: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with locale-based folder names and My Wave.
+        """
+        Browse provider items with locale-based folder names and My Wave.
 
         Root level shows My Wave, artists, albums, liked tracks, playlists. Names
         are in Russian when MA locale is ru_*, otherwise in English. My Wave
@@ -563,8 +595,8 @@ class YandexMusicProvider(MusicProvider):
         if subpath:
             return await super().browse(path)
 
-        names = self._get_browse_names()
-
+        # The English name on each folder doubles as the fallback; translation_key localizes
+        # it for the connection locale at serialization (the server is the single source).
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
         # My Wave folder (always enabled — Яндекс «Моя волна»)
@@ -573,7 +605,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                name=names[MY_WAVE_PLAYLIST_ID],
+                name="My Wave",
+                translation_key=MY_WAVE_PLAYLIST_ID,
                 is_playable=True,
             )
         )
@@ -583,7 +616,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=MY_WAVE_MODES_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVE_MODES_FOLDER_ID}",
-                name=names.get(MY_WAVE_MODES_FOLDER_ID, "Wave Modes"),
+                name="Wave Modes",
+                translation_key=MY_WAVE_MODES_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -594,7 +628,8 @@ class YandexMusicProvider(MusicProvider):
                     item_id=MY_WAVE_PRESETS_FOLDER_ID,
                     provider=self.instance_id,
                     path=f"{base}{MY_WAVE_PRESETS_FOLDER_ID}",
-                    name=names.get(MY_WAVE_PRESETS_FOLDER_ID, "My Presets"),
+                    name="My Presets",
+                    translation_key=MY_WAVE_PRESETS_FOLDER_ID,
                     is_playable=False,
                 )
             )
@@ -604,7 +639,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=FOR_YOU_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{FOR_YOU_FOLDER_ID}",
-                name=names.get(FOR_YOU_FOLDER_ID, "For You"),
+                name="For You",
+                translation_key=FOR_YOU_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -624,17 +660,19 @@ class YandexMusicProvider(MusicProvider):
                     item_id=COLLECTION_FOLDER_ID,
                     provider=self.instance_id,
                     path=f"{base}{COLLECTION_FOLDER_ID}",
-                    name=names.get(COLLECTION_FOLDER_ID, "Collection"),
+                    name="Collection",
+                    translation_key=COLLECTION_FOLDER_ID,
                     is_playable=False,
                 )
             )
-        # Radio folder — rotor stations (Яндекс волны, renamed to Radio)
+        # Radio folder — rotor stations (Яндекс волны, shown as Radio)
         folders.append(
             BrowseFolder(
                 item_id=RADIO_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{RADIO_FOLDER_ID}",
-                name=names.get(RADIO_FOLDER_ID, "Radio"),
+                name="Radio",
+                translation_key=RADIO_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -644,7 +682,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=MY_WAVES_SET_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVES_SET_FOLDER_ID}",
-                name=names.get(MY_WAVES_SET_FOLDER_ID, "AI Wave Sets"),
+                name="AI Wave Sets",
+                translation_key=MY_WAVES_SET_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -654,7 +693,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=PINNED_ITEMS_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{PINNED_ITEMS_FOLDER_ID}",
-                name=names.get(PINNED_ITEMS_FOLDER_ID, "Pinned"),
+                name="Pinned",
+                translation_key=PINNED_ITEMS_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -664,7 +704,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=LISTENING_HISTORY_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{LISTENING_HISTORY_FOLDER_ID}",
-                name=names.get(LISTENING_HISTORY_FOLDER_ID, "Listening History"),
+                name="Listening History",
+                translation_key=LISTENING_HISTORY_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -675,7 +716,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_my_wave(
         self, path: str, sub_subpath: str | None
     ) -> list[Track | BrowseFolder]:
-        """Browse My Wave tracks (must be called under the My Wave state lock).
+        """
+        Browse My Wave tracks (must be called under the My Wave state lock).
 
         :param path: Full browse path.
         :param sub_subpath: Sub-path part ('next' for load more, or track_id cursor).
@@ -759,21 +801,21 @@ class YandexMusicProvider(MusicProvider):
 
         # Only show "Load more" if we haven't reached the limit and there's more data
         if last_batch_id and total_track_count < max_tracks_config:
-            names = self._get_browse_names()
-            next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
                     provider=self.instance_id,
                     path=f"{path.rstrip('/')}/next",
-                    name=next_name,
+                    name="Load more",
+                    translation_key="load_more",
                     is_playable=False,
                 )
             )
         return all_tracks
 
     def _get_user_wave_presets(self) -> list[dict[str, str]]:
-        """Decode user-defined wave presets from the hidden JSON config key.
+        """
+        Decode user-defined wave presets from the hidden JSON config key.
 
         Thin wrapper around :func:`presets.parse_stored_presets` so browse
         code and settings actions use the exact same parsing — avoids schema
@@ -784,7 +826,8 @@ class YandexMusicProvider(MusicProvider):
     def _browse_user_presets_list(
         self, path: str, presets: list[dict[str, str]]
     ) -> list[BrowseFolder]:
-        """Return one playable BrowseFolder per configured user preset.
+        """
+        Return one playable BrowseFolder per configured user preset.
 
         ``path`` is nested (``my_wave_presets/<idx>``) so MA's back-nav —
         which strips the last ``/``-segment — returns the user to the
@@ -812,7 +855,8 @@ class YandexMusicProvider(MusicProvider):
         return folders
 
     def _browse_my_wave_modes_list(self, path: str) -> list[BrowseFolder]:
-        """Return the 11 wave-mode entries as playable browse folders.
+        """
+        Return the 11 wave-mode entries as playable browse folders.
 
         Same dual-form contract as user presets: nested ``path`` keeps
         back-navigation intact, underscore ``item_id`` survives MA's
@@ -821,17 +865,19 @@ class YandexMusicProvider(MusicProvider):
         :param path: Browse path the user navigated into.
         :return: Ordered list of BrowseFolder entries, one per preset.
         """
-        names = self._get_browse_names()
         base = path if path.endswith("/") else f"{path}/"
         folders: list[BrowseFolder] = []
         for preset in WAVE_MODE_ORDER:
-            name_key = f"wave_mode_{preset}"
+            name, translation_key = self._media_label(
+                "folder", f"wave_mode_{preset}", preset.replace("_", " ").title()
+            )
             folders.append(
                 BrowseFolder(
                     item_id=f"{MY_WAVE_MODES_FOLDER_ID}_{preset}",
                     provider=self.instance_id,
                     path=f"{base}{preset}",
-                    name=names.get(name_key, preset.replace("_", " ").title()),
+                    name=name,
+                    translation_key=translation_key,
                     is_playable=True,
                 )
             )
@@ -840,7 +886,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_my_wave_mode(
         self, path: str, station_key: str, load_more: bool
     ) -> list[Track | BrowseFolder]:
-        """Fetch a batch of tracks for a specific wave-mode preset.
+        """
+        Fetch a batch of tracks for a specific wave-mode preset.
 
         Reuses the session-API machinery: tracks live in
         ``_wave_states[station_key]`` where station_key is
@@ -903,14 +950,13 @@ class YandexMusicProvider(MusicProvider):
                 break
 
         if last_batch_id and total_track_count < max_tracks_config:
-            names = self._get_browse_names()
-            next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
                     provider=self.instance_id,
                     path=f"{path.rstrip('/')}/next",
-                    name=next_name,
+                    name="Load more",
+                    translation_key="load_more",
                     is_playable=False,
                 )
             )
@@ -923,7 +969,8 @@ class YandexMusicProvider(MusicProvider):
         *,
         station_key: str = ROTOR_STATION_MY_WAVE,
     ) -> Track | None:
-        """Parse a Yandex track into a My Wave Track with composite item_id.
+        """
+        Parse a Yandex track into a My Wave Track with composite item_id.
 
         Extracts the track_id, checks for duplicates in the seen_ids set,
         sets composite item_id (track_id@station_key) and updates
@@ -963,7 +1010,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_valid_tags_for_category(self, category: str) -> list[str]:
-        """Return tags for a category by combining hardcoded + landing-discovered.
+        """
+        Return tags for a category by combining hardcoded + landing-discovered.
 
         Trusts the hardcoded ``TAG_CATEGORY_*`` lists (evergreen Yandex
         categories) and the landing API output (Yandex returns landing tags
@@ -995,49 +1043,52 @@ class YandexMusicProvider(MusicProvider):
         return tags
 
     @use_cache(3600, allow_expired_cache=True)
-    async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str]]:
-        """Return all browse-able tags: hardcoded (non-seasonal) + landing-discovered.
+    async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str, str | None]]:
+        """
+        Return all browse-able tags: hardcoded (non-seasonal) + landing-discovered.
 
         Same rationale as :meth:`_get_valid_tags_for_category` — runtime
         validation removed to avoid the per-endpoint concurrency burst that
         triggered Yandex captcha. The locale parameter is part of the cache
-        key so locale changes invalidate the cached result.
+        key so locale changes invalidate the cached landing titles.
 
         :param locale: Current metadata locale (used as part of cache key).
-        :return: List of (slug, title) tuples in hardcoded-then-discovered order.
+        :return: List of (slug, English name, translation_key) tuples in
+            hardcoded-then-discovered order. Landing-discovered tags carry their
+            (already localized) API title and no translation_key.
         """
-        names = self._get_browse_names()
-        all_tags: dict[str, str] = {}
+        all_tags: dict[str, tuple[str, str | None]] = {}
         for slug, cat in TAG_SLUG_CATEGORY.items():
             if cat != "seasonal":
-                all_tags[slug] = names.get(slug, slug.title())
+                all_tags[slug] = self._media_label("folder", _media_label_key(slug), slug.title())
         try:
             landing_tags = await self.client.get_landing_tags()
             for slug, title in landing_tags:
                 if slug not in all_tags:
-                    all_tags[slug] = title
+                    all_tags[slug] = (title, None)
         except Exception as err:
             self.logger.debug("Failed to discover tags from landing API: %s", err)
-        return list(all_tags.items())
+        return [(slug, name, translation_key) for slug, (name, translation_key) in all_tags.items()]
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
-        """Get set of all valid tag slugs (cached).
+        """
+        Get set of all valid tag slugs (cached).
 
         :return: Set of tag slug strings that have playlists.
         """
         discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
-        return {slug for slug, _title in discovered}
+        return {slug for slug, _name, _key in discovered}
 
     async def _browse_for_you(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse «For You» folder — shows Picks and Mixes sub-folders.
+        """
+        Browse «For You» folder — shows Picks and Mixes sub-folders.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
         :return: List of sub-folders (Picks, Mixes).
         """
-        names = self._get_browse_names()
         # Strip the for_you segment to build child paths that route to picks/mixes
         # Path format: ...//for_you  → child paths should be ...//picks, ...//mixes
         # We build base from the root (before for_you) by dropping the last segment.
@@ -1050,14 +1101,16 @@ class YandexMusicProvider(MusicProvider):
                     item_id="picks",
                     provider=self.instance_id,
                     path=f"{root_base}picks",
-                    name=names.get("picks", "Picks"),
+                    name="Picks",
+                    translation_key="picks",
                     is_playable=False,
                 ),
                 BrowseFolder(
                     item_id="mixes",
                     provider=self.instance_id,
                     path=f"{root_base}mixes",
-                    name=names.get("mixes", "Mixes"),
+                    name="Mixes",
+                    translation_key="mixes",
                     is_playable=False,
                 ),
             ]
@@ -1067,7 +1120,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_collection(
         self, path: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse «Collection» folder — shows library sub-folders (tracks/artists/albums/playlists).
+        """
+        Browse «Collection» folder — shows library sub-folders (tracks/artists/albums/playlists).
 
         Child ``path`` is nested (``…/collection/tracks``) so MA's "back"
         button lands on this listing instead of the provider root. The
@@ -1077,34 +1131,30 @@ class YandexMusicProvider(MusicProvider):
         :param path: Full browse path.
         :return: List of library sub-folders.
         """
-        names = self._get_browse_names()
         base = path if path.endswith("/") else f"{path}/"
 
         folders: list[BrowseFolder] = []
-        feature_map: tuple[tuple[ProviderFeature, str, bool], ...] = (
-            (ProviderFeature.LIBRARY_TRACKS, "tracks", True),
-            (ProviderFeature.LIBRARY_ARTISTS, "artists", True),
-            (ProviderFeature.LIBRARY_ALBUMS, "albums", True),
-            (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", True),
-            (ProviderFeature.LIBRARY_PODCASTS, "podcasts", False),
-            (ProviderFeature.LIBRARY_AUDIOBOOKS, "audiobooks", False),
-        )
-        for feature, sub_id, is_playable in feature_map:
+        for feature, sub_id, label_key, is_playable in _COLLECTION_SUBFOLDERS:
             if feature not in self.supported_features:
                 continue
+            name, translation_key = self._media_label(
+                "folder", label_key, label_key.replace("_", " ").title()
+            )
             folders.append(
                 BrowseFolder(
                     item_id=sub_id,
                     provider=self.instance_id,
                     path=f"{base}{sub_id}",
-                    name=names[sub_id],
+                    name=name,
+                    translation_key=translation_key,
                     is_playable=is_playable,
                 )
             )
         return folders
 
     async def _browse_pins(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse user's pinned items (artists/albums/playlists from Yandex Pins).
+        """
+        Browse user's pinned items (artists/albums/playlists from Yandex Pins).
 
         Resolves each pin to its full media item via existing single-item lookups.
         Wave pins are skipped — MA has no native concept for them.
@@ -1137,7 +1187,8 @@ class YandexMusicProvider(MusicProvider):
         return items
 
     async def _browse_history(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse user's recent listening history (flattened across days).
+        """
+        Browse user's recent listening history (flattened across days).
 
         Collects ``track_id`` values from each history entry's ``item_id``
         sub-object (``full_model`` is not populated by the current API
@@ -1205,7 +1256,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_picks(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse picks folder using hardcoded tags validated against the API.
+        """
+        Browse picks folder using hardcoded tags validated against the API.
 
         Tags are sourced from hardcoded category lists and landing API discovery,
         then validated via client.tags() to ensure they have playlists.
@@ -1215,20 +1267,19 @@ class YandexMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         # Get validated tags
         discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
 
-        # Categorize valid tags
-        categorized: dict[str, list[tuple[str, str]]] = {}
-        for slug, title in discovered:
+        # Categorize valid tags, carrying each tag's (slug, English name, translation_key)
+        categorized: dict[str, list[tuple[str, str, str | None]]] = {}
+        for slug, name, translation_key in discovered:
             cat = TAG_SLUG_CATEGORY.get(slug, "mood")
             # Skip seasonal tags — they belong in mixes, not picks
             if cat == "seasonal":
                 continue
-            categorized.setdefault(cat, []).append((slug, title))
+            categorized.setdefault(cat, []).append((slug, name, translation_key))
 
         # Sort tags within each category by preferred order
         for cat, cat_tags in categorized.items():
@@ -1242,24 +1293,28 @@ class YandexMusicProvider(MusicProvider):
             folders: list[BrowseFolder] = []
             for cat in category_display_order:
                 if cat in categorized:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
             # Show any extra categories not in the standard order
             for cat in categorized:
                 if cat not in category_display_order:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
@@ -1279,13 +1334,14 @@ class YandexMusicProvider(MusicProvider):
         if category and not tag:
             category_tags = categorized.get(category, [])
             folders = []
-            for slug, title in category_tags:
+            for slug, name, translation_key in category_tags:
                 folders.append(
                     BrowseFolder(
                         item_id=slug,
                         provider=self.instance_id,
                         path=f"{base}{slug}",
-                        name=names.get(slug, title),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
@@ -1294,7 +1350,7 @@ class YandexMusicProvider(MusicProvider):
 
         # picks/category/tag - show playlists for the tag
         if tag:
-            discovered_slugs = {slug for slug, _ in discovered}
+            discovered_slugs = {slug for slug, _name, _key in discovered}
             if tag in discovered_slugs:
                 self.logger.debug("Fetching playlists for tag: %s", tag)
                 return await self._get_tag_playlists_as_browse(tag)
@@ -1305,7 +1361,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_mixes(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse mixes folder (seasonal collections) using hardcoded tags.
+        """
+        Browse mixes folder (seasonal collections) using hardcoded tags.
 
         Renders every seasonal tag from ``TAG_MIXES`` unconditionally. The
         old per-tag validation fired a ``Semaphore(5)+gather`` of
@@ -1318,21 +1375,24 @@ class YandexMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         # mixes/ - show seasonal folders
         if len(path_parts) == 1:
-            return [
-                BrowseFolder(
-                    item_id=t,
-                    provider=self.instance_id,
-                    path=f"{base}{t}",
-                    name=names.get(t, t.title()),
-                    is_playable=False,
+            folders: list[BrowseFolder] = []
+            for t in TAG_MIXES:
+                name, translation_key = self._media_label("folder", t, t.title())
+                folders.append(
+                    BrowseFolder(
+                        item_id=t,
+                        provider=self.instance_id,
+                        path=f"{base}{t}",
+                        name=name,
+                        translation_key=translation_key,
+                        is_playable=False,
+                    )
                 )
-                for t in TAG_MIXES
-            ]
+            return folders
 
         # mixes/tag - show playlists for the tag
         tag = path_parts[1] if len(path_parts) > 1 else None
@@ -1342,7 +1402,8 @@ class YandexMusicProvider(MusicProvider):
         return []
 
     def _get_wave_state(self, station_id: str) -> _WaveState:
-        """Get or create per-station wave state.
+        """
+        Get or create per-station wave state.
 
         :param station_id: Rotor station ID (e.g. 'genre:rock', 'mood:chill').
         :return: _WaveState instance for this station.
@@ -1358,7 +1419,8 @@ class YandexMusicProvider(MusicProvider):
         track_id: str | None = None,
         total_played_seconds: int | None = None,
     ) -> bool:
-        """Route rotor feedback to the session endpoint.
+        """
+        Route rotor feedback to the session endpoint.
 
         Requires an active ``wave.session_id`` — rotor feedback is only
         meaningful inside the session it originated from. The legacy
@@ -1395,7 +1457,8 @@ class YandexMusicProvider(MusicProvider):
         )
 
     async def _prefetch_rotor_session(self, station_key: str) -> None:
-        """Fire-and-forget: fetch the next batch for an active wave session.
+        """
+        Fire-and-forget: fetch the next batch for an active wave session.
 
         Called from ``on_played`` while a wave track starts playing, so by the
         time Music Assistant's DSTM asks for more via ``get_similar_tracks``,
@@ -1450,7 +1513,8 @@ class YandexMusicProvider(MusicProvider):
     async def _fetch_rotor_session_batch(
         self, wave: _WaveState, station_id: str
     ) -> tuple[list[YandexTrack], str | None]:
-        """Fetch the next rotor-session batch for any station.
+        """
+        Fetch the next rotor-session batch for any station.
 
         On first call (wave.session_id is None), starts a new rotor session
         and records session_id + batch_id on the wave state. On subsequent
@@ -1488,7 +1552,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_waves(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse waves folder (rotor stations by genre/mood/activity/epoch/local).
+        """
+        Browse waves folder (rotor stations by genre/mood/activity/epoch/local).
 
         Fetches available stations from the Yandex rotor API and groups them by category.
 
@@ -1496,7 +1561,6 @@ class YandexMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or tracks.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         locale = (self.mass.metadata.locale or "en_US").lower()
@@ -1506,8 +1570,8 @@ class YandexMusicProvider(MusicProvider):
 
         # Group stations by category, preserving image_url
         categorized: dict[str, list[tuple[str, str, str | None]]] = {}
-        for station_id, cat_key, name, image_url in all_stations:
-            categorized.setdefault(cat_key, []).append((station_id, name, image_url))
+        for station_id, cat_key, station_name, image_url in all_stations:
+            categorized.setdefault(cat_key, []).append((station_id, station_name, image_url))
 
         # waves/ — show category folders
         if len(path_parts) == 1:
@@ -1515,47 +1579,57 @@ class YandexMusicProvider(MusicProvider):
             # Personalized "My Waves" first — only show if dashboard returns stations
             dashboard_stations = await self._get_dashboard_stations_cached()
             if dashboard_stations:
+                name, translation_key = self._media_label("folder", MY_WAVES_FOLDER_ID, "Personal")
                 folders.append(
                     BrowseFolder(
                         item_id=MY_WAVES_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{MY_WAVES_FOLDER_ID}",
-                        name=names.get(MY_WAVES_FOLDER_ID, "My Waves"),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
             # Featured Waves — only show if landing-blocks/waves returns data
             waves_landing = await self._get_waves_landing_cached()
             if waves_landing:
+                name, translation_key = self._media_label(
+                    "folder", WAVES_LANDING_FOLDER_ID, "Featured Waves"
+                )
                 folders.append(
                     BrowseFolder(
                         item_id=WAVES_LANDING_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{WAVES_LANDING_FOLDER_ID}",
-                        name=names.get(WAVES_LANDING_FOLDER_ID, "Featured Waves"),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
             for cat in WAVE_CATEGORY_DISPLAY_ORDER:
                 if cat in categorized:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
             # Append any categories returned by API that aren't in the predefined order
             for cat in categorized:
                 if cat not in WAVE_CATEGORY_DISPLAY_ORDER:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
@@ -1621,14 +1695,16 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(600, allow_expired_cache=True)
     async def _get_dashboard_stations_cached(self) -> list[tuple[str, str, str | None]]:
-        """Get personalized dashboard stations, cached for 10 minutes.
+        """
+        Get personalized dashboard stations, cached for 10 minutes.
 
         :return: List of (station_id, name, image_url) tuples.
         """
         return await self.client.get_dashboard_stations()
 
     async def _browse_my_waves_stations(self, path: str) -> list[BrowseFolder]:
-        """Browse personalized wave stations from rotor/stations/dashboard.
+        """
+        Browse personalized wave stations from rotor/stations/dashboard.
 
         Names are resolved from the non-personalized station list so that
         stations show their actual genre/mood name (e.g. "Рок") rather than
@@ -1675,7 +1751,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_wave_station(
         self, station_id: str, path: str = ""
     ) -> list[Track | BrowseFolder]:
-        """Browse a rotor wave station and return tracks.
+        """
+        Browse a rotor wave station and return tracks.
 
         Fetches tracks from the rotor station, deduplicates within the current session,
         and sends radioStarted feedback on first call. Appends a "Load more" BrowseFolder
@@ -1747,8 +1824,6 @@ class YandexMusicProvider(MusicProvider):
             # Append "Load more" sentinel so MA knows to call browse again for next batch.
             # This mirrors the My Wave mechanism and enables continuous radio playback.
             if tracks and len(state.seen_track_ids) < max_tracks and path:
-                names = self._get_browse_names()
-                next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
                 # Append /next to the current path (same pattern as _browse_my_wave).
                 # This makes each "Load more" path unique (e.g. /next/next/next...)
                 # so MA never serves a cached result for subsequent presses.
@@ -1757,7 +1832,8 @@ class YandexMusicProvider(MusicProvider):
                         item_id="next",
                         provider=self.instance_id,
                         path=f"{path.rstrip('/')}/next",
-                        name=next_name,
+                        name="Load more",
+                        translation_key="load_more",
                         is_playable=False,
                     )
                 )
@@ -1766,7 +1842,8 @@ class YandexMusicProvider(MusicProvider):
 
     @staticmethod
     def _extract_wave_item_cover(item: dict[str, Any]) -> tuple[str | None, str | None]:
-        """Extract cover URI and background color from a wave/mix item.
+        """
+        Extract cover URI and background color from a wave/mix item.
 
         Accepts both camelCase (``compactImageUrl`` — what /landing-blocks/
         actually returns) and snake_case (``compact_image_url`` — retained
@@ -1782,7 +1859,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_mixes_waves_cached(self) -> list[dict[str, Any]] | None:
-        """Get AI Wave Set data from /landing-blocks/mixes-waves, cached for 1 hour.
+        """
+        Get AI Wave Set data from /landing-blocks/mixes-waves, cached for 1 hour.
 
         :return: List of mix category dicts from the API, or None on error.
         """
@@ -1790,7 +1868,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_waves_landing_cached(self) -> list[dict[str, Any]] | None:
-        """Get Featured Waves data from /landing-blocks/waves, cached for 1 hour.
+        """
+        Get Featured Waves data from /landing-blocks/waves, cached for 1 hour.
 
         :return: List of wave category dicts from the API, or None on error.
         """
@@ -1799,7 +1878,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_waves_landing(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Featured Waves (from /landing-blocks/waves).
+        """
+        Browse Featured Waves (from /landing-blocks/waves).
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1817,7 +1897,8 @@ class YandexMusicProvider(MusicProvider):
         categories_data: list[dict[str, Any]],
         id_prefix: str,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse wave-like category folders and their station items.
+        """
+        Browse wave-like category folders and their station items.
 
         Shared logic for both 'my_waves_set' browse trees:
         - Level 1 (e.g. my_waves_set/): category folders
@@ -1916,7 +1997,8 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_vibe_sets(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse AI Wave Sets (from /landing-blocks/mixes-waves).
+        """
+        Browse AI Wave Sets (from /landing-blocks/mixes-waves).
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1931,7 +2013,8 @@ class YandexMusicProvider(MusicProvider):
     async def _get_tag_playlists_as_browse(
         self, tag_id: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Get playlists for a tag and return as browse items.
+        """
+        Get playlists for a tag and return as browse items.
 
         :param tag_id: Tag identifier (e.g. 'chill', '80s').
         :return: List of Playlist objects.
@@ -1954,7 +2037,8 @@ class YandexMusicProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Perform search on Yandex Music.
+        """
+        Perform search on Yandex Music.
 
         :param search_query: The search query.
         :param media_types: List of media types to search for.
@@ -2053,7 +2137,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get artist details by ID, enriched with description and listener stats.
+        """
+        Get artist details by ID, enriched with description and listener stats.
 
         :param prov_artist_id: The provider artist ID.
         :return: Artist object.
@@ -2069,7 +2154,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album(self, prov_album_id: str) -> Album:
-        """Get album details by ID.
+        """
+        Get album details by ID.
 
         :param prov_album_id: The provider album ID.
         :return: Album object.
@@ -2082,7 +2168,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get podcast details by ID (backed by a Yandex album).
+        """
+        Get podcast details by ID (backed by a Yandex album).
 
         :param prov_podcast_id: The provider podcast (album) ID.
         :return: Podcast object.
@@ -2109,7 +2196,8 @@ class YandexMusicProvider(MusicProvider):
                 position += 1
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
-        """Get a single podcast episode by ID.
+        """
+        Get a single podcast episode by ID.
 
         The parent Podcast is reconstructed from the track's parent album. If
         the album isn't present on the track, the episode cannot be converted
@@ -2128,7 +2216,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get audiobook details by ID, including chapters built from tracks.
+        """
+        Get audiobook details by ID, including chapters built from tracks.
 
         :param prov_audiobook_id: The provider audiobook (album) ID.
         :return: Audiobook object.
@@ -2160,7 +2249,8 @@ class YandexMusicProvider(MusicProvider):
         return audiobook
 
     async def get_track(self, prov_track_id: str) -> Track:
-        """Get track details by ID.
+        """
+        Get track details by ID.
 
         Supports composite item_id (track_id@station_id) for My Wave tracks;
         only the track_id part is used for the API. Normalizes the ID before
@@ -2175,7 +2265,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def _get_track_cached(self, track_id: str) -> Track:
-        """Get track details by normalized ID (cached).
+        """
+        Get track details by normalized ID (cached).
 
         :param track_id: Normalized track ID (without station suffix).
         :return: Track object.
@@ -2191,7 +2282,8 @@ class YandexMusicProvider(MusicProvider):
         return parse_track(self, yandex_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get playlist details by ID.
+        """
+        Get playlist details by ID.
 
         Supports virtual playlists MY_WAVE_PLAYLIST_ID (My Wave) and
         LIKED_TRACKS_PLAYLIST_ID (Liked Tracks). Real playlists use format "owner_id:kind".
@@ -2201,13 +2293,14 @@ class YandexMusicProvider(MusicProvider):
         :return: Playlist object.
         :raises MediaNotFoundError: If playlist not found.
         """
-        # Virtual playlists - not cached (locale-dependent names)
+        # Virtual playlists - constructed locally (no API call); translation_key localizes
+        # the name for the connection locale at serialization.
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
-            names = self._get_browse_names()
             return Playlist(
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names[MY_WAVE_PLAYLIST_ID],
+                name="My Wave",
+                translation_key=MY_WAVE_PLAYLIST_ID,
                 owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
@@ -2221,11 +2314,11 @@ class YandexMusicProvider(MusicProvider):
             )
 
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
-            names = self._get_browse_names()
             return Playlist(
                 item_id=LIKED_TRACKS_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names[LIKED_TRACKS_PLAYLIST_ID],
+                name="My Favorites",
+                translation_key=LIKED_TRACKS_PLAYLIST_ID,
                 owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
@@ -2243,7 +2336,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def _get_real_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get real playlist details by ID (cached).
+        """
+        Get real playlist details by ID (cached).
 
         :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
         :return: Playlist object.
@@ -2262,7 +2356,8 @@ class YandexMusicProvider(MusicProvider):
         return parse_playlist(self, playlist)
 
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
-        """Get My Wave tracks for virtual playlist (uncached; uses cursor for page > 0).
+        """
+        Get My Wave tracks for virtual playlist (uncached; uses cursor for page > 0).
 
         Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
         the number of round-trips when the player controller paginates through pages.
@@ -2339,7 +2434,8 @@ class YandexMusicProvider(MusicProvider):
             return tracks
 
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
-        """Get liked tracks for virtual playlist (sorted in reverse chronological order).
+        """
+        Get liked tracks for virtual playlist (sorted in reverse chronological order).
 
         :param page: Page number (0 = all tracks limited by config, >0 = empty for pagination).
         :return: List of Track objects.
@@ -2403,7 +2499,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get album tracks.
+        """
+        Get album tracks.
 
         :param prov_album_id: The provider album ID.
         :return: List of Track objects.
@@ -2425,7 +2522,8 @@ class YandexMusicProvider(MusicProvider):
         return tracks
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Get similar tracks, preferring pre-fetched wave tracks when available.
+        """
+        Get similar tracks, preferring pre-fetched wave tracks when available.
 
         Split in two paths with different caching policies:
 
@@ -2451,7 +2549,8 @@ class YandexMusicProvider(MusicProvider):
         return await self._fetch_similar_tracks_for_seed(track_id, limit)
 
     async def _drain_prefetched_wave_tracks(self, station_key: str, limit: int) -> list[Track]:
-        """Pop up to ``limit`` prefetched tracks off the wave state.
+        """
+        Pop up to ``limit`` prefetched tracks off the wave state.
 
         Runs under ``wave.lock`` so it doesn't race with
         ``_prefetch_rotor_session`` which extends the same list under the
@@ -2478,7 +2577,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 3, allow_expired_cache=True)
     async def _fetch_similar_tracks_for_seed(self, track_id: str, limit: int) -> list[Track]:
-        """Create a one-off rotor session for ``track:{id}`` and return up to ``limit`` tracks.
+        """
+        Create a one-off rotor session for ``track:{id}`` and return up to ``limit`` tracks.
 
         Stateless by design: similar-tracks results don't participate in
         playback feedback or prefetch, so there is no need to keep a
@@ -2501,7 +2601,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
-        """Get artists similar to the given one via Yandex artists/similar endpoint.
+        """
+        Get artists similar to the given one via Yandex artists/similar endpoint.
 
         :param prov_artist_id: Provider artist ID.
         :param limit: Maximum number of artists to return.
@@ -2517,7 +2618,8 @@ class YandexMusicProvider(MusicProvider):
         return artists
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations with multiple discovery folders.
+        """
+        Get recommendations with multiple discovery folders.
 
         Returns My Wave, Feed (Made for You), Chart, New Releases, and
         New Playlists sections.
@@ -2573,7 +2675,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(600, allow_expired_cache=True)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
-        """Get My Wave recommendation folder with personalized tracks.
+        """
+        Get My Wave recommendation folder with personalized tracks.
 
         Shares the same `_WaveState(ROTOR_STATION_MY_WAVE)` with browse and
         virtual-playlist flows, so session_id + batch_id established here
@@ -2635,18 +2738,19 @@ class YandexMusicProvider(MusicProvider):
         if len(items) > initial_tracks_limit:
             items = items[:initial_tracks_limit]
 
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id=MY_WAVE_PLAYLIST_ID,
             provider=self.instance_id,
-            name=names[MY_WAVE_PLAYLIST_ID],
+            name="My Wave",
+            translation_key=MY_WAVE_PLAYLIST_ID,
             items=UniqueList(items),
             icon="mdi-waveform",
         )
 
     @use_cache(1800, allow_expired_cache=True)
     async def _get_feed_recommendations(self) -> RecommendationFolder | None:
-        """Get personalized feed playlists (Playlist of the Day, DejaVu, etc.).
+        """
+        Get personalized feed playlists (Playlist of the Day, DejaVu, etc.).
 
         :return: RecommendationFolder with generated playlists, or None if unavailable.
         """
@@ -2665,18 +2769,19 @@ class YandexMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing feed playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="feed",
             provider=self.instance_id,
-            name=names["feed"],
+            name="Made for You",
+            translation_key="feed",
             items=UniqueList(items),
             icon="mdi-account-music",
         )
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_chart_recommendations(self) -> RecommendationFolder | None:
-        """Get chart tracks (hot tracks of the month).
+        """
+        Get chart tracks (hot tracks of the month).
 
         :return: RecommendationFolder with chart tracks, or None if unavailable.
         """
@@ -2698,18 +2803,19 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing chart track: %s", err)
         if not tracks:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="chart",
             provider=self.instance_id,
-            name=names["chart"],
+            name="Chart",
+            translation_key="chart",
             items=UniqueList(tracks),
             icon="mdi-chart-line",
         )
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_new_releases_recommendations(self) -> RecommendationFolder | None:
-        """Get new album releases.
+        """
+        Get new album releases.
 
         :return: RecommendationFolder with new albums, or None if unavailable.
         """
@@ -2731,18 +2837,19 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing new release album: %s", err)
         if not albums:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="new_releases",
             provider=self.instance_id,
-            name=names["new_releases"],
+            name="New Releases",
+            translation_key="new_releases",
             items=UniqueList(albums),
             icon="mdi-new-box",
         )
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_new_playlists_recommendations(self) -> RecommendationFolder | None:
-        """Get new editorial playlists.
+        """
+        Get new editorial playlists.
 
         :return: RecommendationFolder with new playlists, or None if unavailable.
         """
@@ -2768,18 +2875,19 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing new playlist: %s", err)
         if not playlists:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="new_playlists",
             provider=self.instance_id,
-            name=names["new_playlists"],
+            name="New Playlists",
+            translation_key="new_playlists",
             items=UniqueList(playlists),
             icon="mdi-playlist-star",
         )
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_top_picks_recommendations(self) -> RecommendationFolder | None:
-        """Get Top Picks recommendation folder (tag: top).
+        """
+        Get Top Picks recommendation folder (tag: top).
 
         :return: RecommendationFolder with top playlists, or None if unavailable.
         """
@@ -2794,17 +2902,18 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing top picks playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="top_picks",
             provider=self.instance_id,
-            name=names.get("top_picks", "Top Picks"),
+            name="Top Picks",
+            translation_key="top_picks",
             items=UniqueList(items),
             icon="mdi-star",
         )
 
     async def _pick_random_tag_for_category(self, category: str) -> str | None:
-        """Pick a random valid tag for a category (not cached — enables rotation).
+        """
+        Pick a random valid tag for a category (not cached — enables rotation).
 
         :param category: Category name ('mood', 'activity', etc.).
         :return: Random tag slug, or None if no valid tags.
@@ -2816,7 +2925,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(1800, allow_expired_cache=True)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
-        """Get Mood Mix recommendation folder for a specific tag.
+        """
+        Get Mood Mix recommendation folder for a specific tag.
 
         :param mood_tag: Preselected mood tag slug.
         :return: RecommendationFolder with mood playlists, or None if unavailable.
@@ -2833,12 +2943,13 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing mood playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(mood_tag, mood_tag.title())
+        tag_name, _ = self._media_label("folder", _media_label_key(mood_tag), mood_tag.title())
         return RecommendationFolder(
             item_id="mood_mix",
             provider=self.instance_id,
-            name=f"{names.get('mood_mix', 'Mood')}: {tag_name}",
+            name=f"Mood Mix: {tag_name}",
+            translation_key="mood_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-emoticon-outline",
         )
@@ -2847,7 +2958,8 @@ class YandexMusicProvider(MusicProvider):
     async def _get_activity_mix_recommendations(
         self, activity_tag: str
     ) -> RecommendationFolder | None:
-        """Get Activity Mix recommendation folder for a specific tag.
+        """
+        Get Activity Mix recommendation folder for a specific tag.
 
         :param activity_tag: Preselected activity tag slug.
         :return: RecommendationFolder with activity playlists, or None if unavailable.
@@ -2866,25 +2978,29 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing activity playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(activity_tag, activity_tag.title())
+        tag_name, _ = self._media_label(
+            "folder", _media_label_key(activity_tag), activity_tag.title()
+        )
         return RecommendationFolder(
             item_id="activity_mix",
             provider=self.instance_id,
-            name=f"{names.get('activity_mix', 'Activity')}: {tag_name}",
+            name=f"Activity Mix: {tag_name}",
+            translation_key="activity_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-run",
         )
 
     @use_cache(3600 * 6, allow_expired_cache=True)
     async def _get_seasonal_mix_recommendations(self) -> RecommendationFolder | None:
-        """Get Seasonal Mix recommendation folder (based on current month).
+        """
+        Get Seasonal Mix recommendation folder (based on current month).
 
         :return: RecommendationFolder with seasonal playlists, or None if unavailable.
         """
         # Determine current season tag; fall back to autumn if the seasonal
         # endpoint returns nothing (e.g. spring/autumn handover gap).
-        current_month = datetime.now(tz=UTC).month
+        current_month = utc().month
         seasonal_tag = TAG_SEASONAL_MAP.get(current_month, "autumn")
         playlists = await self.client.get_tag_playlists(seasonal_tag)
         if not playlists and seasonal_tag != "autumn":
@@ -2900,19 +3016,23 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing seasonal playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(seasonal_tag, seasonal_tag.title())
+        tag_name, _ = self._media_label(
+            "folder", _media_label_key(seasonal_tag), seasonal_tag.title()
+        )
         return RecommendationFolder(
             item_id="seasonal_mix",
             provider=self.instance_id,
-            name=f"{names.get('seasonal_mix', 'Seasonal')}: {tag_name}",
+            name=f"Seasonal: {tag_name}",
+            translation_key="seasonal_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-weather-sunny",
         )
 
     @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks.
+        """
+        Get playlist tracks.
 
         :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind",
             my_wave, or liked_tracks).
@@ -3015,7 +3135,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get artist's albums.
+        """
+        Get artist's albums.
 
         :param prov_artist_id: The provider artist ID.
         :return: List of Album objects.
@@ -3031,7 +3152,8 @@ class YandexMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get artist's top tracks.
+        """
+        Get artist's top tracks.
 
         :param prov_artist_id: The provider artist ID.
         :return: List of Track objects.
@@ -3057,7 +3179,8 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing library artist: %s", err)
 
     async def _get_liked_albums_cached(self, ttl: float = 30.0) -> list[YandexAlbum]:
-        """Return liked albums with a short in-process TTL cache + lock.
+        """
+        Return liked albums with a short in-process TTL cache + lock.
 
         Albums, podcasts and audiobooks are all derived from the same
         ``users/{uid}/likes/albums`` endpoint, so a full library sync would
@@ -3076,7 +3199,8 @@ class YandexMusicProvider(MusicProvider):
             return albums
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
-        """Retrieve library albums from Yandex Music.
+        """
+        Retrieve library albums from Yandex Music.
 
         Excludes entries classified as podcasts or audiobooks so they don't
         duplicate into the Albums library view.
@@ -3128,7 +3252,8 @@ class YandexMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing library track: %s", err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
-        """Retrieve library playlists from Yandex Music.
+        """
+        Retrieve library playlists from Yandex Music.
 
         Includes virtual playlists (My Wave and Liked Tracks if enabled), user-created playlists,
         and user-liked editorial playlists (returned by a separate API endpoint).
@@ -3158,7 +3283,8 @@ class YandexMusicProvider(MusicProvider):
     # Library edit methods
 
     async def library_add(self, item: MediaItemType) -> bool:
-        """Add item to library.
+        """
+        Add item to library.
 
         For tracks carrying a wave station context in the item_id (e.g. when
         the user adds a My Wave track to favourites during playback), also
@@ -3187,7 +3313,8 @@ class YandexMusicProvider(MusicProvider):
         return False
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove item from library.
+        """
+        Remove item from library.
 
         :param prov_item_id: The provider item ID (may be track_id@station_id for tracks).
         :param media_type: The media type.
@@ -3214,7 +3341,8 @@ class YandexMusicProvider(MusicProvider):
     async def get_stream_details(
         self, item_id: str, media_type: MediaType = MediaType.TRACK
     ) -> StreamDetails:
-        """Get stream details for a track, podcast episode, or audiobook.
+        """
+        Get stream details for a track, podcast episode, or audiobook.
 
         A podcast episode is a track underneath the Yandex API, so it flows
         through the same per-track streaming path. An audiobook is an album
@@ -3231,7 +3359,8 @@ class YandexMusicProvider(MusicProvider):
         return await self.streaming.get_stream_details(item_id)
 
     async def _get_audiobook_stream_details(self, audiobook_id: str) -> StreamDetails:
-        """Build StreamDetails for an audiobook as a chapter-concatenated CUSTOM stream.
+        """
+        Build StreamDetails for an audiobook as a chapter-concatenated CUSTOM stream.
 
         Loads the album's tracks, uses the first chapter to establish the audio
         format, and stores the per-chapter track-IDs + durations in ``data`` so
@@ -3273,7 +3402,8 @@ class YandexMusicProvider(MusicProvider):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Return the audio stream for the provider item.
+        """
+        Return the audio stream for the provider item.
 
         For tracks and podcast episodes, streams via windowed Range requests
         (raw or AES-CTR encrypted). For audiobooks, iterates chapters: each
@@ -3309,7 +3439,8 @@ class YandexMusicProvider(MusicProvider):
     async def _resolve_audiobook_chapter_map(
         self, audiobook_id: str
     ) -> tuple[list[str], list[int]]:
-        """Return (chapter_track_ids, chapter_durations_ms) for an audiobook.
+        """
+        Return (chapter_track_ids, chapter_durations_ms) for an audiobook.
 
         Served from an in-memory cache populated by ``_get_audiobook_stream_details``.
         On a miss (e.g. ``on_played`` fires before streaming has started), falls back
@@ -3328,7 +3459,8 @@ class YandexMusicProvider(MusicProvider):
     async def _stream_audiobook_chapters(
         self, data: dict[str, Any], seek_position: int
     ) -> AsyncGenerator[bytes]:
-        """Concatenate per-chapter streams of an audiobook.
+        """
+        Concatenate per-chapter streams of an audiobook.
 
         Translates ``seek_position`` into (start_chapter, in_chapter_offset) and
         delegates each chapter to the per-track streaming path. In-chapter offset
@@ -3415,7 +3547,8 @@ class YandexMusicProvider(MusicProvider):
     async def get_rotor_station_tracks(
         self, station_id: str, queue: str | int | None = None
     ) -> tuple[list[Any], str | None]:
-        """Fetch tracks from a rotor station using the session API.
+        """
+        Fetch tracks from a rotor station using the session API.
 
         Public surface — pinned by the ynison plugin
         (`YandexMusicProviderLike.get_rotor_station_tracks`). The
@@ -3452,7 +3585,8 @@ class YandexMusicProvider(MusicProvider):
         return quality
 
     async def resolve_image(self, path: str) -> str | bytes:
-        """Resolve wave cover image with background color fill for transparent PNGs.
+        """
+        Resolve wave cover image with background color fill for transparent PNGs.
 
         If the image URL has an associated background color (stored in _wave_bg_colors),
         downloads the PNG from Yandex CDN and composites it on a solid color background
@@ -3481,7 +3615,7 @@ class YandexMusicProvider(MusicProvider):
                 r = int(bg_clean[0:2], 16)
                 g = int(bg_clean[2:4], 16)
                 b = int(bg_clean[4:6], 16)
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 return raw
             fg = PilImage.open(BytesIO(raw)).convert("RGBA")
             bg = PilImage.new("RGBA", fg.size, (r, g, b, 255))
@@ -3505,7 +3639,8 @@ class YandexMusicProvider(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Report periodic playback updates.
+        """
+        Report periodic playback updates.
 
         - Audiobooks: persist chapter progress via play_audio so Yandex's
           own clients resume at the right point.
@@ -3533,7 +3668,8 @@ class YandexMusicProvider(MusicProvider):
             self.mass.create_task(self._prefetch_rotor_session(station_id))
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
-        """Report stream completion to Yandex.
+        """
+        Report stream completion to Yandex.
 
         - Audiobooks: a final ``play_audio`` with the absolute stream
           position so the last listening point is preserved across Yandex
@@ -3565,7 +3701,8 @@ class YandexMusicProvider(MusicProvider):
         n_chapters: int,
         absolute_sec: int,
     ) -> tuple[int, int, int]:
-        """Resolve an absolute book position into a play_audio-ready tuple.
+        """
+        Resolve an absolute book position into a play_audio-ready tuple.
 
         Returns ``(chapter_idx, track_length_seconds, offset_seconds)``, applying
         two invariants Yandex cares about and that ``_resolve_audiobook_seek``
@@ -3595,7 +3732,8 @@ class YandexMusicProvider(MusicProvider):
         return idx, track_length_sec, offset
 
     async def _report_audiobook_progress(self, audiobook_id: str, position_sec: int) -> None:
-        """Push current listening position of an audiobook to Yandex.
+        """
+        Push current listening position of an audiobook to Yandex.
 
         Resolves the playing chapter + offset from the cached chapter map, then
         calls play_audio so Yandex persists the position for cross-client resume.
@@ -3640,7 +3778,8 @@ class YandexMusicProvider(MusicProvider):
     async def _report_audiobook_final(
         self, streamdetails: StreamDetails, data: dict[str, Any]
     ) -> None:
-        """Send a closing play_audio for an audiobook stream.
+        """
+        Send a closing play_audio for an audiobook stream.
 
         Uses the streamdetails' own ``chapter_ids`` / ``chapter_durations_ms``
         (populated when the StreamDetails was created) to stay consistent with

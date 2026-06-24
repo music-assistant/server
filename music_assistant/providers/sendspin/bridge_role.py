@@ -1,4 +1,5 @@
-"""Reusable bridge player role for external player bridges.
+"""
+Reusable bridge player role for external player bridges.
 
 Provides a BridgePlayerRole that receives audio from Sendspin's PushStream
 and forwards it to an external player via callbacks. This role can be used
@@ -31,7 +32,8 @@ BRIDGE_ROLE_ID = "player@_bridge"
 
 
 class BridgePlayerRole(Role):
-    """Custom Sendspin player role for external player bridges.
+    """
+    Custom Sendspin player role for external player bridges.
 
     This role receives audio from Sendspin's PushStream and forwards it
     to an external player via callbacks. It bypasses the normal WebSocket
@@ -42,7 +44,8 @@ class BridgePlayerRole(Role):
     """
 
     def __init__(self, client: SendspinClient) -> None:
-        """Initialize the bridge player role.
+        """
+        Initialize the bridge player role.
 
         :param client: The Sendspin client this role belongs to.
         """
@@ -70,7 +73,8 @@ class BridgePlayerRole(Role):
         on_stream_end: Callable[[], None],
         initial_volume: int = 100,
     ) -> None:
-        """Wire up bridge callbacks after role creation.
+        """
+        Wire up bridge callbacks after role creation.
 
         :param on_audio_chunk: Callback to receive audio chunks.
         :param on_volume_change: Callback when volume level changes.
@@ -155,10 +159,6 @@ class BridgePlayerRole(Role):
         if self._on_mute_change_cb:
             self._on_mute_change_cb(muted)
 
-    def _emit_volume_changed(self) -> None:
-        """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""
-        self._client._signal_event(VolumeChangedEvent(volume=self._volume, muted=self._muted))
-
     def on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Receive audio chunk from PushStream and forward to callback."""
         if self._on_audio_chunk_cb:
@@ -191,6 +191,10 @@ class BridgePlayerRole(Role):
         LOGGER.debug("BridgePlayerRole stream ended for client %s", self._client.client_id)
         if self._on_stream_end_cb:
             self._on_stream_end_cb()
+
+    def _emit_volume_changed(self) -> None:
+        """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""
+        self._client._signal_event(VolumeChangedEvent(volume=self._volume, muted=self._muted))
 
 
 register_role(BRIDGE_ROLE_ID, lambda client: BridgePlayerRole(client=client))

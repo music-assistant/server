@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import CrossfadeMode
+
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.controllers.streams.smart_fades.fades import (
     SmartCrossFade,
@@ -14,7 +16,6 @@ from music_assistant.controllers.streams.smart_fades.fades import (
 )
 from music_assistant.helpers.audio import align_audio_to_frame_boundary, strip_silence
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -37,7 +38,7 @@ class SmartFadesMixer:
         fade_out_streamdetails: StreamDetails,
         pcm_format: AudioFormat,
         standard_crossfade_duration: int,
-        mode: SmartFadesMode,
+        mode: CrossfadeMode,
         fade_out_data: bytes,
         fade_in_bytes_len: int,
     ) -> SmartFade:
@@ -58,7 +59,7 @@ class SmartFadesMixer:
         :param fade_in_bytes_len: Expected length in bytes of the fade-in input.
         """
         smart_fade: SmartFade | None = None
-        if mode == SmartFadesMode.SMART_CROSSFADE:
+        if mode == CrossfadeMode.SMART_CROSSFADE:
             smart_fade = await self._build_smart_crossfade(
                 fade_in_streamdetails=fade_in_streamdetails,
                 fade_out_streamdetails=fade_out_streamdetails,

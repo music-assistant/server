@@ -142,13 +142,6 @@ class SendspinLocalAudioBridge:
             self._bridge_client_id,
         )
 
-    def _get_sendspin_provider(self) -> SendspinProvider | None:
-        """Get the Sendspin provider if available."""
-        return cast(
-            "SendspinProvider | None",
-            self.mass.get_provider("sendspin"),
-        )
-
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         async with self._lock:
@@ -159,6 +152,13 @@ class SendspinLocalAudioBridge:
                 self._bridge_role = None
 
         self.logger.debug("Sendspin bridge stopped for %s", self.device_name)
+
+    def _get_sendspin_provider(self) -> SendspinProvider | None:
+        """Get the Sendspin provider if available."""
+        return cast(
+            "SendspinProvider | None",
+            self.mass.get_provider("sendspin"),
+        )
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle stream start request from Sendspin server."""
@@ -375,6 +375,16 @@ class LocalAudioBridgeManager:
                 self._bridges[client_id] = bridge
                 self.logger.info("Bridge created for %s", device_name)
 
+    async def stop_all(self) -> None:
+        """Stop all Sendspin bridges."""
+        async with self._lock:
+            for bridge in list(self._bridges.values()):
+                with suppress(Exception):
+                    await bridge.stop()
+            self._bridges.clear()
+
+        self.logger.debug("All local audio bridges stopped")
+
     @staticmethod
     def _enumerate_output_devices() -> list[dict[str, Any]]:
         """
@@ -410,13 +420,3 @@ class LocalAudioBridgeManager:
             dev_with_index["index"] = idx
             devices.append(dev_with_index)
         return devices
-
-    async def stop_all(self) -> None:
-        """Stop all Sendspin bridges."""
-        async with self._lock:
-            for bridge in list(self._bridges.values()):
-                with suppress(Exception):
-                    await bridge.stop()
-            self._bridges.clear()
-
-        self.logger.debug("All local audio bridges stopped")
