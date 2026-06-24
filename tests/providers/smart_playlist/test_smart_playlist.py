@@ -1240,8 +1240,9 @@ async def test_enrich_tracks_with_db_genres_adds_missing_genres() -> None:
 
     await plugin._enrich_tracks_with_db_genres([track_no_genres])
 
-    assert track_no_genres.metadata.genres == {"Rock", "Alternative"}
-    mass.music.genres.get_genres_for_media_item.assert_called_once()  # type: ignore[unreachable]
+    genres = track_no_genres.metadata.genres
+    assert genres == {"Rock", "Alternative"}
+    mass.music.genres.get_genres_for_media_item.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1272,12 +1273,12 @@ async def test_enrich_tracks_with_db_genres_skips_tracks_with_existing_genres() 
     track_with_genres.metadata = MediaItemMetadata()
     track_with_genres.metadata.genres = {"Pop", "Dance"}
 
-    mass.music.database.get_rows_from_query = AsyncMock()
+    mass.music.genres.get_genres_for_media_item = AsyncMock()
 
     await plugin._enrich_tracks_with_db_genres([track_with_genres])
 
-    # Should not query DB since track already has genres
-    mass.music.database.get_rows_from_query.assert_not_called()
+    # Should not query genres controller since track already has genres
+    mass.music.genres.get_genres_for_media_item.assert_not_called()
     assert track_with_genres.metadata.genres == {"Pop", "Dance"}
 
 
@@ -1307,12 +1308,12 @@ async def test_enrich_tracks_with_db_genres_only_queries_library_tracks() -> Non
         },
     )
 
-    mass.music.database.get_rows_from_query = AsyncMock()
+    mass.music.genres.get_genres_for_media_item = AsyncMock()
 
     await plugin._enrich_tracks_with_db_genres([streaming_track])
 
-    # Should not query DB for non-library tracks
-    mass.music.database.get_rows_from_query.assert_not_called()
+    # Should not query genres controller for non-library tracks
+    mass.music.genres.get_genres_for_media_item.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1325,11 +1326,11 @@ async def test_enrich_tracks_with_db_genres_handles_empty_list() -> None:
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    mass.music.database.get_rows_from_query = AsyncMock()
+    mass.music.genres.get_genres_for_media_item = AsyncMock()
 
     await plugin._enrich_tracks_with_db_genres([])
 
-    mass.music.database.get_rows_from_query.assert_not_called()
+    mass.music.genres.get_genres_for_media_item.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1433,7 +1434,8 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
 
     # Both tracks should have been enriched
     assert track1.metadata.genres == {"Rock", "Alternative"}
-    assert track2.metadata.genres == {"Rock", "Alternative"}  # type: ignore[unreachable]
+    genres2 = track2.metadata.genres
+    assert genres2 == {"Rock", "Alternative"}
 
 
 # ---------------------------------------------------------------------------
