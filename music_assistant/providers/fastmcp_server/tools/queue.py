@@ -25,6 +25,14 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
     """Construct the ``queue/*`` sub-server."""
     sub: FastMCP = FastMCP(name="queue")
 
+    def _queue_brief(queue_id: str, include_items: int) -> QueueBrief:
+        queue = mass.player_queues.get(queue_id)
+        if queue is None:
+            raise ToolError(f"Queue {queue_id!r} not found after move.")
+        limit = min(max(include_items, 0), MAX_QUEUE_ITEMS)
+        items = mass.player_queues.items(queue.queue_id, limit=limit) if limit > 0 else []
+        return to_brief_queue(queue, items=list(items))
+
     @sub.tool(
         tags={Tag.QUERY_QUEUE},
         annotations=ToolAnnotations(
@@ -198,12 +206,16 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         ),
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
-    async def move_item(queue_id: str, item_id: str, pos_shift: int = 1) -> None:
+    async def move_item(
+        queue_id: str, item_id: str, pos_shift: int = 1, include_items: int = 25
+    ) -> QueueBrief:
         """
         Move an existing queue row up, down, or to play next.
 
         Call ``get_active_queue`` first for ``item_id`` values. The currently
-        playing or buffered item cannot be moved. Returns nothing.
+        playing or buffered item cannot be moved. Returns the reordered
+        ``QueueBrief`` so the new order can be confirmed without a separate
+        ``get_active_queue`` call.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         :param item_id: ``item_id`` from ``QueueItemBrief`` returned by
@@ -211,11 +223,14 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param pos_shift: Relative move — ``-1`` up one slot, ``+1`` down one
             slot (default), ``0`` to insert after the currently playing item
             (play next).
+        :param include_items: How many lookahead items to materialise in the
+            returned brief. Clamped to the ``[0, 500]`` range.
         """
         try:
             mass.player_queues.move_item(queue_id, item_id, pos_shift)
         except (IndexError, InvalidDataError) as exc:
             raise ToolError(str(exc)) from exc
+        return _queue_brief(queue_id, include_items)
 
     @sub.tool(
         tags={Tag.EDIT_QUEUE},
@@ -228,20 +243,25 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         ),
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
-    async def move_item_to_end(queue_id: str, item_id: str) -> None:
+    async def move_item_to_end(queue_id: str, item_id: str, include_items: int = 25) -> QueueBrief:
         """
         Move an existing queue row to the back of the queue.
 
         Call ``get_active_queue`` first for ``item_id`` values. The currently
-        playing or buffered item cannot be moved. Returns nothing.
+        playing or buffered item cannot be moved. Returns the reordered
+        ``QueueBrief`` so the new order can be confirmed without a separate
+        ``get_active_queue`` call.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         :param item_id: ``item_id`` from ``QueueItemBrief`` returned by
             ``get_active_queue``.
+        :param include_items: How many lookahead items to materialise in the
+            returned brief. Clamped to the ``[0, 500]`` range.
         """
         try:
             mass.player_queues.move_item_end(queue_id, item_id)
         except (IndexError, InvalidDataError) as exc:
             raise ToolError(str(exc)) from exc
+        return _queue_brief(queue_id, include_items)
 
     return sub
