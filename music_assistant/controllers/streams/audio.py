@@ -691,6 +691,7 @@ class StreamsAudio:
 
         :param url: Radio stream URL
         :param streamdetails: StreamDetails to update with metadata
+        :raises aiohttp.ClientResponseError: If the server returns an error status.
         """
         self.logger.debug("Start streaming radio with ICY metadata from url %s", url)
         timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
@@ -722,16 +723,12 @@ class StreamsAudio:
         stream_label: str = "Radio stream",
     ) -> AsyncGenerator[bytes]:
         """
-        Yield bytes from a live stream, reconnecting on disconnect or transient errors.
+        Yield bytes from a live stream, reconnecting until cancelled.
 
-        ``stream_chunks`` is invoked per attempt with the current URL and must async-iterate
-        the audio bytes for that connection until it ends or raises. On clean end or selected
-        aiohttp errors the outer loop reconnects; when multiple URLs are given, each reconnect
-        advances to the next URL, wrapping. With multiple URLs, HTTP error responses (403, 404,
-        etc.) are treated like other reconnect triggers: the next URL is tried until every URL
-        has failed in sequence, then the usual single-URL error is raised.
+        When multiple URLs are given they are treated as interchangeable mirrors and rotated
+        on each reconnect or HTTP failure; once every mirror has failed, the last error is raised.
 
-        :param url: One stream URL, or a sequence of URLs to rotate through on reconnect.
+        :param url: One stream URL, or a list of mirror URLs to rotate through on reconnect.
         :param stream_chunks: Callable returning an async iterator of chunks for one URL.
         :param stream_label: Prefix for log messages.
         """
@@ -816,12 +813,9 @@ class StreamsAudio:
         self, url: str | list[MultiPartPath], streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
         """
-        Yield ICY radio audio with metadata, reconnecting on disconnect.
+        Yield ICY radio audio with metadata, reconnecting until cancelled.
 
-        When multiple URLs are given, each reconnect advances to the next URL in order,
-        wrapping to the first after the last.
-
-        :param url: One stream URL, or a sequence of URLs to rotate through on reconnect.
+        :param url: One stream URL, or a list of mirror URLs to rotate through on reconnect.
         :param streamdetails: Stream details; ``stream_title`` is updated from ICY metadata.
         """
 
