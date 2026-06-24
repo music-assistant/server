@@ -122,6 +122,38 @@ _PLAY_MEDIA_WORKFLOW: dict[str, Any] = {
     ],
 }
 
+# Hardcoded tool names in intent tuning and workflow playbooks — kept in one
+# place so a drift test can assert they still exist in the FastMCP catalog.
+INTENT_TUNED_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "playback_play_media",
+        "playback_pause",
+        "playback_resume",
+        "playback_play_pause",
+        "players_list_players",
+        "playback_play_index",
+        "players_get_player",
+        "players_group_player",
+        "players_ungroup_player",
+    }
+)
+
+WORKFLOW_TOOL_NAMES: frozenset[str] = frozenset(
+    str(step["tool"]) for step in _PLAY_MEDIA_WORKFLOW["steps"]
+)
+
+CATALOG_REFERENCED_TOOL_NAMES: frozenset[str] = INTENT_TUNED_TOOL_NAMES | WORKFLOW_TOOL_NAMES
+
+# Sibling PRs not yet on dev — drift test skips these until merged, then nags
+# to drop this set: #4390 (playback_pause/resume), #4391 (players_ungroup_player).
+PENDING_CATALOG_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "playback_pause",
+        "playback_resume",
+        "players_ungroup_player",
+    }
+)
+
 
 def tokenize_query(text: str) -> list[str]:
     """Split a query into lowercase tokens (min length 2)."""

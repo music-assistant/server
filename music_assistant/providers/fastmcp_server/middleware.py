@@ -36,6 +36,24 @@ ComponentKind = Literal["tool", "resource", "prompt"]
 TagsLookup = Callable[[ComponentKind, str], Awaitable[set[str] | None]]
 
 
+def tags_visible(tags: set[str] | None, allowed: set[str]) -> bool:
+    """
+    Return whether a component's tag set is exposed under *allowed*.
+
+    ``None`` means unknown (blocked). An empty set means untagged (always on).
+    """
+    if tags is None:
+        return False
+    if not tags:
+        return True
+    return any(t in allowed for t in tags)
+
+
+async def tool_visible(lookup: TagsLookup, name: str, allowed: set[str]) -> bool:
+    """Return whether the named tool is visible under *allowed*."""
+    return tags_visible(await lookup("tool", name), allowed)
+
+
 class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
     """
     Hide tools, resources, and prompts whose tags are not in ``allowed_tags``.
@@ -147,11 +165,10 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _is_visible(self, component: Any) -> bool:
-        tags = getattr(component, "tags", None) or set()
-        if not tags:
+        raw = getattr(component, "tags", None) or set()
+        if not raw:
             return True
-        allowed = self._allowed()
-        return any(str(t) in allowed for t in tags)
+        return tags_visible({str(t) for t in raw}, self._allowed())
 
     async def _reject_if_hidden(self, kind: ComponentKind, key: str) -> None:
         if not key:
@@ -163,9 +180,6 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
             # "method-not-allowed" / "not-found" path rather than 500.
             msg = f"{kind.capitalize()} {key!r} not found"
             raise NotFoundError(msg)
-        if not tags:
-            return  # untagged → always-on
-        allowed = self._allowed()
-        if not any(t in allowed for t in tags):
+        if tags and not tags_visible(tags, self._allowed()):
             msg = f"{kind.capitalize()} {key!r} is currently disabled by configuration"
             raise self._ERROR_BY_KIND[kind](msg)

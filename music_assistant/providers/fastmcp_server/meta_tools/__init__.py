@@ -9,7 +9,7 @@ from .constants import (
     META_TOOL_NAMES,
     SEARCH_TOOLS_NAME,
 )
-from .middleware import MetaToolConfig, MetaToolMiddleware
+from .middleware import MetaToolMiddleware
 from .register import register_meta_tools
 from .schema import build_tool_schema
 
@@ -19,7 +19,6 @@ __all__ = [
     "INVOKE_TOOL_NAME",
     "META_TOOL_NAMES",
     "SEARCH_TOOLS_NAME",
-    "MetaToolConfig",
     "MetaToolMiddleware",
     "build_tool_schema",
     "register_meta_tools",

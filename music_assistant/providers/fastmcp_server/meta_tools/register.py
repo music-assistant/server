@@ -1,4 +1,4 @@
-"""Register search_tools and invoke_tool on the FastMCP root."""
+"""Register search_tools, get_tool_schema, and invoke_tool on the FastMCP root."""
 
 from __future__ import annotations
 
@@ -23,6 +23,33 @@ from .schema import build_tool_schema
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+
+async def _resolve_catalog_tool(
+    raw_name: str,
+    *,
+    get_tool: Callable[[str], Awaitable[Any]],
+    is_tool_visible: Callable[[str], Awaitable[bool]],
+    reject_meta: str,
+) -> tuple[str, Any]:
+    """
+    Validate *raw_name* and return the resolved catalog tool.
+
+    :param reject_meta: ``ToolError`` message when *raw_name* is a meta tool.
+    """
+    name = raw_name.strip()
+    if not name:
+        raise ToolError("tool_name is required")
+    if name in META_TOOL_NAMES:
+        raise ToolError(reject_meta.format(name=name))
+    if not await is_tool_visible(name):
+        msg = f"Tool {name!r} is currently disabled by configuration"
+        raise ToolError(msg)
+    tool = await get_tool(name)
+    if tool is None:
+        msg = f"Tool {name!r} not found"
+        raise NotFoundError(msg)
+    return name, tool
 
 
 def register_meta_tools(
@@ -57,21 +84,12 @@ def register_meta_tools(
     @mcp.tool(name=GET_TOOL_SCHEMA_NAME, description=GET_TOOL_SCHEMA_DESCRIPTION)  # type: ignore[untyped-decorator, unused-ignore]
     async def get_tool_schema(tool_name: str) -> str:
         """Return the full schema for a single catalog tool (RBAC-checked)."""
-        name = tool_name.strip()
-        if not name:
-            raise ToolError("tool_name is required")
-        if name in META_TOOL_NAMES:
-            raise ToolError(f"Cannot get schema for meta tool {name!r}")
-
-        if not await is_tool_visible(name):
-            msg = f"Tool {name!r} is currently disabled by configuration"
-            raise ToolError(msg)
-
-        tool = await get_tool(name)
-        if tool is None:
-            msg = f"Tool {name!r} not found"
-            raise NotFoundError(msg)
-
+        _, tool = await _resolve_catalog_tool(
+            tool_name,
+            get_tool=get_tool,
+            is_tool_visible=is_tool_visible,
+            reject_meta="Cannot get schema for meta tool {name!r}",
+        )
         return json.dumps(build_tool_schema(tool), separators=(",", ":"))
 
     @mcp.tool(name=INVOKE_TOOL_NAME, description=INVOKE_TOOL_DESCRIPTION)  # type: ignore[untyped-decorator, unused-ignore]
@@ -80,19 +98,10 @@ def register_meta_tools(
         arguments: dict[str, Any] | None = None,
     ) -> Any:
         """Proxy a tools/call to any catalog tool (RBAC-checked)."""
-        name = tool_name.strip()
-        if not name:
-            raise ToolError("tool_name is required")
-        if name in META_TOOL_NAMES:
-            raise ToolError(f"Cannot invoke meta tool {name!r} through invoke_tool")
-
-        if not await is_tool_visible(name):
-            msg = f"Tool {name!r} is currently disabled by configuration"
-            raise ToolError(msg)
-
-        tool = await get_tool(name)
-        if tool is None:
-            msg = f"Tool {name!r} not found"
-            raise NotFoundError(msg)
-
+        name, _ = await _resolve_catalog_tool(
+            tool_name,
+            get_tool=get_tool,
+            is_tool_visible=is_tool_visible,
+            reject_meta="Cannot invoke meta tool {name!r} through invoke_tool",
+        )
         return await call_tool(name, arguments or {}, run_middleware=False)

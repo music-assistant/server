@@ -3,7 +3,7 @@ Middleware for MCP meta-tool discovery.
 
 When meta-tool discovery is enabled:
 
-* ``tools/list`` returns only ``search_tools`` and ``invoke_tool``.
+* ``tools/list`` returns only ``search_tools``, ``get_tool_schema``, and ``invoke_tool``.
 * Direct ``tools/call`` to any other tool is blocked with a hint to use ``invoke_tool``.
 """
 
@@ -28,31 +28,18 @@ if TYPE_CHECKING:
     from fastmcp.server.middleware.middleware import CallNext, MiddlewareContext
 
 
-class MetaToolConfig:
-    """Hot-swappable meta-tool discovery settings."""
+class MetaToolMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
+    """Expose only meta tools in listings; route execution through invoke_tool."""
 
-    def __init__(self, *, enabled_provider: Callable[[], bool]) -> None:
+    def __init__(self, enabled_provider: Callable[[], bool]) -> None:
         """
-        Store the live toggle provider.
+        Store the hot-swappable discovery toggle.
 
         :param enabled_provider: Callable returning the live toggle state so
             the value can be hot-swapped without rebuilding the middleware.
         """
-        self._enabled = enabled_provider
-
-    @property
-    def enabled(self) -> bool:
-        """Return whether meta-tool discovery is currently enabled."""
-        return self._enabled()
-
-
-class MetaToolMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
-    """Expose only meta tools in listings; route execution through invoke_tool."""
-
-    def __init__(self, config: MetaToolConfig) -> None:
-        """Store the hot-swappable discovery *config*."""
         super().__init__()
-        self._config = config
+        self._enabled = enabled_provider
 
     async def on_list_tools(
         self,
@@ -61,7 +48,7 @@ class MetaToolMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
     ) -> Sequence[Any]:
         """Show only meta tools when enabled, otherwise hide them from listings."""
         items = await call_next(context)
-        if self._config.enabled:
+        if self._enabled():
             return [t for t in items if _tool_name(t) in META_TOOL_NAMES]
         return [t for t in items if _tool_name(t) not in META_TOOL_NAMES]
 
@@ -72,7 +59,7 @@ class MetaToolMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
     ) -> Any:
         """Route catalog calls through invoke_tool when enabled; block direct calls."""
         name = str(getattr(context.message, "name", "") or "")
-        if self._config.enabled:
+        if self._enabled():
             if name not in META_TOOL_NAMES:
                 raise ToolError(_direct_call_blocked_error(name))
             return await call_next(context)

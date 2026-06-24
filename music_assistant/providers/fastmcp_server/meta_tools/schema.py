@@ -22,34 +22,10 @@ def build_tool_schema(tool: Any) -> dict[str, Any]:
     """Build a JSON-serializable tool definition (name, description, schemas)."""
     name = getattr(tool, "name", "")
     description = getattr(tool, "description", "") or ""
-
-    if hasattr(tool, "parameters"):
-        input_schema = tool.parameters or {"type": "object"}
-        output_schema = getattr(tool, "output_schema", None)
-        annotations = getattr(tool, "annotations", None)
-        title = getattr(tool, "title", None)
-    elif hasattr(tool, "to_mcp_tool"):
-        mcp_tool = tool.to_mcp_tool()
-        payload = mcp_tool.model_dump(exclude_none=True) if hasattr(mcp_tool, "model_dump") else {}
-        name = payload.get("name") or name
-        description = payload.get("description") or description
-        input_schema = payload.get("inputSchema") or {"type": "object"}
-        output_schema = payload.get("outputSchema")
-        annotations = payload.get("annotations")
-        title = payload.get("title")
-    elif hasattr(tool, "model_dump"):
-        payload = tool.model_dump(exclude_none=True)
-        name = payload.get("name") or name
-        description = payload.get("description") or description
-        input_schema = payload.get("inputSchema") or {"type": "object"}
-        output_schema = payload.get("outputSchema")
-        annotations = payload.get("annotations")
-        title = payload.get("title")
-    else:
-        input_schema = {"type": "object"}
-        output_schema = None
-        annotations = None
-        title = None
+    input_schema = getattr(tool, "parameters", None) or {"type": "object"}
+    output_schema = getattr(tool, "output_schema", None)
+    annotations = getattr(tool, "annotations", None)
+    title = getattr(tool, "title", None)
 
     result: dict[str, Any] = {
         "name": name,

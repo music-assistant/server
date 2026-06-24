@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+import importlib.util
+import logging
+from typing import TYPE_CHECKING
+
+import pytest
+
 from music_assistant.providers.fastmcp_server.meta_tools.catalog import (
+    CATALOG_REFERENCED_TOOL_NAMES,
+    PENDING_CATALOG_TOOL_NAMES,
     apply_intent_adjustments,
     detect_workflow,
     normalize_query_tokens,
     score_tool_match,
     tokenize_query,
 )
+
+if TYPE_CHECKING:
+    from unittest.mock import MagicMock
+
+_HAVE_FASTMCP = importlib.util.find_spec("fastmcp") is not None
+_HAVE_MA = importlib.util.find_spec("music_assistant") is not None
+_HAVE_MA_MODELS = importlib.util.find_spec("music_assistant_models") is not None
 
 # Realistic descriptions for the tools that compete on conversational queries.
 _PAUSE_DESC = (
@@ -130,6 +145,24 @@ def test_pause_only_query_has_no_play_workflow() -> None:
     assert detect_workflow(tokenize_query("playback pause")) is None
 
 
+def test_pause_intent_penalizes_play_pause() -> None:
+    """An explicit pause query applies a negative adjustment to play_pause."""
+    pause_desc = "Toggle play/pause on the given queue. Playing pauses, paused resumes."
+    tokens = tokenize_query("playback pause")
+    base = score_tool_match("playback_play_pause", pause_desc, tokens)
+    adjusted = apply_intent_adjustments("playback_play_pause", tokens, base)
+    assert adjusted == base - 35
+
+
+def test_resume_intent_penalizes_play_pause() -> None:
+    """An explicit resume query applies a negative adjustment to play_pause."""
+    toggle_desc = "Toggle play/pause on the given queue. Playing pauses, paused resumes."
+    tokens = tokenize_query("resume playback")
+    base = score_tool_match("playback_play_pause", toggle_desc, tokens)
+    adjusted = apply_intent_adjustments("playback_play_pause", tokens, base)
+    assert adjusted == base - 35
+
+
 def test_ungroup_prefers_ungroup_player_over_group_player() -> None:
     """An ungroup query ranks the ungroup tool above the group tool."""
     group_desc = "Add a player to another player's sync group so both play in lockstep."
@@ -144,34 +177,6 @@ def test_ungroup_prefers_ungroup_player_over_group_player() -> None:
         score_tool_match("players_ungroup_player", ungroup_desc, tokens),
     )
     assert ungroup > group
-
-
-def test_pause_prefers_pause_over_play_pause() -> None:
-    """An explicit pause query ranks the non-toggling pause tool above play_pause."""
-    pause_desc = "Pause playback on the given queue. Always pauses — unlike play_pause, this does not toggle."
-    toggle_desc = "Toggle play/pause on the given queue. Playing pauses, paused resumes."
-    tokens = tokenize_query("playback pause")
-    explicit = apply_intent_adjustments(
-        "playback_pause", tokens, score_tool_match("playback_pause", pause_desc, tokens)
-    )
-    toggle = apply_intent_adjustments(
-        "playback_play_pause", tokens, score_tool_match("playback_play_pause", toggle_desc, tokens)
-    )
-    assert explicit > toggle
-
-
-def test_resume_prefers_resume_over_play_pause() -> None:
-    """An explicit resume query ranks the non-toggling resume tool above play_pause."""
-    resume_desc = "Resume paused playback on the given queue. Always resumes — unlike play_pause, this does not toggle."
-    toggle_desc = "Toggle play/pause on the given queue. Playing pauses, paused resumes."
-    tokens = tokenize_query("resume playback")
-    explicit = apply_intent_adjustments(
-        "playback_resume", tokens, score_tool_match("playback_resume", resume_desc, tokens)
-    )
-    toggle = apply_intent_adjustments(
-        "playback_play_pause", tokens, score_tool_match("playback_play_pause", toggle_desc, tokens)
-    )
-    assert explicit > toggle
 
 
 def test_normalize_drops_stopwords_and_applies_synonyms() -> None:
@@ -247,3 +252,32 @@ def test_description_only_match_at_half_coverage_survives() -> None:
         ["zzz", "track"],
     )
     assert score > 0
+
+
+@pytest.mark.skipif(
+    not (_HAVE_FASTMCP and _HAVE_MA and _HAVE_MA_MODELS),
+    reason="needs fastmcp + music_assistant + music_assistant_models installed",
+)
+@pytest.mark.asyncio
+async def test_catalog_referenced_tool_names_exist_in_runtime(
+    mock_mass: MagicMock,
+    mock_config: MagicMock,
+) -> None:
+    """Hardcoded intent/workflow tool names must match the live FastMCP catalog."""
+    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
+
+    runtime = MCPServerRuntime(mock_mass, mock_config, logging.getLogger("catalog-drift"))
+    await runtime.start()
+    try:
+        tools = await runtime._mcp.list_tools(run_middleware=False)
+        registered = {str(getattr(t, "name", "") or "") for t in tools}
+        required = CATALOG_REFERENCED_TOOL_NAMES - PENDING_CATALOG_TOOL_NAMES
+        missing = required - registered
+        assert not missing, f"catalog references unknown tools: {sorted(missing)}"
+        if not (PENDING_CATALOG_TOOL_NAMES - registered):
+            pytest.fail(
+                "All PENDING_CATALOG_TOOL_NAMES are registered — remove the pending "
+                "set from catalog.py (sibling PRs #4390 / #4391 merged)"
+            )
+    finally:
+        await runtime.stop()

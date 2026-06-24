@@ -15,17 +15,12 @@ from music_assistant.providers.fastmcp_server.meta_tools import (
     GET_TOOL_SCHEMA_NAME,
     INVOKE_TOOL_NAME,
     SEARCH_TOOLS_NAME,
-    MetaToolConfig,
     MetaToolMiddleware,
     build_tool_schema,
     register_meta_tools,
 )
-from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
+from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware, tool_visible
 from music_assistant.providers.fastmcp_server.server import build_tag_lookup
-
-
-def _meta_config(*, enabled: bool = True) -> MetaToolConfig:
-    return MetaToolConfig(enabled_provider=lambda: enabled)
 
 
 def _build_server(
@@ -38,12 +33,7 @@ def _build_server(
     lookup = build_tag_lookup(mcp)
 
     async def is_tool_visible(name: str) -> bool:
-        tags = await lookup("tool", name)
-        if tags is None:
-            return False
-        if not tags:
-            return True
-        return any(t in allowed_tags for t in tags)
+        return await tool_visible(lookup, name, allowed_tags)
 
     @mcp.tool(tags={"query"})  # type: ignore[untyped-decorator, unused-ignore]
     async def library_search_albums(query: str, limit: int = 25) -> str:
@@ -86,7 +76,7 @@ def _build_server(
         is_tool_visible=is_tool_visible,
     )
 
-    mcp.add_middleware(MetaToolMiddleware(_meta_config(enabled=meta_enabled)))
+    mcp.add_middleware(MetaToolMiddleware(lambda: meta_enabled))
     mcp.add_middleware(TagFilterMiddleware(lambda: allowed_tags, lookup))
     return mcp
 
@@ -135,7 +125,7 @@ async def test_search_tools_natural_language_recommends_albums() -> None:
     assert payload["tools"][0]["name"] == "library_search_albums"
 
 
-async def test_search_tools_always_omits_schema() -> None:
+async def test_search_tools_never_inlines_schemas() -> None:
     """search_tools returns lightweight name+description+score results only."""
     mcp = _build_server(meta_enabled=True)
     async with Client(mcp) as client:
@@ -143,24 +133,7 @@ async def test_search_tools_always_omits_schema() -> None:
     text_blocks = [c for c in result.content if hasattr(c, "text")]
     payload = json.loads(text_blocks[0].text)
     assert payload["count"] >= 1
-    match = next(t for t in payload["tools"] if t["name"] == "library_search_tracks")
-    assert set(match) == {"name", "description", "score"}
-    assert "inputSchema" not in match
-
-
-async def test_search_tools_include_schema_override_removed() -> None:
-    """The include_schema override is gone: it never yields inline schemas."""
-    mcp = _build_server(meta_enabled=True)
-    async with Client(mcp) as client:
-        try:
-            result = await client.call_tool(
-                SEARCH_TOOLS_NAME,
-                {"query": "tracks", "include_schema": True},
-            )
-        except ToolError:
-            return  # param rejected outright — acceptable
-    text_blocks = [c for c in result.content if hasattr(c, "text")]
-    payload = json.loads(text_blocks[0].text)
+    assert all(set(t) == {"name", "description", "score"} for t in payload["tools"])
     assert all("inputSchema" not in t for t in payload["tools"])
 
 
@@ -268,6 +241,7 @@ async def test_build_tool_schema_serializes_annotations() -> None:
     mcp = _build_server(meta_enabled=True)
     tool = await mcp.get_tool("library_search_tracks")
     assert tool is not None
+    assert hasattr(tool, "parameters"), "FastMCP tool shape changed; revisit build_tool_schema"
     tool.annotations = ToolAnnotations(title="Search tracks", readOnlyHint=True)
 
     payload = build_tool_schema(tool)

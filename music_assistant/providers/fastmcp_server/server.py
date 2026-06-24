@@ -327,19 +327,17 @@ class MCPServerRuntime:
 
     def _register_meta_tools(self, mcp: Any) -> None:
         """
-        Register the search_tools/invoke_tool helpers and gate them behind the toggle.
+        Register search_tools, get_tool_schema, and invoke_tool; gate via the toggle.
 
         :param mcp: FastMCP root the meta tools are registered on.
         """
         from .meta_tools import register_meta_tools  # noqa: PLC0415
+        from .middleware import tool_visible  # noqa: PLC0415
+
+        lookup = build_tag_lookup(mcp)
 
         async def is_tool_visible(name: str) -> bool:
-            tags = await _tag_lookup(mcp, "tool", name)
-            if tags is None:
-                return False
-            if not tags:
-                return True
-            return any(t in self._allowed_tags for t in tags)
+            return await tool_visible(lookup, name, self._allowed_tags)
 
         register_meta_tools(
             mcp,
@@ -352,10 +350,9 @@ class MCPServerRuntime:
 
     def _apply_meta_tools(self, mcp: Any) -> None:
         """Install meta-tool middleware (inner — runs after tag filter on ingress)."""
-        from .meta_tools import MetaToolConfig, MetaToolMiddleware  # noqa: PLC0415
+        from .meta_tools import MetaToolMiddleware  # noqa: PLC0415
 
-        meta_config = MetaToolConfig(enabled_provider=self._meta_tool_enabled)
-        mcp.add_middleware(MetaToolMiddleware(meta_config))
+        mcp.add_middleware(MetaToolMiddleware(self._meta_tool_enabled))
 
 
 async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:
