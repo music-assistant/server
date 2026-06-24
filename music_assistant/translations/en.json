@@ -1498,6 +1498,8 @@
   "provider.spotify.config_entries.sync_podcast_progress.description": "Automatically sync episode played status from Spotify to Music Assistant. Episodes marked as played in Spotify will be marked as played in MA. Only enable this if you use both the Spotify app and Music Assistant for podcast playback.",
   "provider.spotify.config_entries.sync_podcast_progress.label": "Sync Podcast Progress from Spotify",
   "provider.spotify.manifest.description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem.",
+  "provider.spotify.media.folder.genres_and_moods.name": "Genres & Moods",
+  "provider.spotify.media.folder.new_releases.name": "New Releases",
   "provider.spotify.media.playlist.liked_songs.name": "Liked Songs {0}",
   "provider.spotify.media.podcast.unknown_podcast.name": "Unknown Podcast",
   "provider.spotify_connect.config_entries.mass_player_id.description": "The Music Assistant player connected to this Spotify Connect plugin. When you start playback in the Spotify app to this virtual speaker, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player, or the first available player if none is playing.",

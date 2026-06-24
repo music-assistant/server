@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import builtins
 import contextlib
 import logging
 import os
@@ -479,50 +480,7 @@ class ConfigController:
         else:
             provider = None
             supported_features = getattr(prov_mod, "SUPPORTED_FEATURES", set())
-        extra_entries: list[ConfigEntry] = []
-        if manifest.type == ProviderType.MUSIC:
-            # library sync settings
-            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ARTISTS)
-            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUMS)
-                if (
-                    provider
-                    and isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider
-                ):
-                    extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS)
-            if ProviderFeature.LIBRARY_TRACKS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_TRACKS)
-            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS)
-                if (
-                    provider
-                    and isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider
-                ):
-                    extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS)
-            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS)
-            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
-            if ProviderFeature.LIBRARY_RADIOS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_RADIOS)
-            # sync export settings
-            if supported_features.intersection(
-                {
-                    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-                    ProviderFeature.LIBRARY_ALBUMS_EDIT,
-                    ProviderFeature.LIBRARY_TRACKS_EDIT,
-                    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-                    ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
-                    ProviderFeature.LIBRARY_PODCASTS_EDIT,
-                    ProviderFeature.LIBRARY_RADIOS_EDIT,
-                }
-            ):
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
-            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_DELETIONS)
+        extra_entries = self._build_sync_entries(manifest, supported_features, provider)
 
         all_entries = [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,
@@ -1503,6 +1461,52 @@ class ConfigController:
         except InvalidToken as err:
             msg = "Password decryption failed"
             raise InvalidDataError(msg) from err
+
+    def _build_sync_entries(
+        self,
+        manifest: Any,
+        supported_features: builtins.set[ProviderFeature],
+        provider: Any,
+    ) -> list[ConfigEntry]:
+        """Build sync-related ConfigEntry list based on provider features."""
+        if manifest.type != ProviderType.MUSIC:
+            return []
+        extra_entries: list[ConfigEntry] = []
+        # library sync settings
+        if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ARTISTS)
+        if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUMS)
+            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS)
+        if ProviderFeature.LIBRARY_TRACKS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_TRACKS)
+        if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS)
+            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS)
+        if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS)
+        if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
+        if ProviderFeature.LIBRARY_RADIOS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_RADIOS)
+        # sync export settings
+        if supported_features.intersection(
+            {
+                ProviderFeature.LIBRARY_ARTISTS_EDIT,
+                ProviderFeature.LIBRARY_ALBUMS_EDIT,
+                ProviderFeature.LIBRARY_TRACKS_EDIT,
+                ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+                ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+                ProviderFeature.LIBRARY_PODCASTS_EDIT,
+                ProviderFeature.LIBRARY_RADIOS_EDIT,
+            }
+        ):
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
+        if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_DELETIONS)
+        return extra_entries
 
     def _parse_player_queue_config(
         self, queue_id: str, raw_conf: dict[str, Any]
