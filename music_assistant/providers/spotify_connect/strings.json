@@ -12,6 +12,9 @@
       "description": "How should this Spotify Connect device be named in the Spotify app?"
     }
   },
+  "errors": {
+    "not_active_device": "'{0}' is not the active Spotify playback device. Open the Spotify app, select it as the playback device, and try again."
+  },
   "manifest": {
     "description": "Makes a Music Assistant player appear as a device in the official Spotify app via Spotify Connect."
   }

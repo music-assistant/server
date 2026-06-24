@@ -1308,10 +1308,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         if player.state.group_members:
             # player is a sync leader (a non-group player with synced followers).
-            # Ungroup all followers from it.
-            await self.cmd_set_members(
-                player.player_id, player_ids_to_remove=player.state.group_members
-            )
+            # Remove only the leader itself: _handle_set_members will either transfer
+            # leadership to a remaining member (keeping playback alive) or, when no
+            # members remain / nothing is playing, dissolve the group and stop.
+            await self.cmd_set_members(player.player_id, player_ids_to_remove=[player.player_id])
             return
         # unjoin from any dynamic sync groups if we're currently in one (edge case)
         # this is in particular used for the Home Assistant integration which does
@@ -3106,10 +3106,23 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player_ids_to_remove: List of player_id's to remove from the parent player.
         """
         target_player = parent_player.player_id
-        # handle dissolve sync group if the target player is currently
-        # a sync leader and is being removed from itself
+        # handle the sync leader being removed from itself: either transfer leadership
+        # to a remaining member (keeping playback alive) or dissolve the group entirely
         should_stop = False
         if player_ids_to_remove and target_player in player_ids_to_remove:
+            remaining_members = [
+                m
+                for m in parent_player.state.group_members
+                if m != target_player
+                and m not in player_ids_to_remove
+                and (member := self.get_player(m))
+                and member.state.available
+            ]
+            active_queue = self.get_active_queue(parent_player)
+            if remaining_members and active_queue and active_queue.state != PlaybackState.IDLE:
+                # transfer leadership to a remaining member instead of dissolving
+                await self._transfer_ad_hoc_leadership(parent_player, remaining_members)
+                return
             self.logger.info(
                 "Dissolving sync group of player %s as it is being removed from itself",
                 parent_player.name,
@@ -3310,6 +3323,72 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     player_ids_to_add=filtered_native_add or None,
                     player_ids_to_remove=filtered_native_remove or None,
                 )
+
+    async def _transfer_ad_hoc_leadership(
+        self, leader: Player, remaining_members: list[str]
+    ) -> None:
+        """
+        Transfer leadership of an ad-hoc sync group to a remaining member.
+
+        Called when the sync leader of an ad-hoc group is unjoined while other
+        members remain and playback is active. The queue is moved to a newly
+        selected leader, the remaining members are regrouped under it and playback
+        resumes at the saved position (accepting a brief audio gap).
+
+        :param leader: The current sync leader being removed from the group.
+        :param remaining_members: Available group members (excluding the leader)
+            that should keep playing under a new leader.
+        """
+        active_queue = self.get_active_queue(leader)
+        was_playing = active_queue is not None and active_queue.state == PlaybackState.PLAYING
+        new_leader_id = self._select_ad_hoc_leader(leader, remaining_members)
+        self.logger.info(
+            "Transferring leadership of %s to %s (%s remaining member(s))",
+            leader.name,
+            new_leader_id,
+            len(remaining_members),
+        )
+        # Move the queue to the new leader. transfer_queue frees the new leader from
+        # the old leader's group and stops the old leader; the playback position
+        # survives because stop() stores it in resume_pos.
+        await self.mass.player_queues.transfer_queue(
+            leader.player_id, new_leader_id, auto_play=False
+        )
+        # regroup the other remaining members under the new leader
+        other_members = [m for m in remaining_members if m != new_leader_id]
+        if other_members:
+            await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
+        if was_playing:
+            await self.mass.player_queues.resume(new_leader_id)
+
+    def _select_ad_hoc_leader(self, leader: Player, remaining_members: list[str]) -> str:
+        """
+        Pick the new leader for an ad-hoc sync group leadership transfer.
+
+        Prefers a remaining member that supports the protocol the group is currently
+        playing on, so the other members can be regrouped under it; falls back to the
+        first remaining member. The members' own ``can_group_with`` is unusable here
+        because it is empty while they are still synced to the old leader.
+
+        :param leader: The current sync leader being removed.
+        :param remaining_members: Candidate member player_ids, already filtered for
+            availability. Must not be empty.
+        """
+        active_domain: str | None = None
+        if leader.active_output_protocol and leader.active_output_protocol != "native":
+            if protocol_player := self.get_player(leader.active_output_protocol):
+                active_domain = protocol_player.provider.domain
+        if active_domain:
+            for member_id in remaining_members:
+                member = self.get_player(member_id)
+                if member is None:
+                    continue
+                if member.provider.domain == active_domain or any(
+                    protocol.protocol_domain == active_domain and protocol.available
+                    for protocol in member.linked_output_protocols
+                ):
+                    return member_id
+        return remaining_members[0]
 
     # Private command handlers (no permission checks)
 
@@ -3803,6 +3882,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             ):
                 await target_player.play()
                 return
+            # No active protocol target: if the player natively supports pause and the active
+            # (external) source can be paused, unpause the player directly instead of
+            # restarting the source.
+            if (
+                active_source
+                and active_source.can_play_pause
+                and PlayerFeature.PAUSE in player.state.supported_features
+            ):
+                await player.play()
+                return
 
         # player is not paused: try to resume the player
         # Note: We handle resume inline here without calling _handle_cmd_resume
@@ -3853,17 +3942,24 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             raise PlayerCommandFailed(msg)
         # Delegate to active protocol player if one is active
-        if not (
-            target_player := self._get_control_target(
-                player, PlayerFeature.PAUSE, require_active=True
-            )
+        if target_player := self._get_control_target(
+            player, PlayerFeature.PAUSE, require_active=True
         ):
-            # if player(protocol) does not support pause, we need to send stop
-            self.logger.debug(
-                "Player/protocol %s does not support pause, using STOP instead",
-                player.state.name,
-            )
-            await self._handle_cmd_stop(player.player_id)
+            await target_player.pause()
             return
-        # handle command on player(protocol) directly
-        await target_player.pause()
+        # No active protocol target: if the player natively supports pause and the active
+        # (external) source can be paused, forward the command to the player itself instead
+        # of stopping it (mirrors the external-source handling in cmd_seek/cmd_next_track).
+        if (
+            active_source
+            and active_source.can_play_pause
+            and PlayerFeature.PAUSE in player.state.supported_features
+        ):
+            await player.pause()
+            return
+        # player/protocol does not support pause: fall back to stop
+        self.logger.debug(
+            "Player/protocol %s does not support pause, using STOP instead",
+            player.state.name,
+        )
+        await self._handle_cmd_stop(player.player_id)

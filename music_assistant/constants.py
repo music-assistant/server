@@ -33,7 +33,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 33
+API_SCHEMA_VERSION: Final[int] = 34
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -79,6 +79,7 @@ CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
+CONF_PLAYER_QUEUES: Final[str] = "player_queues"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
@@ -135,7 +136,8 @@ CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC fo
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
-CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
+CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"  # legacy; consumed by one-time migration
+CONF_CROSSFADE_MODE: Final[str] = "crossfade_mode"
 CONF_SOCKS_URL: Final[str] = "socks_url"
 CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
@@ -392,26 +394,14 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
 )
 
 
-CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
-    key=CONF_SMART_FADES_MODE,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("disabled"),
-        ConfigValueOption("smart_crossfade"),
-        ConfigValueOption("standard_crossfade"),
-    ],
-    default_value="disabled",
-    category="playback",
-    requires_reload=True,
-)
+# Note: the crossfade_mode select entry (standard/smart) is built dynamically in the config
+# controller because its options and default depend on smart fades availability.
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     key=CONF_CROSSFADE_DURATION,
     type=ConfigEntryType.INTEGER,
     range=(1, 15),
     default_value=8,
-    depends_on=CONF_SMART_FADES_MODE,
-    depends_on_value="standard_crossfade",
     category="playback",
     advanced=True,
     requires_reload=True,

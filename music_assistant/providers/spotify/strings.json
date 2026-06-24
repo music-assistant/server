@@ -32,6 +32,14 @@
     }
   },
   "media": {
+    "folder": {
+      "new_releases": {
+        "name": "New Releases"
+      },
+      "genres_and_moods": {
+        "name": "Genres & Moods"
+      }
+    },
     "playlist": {
       "liked_songs": {
         "name": "Liked Songs {0}"

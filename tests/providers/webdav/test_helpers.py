@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import aiohttp
 import pytest
@@ -23,7 +23,7 @@ class _FakeResponse:
         self.status = status
         self._body = body
 
-    async def __aenter__(self) -> _FakeResponse:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *_exc: object) -> bool:

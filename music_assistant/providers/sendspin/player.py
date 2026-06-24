@@ -33,6 +33,8 @@ from aiosendspin.server.roles import (
     ControllerPlayEvent,
     ControllerPreviousEvent,
     ControllerRepeatEvent,
+    ControllerSeekEvent,
+    ControllerSeekRelativeEvent,
     ControllerShuffleEvent,
     ControllerStopEvent,
     MetadataGroupRole,
@@ -54,7 +56,7 @@ from music_assistant_models.enums import (
     ProviderType,
     RepeatMode,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
@@ -83,6 +85,8 @@ SUPPORTED_GROUP_COMMANDS = [
     MediaCommand.REPEAT_ALL,
     MediaCommand.SHUFFLE,
     MediaCommand.UNSHUFFLE,
+    MediaCommand.SEEK,
+    MediaCommand.SEEK_RELATIVE,
 ]
 
 # Config constants for Sendspin audio format
@@ -616,6 +620,23 @@ class SendspinPlayer(SendspinBasePlayer):
                         self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case ControllerShuffleEvent(shuffle=shuffle) if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
+            case ControllerSeekEvent(position_ms=position_ms) if (
+                queue and queue.current_item and queue.current_item.duration
+            ):
+                # Clamp in case track duration changed after we advertised the seek range.
+                duration_ms = int(queue.current_item.duration * 1000)
+                await self.mass.player_queues.seek(
+                    queue.queue_id, max(0, min(position_ms, duration_ms)) // 1000
+                )
+            case ControllerSeekRelativeEvent(offset_ms=offset_ms) if (
+                queue and queue.current_item and queue.current_item.duration
+            ):
+                # Clamp current position + offset to the 0..duration range.
+                target_ms = int(queue.corrected_elapsed_time * 1000) + offset_ms
+                duration_ms = int(queue.current_item.duration * 1000)
+                await self.mass.player_queues.seek(
+                    queue.queue_id, max(0, min(target_ms, duration_ms)) // 1000
+                )
 
     async def _sync_membership_from_group(self, group: SendspinGroup) -> None:
         """Sync MA/player + playback session membership from authoritative group state."""
@@ -859,7 +880,13 @@ class SendspinPlayer(SendspinBasePlayer):
             if artwork_url is not None:
                 # Fetch from the resolved URL so the bytes match artwork_url, even when
                 # radio now-playing art differs from the queue item's own image.
-                image_data = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
+                try:
+                    image_data = await self.mass.metadata.get_thumbnail(
+                        artwork_url, provider="builtin"
+                    )
+                except MediaNotFoundError:
+                    # artwork file was removed from disk; skip rather than crash the send
+                    image_data = None
                 if isinstance(image_data, bytes):
                     # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
                     image = await self._decode_artwork(image_data)
@@ -893,9 +920,13 @@ class SendspinPlayer(SendspinBasePlayer):
             if artist_artwork_url is not None:
                 # Fetch bytes from the already-resolved URL to avoid the secondary
                 # provider lookup that get_image_data_for_item triggers for ItemMappings.
-                artist_image_data = await self.mass.metadata.get_thumbnail(
-                    artist_artwork_url, provider="builtin"
-                )
+                try:
+                    artist_image_data = await self.mass.metadata.get_thumbnail(
+                        artist_artwork_url, provider="builtin"
+                    )
+                except MediaNotFoundError:
+                    # artwork file was removed from disk; skip rather than crash the send
+                    artist_image_data = None
                 if isinstance(artist_image_data, bytes):
                     artist_image = await self._decode_artwork(artist_image_data)
                     if (
@@ -950,6 +981,8 @@ class SendspinPlayer(SendspinBasePlayer):
             await artwork_role.set_artist_artwork(None)
         if (color_role := self._color_role) is not None:
             color_role.clear()
+        if (controller_role := self._controller_role) is not None:
+            controller_role.set_seek_max_ms(None)
         self.last_sent_artwork_url = None
         self.last_sent_artist_artwork_url = None
         self._last_beat_queue_item_id = None
@@ -1046,6 +1079,8 @@ class SendspinPlayer(SendspinBasePlayer):
                     album_artist = full_album.artist_str
 
         track_duration = current_media.duration or 0
+        if controller_role := self._controller_role:
+            controller_role.set_seek_max_ms(int(track_duration * 1000) if track_duration else None)
         repeat = SendspinRepeatMode.OFF
         if queue and queue.repeat_mode == RepeatMode.ALL:
             repeat = SendspinRepeatMode.ALL
