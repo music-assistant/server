@@ -293,6 +293,66 @@ class TestStateForwarding:
         on_sync_parent_updated.assert_not_called()
 
 
+class TestSleepTimer:
+    """Test native sleep timer handling."""
+
+    def test_set_and_clear_sleep_timer(self, mock_mass: MagicMock) -> None:
+        """Setting a sleep timer exposes state and schedules the stop callback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+
+        expires_at = controller.set_sleep_timer("player_1", 30)
+
+        assert controller.get_sleep_timer("player_1") == expires_at
+        assert player.extra_attributes["sleep_timer_expires_at"] == expires_at
+        mock_mass.call_later.assert_called_with(
+            30,
+            controller._handle_sleep_timer_expired,
+            "player_1",
+            task_id="player_sleep_timer_player_1",
+        )
+
+        controller.clear_sleep_timer("player_1")
+
+        assert controller.get_sleep_timer("player_1") is None
+        assert "sleep_timer_expires_at" not in player.extra_attributes
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
+
+    async def test_sleep_timer_removed_when_player_unregistered(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player cancels and clears its sleep timer."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        controller._sleep_timer_expires_at["player_1"] = 123.0
+        player.extra_attributes["sleep_timer_expires_at"] = 123.0
+
+        await controller.unregister("player_1")
+
+        assert controller._sleep_timer_expires_at == {}
+        assert "sleep_timer_expires_at" not in player.extra_attributes
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
+
+    async def test_sleep_timer_expiry_stops_player(self, mock_mass: MagicMock) -> None:
+        """An expired sleep timer clears its state and stops playback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        controller._sleep_timer_expires_at["player_1"] = 123.0
+        player.extra_attributes["sleep_timer_expires_at"] = 123.0
+        controller.cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_sleep_timer_expired("player_1")
+
+        assert controller.get_sleep_timer("player_1") is None
+        assert "sleep_timer_expires_at" not in player.extra_attributes
+        controller.cmd_stop.assert_awaited_once_with("player_1")
+
+
 class TestUnregisterCleanup:
     """Test that unregister cleans up leaked internal state."""
 
