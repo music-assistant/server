@@ -52,16 +52,7 @@ RECOMMEND_ITEM_LIMIT: int = 12
 METADATA_BONUS_SCALE: float = 0.1
 
 # Group weights match FEATURE_GROUPS in vectors.py; `genre`/`era` are rerank-only knobs.
-#
-# Weights are tuned by per-group informativeness: how much tighter "sonically
-# similar" pairs sit in each group than random pairs. mood/rhythm carry the most
-# signal, tonal (key/mode) is ~noise, so a uniform weighting wastes weight on
-# tonal and under-weights mood. Each preset then leans into the axis it owns and
-# down-weights the uninformative groups (often to zero). `genre` is a real
-# cross-artist signal (~2.4x random), so by default it stays moderate and goes
-# high in `genre_era` (while party/discover deliberately lower it for novelty);
-# `era` is weak (~1.2x) and gap-ridden, so it is low everywhere except
-# `genre_era` (the only "stay in the same lane" preset).
+# Weights are deliberately non-uniform (tuned by per-group informativeness), not all 1.0.
 SIMILARITY_PRESETS: dict[str, dict[str, float]] = {
     "balanced": {
         "rhythm": 0.77,
