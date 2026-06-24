@@ -852,15 +852,15 @@ class DigitallyIncorporatedProvider(MusicProvider):
         except ProviderUnavailableError, MediaNotFoundError:
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
-        except (aiohttp.ClientError, ValueError, KeyError, IndexError) as err:
+        except (aiohttp.ClientError, ValueError) as err:
             self.logger.error(
-                "%s: Failed to get stream URL for %s:%s: %s",
+                "%s: Failed to get stream URLs for %s:%s: %s",
                 self.domain,
                 network_key,
                 channel_key,
                 err,
             )
-            raise MediaNotFoundError(f"{self.domain}: Unable to get stream URL: {err}") from err
+            raise MediaNotFoundError(f"{self.domain}: Unable to get stream URLs: {err}") from err
 
     def _channel_to_radio(self, channel_data: dict[str, Any], network_key: str) -> Radio:
         """Convert channel data to Radio object."""
