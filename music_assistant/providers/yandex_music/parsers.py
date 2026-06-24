@@ -17,6 +17,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudioFormat,
+    ItemMapping,
     MediaItemImage,
     Playlist,
     Podcast,
@@ -49,7 +50,8 @@ AlbumKind = Literal["music", "podcast", "audiobook"]
 
 
 def classify_album(album_obj: YandexAlbum) -> AlbumKind:
-    """Classify a Yandex album as music / podcast / audiobook.
+    """
+    Classify a Yandex album as music / podcast / audiobook.
 
     Checks both ``meta_type`` and ``type`` for the substrings "audiobook" /
     "podcast". The more specific "audiobook" signal wins over "podcast" on any
@@ -72,7 +74,8 @@ def classify_album(album_obj: YandexAlbum) -> AlbumKind:
 
 
 def get_canonical_provider_name(provider: YandexMusicProvider) -> str:
-    """Return the locale-aware canonical display name for the Yandex Music system account.
+    """
+    Return the locale-aware canonical display name for the Yandex Music system account.
 
     :param provider: The Yandex Music provider instance.
     :return: Localized provider display name.
@@ -85,7 +88,8 @@ def get_canonical_provider_name(provider: YandexMusicProvider) -> str:
 
 
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
-    """Convert Yandex cover URI to full URL.
+    """
+    Convert Yandex cover URI to full URL.
 
     :param cover_uri: Yandex cover URI template.
     :param size: Image size (e.g., '1000x1000').
@@ -98,13 +102,48 @@ def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str |
     return f"https://{cover_uri.replace('%%', size)}"
 
 
+_NON_RUSSIAN_CYRILLIC_MARKERS = frozenset("їєґіўЇЄҐІЎ")
+
+
+def detect_description_language(text: str | None) -> Literal["ru"] | None:
+    """
+    Return ``"ru"`` for Russian-language text, ``None`` otherwise.
+
+    Yandex Music's API does not expose the language of artist / playlist /
+    podcast descriptions, so we infer it from script. A string classifies as
+    Russian when it (a) contains at least 8 Cyrillic characters that
+    (b) make up at least 50% of its length and (c) contains none of the
+    letters that mark another Slavic Cyrillic language (see
+    ``_NON_RUSSIAN_CYRILLIC_MARKERS`` — currently Ukrainian and Belarusian
+    discriminators). Everything else returns ``None`` so MA can fall back
+    to metadata providers for a user-localized bio.
+
+    :param text: The description string to classify.
+    :return: ``"ru"`` when the heuristic is confident, ``None`` otherwise.
+    """
+    if not text:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    if not _NON_RUSSIAN_CYRILLIC_MARKERS.isdisjoint(text):
+        return None
+    cyrillic = sum(1 for c in text if "Ѐ" <= c <= "ӿ")
+    # Floor + 50% share: a stray transliterated word in an English bio (e.g.
+    # an artist's Cyrillic name) must not flip the result to "ru".
+    if cyrillic >= 8 and cyrillic * 2 >= len(text):
+        return "ru"
+    return None
+
+
 def parse_artist(
     provider: YandexMusicProvider,
     artist_obj: YandexArtist,
     *,
     about: object | None = None,
 ) -> Artist:
-    """Parse Yandex artist object to MA Artist model.
+    """
+    Parse Yandex artist object to MA Artist model.
 
     :param provider: The Yandex Music provider instance.
     :param artist_obj: Yandex artist object.
@@ -160,6 +199,7 @@ def parse_artist(
         description = getattr(about, "description", None)
         if description:
             artist.metadata.description = description
+            artist.metadata.description_language = detect_description_language(description)
         stats = getattr(about, "stats", None)
         monthly = getattr(stats, "last_month_listeners", None) if stats else None
         if monthly is not None:
@@ -171,7 +211,8 @@ def parse_artist(
 def _album_cover_images(
     provider: YandexMusicProvider, album_obj: YandexAlbum
 ) -> UniqueList[MediaItemImage]:
-    """Build the UniqueList of images for an album-like object.
+    """
+    Build the UniqueList of images for an album-like object.
 
     Prefers the templated ``cover_uri`` and falls back to ``og_image`` — matches
     the selection rules used for podcasts and audiobooks so all album-like
@@ -196,7 +237,8 @@ def _album_cover_images(
 
 
 def parse_album(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Album:
-    """Parse Yandex album object to MA Album model.
+    """
+    Parse Yandex album object to MA Album model.
 
     :param provider: The Yandex Music provider instance.
     :param album_obj: Yandex album object.
@@ -273,7 +315,8 @@ def parse_track(
     lyrics: str | None = None,
     lyrics_synced: bool = False,
 ) -> Track:
-    """Parse Yandex track object to MA Track model.
+    """
+    Parse Yandex track object to MA Track model.
 
     :param provider: The Yandex Music provider instance.
     :param track_obj: Yandex track object.
@@ -340,11 +383,6 @@ def parse_track(
                     ]
                 )
 
-    # Parse external IDs
-    if track_obj.real_id:
-        # real_id can be used as an identifier
-        pass
-
     # Metadata
     if track_obj.content_warning:
         track.metadata.explicit = track_obj.content_warning == "explicit"
@@ -366,7 +404,8 @@ def parse_playlist(
     *,
     is_dynamic: bool = False,
 ) -> Playlist:
-    """Parse Yandex playlist object to MA Playlist model.
+    """
+    Parse Yandex playlist object to MA Playlist model.
 
     :param provider: The Yandex Music provider instance.
     :param playlist_obj: Yandex playlist object.
@@ -455,7 +494,8 @@ def parse_playlist(
 
 
 def parse_podcast(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Podcast:
-    """Parse Yandex album (meta_type=podcast) to MA Podcast model.
+    """
+    Parse Yandex album (meta_type=podcast) to MA Podcast model.
 
     :param provider: The Yandex Music provider instance.
     :param album_obj: Yandex album object classified as a podcast.
@@ -529,7 +569,8 @@ def parse_podcast_episode(
     podcast: Podcast,
     position: int = 0,
 ) -> PodcastEpisode:
-    """Parse Yandex track (episode of a podcast album) to MA PodcastEpisode.
+    """
+    Parse Yandex track (episode of a podcast album) to MA PodcastEpisode.
 
     :param provider: The Yandex Music provider instance.
     :param track_obj: Yandex track object.
@@ -602,7 +643,8 @@ def parse_podcast_episode(
 
 
 def parse_audiobook(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Audiobook:
-    """Parse Yandex album (meta_type=audiobook) to MA Audiobook model.
+    """
+    Parse Yandex album (meta_type=audiobook) to MA Audiobook model.
 
     :param provider: The Yandex Music provider instance.
     :param album_obj: Yandex album object classified as an audiobook.
@@ -627,7 +669,7 @@ def parse_audiobook(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Au
         if label_name:
             publisher = label_name
 
-    authors: UniqueList[str | Artist] = UniqueList()
+    authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
     if album_obj.artists:
         for artist in album_obj.artists:
             if artist.name:

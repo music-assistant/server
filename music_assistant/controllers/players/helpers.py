@@ -126,18 +126,14 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
-            async def execute() -> None:
-                async with self._player_throttlers[player.player_id]:
-                    try:
+            try:
+                if lock:
+                    async with self.get_player_lock(player.player_id, lock):
                         await fn(self, *args, **kwargs)
-                    except Exception as err:
-                        raise PlayerCommandFailed(str(err)) from err
-
-            if lock:
-                async with self.get_player_lock(player.player_id, lock):
-                    await execute()
-            else:
-                await execute()
+                else:
+                    await fn(self, *args, **kwargs)
+            except Exception as err:
+                raise PlayerCommandFailed(str(err)) from err
 
         return wrapper
 
@@ -153,7 +149,8 @@ async def wait_for_power_on(
     player_control: PlayerControl | None = None,
     timeout: float = 5.0,
 ) -> None:
-    """Wait for a player (or player control) to report powered on after a power on command.
+    """
+    Wait for a player (or player control) to report powered on after a power on command.
 
     :param logger: Logger instance for debug logging.
     :param player: The player to wait for (checked when player_control is None).

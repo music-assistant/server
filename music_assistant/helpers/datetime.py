@@ -48,7 +48,8 @@ def from_iso_string(iso_datetime: str) -> datetime.datetime:
 
 
 def local_clock_time_to_utc(hour: int, minute: int = 0) -> tuple[int, int]:
-    """Convert a server-local wall clock time to UTC hour/minute.
+    """
+    Convert a server-local wall clock time to UTC hour/minute.
 
     This uses the server's current local timezone offset.
     """

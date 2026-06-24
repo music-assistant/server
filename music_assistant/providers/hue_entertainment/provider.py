@@ -11,19 +11,22 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from hue_entertainment import HueEntertainmentAPI
 from zeroconf import ServiceStateChange
 
 from music_assistant.models.plugin import PluginProvider
-from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import HueEntertainmentAPI
 
 from .bridge import HueEntertainmentBridgeManager
 from .constants import (
+    COLOR_MODES,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS,
     CONF_COLOR_MODE,
-    CONF_INTENSITY,
+    CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
+    DEFAULT_COLOR_MODE,
+    DEFAULT_HUE_LATENCY_MS,
 )
 
 if TYPE_CHECKING:
@@ -59,6 +62,12 @@ class HueEntertainmentProvider(PluginProvider):
 
     async def loaded_in_mass(self) -> None:
         """Initialize Hue bridge connection and set up entertainment area bridges."""
+        # Migrate orphaned color_mode values from older versions to the default
+        # so the settings dropdown shows a valid option.
+        stored_mode = self.config.get_value(CONF_COLOR_MODE)
+        if stored_mode is not None and str(stored_mode) not in COLOR_MODES:
+            self._update_config_value(CONF_COLOR_MODE, DEFAULT_COLOR_MODE)
+
         host = self.config.get_value(CONF_BRIDGE_HOST)
         username = self.config.get_value(CONF_USERNAME)
 
@@ -99,7 +108,8 @@ class HueEntertainmentProvider(PluginProvider):
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
-        """Handle mDNS service discovery for Hue bridges.
+        """
+        Handle mDNS service discovery for Hue bridges.
 
         Updates the bridge IP address if it changes (e.g. DHCP renewal).
         """
@@ -166,15 +176,17 @@ class HueEntertainmentProvider(PluginProvider):
         """
         Handle config changes.
 
-        Settings like brightness/intensity/color_mode can be updated
+        Settings like brightness/color_mode can be updated
         without a full provider reload.
         """
-        settings_keys = {CONF_BRIGHTNESS, CONF_INTENSITY, CONF_COLOR_MODE}
+        settings_keys = {CONF_BRIGHTNESS, CONF_COLOR_MODE, CONF_HUE_LATENCY_MS}
         if changed_keys & settings_keys and self._bridge_manager:
             self._bridge_manager.update_settings(
-                color_mode=str(config.get_value(CONF_COLOR_MODE) or "spectrum"),
+                color_mode=str(config.get_value(CONF_COLOR_MODE) or "smooth"),
                 brightness=int(float(str(config.get_value(CONF_BRIGHTNESS) or 100))),
-                intensity=int(float(str(config.get_value(CONF_INTENSITY) or 70))),
+                hue_latency_ms=int(
+                    float(str(config.get_value(CONF_HUE_LATENCY_MS) or DEFAULT_HUE_LATENCY_MS))
+                ),
             )
             self.config = config
             return

@@ -86,7 +86,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_FEED_URL,
             type=ConfigEntryType.STRING,
-            label="RSS Feed URL",
             required=True,
         ),
     )
@@ -128,7 +127,7 @@ class PodcastMusicprovider(MusicProvider):
         """Return a (default) instance name postfix for this provider instance."""
         return self.parsed_podcast.get("title")
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         """
         Only one podcast per rss feed is supported. The data format of the rss feed supports
@@ -158,7 +157,7 @@ class PodcastMusicprovider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """List all episodes for the podcast."""
         if prov_podcast_id != self.podcast_id:
             raise Exception(f"Podcast id not in provider: {prov_podcast_id}")
@@ -192,6 +191,32 @@ class PodcastMusicprovider(MusicProvider):
                     ],
                 )
         raise MediaNotFoundError("Stream not found")
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Resolve image for RSS provider with fallback to podcast cover."""
+        if not path.startswith("http"):
+            return path
+
+        try:
+            async with self.mass.http_session.get(path, raise_for_status=True) as response:
+                # Check if we got actual image content
+                content_type = response.headers.get("content-type", "").lower()
+                if not content_type.startswith(("image/", "application/octet-stream")):
+                    # Not an image - likely redirected to error page
+                    raise ClientError(f"Invalid content type: {content_type}")
+
+                return await response.read()
+
+        except ClientError, Exception:
+            # Try podcast cover fallback
+            podcast_cover = self.parsed_podcast.get("cover_url")
+            if podcast_cover and isinstance(podcast_cover, str) and podcast_cover != path:
+                async with self.mass.http_session.get(
+                    podcast_cover, raise_for_status=True
+                ) as response:
+                    return await response.read()
+
+            raise MediaNotFoundError(f"Episode image not found: {path}")
 
     async def _parse_podcast(self) -> Podcast:
         """Parse podcast information from podcast feed."""
@@ -257,29 +282,3 @@ class PodcastMusicprovider(MusicProvider):
             data=self.parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
         )
-
-    async def resolve_image(self, path: str) -> str | bytes:
-        """Resolve image for RSS provider with fallback to podcast cover."""
-        if not path.startswith("http"):
-            return path
-
-        try:
-            async with self.mass.http_session.get(path, raise_for_status=True) as response:
-                # Check if we got actual image content
-                content_type = response.headers.get("content-type", "").lower()
-                if not content_type.startswith(("image/", "application/octet-stream")):
-                    # Not an image - likely redirected to error page
-                    raise ClientError(f"Invalid content type: {content_type}")
-
-                return await response.read()
-
-        except (ClientError, Exception):
-            # Try podcast cover fallback
-            podcast_cover = self.parsed_podcast.get("cover_url")
-            if podcast_cover and isinstance(podcast_cover, str) and podcast_cover != path:
-                async with self.mass.http_session.get(
-                    podcast_cover, raise_for_status=True
-                ) as response:
-                    return await response.read()
-
-            raise MediaNotFoundError(f"Episode image not found: {path}")

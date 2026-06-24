@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import platform
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -16,6 +15,7 @@ from music_assistant_models.enums import MediaType
 from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.util import is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
@@ -73,6 +73,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # Configure the inference runtime before loading any model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
         (
             self._beat_this_model,
             self._beat_this_post_processor,
@@ -81,33 +83,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
             self._skey_crop,
             self._spectral_centroid,
         ) = await asyncio.to_thread(self._initialize_models)
-
-    def _initialize_models(self) -> tuple[Any, ...]:
-        """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
-        beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
-        # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
-        is_arm = platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
-        preference = ("qnnpack", "fbgemm") if is_arm else ("fbgemm", "qnnpack")
-        supported_engines = torch.backends.quantized.supported_engines
-        quantized_engine = next((e for e in preference if e in supported_engines), None)
-        if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
-            torch.backends.quantized.engine = quantized_engine
-        beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
-            beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
-        )
-        beat_this_post_processor = DBNDownBeatTracker(
-            beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=50
-        )
-        skey_vqt, skey_chromanet, skey_crop = load_skey_components(device=self._device)
-        spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
-        return (
-            beat_this_model,
-            beat_this_post_processor,
-            skey_vqt,
-            skey_chromanet,
-            skey_crop,
-            spectral_centroid,
-        )
 
     async def process_pcm_chunk(
         self,
@@ -119,7 +94,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if not data:
             return
 
-        pcm_mono = await asyncio.to_thread(
+        pcm_mono = await self._run_offloaded(
             decode_pcm_chunk_to_mono, data.input_audio_format, pcm_chunk
         )
         if pcm_mono.size == 0:
@@ -127,7 +102,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         # Per-chunk VQT for key detection (skip short tail chunks)
         if len(pcm_mono) >= data.input_audio_format.sample_rate:
-            await asyncio.to_thread(
+            await self._run_offloaded(
                 self._compute_musical_key_features,
                 pcm_mono,
                 data.input_audio_format.sample_rate,
@@ -151,6 +126,32 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.features.reset()
         await super().cancel(session_id)
 
+    def _initialize_models(self) -> tuple[Any, ...]:
+        """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
+        beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
+        # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
+        preference = ("qnnpack", "fbgemm") if is_arm() else ("fbgemm", "qnnpack")
+        supported_engines = torch.backends.quantized.supported_engines
+        quantized_engine = next((e for e in preference if e in supported_engines), None)
+        if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
+            torch.backends.quantized.engine = quantized_engine
+        beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
+            beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
+        )
+        beat_this_post_processor = DBNDownBeatTracker(
+            beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=50
+        )
+        skey_vqt, skey_chromanet, skey_crop = load_skey_components(device=self._device)
+        spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
+        return (
+            beat_this_model,
+            beat_this_post_processor,
+            skey_vqt,
+            skey_chromanet,
+            skey_crop,
+            spectral_centroid,
+        )
+
     async def _start_analysis(
         self,
         session_id: str,
@@ -173,6 +174,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             features=AdvancedBeatFeatureExtractor(
                 sample_rate=ANALYSIS_SAMPLE_RATE,
                 device=self._device,
+                offload=self._run_offloaded,
             ),
             resampler=soxr.ResampleStream(
                 in_rate=audio_format.sample_rate,
@@ -214,11 +216,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
 
         # Run beat and key inference sequentially to keep peak CPU bounded.
-        beats, downbeats = await asyncio.to_thread(self._infer_beat_timings, feats)
+        beats, downbeats = await self._run_offloaded(self._infer_beat_timings, feats)
         if len(beats) < 2:
             self.logger.debug("Not enough beats detected, skipping storage")
             return None
-        key, mode = await asyncio.to_thread(self._infer_musical_key, all_vqt)
+        key, mode = await self._run_offloaded(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)
 
@@ -274,7 +276,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         data.pcm_samples = 0
 
         if data.resampler is not None:
-            pcm_22k = await asyncio.to_thread(data.resampler.resample_chunk, pcm_raw, last)
+            pcm_22k = await self._run_offloaded(data.resampler.resample_chunk, pcm_raw, last)
         else:
             pcm_22k = pcm_raw
 
@@ -282,7 +284,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         feats, _ = await asyncio.gather(
             data.features.process_pcm(pcm_22k),
-            asyncio.to_thread(self._compute_energy_and_spectral_centroids, pcm_22k, data),
+            self._run_offloaded(self._compute_energy_and_spectral_centroids, pcm_22k, data),
         )
 
         if feats.size:
@@ -312,10 +314,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
                 data.energy_chunks.append(np.concatenate(rms_list).astype(np.float32))
 
         # Spectral centroid: keep per-frame (hop_length=512, ~43 frames/s)
-        pcm_tensor = torch.from_numpy(pcm_22k)
-        centroid_frames = self._spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
-        if len(centroid_frames) > 0:
-            data.centroid_chunks.append(centroid_frames.astype(np.float32))
+        # Skip short tail buffers: STFT reflect-pad requires len > n_fft // 2.
+        if len(pcm_22k) >= self._spectral_centroid.n_fft:
+            pcm_tensor = torch.from_numpy(pcm_22k)
+            centroid_frames = self._spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
+            if len(centroid_frames) > 0:
+                data.centroid_chunks.append(centroid_frames.astype(np.float32))
 
     def _compute_musical_key_features(
         self, pcm_mono: np.ndarray, sample_rate: int, data: SmartFadesData

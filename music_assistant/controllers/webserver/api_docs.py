@@ -30,14 +30,6 @@ def _format_type_name(type_hint: Any) -> str:
         ):
             return "PlayerState"
 
-    # Handle PluginSource - replace with PlayerSource (parent type)
-    if hasattr(type_hint, "__name__") and type_hint.__name__ == "PluginSource":
-        if (
-            hasattr(type_hint, "__module__")
-            and type_hint.__module__ == "music_assistant.models.plugin"
-        ):
-            return "PlayerSource"
-
     # Map Python types to JSON types
     type_name_mapping = {
         "str": "string",
@@ -66,7 +58,8 @@ def _format_type_name(type_hint: Any) -> str:
 
 
 def _generate_type_alias_description(type_alias: Any, alias_name: str) -> str:
-    """Generate a human-readable description of a type alias from its definition.
+    """
+    Generate a human-readable description of a type alias from its definition.
 
     :param type_alias: The type alias to describe (e.g., ConfigValueType)
     :param alias_name: The name of the alias for display
@@ -195,10 +188,6 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
                     definitions["MediaItemType"] = _get_type_schema(media_item_type, definitions)
             return {"$ref": "#/components/schemas/MediaItemType"}
 
-        # Handle PluginSource - replace with PlayerSource (parent type)
-        if type_hint == "PluginSource":
-            return _get_type_schema("PlayerSource", definitions)
-
         # Check if it looks like a simple class name (no special chars, starts with uppercase)
         # Examples: "PlayerType", "DeviceInfo", "PlaybackState"
         # Exclude generic types like "Any", "Union", "Optional", etc.
@@ -229,18 +218,6 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
         ):
             # Replace with PlayerState from music_assistant_models
             return _get_type_schema(PlayerState, definitions)
-
-    # Handle PluginSource - replace with PlayerSource (parent type)
-    if hasattr(type_hint, "__name__") and type_hint.__name__ == "PluginSource":
-        # Check if this is PluginSource from music_assistant.models.plugin
-        if (
-            hasattr(type_hint, "__module__")
-            and type_hint.__module__ == "music_assistant.models.plugin"
-        ):
-            # Replace with PlayerSource from music_assistant.models.player
-            from music_assistant.models.player import PlayerSource  # noqa: PLC0415
-
-            return _get_type_schema(PlayerSource, definitions)
 
     # Handle Union types (including Optional)
     origin = get_origin(type_hint)
@@ -434,7 +411,8 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
 def _parse_docstring(  # noqa: PLR0915
     func: Callable[..., Any],
 ) -> tuple[str, str, dict[str, str]]:
-    """Parse docstring to extract summary, description and parameter descriptions.
+    """
+    Parse docstring to extract summary, description and parameter descriptions.
 
     Returns:
         Tuple of (short_summary, full_description, param_descriptions)
@@ -567,7 +545,8 @@ def generate_openapi_spec(
     server_url: str = "http://localhost:8095",
     version: str = "1.0.0",
 ) -> dict[str, Any]:
-    """Generate simplified OpenAPI 3.0 specification focusing on data models.
+    """
+    Generate simplified OpenAPI 3.0 specification focusing on data models.
 
     This spec documents the single /api endpoint and all data models/schemas.
     For detailed command documentation, see the Commands Reference page.
@@ -850,7 +829,8 @@ def generate_openapi_spec(
 
 
 def _split_union_type(type_str: str) -> list[str]:
-    """Split a union type on | but respect brackets and parentheses.
+    """
+    Split a union type on | but respect brackets and parentheses.
 
     This ensures that list[A | B] and (A | B) are not split at the inner |.
     """
@@ -895,7 +875,8 @@ def _split_union_type(type_str: str) -> list[str]:
 
 
 def _extract_generic_inner_type(type_str: str) -> str | None:
-    """Extract inner type from generic type like list[T] or dict[K, V].
+    """
+    Extract inner type from generic type like list[T] or dict[K, V].
 
     :param type_str: Type string like "list[str]" or "dict[str, int]"
     :return: Inner type string "str" or "str, int", or None if not a complete generic type
@@ -920,7 +901,8 @@ def _extract_generic_inner_type(type_str: str) -> str | None:
 
 
 def _parse_dict_type_params(inner_type: str) -> tuple[str, str] | None:
-    """Parse key and value types from dict inner type string.
+    """
+    Parse key and value types from dict inner type string.
 
     :param inner_type: The content inside dict[...], e.g., "str, ConfigValueType"
     :return: Tuple of (key_type, value_type) or None if parsing fails
@@ -951,7 +933,8 @@ def _parse_dict_type_params(inner_type: str) -> tuple[str, str] | None:
 
 
 def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
-    """Convert Python type string to JSON/JavaScript type string.
+    """
+    Convert Python type string to JSON/JavaScript type string.
 
     Args:
         type_str: The type string to convert
@@ -1070,7 +1053,8 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
 
 
 def _make_type_links(type_str: str, server_url: str, as_list: bool = False) -> str:
-    """Convert type string to HTML with links to schemas reference for complex types.
+    """
+    Convert type string to HTML with links to schemas reference for complex types.
 
     Args:
         type_str: The type string to convert
@@ -1109,7 +1093,8 @@ def _make_type_links(type_str: str, server_url: str, as_list: bool = False) -> s
 
 
 def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> list[dict[str, Any]]:
-    """Generate JSON representation of all available API commands.
+    """
+    Generate JSON representation of all available API commands.
 
     This is used by client libraries to sync their methods with the server API.
 
@@ -1191,7 +1176,8 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
 
 
 def generate_schemas_json(command_handlers: dict[str, APICommandHandler]) -> dict[str, Any]:
-    """Generate JSON representation of all schemas/data models.
+    """
+    Generate JSON representation of all schemas/data models.
 
     Returns a dict mapping schema names to their OpenAPI schema definitions.
     """

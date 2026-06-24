@@ -1,15 +1,16 @@
-"""Allows scrobbling of tracks back to the Subsonic media server."""
+"""Allows scrobbling of supported media items back to the Subsonic media server."""
 
 import logging
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING, ClassVar, Final
 
+import aiohttp
+from libopensonic.errors import SonicError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.helpers.uri import parse_uri
@@ -18,6 +19,19 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.provider import ProviderManifest
+
+SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset(
+    {
+        MediaType.TRACK,
+        MediaType.AUDIOBOOK,
+        MediaType.PODCAST_EPISODE,
+    }
+)
 
 
 async def setup(
@@ -32,7 +46,7 @@ async def setup(
 
 
 class SubsonicScrobbleProvider(PluginProvider):
-    """Plugin provider to support scrobbling of tracks."""
+    """Plugin provider to support Subsonic scrobbling."""
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -45,7 +59,7 @@ class SubsonicScrobbleProvider(PluginProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
 
-        handler = SubsonicScrobbleEventHandler(self.mass, self.logger)
+        handler = SubsonicScrobbleEventHandler(self.mass, self.logger, self.config)
 
         # subscribe to media_item_played event
         self._on_unload.append(
@@ -65,23 +79,30 @@ class SubsonicScrobbleProvider(PluginProvider):
 class SubsonicScrobbleEventHandler(ScrobblerHelper):
     """Handles the scrobbling event handling."""
 
-    def __init__(self, mass: MusicAssistant, logger: logging.Logger) -> None:
-        """Initialize."""
-        super().__init__(logger)
-        self.mass = mass
+    # SonicError covers Subsonic API failures; aiohttp.ClientError and TimeoutError
+    # cover the underlying transport the libopensonic connection uses.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (
+        SonicError,
+        aiohttp.ClientError,
+        TimeoutError,
+    )
 
-    def _is_scrobblable_media_type(self, media_type: MediaType) -> bool:
-        """Return true if the given OpenSubsonic media type can be scrobbled, false otherwise."""
-        return media_type in (
-            MediaType.TRACK,
-            MediaType.AUDIOBOOK,
-            MediaType.PODCAST_EPISODE,
+    def __init__(
+        self, mass: MusicAssistant, logger: logging.Logger, config: ProviderConfig
+    ) -> None:
+        """Initialize."""
+        super().__init__(
+            logger,
+            ScrobblerConfig.create_from_config(config),
+            SUPPORTED_SCROBBLE_MEDIA_TYPES,
         )
+        self.mass = mass
 
     async def _get_subsonic_provider_and_item_id(
         self, media_type: MediaType, provider_instance_id_or_domain: str, item_id: str
     ) -> tuple[None | OpenSonicProvider, str]:
-        """Return a OpenSonicProvider or None if no subsonic provider, and the Subsonic item_id.
+        """
+        Return a OpenSonicProvider or None if no subsonic provider, and the Subsonic item_id.
 
         Returns:
             Tuple[OpenSonicProvider | None, str]: The provider or None, and the Subsonic item_id.
@@ -122,38 +143,23 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
-        if not self._is_scrobblable_media_type(media_type):
-            return
         prov, item_id = await self._get_subsonic_provider_and_item_id(
             media_type, provider_instance_id_or_domain, item_id
         )
         if not prov:
             return
 
-        try:
-            self.logger.info("scrobble play now event")
-            await prov.conn.scrobble(item_id, submission=False)
-            self.logger.debug("track %s marked as 'now playing'", report.uri)
-            self.currently_playing = report.uri
-        except Exception as err:
-            self.logger.exception(err)
+        await prov.conn.scrobble(item_id, submission=False)
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
-        if not self._is_scrobblable_media_type(media_type):
-            return
         prov, item_id = await self._get_subsonic_provider_and_item_id(
             media_type, provider_instance_id_or_domain, item_id
         )
         if not prov:
             return
 
-        try:
-            await prov.conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
-            self.logger.debug("track %s marked as 'played'", report.uri)
-            self.last_scrobbled = report.uri
-        except Exception as err:
-            self.logger.exception(err)
+        await prov.conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
 
 
 async def get_config_entries(

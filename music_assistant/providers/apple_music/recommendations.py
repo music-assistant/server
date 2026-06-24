@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from aiohttp import ClientResponseError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -46,7 +47,7 @@ class AppleMusicRecommendationManager:
         self.api = provider.api_client
         self.logger = provider.logger
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         # Apple Music only provides ~2 tracks per call, cap at 6 to avoid flooding the API.
@@ -54,8 +55,16 @@ class AppleMusicRecommendationManager:
         endpoint = f"me/stations/next-tracks/ra.{prov_track_id}"
         found_tracks: list[Track] = []
         while len(found_tracks) < limit:
-            response = await self.api.post_data(endpoint, include="artists")
-            if not response or "data" not in response:
+            try:
+                response = await self.api.post_data(endpoint, include="artists")
+            except ClientResponseError as err:
+                if err.status == 500:
+                    self.logger.debug(
+                        "Similar tracks unavailable for %s (%s)", prov_track_id, endpoint
+                    )
+                    break
+                raise
+            if not response or not response.get("data"):
                 break
             track_ids = [track["id"] for track in response["data"] if track and track["id"]]
             rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
@@ -94,7 +103,7 @@ class AppleMusicRecommendationManager:
             station_obj = station_response["data"][0]
             station_obj["id"] = station_id
             return parse_station_as_playlist(self.provider, station_obj)
-        except (MediaNotFoundError, KeyError, IndexError):
+        except MediaNotFoundError, KeyError, IndexError:
             return parse_station_as_playlist(self.provider, {"id": station_id})
 
     @use_cache(3600)
@@ -164,6 +173,7 @@ class AppleMusicRecommendationManager:
 
     async def browse_stations(self) -> list[ItemMapping | Playlist]:
         """Return recommended radio stations from personal recommendations."""
-        return [
-            item for folder in await self.get_personal_recommendations() for item in folder.items
-        ]
+        return cast(
+            "list[ItemMapping | Playlist]",
+            [item for folder in await self.get_personal_recommendations() for item in folder.items],
+        )

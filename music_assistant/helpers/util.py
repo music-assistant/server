@@ -24,12 +24,12 @@ from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
 from urllib.parse import urlparse
 
-import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
+from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
@@ -49,8 +49,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderModuleType
-    from music_assistant.models.core_controller import CoreController
-    from music_assistant.models.provider import Provider
 
 from dataclasses import fields, is_dataclass
 
@@ -63,7 +61,8 @@ CALLBACK_TYPE = Callable[[], None]
 
 
 async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
-    """Log a deprecation warning if the CPU lacks x86-64-v2 support.
+    """
+    Log a deprecation warning if the CPU lacks x86-64-v2 support.
 
     :param logger: Logger instance to write the warning to.
     """
@@ -73,7 +72,7 @@ async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
     def _check() -> bool | None:
         try:
             cpuinfo = Path("/proc/cpuinfo").read_text()
-        except (FileNotFoundError, PermissionError):
+        except FileNotFoundError, PermissionError:
             return None
 
         flags: set[str] = set()
@@ -120,15 +119,270 @@ async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
 
 
 def get_total_system_memory() -> float:
-    """Get total system memory in GB."""
-    try:
-        # Works on Linux and macOS
-        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        return total_memory_bytes / (1024**3)  # Convert to GB
-    except (AttributeError, ValueError):
-        # Fallback if sysconf is not available (e.g., Windows)
-        # Return a conservative default to disable buffering by default
+    """
+    Return the memory available to this process in GB (0.0 when unknown).
+
+    On Linux this is min(physical RAM, cgroup memory limit), so a container's
+    --memory limit is honored when sizing buffers and gating heavy features.
+    Returns 0.0 when the platform cannot report memory (e.g. Windows), which
+    callers treat as "unknown" and fail open.
+    """
+    host_gb = _get_host_memory_gb()
+    if host_gb <= 0.0:
         return 0.0
+    if sys.platform != "linux":
+        return host_gb
+    cgroup_gb = _get_cgroup_memory_limit_gb()
+    if cgroup_gb is None or cgroup_gb <= 0.0:
+        return host_gb
+    return min(host_gb, cgroup_gb)
+
+
+def _get_host_memory_gb() -> float:
+    """Return host physical RAM in GB via sysconf, or 0.0 when unavailable."""
+    try:
+        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total_memory_bytes / (1024**3)
+    except AttributeError, ValueError, OSError:
+        # sysconf is unavailable on some platforms (e.g. Windows); treat as unknown.
+        return 0.0
+
+
+def _get_cgroup_memory_limit_gb(
+    cgroup_root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup"
+) -> float | None:
+    """
+    Return this process's cgroup memory limit in GB, or None if unlimited/unavailable.
+
+    cgroup v2 (memory.max) is tried first, then v1 (memory/memory.limit_in_bytes).
+
+    :param cgroup_root: Mount point of the cgroup filesystem (overridable for tests).
+    :param proc_cgroup: Path to the process cgroup file (overridable for tests).
+    """
+    limit = _read_cgroup_v2_limit(cgroup_root, proc_cgroup)
+    if limit is not None:
+        return limit
+    return _read_cgroup_v1_limit(cgroup_root, proc_cgroup)
+
+
+def _read_cgroup_v2_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
+    """Read the effective cgroup v2 memory limit in GB, or None."""
+    rel = _read_self_cgroup_path(proc_cgroup, controller=None)
+    return _min_hierarchical_limit(cgroup_root, rel, "memory.max")
+
+
+def _read_cgroup_v1_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
+    """Read the effective cgroup v1 memory limit in GB, or None."""
+    # On v1 the memory controller is conventionally mounted at <root>/memory.
+    rel = _read_self_cgroup_path(proc_cgroup, controller="memory")
+    return _min_hierarchical_limit(
+        os.path.join(cgroup_root, "memory"), rel, "memory.limit_in_bytes"
+    )
+
+
+def _min_hierarchical_limit(base: str, rel: str | None, filename: str) -> float | None:
+    """
+    Return the smallest bounded memory limit (GB) across the cgroup and its ancestors, or None.
+
+    The effective limit is the minimum imposed anywhere from the process's own cgroup
+    up to the mount root, since a parent slice can cap memory even when the leaf cgroup
+    itself is unlimited (e.g. systemd slices or nested k8s cgroups).
+
+    :param base: Base of the hierarchy (the cgroup mount, or <mount>/memory on v1).
+    :param rel: The process's cgroup path relative to base (from /proc/self/cgroup).
+    :param filename: Limit file to read at each level (memory.max or memory.limit_in_bytes).
+    """
+    parts = [p for p in (rel or "").split("/") if p]
+    limits: list[float] = []
+    # Walk from the process's own cgroup up to the mount root.
+    while True:
+        directory = os.path.join(base, *parts) if parts else base
+        limit = _read_cgroup_limit_file(os.path.join(directory, filename))
+        if limit is not None:
+            limits.append(limit)
+        if not parts:
+            break
+        parts.pop()
+    return min(limits) if limits else None
+
+
+def _read_cgroup_limit_file(path: str) -> float | None:
+    """
+    Parse a cgroup memory-limit file into GB, or None if missing/unlimited/invalid.
+
+    :param path: Path to a cgroup memory.max (v2) or memory.limit_in_bytes (v1) file.
+    """
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+    except OSError:
+        # File absent or unreadable (covers FileNotFoundError/PermissionError/etc.).
+        return None
+    # "max" (v2) or a near-INT64_MAX sentinel (v1) both mean "no limit set".
+    if not raw or raw == "max":
+        return None
+    try:
+        limit_bytes = int(raw)
+    except ValueError:
+        return None
+    if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
+        return None
+    return limit_bytes / (1024**3)
+
+
+def _read_self_cgroup_path(proc_cgroup: str, *, controller: str | None) -> str | None:
+    """
+    Return the process's cgroup path from /proc/self/cgroup, or None.
+
+    :param proc_cgroup: Path to the process cgroup file.
+    :param controller: For cgroup v1, the controller name (e.g. "memory") whose path
+        to return. None selects the cgroup v2 unified hierarchy line ("0::<path>").
+    """
+    try:
+        with open(proc_cgroup) as fh:
+            for line in fh:
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                hierarchy_id, controllers, path = parts
+                if controller is None:
+                    if hierarchy_id == "0" and controllers == "":
+                        return path or "/"
+                elif controller in controllers.split(","):
+                    return path or "/"
+    except OSError:
+        return None
+    return None
+
+
+# cgroup v1 writes a near-INT64_MAX value (PAGE_SIZE * LONG_MAX on most kernels) to
+# memory.limit_in_bytes when no limit is set; treat anything this large as unlimited.
+_CGROUP_UNLIMITED_THRESHOLD: int = 1 << 62
+
+
+def is_arm() -> bool:
+    """Return whether the host CPU is ARM-based (32- or 64-bit)."""
+    return platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
+
+
+def verify_system_meets_requirements(
+    *,
+    feature_name: str,
+    min_memory_gb: float = 0.0,
+    min_cpu_cores: int = 0,
+    require_ml_inference: bool = False,
+) -> None:
+    """
+    Verify the host meets the minimum CPU/RAM requirements for a heavy provider.
+
+    :param feature_name: Human-readable provider name used in the error message.
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    :param require_ml_inference: When True, also verify the CPU can run on-device
+        torch inference (AVX2 on x86). Checked last, as it imports torch.
+    :raises UnsupportedSystemError: If the system does not meet the requirements.
+    """
+    if shortfall := _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores):
+        message, translation_key, translation_args = shortfall
+        raise UnsupportedSystemError(
+            f"This system does not meet the minimal requirements for {feature_name}: {message}",
+            translation_key=translation_key,
+            translation_args=[feature_name, *translation_args],
+        )
+    if require_ml_inference:
+        verify_cpu_supports_ml_inference()
+
+
+def system_meets_requirements(
+    *,
+    min_memory_gb: float = 0.0,
+    min_cpu_cores: int = 0,
+) -> bool:
+    """
+    Return whether the host meets the given RAM/CPU thresholds.
+
+    A non-raising companion to verify_system_meets_requirements for soft UI hints
+    (e.g. hiding a recommended-hardware notice) rather than gating setup. The
+    ML-inference capability is not considered here.
+
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    """
+    return _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores) is None
+
+
+# The kernel reports MemTotal — installed RAM minus firmware/reserved pages — so a host
+# always shows a little under its nominal size (a "4GB" box reports ~3.8GB). Allow this
+# fraction of slack when checking a RAM target, in one place rather than per call site, so
+# nominal requirements (4, 8 GB) match the hardware they describe without ad-hoc thresholds.
+MEMORY_REPORTING_TOLERANCE: float = 0.08
+
+
+def meets_memory_target(total_memory_gb: float, target_gb: float) -> bool:
+    """
+    Return whether reported RAM satisfies a nominal target within the reporting tolerance.
+
+    Fails open (True) when the target is 0 (no requirement) or memory is unknown
+    (0.0, e.g. Windows), so callers never block on a guess.
+
+    :param total_memory_gb: RAM reported by get_total_system_memory() in GB.
+    :param target_gb: Nominal RAM target in GB (e.g. 4 or 8).
+    """
+    if not target_gb or not total_memory_gb:
+        return True
+    return total_memory_gb >= target_gb * (1.0 - MEMORY_REPORTING_TOLERANCE)
+
+
+def _resource_shortfall(
+    *, min_memory_gb: float, min_cpu_cores: int
+) -> tuple[str, str, list[Any]] | None:
+    """
+    Return an unmet RAM/CPU threshold as (message, translation_key, translation_args), or None.
+
+    translation_args exclude the feature name, which the caller prepends.
+
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    """
+    cpu_cores = os.process_cpu_count() or os.cpu_count() or 1
+    if min_cpu_cores and cpu_cores < min_cpu_cores:
+        return (
+            f"at least {min_cpu_cores} CPU cores are required ({cpu_cores} detected).",
+            "unsupported_system_cpu_cores",
+            [min_cpu_cores, cpu_cores],
+        )
+    total_memory_gb = get_total_system_memory()
+    # meets_memory_target() fails open on unknown memory (0.0, e.g. Windows) and absorbs
+    # the kernel's MemTotal under-report, so min_memory_gb stays a clean nominal figure.
+    if min_memory_gb and not meets_memory_target(total_memory_gb, min_memory_gb):
+        return (
+            f"at least {min_memory_gb:.0f}GB of RAM is required ({total_memory_gb:.1f}GB detected).",
+            "unsupported_system_memory",
+            [f"{min_memory_gb:.0f}", f"{total_memory_gb:.1f}"],
+        )
+    return None
+
+
+def verify_cpu_supports_ml_inference() -> None:
+    """
+    Verify the CPU can run on-device ML (torch) inference.
+
+    :raises UnsupportedSystemError: If this is an x86 CPU without AVX2 support, which
+        torch's FBGEMM quantized backend requires.
+    """
+    if platform.machine().lower() not in ("x86_64", "amd64", "i386", "i686", "x86"):
+        # non-x86 (ARM) machines run quantized inference via QNNPACK instead of FBGEMM
+        return
+    import torch  # noqa: PLC0415
+
+    if torch.backends.cpu.get_cpu_capability() in ("DEFAULT", "NO AVX"):
+        raise UnsupportedSystemError(
+            "On-device audio analysis requires a CPU with AVX2 support "
+            "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
+            "If you are running in a virtual machine (e.g. Proxmox), changing the "
+            "CPU type to 'host' may expose AVX2 to the guest.",
+            translation_key="unsupported_system_avx2",
+        )
 
 
 keyword_pattern = re.compile("title=|artist=")
@@ -139,6 +393,13 @@ ad_pattern = re.compile(r"((ad|advertisement)_)|^AD\s\d+$|ADBREAK", flags=re.IGN
 title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", flags=re.IGNORECASE)
 # German format used by some stations: "Track" von Artist
 german_von_pattern = re.compile(r'^"(?P<title>[^"]+)"\s+von\s+(?P<artist>.+)$', flags=re.IGNORECASE)
+# English format used by some stations: "Track" by Artist from "Album" (album optional).
+# Title and album are quote-delimited, so the non-greedy artist plus the anchored,
+# quoted album group keep "by"/"from" inside the artist name from being mis-split.
+english_by_pattern = re.compile(
+    r'^"(?P<title>[^"]+)"\s+by\s+(?P<artist>.+?)(?:\s+from\s+"(?P<album>[^"]*)")?$',
+    flags=re.IGNORECASE,
+)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
 
@@ -230,7 +491,7 @@ def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
     """Try to parse an int."""
     try:
         return int(float(possible_int))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -238,7 +499,7 @@ def try_parse_float(possible_float: Any, default: float | None = 0.0) -> float |
     """Try to parse a float."""
     try:
         return float(possible_float)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -265,7 +526,8 @@ def try_parse_duration(duration_str: str) -> float:
 
 
 def normalize_unicode(value: str | None) -> str | None:
-    """Normalize Unicode strings to NFC form for consistent handling.
+    """
+    Normalize Unicode strings to NFC form for consistent handling.
 
     This ensures that Unicode characters like "é" are stored as single
     codepoints rather than "e" + combining accent mark, which prevents
@@ -316,8 +578,12 @@ def parse_title_and_version(
         return title, version
 
     # Standard version parsing
-    for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
-        for title_part in re.findall(regex, title):
+    for parts in (
+        _balanced_bracket_groups(title, "(", ")"),
+        _balanced_bracket_groups(title, "[", "]"),
+        re.findall(r" - .*", title),
+    ):
+        for title_part in parts:
             # Extract the content without brackets/dashes for checking
             clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
 
@@ -347,11 +613,47 @@ def parse_title_and_version(
             # Check if this part is a version
             for version_str in VERSION_PARTS:
                 if version_str in clean_part:
-                    # Preserve original casing for output
-                    version = title_part.strip("()[]- ").strip()
+                    # Preserve original casing (and any nested brackets) for output
+                    version = _strip_outer_markers(title_part)
                     title = title.replace(title_part, "").strip()
                     return title, version
     return title, version
+
+
+def _balanced_bracket_groups(text: str, open_char: str, close_char: str) -> list[str]:
+    """
+    Return the top-level balanced bracketed substrings, including the outer brackets.
+
+    :param text: The text to scan.
+    :param open_char: The opening bracket character.
+    :param close_char: The closing bracket character.
+    """
+    groups: list[str] = []
+    depth = 0
+    start = -1
+    for idx, char in enumerate(text):
+        if char == open_char:
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif char == close_char and depth > 0:
+            depth -= 1
+            if depth == 0:
+                groups.append(text[start : idx + 1])
+    return groups
+
+
+def _strip_outer_markers(part: str) -> str:
+    """
+    Strip the outer brackets or leading hyphen from a parsed title part.
+
+    :param part: The raw title part as matched from the title.
+    """
+    part = part.strip()
+    # only strip a single outer bracket pair so nested brackets stay intact
+    if part[:1] in "([" and part[-1:] in ")]":
+        return part[1:-1].strip()
+    return part.lstrip("- ").strip()
 
 
 def infer_album_type(title: str, version: str) -> AlbumType:
@@ -407,17 +709,42 @@ def multi_strip(line: str) -> str:
     ).rstrip()
 
 
+def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
+    """
+    Parse stream titles that name the track in natural language with a quoted title.
+
+    Recognises '"Track" by Artist from "Album"' (album optional) and the German
+    '"Track" von Artist'.
+
+    :param line: Raw (uncleaned) stream title.
+    :returns: Tuple of (title, artist, album), or None when the line is not in one of
+        these formats. ``album`` is None when the station omits it.
+    """
+    stripped = line.strip()
+    if match := english_by_pattern.match(stripped):
+        title = multi_strip(match.group("title"))
+        artist = multi_strip(match.group("artist")).strip('"')
+        album_raw = match.group("album")
+        album = multi_strip(album_raw).strip('"') if album_raw else None
+        if title and artist:
+            return title, artist, album or None
+    if match := german_von_pattern.match(stripped):
+        title = multi_strip(match.group("title"))
+        artist = multi_strip(match.group("artist")).strip('"')
+        if title and artist:
+            return title, artist, None
+    return None
+
+
 def clean_stream_title(line: str) -> str:
     """Strip junk text from radio streamtitle."""
     title: str = ""
     artist: str = ""
 
     if not keyword_pattern.search(line):
-        if german_match := german_von_pattern.match(line.strip()):
-            title = multi_strip(german_match.group("title"))
-            artist = multi_strip(german_match.group("artist")).strip('"')
-            if title and artist:
-                return f"{artist} - {title}"
+        if parsed := parse_quoted_stream_title(line):
+            track_name, artist_name, _ = parsed
+            return f"{artist_name} - {track_name}"
         return multi_strip(line)
 
     if match := title_pattern.search(line):
@@ -666,7 +993,7 @@ def empty_queue[T](q: asyncio.Queue[T]) -> None:
         try:
             q.get_nowait()
             q.task_done()
-        except (asyncio.QueueEmpty, ValueError):
+        except asyncio.QueueEmpty, ValueError:
             pass
 
 
@@ -757,7 +1084,7 @@ async def has_tmpfs_mount() -> bool:
                 for line in file:
                     if "tmpfs /tmp tmpfs rw" in line:
                         return True
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             pass
         return False
 
@@ -772,7 +1099,7 @@ async def get_free_space(folder: str) -> float:
         try:
             res = shutil.disk_usage(folder)
             return res.free / float(1 << 30)
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             return 0.0
 
     return await asyncio.to_thread(_get_free_space, folder)
@@ -786,7 +1113,7 @@ async def get_free_space_percentage(folder: str) -> float:
         try:
             res = shutil.disk_usage(folder)
             return res.free / res.total * 100
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             return 0.0
 
     return await asyncio.to_thread(_get_free_space, folder)
@@ -815,7 +1142,8 @@ def get_primary_ip_address_from_zeroconf(
     discovery_info: AsyncServiceInfo,
     prefer_ipv6: bool = False,
 ) -> str | None:
-    """Get primary IP address from zeroconf discovery info.
+    """
+    Get primary IP address from zeroconf discovery info.
 
     :param discovery_info: The zeroconf service info to extract the address from.
     :param prefer_ipv6: If True, prefer IPv6 addresses over IPv4.
@@ -840,7 +1168,8 @@ def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> int | None:
 def get_zeroconf_args(
     use_all_interfaces: bool = False,
 ) -> dict[str, Any]:
-    """Determine optimal zeroconf IPVersion and interfaces from system adapters.
+    """
+    Determine optimal zeroconf IPVersion and interfaces from system adapters.
 
     Inspects available network adapters to determine the correct IP version
     and interface configuration, similar to Home Assistant's approach.
@@ -901,7 +1230,7 @@ def get_zeroconf_args(
     return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
 
 
-async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
+async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
     """Force close an async generator."""
     task = asyncio.create_task(agen.__anext__())
     task.cancel()
@@ -912,6 +1241,10 @@ async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
 
 async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     """Detect charset of raw data."""
+    # imported here to keep chardet (~18MB) out of the idle import footprint:
+    # it is only needed on the rarely-hit playlist/radio charset fallback path
+    import chardet  # noqa: PLC0415
+
     try:
         detected: ResultDict = await asyncio.to_thread(chardet.detect, data)
         if detected and detected["encoding"] and detected["confidence"] > 0.75:
@@ -1230,13 +1563,13 @@ class TaskManager:
         self._tasks: list[asyncio.Task[None]] = []
         self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+    def create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[None]:
         """Create a new task and add it to the manager."""
         task = self.mass.create_task(coro)
         self._tasks.append(task)
         return task
 
-    async def create_task_with_limit(self, coro: Coroutine[Any, Any, None]) -> None:
+    async def create_task_with_limit(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Create a new task with semaphore limit."""
         assert self._semaphore is not None
 
@@ -1273,7 +1606,8 @@ _P = ParamSpec("_P")
 def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
-    """Call async function using a per-instance Lock.
+    """
+    Call async function using a per-instance Lock.
 
     Each instance gets its own lock so that e.g. SyncGroupPlayer A
     does not block SyncGroupPlayer B when both call set_members().
@@ -1339,13 +1673,22 @@ class TimedAsyncGenerator:
         return self._factory()
 
 
-def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
-    func: Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
-) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
+# Bound for guard_single_request: it only needs ``.mass``, so a structural protocol
+# lets it decorate providers, core controllers and media controllers alike without
+# coupling to their concrete base classes.
+class _SupportsMass(Protocol):
+    """Structural type for objects exposing a MusicAssistant reference."""
+
+    mass: MusicAssistant
+
+
+def guard_single_request[SelfT: _SupportsMass, **P, R](
+    func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
     """Guard single request to a function."""
 
     @functools.wraps(func)
-    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
         # create a task_id dynamically based on the function and args/kwargs
         cache_key_parts = [func.__class__.__name__, func.__name__, *args]
