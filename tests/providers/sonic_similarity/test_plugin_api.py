@@ -17,6 +17,7 @@ from music_assistant.providers.sonic_similarity.helpers import (
     apply_filters,
 )
 from music_assistant.providers.sonic_similarity.similarity import Candidate, ScoredCandidate
+from music_assistant.providers.sonic_similarity.vectors import FEATURE_GROUPS
 from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
@@ -210,6 +211,30 @@ class TestParseWeights:
             "era",
         ):
             assert key in result
+
+
+class TestSimilarityPresets:
+    """Structural invariants over the SIMILARITY_PRESETS weight dicts.
+
+    Each preset is a hand-edited dict; these guard against a typo (a dropped,
+    misspelled or extra key, or an out-of-range value) shipping as a runtime
+    KeyError or a degenerate weighting.
+    """
+
+    @pytest.mark.parametrize("preset", SIMILARITY_PRESETS.values(), ids=SIMILARITY_PRESETS.keys())
+    def test_exact_key_set(self, preset: dict[str, float]) -> None:
+        """A preset weights exactly the feature groups plus the genre/era knobs."""
+        assert set(preset) == set(FEATURE_GROUPS) | {"genre", "era"}
+
+    @pytest.mark.parametrize("preset", SIMILARITY_PRESETS.values(), ids=SIMILARITY_PRESETS.keys())
+    def test_weights_in_unit_range(self, preset: dict[str, float]) -> None:
+        """Every weight sits in [0, 1] (preset baselines are not clamped at use)."""
+        assert all(0.0 <= w <= 1.0 for w in preset.values())
+
+    @pytest.mark.parametrize("preset", SIMILARITY_PRESETS.values(), ids=SIMILARITY_PRESETS.keys())
+    def test_has_a_nonzero_audio_group(self, preset: dict[str, float]) -> None:
+        """At least one audio group is weighted, so the distance stays meaningful."""
+        assert any(preset[group] > 0.0 for group in FEATURE_GROUPS)
 
 
 class TestSingleSeedAPI:
