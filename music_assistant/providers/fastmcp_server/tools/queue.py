@@ -170,12 +170,8 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param queue_id: Queue identifier from ``QueueBrief.queue_id`` (distinct
             from ``PlayerBrief.player_id``).
         :param uri: Music Assistant URI of the media to add, of the form
-            ``<provider>://<media_type>/<id>``. Accepts track, album, artist,
-            and playlist URIs (e.g. ``TrackBrief.uri``, ``AlbumBrief.uri``,
-            ``ArtistBrief.uri``, ``PlaylistBrief.uri``). An **artist** URI
-            enqueues the artist's full discography; an **album** URI enqueues
-            all album tracks. Use ``library_search_*`` or ``library_get_*_by_uri``
-            to resolve URIs first.
+            ``<provider>://<media_type>/<id>`` (e.g. as found on
+            ``TrackBrief.uri`` / ``AlbumBrief.uri`` / ``PlaylistBrief.uri``).
         :param option: Enqueue mode controlling placement and playback:
 
             - ``add`` (default): Append to the end of the queue without
