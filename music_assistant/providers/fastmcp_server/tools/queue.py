@@ -10,13 +10,15 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from music_assistant_models.enums import QueueOption
 
-from ..models import QueueBrief
+from ..models import AddToQueueResult, QueueBrief
 from ..tags import Tag
 from ._common import (
     TIMEOUT_FAST,
     TIMEOUT_MUTATION,
     TIMEOUT_QUERY,
     confirm_or_raise,
+    queue_item_display_name,
+    resolve_added_queue_item,
     to_brief_queue,
 )
 
@@ -160,12 +162,16 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         queue_id: str,
         uri: str,
         option: str = "add",
-    ) -> None:
+    ) -> AddToQueueResult:
         """
         Enqueue media on a queue with an explicit placement mode.
 
         Supports different enqueue modes to control where items are placed
         and whether playback is affected.
+
+        Returns ``AddToQueueResult`` with the new row's ``item_id``, ``uri``,
+        ``name``, and ``option`` so callers can confirm the add succeeded
+        before enqueueing the next item.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id`` (distinct
             from ``PlayerBrief.player_id``).
@@ -190,6 +196,20 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             valid = ", ".join(f"``{e.value}``" for e in QueueOption if e is not QueueOption.UNKNOWN)
             raise ToolError(f"Invalid option {option!r}. Valid options: {valid}")
 
+        before_items = mass.player_queues.items(queue_id, limit=MAX_QUEUE_ITEMS)
+        before_item_ids = frozenset(str(getattr(it, "queue_item_id", "")) for it in before_items)
         await mass.player_queues.play_media(queue_id, uri, option=queue_option)
+        after_items = mass.player_queues.items(queue_id, limit=MAX_QUEUE_ITEMS)
+        added = resolve_added_queue_item(after_items, uri, before_item_ids=before_item_ids)
+        if added is None:
+            raise ToolError(
+                f"Added {uri!r} to queue {queue_id!r} but could not locate the new queue row."
+            )
+        return AddToQueueResult(
+            item_id=str(getattr(added, "queue_item_id", "")),
+            uri=uri,
+            name=queue_item_display_name(added),
+            option=option,
+        )
 
     return sub

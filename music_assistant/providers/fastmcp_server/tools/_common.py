@@ -311,6 +311,63 @@ def to_brief_queue(queue: Any, items: Sequence[Any] | None = None) -> QueueBrief
     )
 
 
+def queue_item_uri(item: Any) -> str:
+    """
+    Return the media URI for a queue row, if present.
+
+    :param item: queue item object from ``player_queues.items``.
+    """
+    uri = getattr(item, "uri", None)
+    if uri:
+        return str(uri)
+    media_item = getattr(item, "media_item", None)
+    if media_item is not None:
+        media_uri = getattr(media_item, "uri", None)
+        if media_uri:
+            return str(media_uri)
+    return ""
+
+
+def queue_item_display_name(item: Any) -> str:
+    """
+    Return the display title for a queue row.
+
+    :param item: queue item object from ``player_queues.items``.
+    """
+    now_playing = _external_now_playing(item)
+    if now_playing and now_playing.title:
+        return now_playing.title
+    return str(getattr(item, "name", ""))
+
+
+def resolve_added_queue_item(
+    items: Sequence[Any],
+    uri: str,
+    *,
+    before_item_ids: frozenset[str],
+) -> Any | None:
+    """
+    Locate the queue row created by the most recent ``add_to_queue`` call.
+
+    Prefers rows whose ``queue_item_id`` was not present before the add.
+    Falls back to the last row matching ``uri`` when ids cannot be
+    distinguished (e.g. after ``replace``).
+
+    :param items: queue items after the add.
+    :param uri: URI passed to ``add_to_queue``.
+    :param before_item_ids: ``queue_item_id`` values present before the add.
+    """
+    matches = [it for it in items if queue_item_uri(it) == uri]
+    if not matches:
+        return None
+    new_matches = [
+        it for it in matches if str(getattr(it, "queue_item_id", "")) not in before_item_ids
+    ]
+    if new_matches:
+        return new_matches[-1]
+    return matches[-1]
+
+
 # ── private helpers ──────────────────────────────────────────────────────────
 
 
