@@ -16,16 +16,14 @@ _MUSIC_WORD = re.compile(r"\bmusic\b", re.IGNORECASE)
 
 
 def format_text_query(query: str) -> str:
-    """Frame a bare text query toward CLAP's training captions.
+    """Frame a bare query as ``<query> music`` for the CLAP text encoder.
 
-    CLAP's text encoder was trained on audio captions, so a light ``<query> music``
-    suffix lands the embedding closer to how tracks were captioned and measurably
-    sharpens retrieval. The suffix is skipped when the query already contains the
-    word "music" (case-insensitive) to avoid ``rock music music``; an empty or
-    whitespace-only query returns an empty string.
+    Skipped when the query already contains the word "music" (case-insensitive);
+    an empty or whitespace-only query returns "".
 
     :param query: Raw user query.
     """
+    # CLAP was trained on audio captions, so the " music" suffix matches that form.
     cleaned = query.strip()
     if not cleaned or _MUSIC_WORD.search(cleaned):
         return cleaned
