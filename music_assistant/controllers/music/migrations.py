@@ -673,6 +673,20 @@ async def migrate_database(  # noqa: PLR0915
                 if "duplicate column" not in str(err):
                     raise
 
+    if prev_version <= 43:
+        # Pandora provider changes to serve dynamic playlists instead of radio streams.
+        await database.execute(
+            f"DELETE FROM {DB_TABLE_RADIOS} "
+            "WHERE item_id IN ( "
+            f"  SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "  WHERE provider_domain = 'pandora' AND media_type = 'radio');"
+        )
+
+        await database.execute(
+            f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "WHERE provider_domain = 'pandora' AND media_type = 'radio';"
+        )
+
     # save changes
     await database.commit()
 
