@@ -337,7 +337,7 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
-        player._attr_sleep_timer_expires_at = 123.0
+        player.set_sleep_timer_expires_at(123.0)
 
         await controller.unregister("player_1")
 
@@ -350,7 +350,7 @@ class TestSleepTimer:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
         controller._players = {"player_1": player}
-        player._attr_sleep_timer_expires_at = 123.0
+        player.set_sleep_timer_expires_at(123.0)
         controller.cmd_stop = AsyncMock()  # type: ignore[method-assign]
 
         await controller._handle_sleep_timer_expired("player_1")

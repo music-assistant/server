@@ -517,7 +517,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         except OverflowError:
             msg = "Sleep timer duration is too large to schedule"
             raise InvalidDataError(msg) from None
-        player._attr_sleep_timer_expires_at = expires_at
+        player.set_sleep_timer_expires_at(expires_at)
         player.update_state()
         self._signal_sleep_timer_updated(player, expires_at)
         self.mass.call_later(
@@ -3475,7 +3475,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
         if player.sleep_timer_expires_at is not None:
-            player._attr_sleep_timer_expires_at = None
+            player.set_sleep_timer_expires_at(None)
             player.update_state()
             self._signal_sleep_timer_updated(player, None)
 
@@ -3488,7 +3488,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self.get_player(player_id)
         if player is None or player.sleep_timer_expires_at is None:
             return
-        player._attr_sleep_timer_expires_at = None
+        player.set_sleep_timer_expires_at(None)
         player.update_state()
         self._signal_sleep_timer_updated(player, None)
         await self.cmd_stop(player_id)

@@ -111,7 +111,6 @@ class Player(ABC):
     _attr_enabled_by_default: bool = True
     _attr_needs_setup: bool = False
     _attr_supported_sample_rates: list[tuple[int, int]] | None = None
-    _attr_sleep_timer_expires_at: float | None = None
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -369,11 +368,6 @@ class Player(ABC):
     def active_sound_mode(self) -> str | None:
         """Return active sound mode of this player."""
         return self._attr_active_sound_mode
-
-    @property
-    def sleep_timer_expires_at(self) -> float | None:
-        """Return the unix timestamp at which the active sleep timer stops playback."""
-        return self._attr_sleep_timer_expires_at
 
     @cached_property
     def sound_mode_list(self) -> UniqueList[PlayerSoundMode]:
@@ -2282,6 +2276,23 @@ class Player(ABC):
         self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         self.__active_mass_source = value
         self.update_state()
+
+    __sleep_timer_expires_at: float | None = None
+
+    @final
+    def set_sleep_timer_expires_at(self, value: float | None) -> None:
+        """
+        Set the unix (utc) timestamp at which the active sleep timer stops playback.
+
+        :param value: The expiry timestamp, or None to clear the sleep timer.
+        """
+        self.__sleep_timer_expires_at = value
+
+    @property
+    @final
+    def sleep_timer_expires_at(self) -> float | None:
+        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
+        return self.__sleep_timer_expires_at
 
     __stop_called: bool = False
 
