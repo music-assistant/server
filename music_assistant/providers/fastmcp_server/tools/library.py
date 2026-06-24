@@ -47,8 +47,8 @@ def _readonly(title: str) -> ToolAnnotations:
     )
 
 
-def _register_get_by_uri_tools(sub: FastMCP, mass: MusicAssistant) -> None:
-    """Register typed URI→Brief resolver tools for each library media type."""
+def _register_uri_tools(sub: FastMCP, mass: MusicAssistant) -> None:
+    """Register URI resolver and drill-down library tools."""
 
     @sub.tool(
         tags={Tag.QUERY_LIBRARY},
@@ -415,8 +415,6 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         items = await mass.music.radio.library_items(limit=limit, offset=offset)
         return [to_brief_radio(r) for r in items]
 
-    _register_get_by_uri_tools(sub, mass)
-
     @sub.tool(
         tags={Tag.QUERY_LIBRARY},
         annotations=_readonly("Recently added tracks"),
@@ -434,5 +432,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         _, limit = page_args(0, limit)
         items = await mass.music.recently_added_tracks(limit=limit)
         return [to_brief_track(t) for t in items]
+
+    _register_uri_tools(sub, mass)
 
     return sub

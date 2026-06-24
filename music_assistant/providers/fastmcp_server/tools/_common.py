@@ -124,6 +124,35 @@ async def resolve_uri(mass: MusicAssistant, uri: str) -> Any:
         raise ToolError(f"Provider for URI {uri!r} is offline or unreachable") from exc
 
 
+async def resolve_typed_uri(
+    mass: MusicAssistant,
+    uri: str,
+    expected: MediaType,
+    *,
+    type_label: str,
+    hint: str | None = None,
+) -> Any:
+    """
+    Resolve a URI and enforce an expected ``MediaType``.
+
+    :param mass: Music Assistant instance.
+    :param uri: Music Assistant media URI.
+    :param expected: Required ``MediaType`` for the caller.
+    :param type_label: Human-readable type name for error messages (e.g. ``track``).
+    :param hint: Optional recovery hint; defaults to a tool name derived from the
+        resolved ``media_type``.
+    """
+    item = await resolve_uri(mass, uri)
+    media_type = getattr(item, "media_type", None)
+    if media_type != expected:
+        recovery = hint if hint is not None else _wrong_type_hint(media_type)
+        article = "an" if type_label[:1].lower() in "aeiou" else "a"
+        raise ToolError(
+            f"URI {uri!r} is not {article} {type_label} (got media_type={media_type!r}); {recovery}"
+        )
+    return item
+
+
 async def brief_from_uri(
     mass: MusicAssistant,
     uri: str,
@@ -141,13 +170,7 @@ async def brief_from_uri(
     :param to_brief: Converter for the resolved item.
     :param type_label: Human-readable type name for error messages (e.g. ``track``).
     """
-    item = await resolve_uri(mass, uri)
-    media_type = getattr(item, "media_type", None)
-    if media_type != expected:
-        raise ToolError(
-            f"URI {uri!r} is not a {type_label} (got media_type={media_type!r}); "
-            f"use library_get_{type_label}_by_uri or search first."
-        )
+    item = await resolve_typed_uri(mass, uri, expected, type_label=type_label)
     return to_brief(item)
 
 
@@ -158,13 +181,13 @@ async def album_tracks_from_uri(mass: MusicAssistant, uri: str) -> AlbumTracksRe
     :param mass: Music Assistant instance.
     :param uri: Music Assistant album URI.
     """
-    item = await resolve_uri(mass, uri)
-    media_type = getattr(item, "media_type", None)
-    if media_type != MediaType.ALBUM:
-        raise ToolError(
-            f"URI {uri!r} is not an album (got media_type={media_type!r}); "
-            "use library_search_albums or library_get_album_by_uri first."
-        )
+    item = await resolve_typed_uri(
+        mass,
+        uri,
+        MediaType.ALBUM,
+        type_label="album",
+        hint="use library_search_albums or library_get_album_by_uri first.",
+    )
     raw_tracks = await mass.music.albums.tracks(item.item_id, item.provider)
     tracks = [t for t in raw_tracks if getattr(t, "available", True)]
     tracks.sort(
@@ -187,13 +210,13 @@ async def artist_albums_from_uri(mass: MusicAssistant, uri: str) -> ArtistAlbums
     :param mass: Music Assistant instance.
     :param uri: Music Assistant artist URI.
     """
-    item = await resolve_uri(mass, uri)
-    media_type = getattr(item, "media_type", None)
-    if media_type != MediaType.ARTIST:
-        raise ToolError(
-            f"URI {uri!r} is not an artist (got media_type={media_type!r}); "
-            "use library_search_artists or library_get_artist_by_uri first."
-        )
+    item = await resolve_typed_uri(
+        mass,
+        uri,
+        MediaType.ARTIST,
+        type_label="artist",
+        hint="use library_search_artists or library_get_artist_by_uri first.",
+    )
     raw_albums = await mass.music.artists.albums(item.item_id, item.provider)
     albums = [a for a in raw_albums if getattr(a, "available", True)]
     albums.sort(
@@ -430,6 +453,30 @@ def to_brief_queue(queue: Any, items: Sequence[Any] | None = None) -> QueueBrief
 
 
 # ── private helpers ──────────────────────────────────────────────────────────
+
+_GET_BY_URI_TOOL: dict[MediaType, str] = {
+    MediaType.TRACK: "library_get_track_by_uri",
+    MediaType.ALBUM: "library_get_album_by_uri",
+    MediaType.ARTIST: "library_get_artist_by_uri",
+    MediaType.PLAYLIST: "library_get_playlist_by_uri",
+    MediaType.RADIO: "library_get_radio_by_uri",
+}
+
+_LIST_OR_SEARCH_TOOL: dict[MediaType, str] = {
+    MediaType.TRACK: "library_search_tracks",
+    MediaType.ALBUM: "library_search_albums",
+    MediaType.ARTIST: "library_search_artists",
+    MediaType.PLAYLIST: "library_list_library_playlists",
+    MediaType.RADIO: "library_list_library_radio",
+}
+
+
+def _wrong_type_hint(got: Any) -> str:
+    """Build a recovery hint naming the tool that matches the resolved media type."""
+    if isinstance(got, MediaType) and got in _GET_BY_URI_TOOL:
+        return f"use {_GET_BY_URI_TOOL[got]} or {_LIST_OR_SEARCH_TOOL[got]}"
+    label = getattr(got, "value", got)
+    return f"use the matching library_get_*_by_uri tool for {label!r}"
 
 
 def _names(items: Any) -> list[str]:

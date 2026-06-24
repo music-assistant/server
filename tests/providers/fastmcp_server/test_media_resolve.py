@@ -32,26 +32,15 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 
-from music_assistant.providers.fastmcp_server.tools._common import resolve_uri
+from music_assistant.providers.fastmcp_server.tools._common import (
+    brief_from_uri,
+    resolve_typed_uri,
+    resolve_uri,
+    to_brief_track,
+)
 from music_assistant.providers.fastmcp_server.tools.library import build_library_server
-from music_assistant.providers.fastmcp_server.tools.media import build_media_server
 from music_assistant.providers.fastmcp_server.tools.metadata import build_metadata_server
-
-_URI_TOOLS: list[tuple[MediaType, str, str]] = [
-    (MediaType.TRACK, "library_get_track_by_uri", "track"),
-    (MediaType.ALBUM, "library_get_album_by_uri", "album"),
-    (MediaType.ARTIST, "library_get_artist_by_uri", "artist"),
-    (MediaType.PLAYLIST, "library_get_playlist_by_uri", "playlist"),
-    (MediaType.RADIO, "library_get_radio_by_uri", "radio"),
-]
-
-_ALL_LIBRARY_TYPES = [
-    MediaType.TRACK,
-    MediaType.ALBUM,
-    MediaType.ARTIST,
-    MediaType.PLAYLIST,
-    MediaType.RADIO,
-]
+from tests.providers.fastmcp_server.media_fakes import fake_media_item
 
 
 @pytest.fixture
@@ -67,14 +56,6 @@ def metadata_server(mock_mass: Any) -> FastMCP:
     """Mount only the metadata sub-server."""
     mcp: FastMCP = FastMCP(name="t")
     mcp.mount(build_metadata_server(mock_mass), namespace="metadata")
-    return mcp
-
-
-@pytest.fixture
-def media_server(mock_mass: Any) -> FastMCP:
-    """Mount only the media sub-server (for ``resolve_uri`` integration use)."""
-    mcp: FastMCP = FastMCP(name="t")
-    mcp.mount(build_media_server(mock_mass, require_confirmation=False), namespace="media")
     return mcp
 
 
@@ -107,83 +88,83 @@ class TestResolveUriNarrowsExceptions:
             await resolve_uri(mock_mass, "library://track/1")
 
 
-# ── get_*_by_uri / get_lyrics media-type assertion ───────────────────────────
+# ── resolve_typed_uri / brief_from_uri media-type assertion ─────────────────
 
 
-def _fake_item(media_type: MediaType, **kwargs: Any) -> MagicMock:
-    """Build a stub item exposing ``media_type`` and the usual brief fields."""
-    item = MagicMock(
-        spec_set=[
-            "media_type",
-            "uri",
-            "name",
-            "artists",
-            "artist",
-            "album",
-            "duration",
-            "year",
-            "track_count",
-            "owner",
-            "description",
-            "metadata",
-        ]
+class TestResolveTypedUriRejectsWrongMediaType:
+    """Wrong-type URIs must raise with a hint for the resolved type."""
+
+    @pytest.mark.parametrize(
+        ("expected", "type_label", "wrong"),
+        [
+            (MediaType.TRACK, "track", MediaType.ALBUM),
+            (MediaType.ALBUM, "album", MediaType.TRACK),
+            (MediaType.ARTIST, "artist", MediaType.PLAYLIST),
+            (MediaType.PLAYLIST, "playlist", MediaType.RADIO),
+            (MediaType.RADIO, "radio", MediaType.TRACK),
+        ],
     )
-    item.media_type = media_type
-    item.uri = kwargs.get("uri", f"library://{media_type.value}/1")
-    item.name = kwargs.get("name", f"{media_type.value.title()} Name")
-    item.artists = kwargs.get("artists", [])
-    item.artist = kwargs.get("artist")
-    item.album = kwargs.get("album")
-    item.duration = kwargs.get("duration", 180)
-    item.year = kwargs.get("year")
-    item.track_count = kwargs.get("track_count")
-    item.owner = kwargs.get("owner")
-    item.description = kwargs.get("description")
-    item.metadata = kwargs.get("metadata")
-    return item
-
-
-class TestGetByUriRejectsWrongMediaType:
-    """A wrong-type URI must raise rather than silently coerce."""
-
-    @pytest.mark.parametrize(("expected_type", "tool_name", "type_label"), _URI_TOOLS)
-    @pytest.mark.parametrize("wrong_type", _ALL_LIBRARY_TYPES)
-    async def test_rejects_wrong_media_type(
+    async def test_rejects_wrong_type_with_matching_hint(
         self,
-        library_server: FastMCP,
         mock_mass: Any,
-        expected_type: MediaType,
-        tool_name: str,
+        expected: MediaType,
         type_label: str,
-        wrong_type: MediaType,
+        wrong: MediaType,
     ) -> None:
-        """Passing e.g. an album URI to get_track_by_uri raises ``ToolError``."""
-        if wrong_type == expected_type:
-            pytest.skip("same type is the happy path")
+        """Hint names the tool for the resolved media type, not the caller's tool."""
         mock_mass.music.get_item_by_uri = AsyncMock(
-            return_value=_fake_item(wrong_type, uri=f"library://{wrong_type.value}/42")
+            return_value=fake_media_item(wrong, uri=f"library://{wrong.value}/42")
+        )
+        with pytest.raises(ToolError, match=rf"is not an? {type_label}") as exc_info:
+            await resolve_typed_uri(
+                mock_mass,
+                f"library://{wrong.value}/42",
+                expected,
+                type_label=type_label,
+            )
+        assert wrong.value in str(exc_info.value).lower()
+
+    async def test_album_uri_on_track_tool_mentions_album_not_track(self, mock_mass: Any) -> None:
+        """Album URI passed where a track is expected suggests album tools."""
+        mock_mass.music.get_item_by_uri = AsyncMock(
+            return_value=fake_media_item(MediaType.ALBUM, uri="library://album/7")
+        )
+        with pytest.raises(ToolError, match="library_get_album_by_uri"):
+            await brief_from_uri(
+                mock_mass,
+                "library://album/7",
+                MediaType.TRACK,
+                to_brief=to_brief_track,
+                type_label="track",
+            )
+
+
+class TestGetByUriIntegration:
+    """Smoke-test MCP wiring for URI resolver tools."""
+
+    async def test_get_track_by_uri_happy_path(
+        self, library_server: FastMCP, mock_mass: Any
+    ) -> None:
+        """Track URI returns a brief via the mounted library server."""
+        uri = "library://track/1"
+        mock_mass.music.get_item_by_uri = AsyncMock(
+            return_value=fake_media_item(MediaType.TRACK, uri=uri)
         )
         async with Client(library_server) as client:
-            with pytest.raises(ToolError, match=f"is not a {type_label}"):
-                await client.call_tool(
-                    tool_name,
-                    {"uri": f"library://{wrong_type.value}/42"},
-                )
+            result = await client.call_tool("library_get_track_by_uri", {"uri": uri})
+        text_blocks = [c.text for c in result.content if hasattr(c, "text")]
+        assert any(uri in t for t in text_blocks)
 
-    @pytest.mark.parametrize(("expected_type", "tool_name", "_type_label"), _URI_TOOLS)
-    async def test_accepts_matching_media_type(
-        self,
-        library_server: FastMCP,
-        mock_mass: Any,
-        expected_type: MediaType,
-        tool_name: str,
-        _type_label: str,
+    async def test_get_album_by_uri_happy_path(
+        self, library_server: FastMCP, mock_mass: Any
     ) -> None:
-        """A genuine URI of the expected type returns the brief."""
-        uri = f"library://{expected_type.value}/1"
-        mock_mass.music.get_item_by_uri = AsyncMock(return_value=_fake_item(expected_type, uri=uri))
+        """Album URI returns a brief via the mounted library server."""
+        uri = "library://album/1"
+        mock_mass.music.get_item_by_uri = AsyncMock(
+            return_value=fake_media_item(MediaType.ALBUM, uri=uri, artist="Artist")
+        )
         async with Client(library_server) as client:
-            result = await client.call_tool(tool_name, {"uri": uri})
+            result = await client.call_tool("library_get_album_by_uri", {"uri": uri})
         text_blocks = [c.text for c in result.content if hasattr(c, "text")]
         assert any(uri in t for t in text_blocks)
 
@@ -194,7 +175,7 @@ class TestGetLyricsRejectsNonTracks:
     async def test_rejects_album_uri(self, metadata_server: FastMCP, mock_mass: Any) -> None:
         """An album URI raises rather than returning ``None`` silently."""
         mock_mass.music.get_item_by_uri = AsyncMock(
-            return_value=_fake_item(MediaType.ALBUM, uri="library://album/7")
+            return_value=fake_media_item(MediaType.ALBUM, uri="library://album/7")
         )
         async with Client(metadata_server) as client:
             with pytest.raises(ToolError, match="is not a track"):
@@ -209,7 +190,7 @@ class TestGetLyricsRejectsNonTracks:
         """A real track URI surfaces ``metadata.lyrics`` if present."""
         metadata = MagicMock()
         metadata.lyrics = "verse one\nverse two"
-        item = _fake_item(MediaType.TRACK, metadata=metadata)
+        item = fake_media_item(MediaType.TRACK, metadata=metadata)
         mock_mass.music.get_item_by_uri = AsyncMock(return_value=item)
 
         async with Client(metadata_server) as client:

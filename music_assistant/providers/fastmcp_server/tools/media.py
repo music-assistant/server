@@ -17,11 +17,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-async def _resolve_uri(mass: MusicAssistant, uri: str) -> Any:
-    """Backward-compatible alias for :func:`resolve_uri`."""
-    return await resolve_uri(mass, uri)
-
-
 async def _resolve_to_library_item(mass: MusicAssistant, uri: str) -> Any:
     """
     Resolve a URI to its library counterpart, raising ToolError when not in library.
@@ -29,13 +24,13 @@ async def _resolve_to_library_item(mass: MusicAssistant, uri: str) -> Any:
     MA's :meth:`MusicController.remove_item_from_favorites` and
     :meth:`remove_item_from_library` expect a library item id. When the
     caller passes a provider-native URI (e.g. ``yandex_music://track/abc``),
-    :func:`_resolve_uri` returns a MediaItem with the provider's id —
+    :func:`resolve_uri` returns a MediaItem with the provider's id —
     feeding that into the controller silently targets the wrong row (or
     fails on ``int(...)``). This helper looks up the library counterpart
     via :meth:`get_library_item_by_prov_id` and raises if the item isn't
     in the library.
     """
-    item = await _resolve_uri(mass, uri)
+    item = await resolve_uri(mass, uri)
     if getattr(item, "provider", None) == "library":
         return item
     lib_item = await mass.music.get_library_item_by_prov_id(
@@ -72,7 +67,7 @@ def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param uri: Music Assistant URI of the artist, album, track,
             playlist or radio station (e.g. as found on ``TrackBrief.uri``).
         """
-        item = await _resolve_uri(mass, uri)
+        item = await resolve_uri(mass, uri)
         await mass.music.add_item_to_favorites(item)
 
     @sub.tool(
@@ -127,7 +122,7 @@ def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param uri: Music Assistant URI of the artist, album, track,
             playlist or radio station to import.
         """
-        item = await _resolve_uri(mass, uri)
+        item = await resolve_uri(mass, uri)
         await mass.music.add_item_to_library(item)
 
     @sub.tool(
@@ -179,7 +174,7 @@ def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
 
         :param uri: Music Assistant URI of the item to mark as played.
         """
-        item = await _resolve_uri(mass, uri)
+        item = await resolve_uri(mass, uri)
         await mass.music.mark_item_played(item)
 
     @sub.tool(
