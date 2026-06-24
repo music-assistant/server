@@ -607,10 +607,10 @@ class SendspinLocalAudioBridge:
         finally:
             self._is_streaming = False
             if write_future is not None:
-                with suppress(Exception):
+                with suppress(OSError):
                     await asyncio.shield(write_future)
             if stream is not None:
-                with suppress(Exception):
+                with suppress(OSError):
                     await asyncio.shield(self.mass.loop.run_in_executor(None, stream.close))
             if self._writer_task is asyncio.current_task():
                 self._writer_task = None
@@ -648,9 +648,9 @@ class SendspinLocalAudioBridge:
         finally:
             self._is_streaming = False
             if self._output_stream is not None:
-                with suppress(Exception):
+                with suppress(OSError):
                     self._output_stream.stop()
-                with suppress(Exception):
+                with suppress(OSError):
                     self._output_stream.close()
                 self._output_stream = None
             if self._writer_task is asyncio.current_task():
@@ -784,7 +784,7 @@ class LocalAudioBridgeManager:
                     await bridge.start()
                 except Exception:
                     self.logger.warning("Failed to start bridge for %s", device_name)
-                    with suppress(Exception):
+                    with suppress(OSError):
                         await bridge.stop()
                     protocol_player._attr_available = False
                     protocol_player.update_state()
@@ -807,7 +807,7 @@ class LocalAudioBridgeManager:
         """Stop all Sendspin bridges and unload any remap sinks we created."""
         async with self._lock:
             for bridge in list(self._bridges.values()):
-                with suppress(Exception):
+                with suppress(OSError):
                     await bridge.stop()
             self._bridges.clear()
         if self._loaded_remap_modules:
@@ -818,14 +818,14 @@ class LocalAudioBridgeManager:
         if self._volume_controller is not None:
             controller = self._volume_controller
             for sink_name, module_index in self._loaded_remap_modules.items():
-                with suppress(Exception):
+                with suppress(OSError):
                     ok = await self.mass.loop.run_in_executor(
                         None, controller.unload_module, module_index
                     )
                     if not ok:
                         self.logger.warning("Failed to unload remap sink %s", sink_name)
             self._loaded_remap_modules.clear()
-            with suppress(Exception):
+            with suppress(OSError):
                 await self.mass.loop.run_in_executor(None, self._volume_controller.close)
             self._volume_controller = None
         self.logger.debug("All local audio bridges stopped")
@@ -955,7 +955,7 @@ class LocalAudioBridgeManager:
             # do it here explicitly. Without this, module-device-restore or
             # any other PA client can leave the master at an arbitrary volume,
             # stacking an extra hidden attenuation on top of every remap sink.
-            with suppress(Exception):
+            with suppress(OSError):
                 await self.mass.loop.run_in_executor(
                     None,
                     controller.set_sink_volume,

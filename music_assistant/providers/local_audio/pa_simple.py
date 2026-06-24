@@ -140,11 +140,9 @@ class _PACVolume(ctypes.Structure):
 
 def _load_full_lib() -> ctypes.CDLL:
     """
-    Load full libpulse (not -simple) for the async context API.
+    Load and configure libpulse for use by PAVolumeController.
 
-    Required for pa_context_set_sink_volume_by_name(), which has no
-    equivalent in libpulse-simple. libpulse.so.0 is a transitive dependency
-    of libpulse-simple.so.0, so it is present anywhere PASimpleStream works.
+    Called once per process; the result is cached by _get_full_lib().
     """
     lib = ctypes.CDLL("libpulse.so.0")
 
@@ -220,21 +218,10 @@ def _get_full_lib() -> ctypes.CDLL:
 
 class PAVolumeController:
     """
-    Shared async libpulse connection for hardware PA sink volume control.
+    Shared libpulse connection for hardware PA sink volume control.
 
-    One instance is shared across all PA sink bridges. Connects once via a
-    threaded mainloop; set_sink_volume() calls are then direct function calls
-    into the existing connection — no subprocess, no fork/exec per change.
-
-    A pa_cvolume with channels=1 is used for all sinks regardless of their
-    actual channel count: PA remaps a single-channel volume uniformly across
-    the sink's full channel map (same behavior as `pactl set-sink-volume
-    <sink> N%`), so no per-sink channel-count detection is needed. This also
-    works correctly for module-remap-sink.c sinks — each remap sink has an
-    independent volume that does not affect its master sink or siblings.
-
-    All calls are blocking (bounded by short timeouts) and must be invoked
-    via run_in_executor from async code.
+    One instance is shared across all PA sink bridges. All calls are blocking
+    and must be invoked via run_in_executor from async code.
     """
 
     def __init__(self) -> None:
@@ -284,31 +271,13 @@ class PAVolumeController:
 
     def set_sink_volume(self, sink_name: str, volume_pct: int, channels: int = 2) -> bool:
         """
-        Set hardware volume on a PA sink by name.
+        Set hardware volume on a named PA sink.
 
-        :param volume_pct: MA player volume, 0-100. Mapped to an amplitude
-            scale factor via a dr-lex 60dB exponential audio taper
-            (_volume_pct_to_amplitude) — constant dB change per slider step,
-            with true silence at volume_pct=0. See
-            https://www.dr-lex.be/info-stuff/volumecontrols.html
-
-            PulseAudio's own volume percentage represents amplitude**3 (a
-            perceptual/cubic curve — pactl reports 10% as -60dB, since
-            20*log10(0.10**3) == -60). Passing the target amplitude straight
-            through as a PA percentage would apply PA's cubic curve on top
-            of the taper already applied here, over-attenuating the signal.
-            A cube root converts the target amplitude to the PA volume
-            percentage that produces it once PA's own cubic curve is
-            applied.
-
-        :param channels: Number of channels to set in the pa_cvolume, all to
-            the same value. Defaults to 2 (BRIDGE_CHANNELS — all local_audio
-            sinks are stereo). Matching the sink's actual channel count
-            avoids PA's channel-count-mismatch remap path, which updates the
-            displayed reference_volume but may not reliably update the
-            soft_volume actually used for sample mixing.
-
-        Blocks (up to ~0.5s) for PA's success/failure response.
+        :param sink_name: PA sink name as returned by ``enumerate_pa_sinks()``.
+        :param volume_pct: Volume level 0-100, mapped through an exponential
+            audio taper curve before being sent to PA.
+        :param channels: Channel count for the PA volume structure. Should
+            match the sink's actual channel count.
         :returns: True if PA reported success.
         """
         with self._lock:
@@ -530,20 +499,10 @@ class PASimpleStream:
 
 def enumerate_alsa_devices() -> list[dict[str, Any]]:
     """
-    Enumerate stereo-capable ALSA output devices via sounddevice/PortAudio.
+    Enumerate stereo-capable ALSA output devices via PortAudio.
 
-    Returns list of dicts compatible with the PA sink dict shape so that
-    LocalAudioBridgeManager can use the same registration path for both
-    backends.  Keys returned:
-      - name: stable device name (used for UUID / player-id generation)
-      - description: human-readable label (MA player display name)
-      - pa_sink_name: None (not a PA device)
-      - max_output_channels: number of channels
-      - sample_rate: device default sample rate
-      - bit_depth: fixed 16 (PortAudio ALSA path; bridge uses int16 dtype)
-      - is_remap: False
-      - index: sounddevice device index
-      - hostapi: host API index
+    Returns device dicts in the same shape as ``enumerate_pa_sinks()`` so
+    both backends share the same bridge registration path.
     """
     import sounddevice as _sd  # noqa: PLC0415
 
@@ -607,29 +566,12 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
 
 def enumerate_pa_sinks() -> list[dict[str, Any]]:
     """
-    Enumerate stereo-capable PulseAudio sinks via pactl JSON output.
+    Enumerate PulseAudio output sinks via pactl.
 
-    Uses pactl --format=json list sinks which always returns the sink's
-    native sample rate and format regardless of active stream state —
-    unlike pulsectl/libpulse which reports the currently negotiated format
-    when streams are active (which can differ from native hardware format).
-
-    Returns list of dicts with keys:
-      - name: display name (PA sink description)
-      - pa_sink_name: internal PA sink name
-      - max_output_channels: number of channels
-      - sample_rate: sink native sample rate in Hz
-      - bit_depth: sink native bit depth (16, 24, or 32)
-      - is_remap: True for module-remap-sink.c sinks
-      - master_device: for remap sinks, the underlying master sink's PA name
-        (from the device.master_device property), else None
-      - driver: PA driver string, e.g. "module-alsa-card.c" or
-        "module-remap-sink.c"
-      - channel_map: list of PA channel position names, e.g.
-        ["front-left", "front-right", "rear-left", "rear-right",
-        "front-center", "lfe", "side-left", "side-right"]
-      - alsa_card_name: the alsa.card_name property (e.g. "Creative X-Fi"),
-        or None if not an ALSA-backed sink
+    :raises FileNotFoundError: if pactl is not installed.
+    :raises RuntimeError: if pactl returns unexpected output.
+    :returns: List of sink dicts, one per sink, containing name, description,
+        sample rate, bit depth, channel map, and remap-sink metadata.
     """
     import json  # noqa: PLC0415
     import shutil  # noqa: PLC0415
