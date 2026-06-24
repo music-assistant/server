@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -36,9 +40,11 @@ class _FakeContent:
 class _FakeConnCtx:
     """Async context manager yielding a fake ICY response."""
 
-    def __init__(self, frames: list[bytes | Exception], status: int = 200) -> None:
+    def __init__(
+        self, frames: list[bytes | Exception], status: int = 200, meta_int: str = str(_META_INT)
+    ) -> None:
         self._resp = MagicMock()
-        self._resp.headers = {"icy-metaint": str(_META_INT)}
+        self._resp.headers = {"icy-metaint": meta_int}
         self._resp.content = _FakeContent(frames)
         if status >= 400:
             self._resp.raise_for_status.side_effect = aiohttp.ClientResponseError(
@@ -136,3 +142,18 @@ async def test_icy_stream_gives_up_when_no_data(monkeypatch: pytest.MonkeyPatch)
 
     # bails after the budget is exhausted rather than spinning indefinitely
     assert connect_calls < 50
+
+
+@pytest.mark.asyncio
+async def test_icy_stream_invalid_metaint_is_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malformed icy-metaint header raises a controlled InvalidDataError, not a raw ValueError."""
+    audio = StreamsAudio(MagicMock())
+    monkeypatch.setattr(
+        audio, "_connect_radio_stream", lambda *_a, **_k: _FakeConnCtx([], meta_int="not-a-number")
+    )
+
+    with pytest.raises(InvalidDataError):
+        async for _chunk in audio.get_icy_radio_stream(
+            "http://example.test/radio.mp3", _radio_streamdetails()
+        ):
+            pass

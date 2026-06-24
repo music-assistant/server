@@ -711,7 +711,14 @@ class StreamsAudio:
                     meta_int_str = resp.headers.get("icy-metaint")
                     if not meta_int_str:
                         raise InvalidDataError(f"No icy-metaint header for radio stream: {url}")
-                    meta_int = int(meta_int_str)
+                    try:
+                        meta_int = int(meta_int_str)
+                    except ValueError as err:
+                        raise InvalidDataError(
+                            f"Invalid icy-metaint value for radio stream: {url}"
+                        ) from err
+                    if meta_int <= 0:
+                        raise InvalidDataError(f"Invalid icy-metaint value for radio stream: {url}")
                     # readexactly raises IncompleteReadError when the server closes the
                     # connection mid-frame; that (and the network errors below) drops us
                     # out to the reconnect handler so a live stream survives the blip.
