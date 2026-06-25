@@ -21,6 +21,11 @@ if TYPE_CHECKING:
 MAX_QUEUE_ITEMS = 500
 
 
+def _require_queue(mass: MusicAssistant, queue_id: str) -> None:
+    if mass.player_queues.get(queue_id) is None:
+        raise ToolError(f"Queue {queue_id!r} not found.")
+
+
 def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
     """Construct the ``queue/*`` sub-server."""
     sub: FastMCP = FastMCP(name="queue")
@@ -184,6 +189,7 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
                 "Provide at least one item_id from QueueBrief.items[].item_id "
                 "(use get_active_queue first)."
             )
+        _require_queue(mass, queue_id)
         await confirm_or_raise(
             ctx,
             f"Remove {len(item_ids)} item(s) from queue {queue_id!r}?",
@@ -192,7 +198,7 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         for item_id in item_ids:
             try:
                 mass.player_queues.delete_item(queue_id, item_id)
-            except InvalidDataError as exc:
+            except (KeyError, InvalidDataError) as exc:
                 raise ToolError(str(exc)) from exc
 
     @sub.tool(
@@ -226,9 +232,10 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param include_items: How many lookahead items to materialise in the
             returned brief. Clamped to the ``[0, 500]`` range.
         """
+        _require_queue(mass, queue_id)
         try:
             mass.player_queues.move_item(queue_id, item_id, pos_shift)
-        except (IndexError, InvalidDataError) as exc:
+        except (KeyError, IndexError, InvalidDataError) as exc:
             raise ToolError(str(exc)) from exc
         return _queue_brief(queue_id, include_items)
 
@@ -258,9 +265,10 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param include_items: How many lookahead items to materialise in the
             returned brief. Clamped to the ``[0, 500]`` range.
         """
+        _require_queue(mass, queue_id)
         try:
             mass.player_queues.move_item_end(queue_id, item_id)
-        except (IndexError, InvalidDataError) as exc:
+        except (KeyError, IndexError, InvalidDataError) as exc:
             raise ToolError(str(exc)) from exc
         return _queue_brief(queue_id, include_items)
 

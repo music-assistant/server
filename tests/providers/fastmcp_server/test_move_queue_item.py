@@ -78,6 +78,7 @@ async def test_move_item_raises_tool_error_on_buffered_item(
     mounted_queue: FastMCP, mock_mass: MagicMock
 ) -> None:
     """Buffered/played items surface as ToolError for the agent."""
+    mock_mass.player_queues.get = MagicMock(return_value=SimpleNamespace(queue_id="q1"))
     mock_mass.player_queues.move_item = MagicMock(
         side_effect=IndexError("0 is already played/buffered")
     )
@@ -104,12 +105,26 @@ async def test_move_item_raises_tool_error_on_missing_item(
             )
 
 
+async def test_move_item_raises_tool_error_on_unknown_queue(
+    mounted_queue: FastMCP, mock_mass: MagicMock
+) -> None:
+    """Unknown queue_id surfaces as ToolError before the move call."""
+    mock_mass.player_queues.get = MagicMock(return_value=None)
+    async with Client(mounted_queue) as client:
+        with pytest.raises(ToolError, match="Queue 'q-missing' not found"):
+            await client.call_tool(
+                "queue_move_item",
+                {"queue_id": "q-missing", "item_id": "item-1", "pos_shift": 1},
+            )
+
+
 async def test_move_item_raises_when_queue_missing_after_move(
     mounted_queue: FastMCP, mock_mass: MagicMock
 ) -> None:
     """A vanished queue after a successful move surfaces as ToolError."""
+    queue = SimpleNamespace(queue_id="q1")
     mock_mass.player_queues.move_item = MagicMock()
-    mock_mass.player_queues.get = MagicMock(return_value=None)
+    mock_mass.player_queues.get = MagicMock(side_effect=[queue, None])
     async with Client(mounted_queue) as client:
         with pytest.raises(ToolError, match="not found after move"):
             await client.call_tool(
@@ -130,3 +145,16 @@ async def test_move_item_to_end_forwards_call(mounted_queue: FastMCP, mock_mass:
     mock_mass.player_queues.move_item_end.assert_called_once_with("q1", "item-1")
     assert result.data.queue_id == "q1"
     assert [i.item_id for i in result.data.items] == ["item-1"]
+
+
+async def test_move_item_to_end_raises_tool_error_on_unknown_queue(
+    mounted_queue: FastMCP, mock_mass: MagicMock
+) -> None:
+    """Unknown queue_id surfaces as ToolError before move_item_end."""
+    mock_mass.player_queues.get = MagicMock(return_value=None)
+    async with Client(mounted_queue) as client:
+        with pytest.raises(ToolError, match="Queue 'q-missing' not found"):
+            await client.call_tool(
+                "queue_move_item_to_end",
+                {"queue_id": "q-missing", "item_id": "item-1"},
+            )
