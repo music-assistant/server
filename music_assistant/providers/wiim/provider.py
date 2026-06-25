@@ -15,6 +15,7 @@ from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_L
 from music_assistant.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
+    get_source_ip_for_target,
 )
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -157,7 +158,11 @@ class WiimProvider(PlayerProvider):
                 upnp_location,
                 self.mass.http_session_no_ssl,
                 host=ip_address,
-                local_host=str(self.mass.streams.publish_ip),
+                local_host=await get_source_ip_for_target(
+                    ip_address,
+                    bind_ip=str(self.mass.streams.bind_ip),
+                    publish_ip=str(self.mass.streams.publish_ip or ""),
+                ),
                 polling_interval=60,
             )
         except (WiimRequestException, WiimDeviceException) as err:
