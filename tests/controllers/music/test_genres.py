@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Genre,
+    Podcast,
     ProviderMapping,
     Track,
 )
@@ -33,6 +34,7 @@ from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_PLAYLOG,
+    DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
@@ -114,6 +116,28 @@ async def _add_test_track(mass: MusicAssistant, name: str) -> Track:
         artists=UniqueList([artist]),
     )
     return await mass.music.tracks.add_item_to_library(track)
+
+
+async def _add_test_podcast(mass: MusicAssistant, name: str) -> Podcast:
+    """Add a minimal podcast to the library."""
+    podcast = Podcast(
+        item_id="0",
+        provider="library",
+        name=name,
+        provider_mappings=_library_provider_mapping(),
+    )
+    return await mass.music.podcasts.add_item_to_library(podcast)
+
+
+async def _set_podcast_genres(mass: MusicAssistant, podcast_id: int, genres: list[str]) -> None:
+    """Set metadata.genres on a podcast row directly in the DB."""
+    await mass.music.database.execute(
+        f"UPDATE {DB_TABLE_PODCASTS} "
+        "SET metadata = json_set(metadata, '$.genres', json(:genres)) "
+        "WHERE item_id = :id",
+        {"genres": json.dumps(genres), "id": podcast_id},
+    )
+    await mass.music.database.commit()
 
 
 async def _add_test_album(mass: MusicAssistant, name: str) -> Album:
@@ -312,7 +336,7 @@ class TestGenreCRUD:
         """
         await genre_ctrl.restore_default_genres()
         scanned_name = "ScannedNonDefaultGenreXyz"
-        await genre_ctrl._find_genres_for_alias(scanned_name)
+        await genre_ctrl._find_genres_for_alias(scanned_name, None)
 
         default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
         items = await genre_ctrl.library_items(hide_empty=None)
@@ -325,7 +349,7 @@ class TestGenreCRUD:
     ) -> None:
         """Calling library_items() with no hide_empty arg behaves like hide_empty=None."""
         await genre_ctrl.restore_default_genres()
-        await genre_ctrl._find_genres_for_alias("DefaultArgScannedGenreXyz")
+        await genre_ctrl._find_genres_for_alias("DefaultArgScannedGenreXyz", None)
         default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
         items_default = await genre_ctrl.library_items()
         items_none = await genre_ctrl.library_items(hide_empty=None)
@@ -1316,7 +1340,7 @@ class TestQueryMethods:
     async def test_library_items_hide_empty_default(self, genre_ctrl: GenreController) -> None:
         """Default (hide_empty=None) returns only default genres (translation_key IS NOT NULL)."""
         await genre_ctrl.restore_default_genres()
-        scanned = await genre_ctrl._find_genres_for_alias("DefaultFilterScannedXyz")
+        scanned = await genre_ctrl._find_genres_for_alias("DefaultFilterScannedXyz", None)
         assert scanned
 
         default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
@@ -1352,7 +1376,7 @@ class TestGenreLookupAndScanner:
     async def test_find_genres_for_alias_existing(self, genre_ctrl: GenreController) -> None:
         """Finds existing genre by name."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Garage"))
-        found = await genre_ctrl._find_genres_for_alias("Garage")
+        found = await genre_ctrl._find_genres_for_alias("Garage", None)
         assert isinstance(found, list)
         assert int(genre.item_id) in found
 
@@ -1360,7 +1384,7 @@ class TestGenreLookupAndScanner:
         """Finds existing genre by alias string in genre_aliases JSON."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("Breakbeat"))
         await genre_ctrl.add_alias(genre.item_id, "Big Beat")
-        found = await genre_ctrl._find_genres_for_alias("Big Beat")
+        found = await genre_ctrl._find_genres_for_alias("Big Beat", None)
         assert isinstance(found, list)
         assert int(genre.item_id) in found
 
@@ -1381,12 +1405,12 @@ class TestGenreLookupAndScanner:
         # Simulate "pop" being written as a secondary alias on Rock (the bug scenario)
         await genre_ctrl.add_alias(rock_genre.item_id, "pop")
 
-        found = await genre_ctrl._find_genres_for_alias("Pop")
+        found = await genre_ctrl._find_genres_for_alias("Pop", None)
         assert found == [int(pop_genre.item_id)]
 
     async def test_find_genres_for_alias_creates_new(self, genre_ctrl: GenreController) -> None:
         """Creates new genre when no match found."""
-        found = await genre_ctrl._find_genres_for_alias("BrandNewGenre12345")
+        found = await genre_ctrl._find_genres_for_alias("BrandNewGenre12345", None)
         assert isinstance(found, list)
         assert len(found) == 1
         genre = await genre_ctrl.get_library_item(found[0])
@@ -1586,7 +1610,7 @@ class TestCleanupStaleMappings:
     ) -> None:
         """Non-default genre (is_default = 0) with no mappings is deleted."""
         # _find_genres_for_alias creates genres with is_default = 0
-        found = await genre_ctrl._find_genres_for_alias("CsNonDefault1XYZ99")
+        found = await genre_ctrl._find_genres_for_alias("CsNonDefault1XYZ99", None)
         assert len(found) == 1
         genre_id = found[0]
         row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
@@ -1632,7 +1656,7 @@ class TestCleanupStaleMappings:
         track = await _add_test_track(mass, "CsKeep Track")
         track_id = int(track.item_id)
         await _set_track_genres(mass, track_id, ["CsKeepGenreXYZ"])
-        found = await genre_ctrl._find_genres_for_alias("CsKeepGenreXYZ")
+        found = await genre_ctrl._find_genres_for_alias("CsKeepGenreXYZ", None)
         genre_id = found[0]
         await genre_ctrl.add_media_mapping(
             genre_id, MediaType.TRACK, track.item_id, "CsKeepGenreXYZ"
@@ -1680,7 +1704,7 @@ class TestCleanupStaleMappings:
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
         """Playlog entries for a deleted empty non-default genre are removed."""
-        found = await genre_ctrl._find_genres_for_alias("CsPlaylog1XYZ99")
+        found = await genre_ctrl._find_genres_for_alias("CsPlaylog1XYZ99", None)
         genre_id = found[0]
         # Insert a fake playlog entry for this genre
         cols = (
@@ -2402,7 +2426,7 @@ class TestGlobalGenreExclusion:
         """_find_genres_for_alias returns [] for a globally excluded genre name."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("GblExclScan"))
         await genre_ctrl.remove_item_from_library(int(genre.item_id))
-        result = await genre_ctrl._find_genres_for_alias("GblExclScan")
+        result = await genre_ctrl._find_genres_for_alias("GblExclScan", None)
         assert result == []
 
     async def test_restore_custom_genre_is_not_default(
@@ -2462,3 +2486,92 @@ class TestGlobalGenreExclusion:
         exclusions = await genre_ctrl.get_global_genre_exclusions()
         names = {e["name"] for e in exclusions}
         assert "GblMergeSource" not in names
+
+
+class TestGenreContentTypeNamespacing:
+    """Genre resolution and mappings are scoped per content_type taxonomy (2b)."""
+
+    async def test_find_genres_for_alias_namespaces_by_content_type(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """The same name resolves to a distinct genre per taxonomy, each tagged correctly."""
+        music = await genre_ctrl._find_genres_for_alias("Comedy", None)
+        podcast = await genre_ctrl._find_genres_for_alias("Comedy", MediaType.PODCAST)
+        audiobook = await genre_ctrl._find_genres_for_alias("Comedy", MediaType.AUDIOBOOK)
+
+        assert len({music[0], podcast[0], audiobook[0]}) == 3
+        assert (await genre_ctrl.get_library_item(music[0])).content_type is None
+        assert (await genre_ctrl.get_library_item(podcast[0])).content_type is MediaType.PODCAST
+        assert (await genre_ctrl.get_library_item(audiobook[0])).content_type is MediaType.AUDIOBOOK
+
+    async def test_find_genres_for_alias_does_not_cross_namespaces(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """A lookup in one taxonomy never returns a genre that lives in another."""
+        music = await genre_ctrl._find_genres_for_alias("Zzklezmertest", None)
+        podcast = await genre_ctrl._find_genres_for_alias("Zzklezmertest", MediaType.PODCAST)
+        assert music[0] not in podcast
+        assert (await genre_ctrl.get_library_item(music[0])).content_type is None
+
+    async def test_scanner_buckets_genres_by_content_type(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """The scanner files a track's and a podcast's same-named genre as distinct entities."""
+        track = await _add_test_track(mass, "NsTrack")
+        await _set_track_genres(mass, int(track.item_id), ["Zmystery9"])
+        podcast = await _add_test_podcast(mass, "NsPodcast")
+        await _set_podcast_genres(mass, int(podcast.item_id), ["Zmystery9"])
+
+        await genre_ctrl._bulk_scan_unmapped_genres()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id, content_type FROM {DB_TABLE_GENRES} WHERE search_name = :sn",
+            {"sn": create_safe_string("Zmystery9", True, True)},
+            limit=0,
+        )
+        by_content_type = {row["content_type"]: int(row["item_id"]) for row in rows}
+        # one music genre (NULL) and one podcast genre exist for the same name
+        assert None in by_content_type
+        assert MediaType.PODCAST.value in by_content_type
+        # the podcast maps to the podcast-namespace genre, never the music one
+        pod_maps = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_type = :mt AND media_id = :mid",
+            {"mt": MediaType.PODCAST.value, "mid": int(podcast.item_id)},
+            limit=0,
+        )
+        assert {int(r["genre_id"]) for r in pod_maps} == {by_content_type[MediaType.PODCAST.value]}
+
+    async def test_cleanup_rehomes_legacy_cross_namespace_mapping(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Cleanup removes a legacy podcast→music-genre mapping so the item can re-home."""
+        podcast = await _add_test_podcast(mass, "RehomePod")
+        await _set_podcast_genres(mass, int(podcast.item_id), ["Spoken Word"])
+        # simulate the pre-namespacing state: the podcast mapped to a music (NULL) genre
+        music_genre = await genre_ctrl._find_genres_for_alias("Spoken Word", None)
+        await mass.music.database.insert(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": music_genre[0],
+                "media_id": int(podcast.item_id),
+                "media_type": MediaType.PODCAST.value,
+                "alias": "Spoken Word",
+                "is_derived": 0,
+                "is_manual": 0,
+            },
+        )
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        remaining = await mass.music.database.get_rows_from_query(
+            f"SELECT 1 FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_type = :mt AND media_id = :mid AND genre_id = :gid",
+            {
+                "mt": MediaType.PODCAST.value,
+                "mid": int(podcast.item_id),
+                "gid": music_genre[0],
+            },
+            limit=0,
+        )
+        assert remaining == []
