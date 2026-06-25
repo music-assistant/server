@@ -5,7 +5,8 @@ from __future__ import annotations
 import ctypes
 import sys
 
-from music_assistant.helpers.util import UnsupportedSystemError
+from music_assistant_models.errors import SetupFailedError
+
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
@@ -36,7 +37,7 @@ class LocalAudioProvider(PlayerProvider):
                     ctypes.CDLL("libpulse-simple.so.0")
                 except OSError:
                     if configured_backend == AUDIO_BACKEND_PULSEAUDIO:
-                        raise UnsupportedSystemError(
+                        raise SetupFailedError(
                             "libpulse-simple.so.0 not found — is PulseAudio installed?"
                         ) from None
                     # AUTO: libpulse absent, bridge manager will use ALSA
