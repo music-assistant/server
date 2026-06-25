@@ -692,6 +692,8 @@ class BrowseConverter(BaseConverter):
     ) -> BrowseFolder:
         """Convert Category, Collection or Playlist to BrowseFolder."""
         if isinstance(item, Playlist):
+            if not isinstance(self.context.path_parts, list):
+                raise ConversionError("Path not provided for Playlist item")
             path = "/".join([*self.context.path_parts, item.item_id])
         else:
             path_prefix = "categories" if isinstance(item, Category) else "collections"
