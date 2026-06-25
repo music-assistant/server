@@ -519,7 +519,10 @@ class BBCSoundsProvider(MusicProvider):
         if not station_id:
             return
 
-        now_playing = await self.client.schedules.currently_playing_song(station_id)
+        now_playing = await self._request_pool(
+            f"now_playing_{station_id}",
+            self.client.schedules.currently_playing_song(station_id),
+        )
         if now_playing:
             self.logger.debug(f"Now playing for {station_id}: {now_playing}")
             stream_details.stream_metadata = _segment_to_metadata(now_playing)
