@@ -139,6 +139,8 @@ class PlayerQueuesController(CoreController):
         self._transitioning_players: set[str] = set()
         self._play_action_refcount: dict[str, int] = {}
         self._last_counted_play: dict[str, str] = {}
+        # queue_id -> session_id whose flow stream was fully generated
+        self._flow_buffer_completed: dict[str, str] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -907,6 +909,7 @@ class PlayerQueuesController(CoreController):
             # At this point index is guaranteed to be int
             queue.index_in_buffer = index
             queue.flow_mode_stream_log = []
+            self._flow_buffer_completed.pop(queue_id, None)
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -1327,6 +1330,9 @@ class PlayerQueuesController(CoreController):
 
         # capture session_id so we can bail out if playback restarts
         original_session_id = queue.session_id
+        # record so player providers can detect flow EOF without an idle report
+        if original_session_id is not None:
+            self._flow_buffer_completed[queue_id] = original_session_id
 
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
@@ -1358,6 +1364,20 @@ class PlayerQueuesController(CoreController):
 
         task_id = f"queue_buffer_completed_{queue_id}"
         self.mass.create_task(_resume_on_idle(), task_id=task_id)
+
+    def flow_stream_finished(self, queue_id: str) -> bool:
+        """
+        Return whether the flow stream for the current playback session is fully generated.
+
+        Lets player providers detect flow EOF when the device does not report idle
+        (e.g. a Cast group that underruns the LIVE flow stream and keeps reporting playing).
+
+        :param queue_id: The queue ID.
+        """
+        queue = self._queues.get(queue_id)
+        if queue is None or queue.session_id is None:
+            return False
+        return self._flow_buffer_completed.get(queue_id) == queue.session_id
 
     # Main queue manipulation methods
 
