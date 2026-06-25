@@ -6,6 +6,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.models.player import DeviceInfo, Player
@@ -136,6 +137,15 @@ def test_supported_features_forwards_only_transport(
         PlayerFeature.SEEK,
         PlayerFeature.NEXT_PREVIOUS,
     }
+
+
+def test_volume_and_mute_not_captured_as_native(
+    setup: tuple[UniversalPlayer, MagicMock],
+) -> None:
+    """With an external source active, the player does not capture native volume/mute control."""
+    universal, _chromecast = setup
+    assert universal.volume_control != PLAYER_CONTROL_NATIVE
+    assert universal.mute_control != PLAYER_CONTROL_NATIVE
 
 
 async def test_transport_proxied_to_external_source(
