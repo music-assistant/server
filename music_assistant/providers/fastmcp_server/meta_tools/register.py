@@ -42,13 +42,13 @@ async def _resolve_catalog_tool(
         raise ToolError("tool_name is required")
     if name in META_TOOL_NAMES:
         raise ToolError(reject_meta.format(name=name))
-    if not await is_tool_visible(name):
-        msg = f"Tool {name!r} is currently disabled by configuration"
-        raise ToolError(msg)
     tool = await get_tool(name)
     if tool is None:
         msg = f"Tool {name!r} not found"
         raise NotFoundError(msg)
+    if not await is_tool_visible(name):
+        msg = f"Tool {name!r} is currently disabled by configuration"
+        raise ToolError(msg)
     return name, tool
 
 
