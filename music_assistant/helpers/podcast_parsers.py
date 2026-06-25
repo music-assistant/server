@@ -200,6 +200,10 @@ def parse_podcast_episode(
     if episode_published is not None:
         mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published, tz=UTC)
 
+    # description (podcastparser normalizes this to plain text, defaulting to "")
+    if description := episode.get("description"):
+        mass_episode.metadata.description = description
+
     # chapter
     if chapters := episode.get("chapters"):
         _chapters = []
