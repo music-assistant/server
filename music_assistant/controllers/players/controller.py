@@ -1773,8 +1773,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
 
         # Kick async palette extraction on cold cache. On transition prefetch
-        # the next queue item too.
-        if (current_media := player.state.current_media) and current_media.image_url:
+        # the next queue item too. Skip players that mirror another player's media
+        # (grouped/synced members, protocol children): their current_media - palette
+        # included - is taken wholesale from the owner, so resolving it per member is
+        # wasted work that also produces duplicate state updates across the group.
+        if (
+            not self._mirrors_parent_media(player)
+            and (current_media := player.state.current_media)
+            and current_media.image_url
+        ):
             if current_media.palette is None:
                 self._schedule_palette_fetch(player_id, current_media.image_url)
             if "current_media.image_url" in changed_values or "current_media" in changed_values:
@@ -2345,6 +2352,23 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     player.state.name,
                 )
                 await self._handle_cmd_stop(group.player_id)
+
+    def _mirrors_parent_media(self, player: Player) -> bool:
+        """
+        Return True if the player's current_media is taken from another player.
+
+        Grouped/synced members and protocol children mirror their parent's
+        current_media (palette included), so they must not resolve it themselves.
+
+        :param player: The player to check.
+        """
+        state = player.state
+        # a self-referential active_group/synced_to is not a real parent (mirror the
+        # != self guard in Player.__final_current_media), so it must not skip resolution
+        parent_id = state.active_group or state.synced_to
+        if parent_id and parent_id != player.player_id:
+            return True
+        return state.type == PlayerType.PROTOCOL and player.protocol_parent_id is not None
 
     def _schedule_palette_fetch(
         self, player_id: str, image_url: str | None, *, trigger_update: bool = True
