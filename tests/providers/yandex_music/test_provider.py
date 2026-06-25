@@ -1,4 +1,5 @@
-"""Unit tests for YandexMusicProvider (provider.py).
+"""
+Unit tests for YandexMusicProvider (provider.py).
 
 These tests construct a partial provider instance via ``__new__`` (no
 ``__init__``), attach the attributes the method-under-test reads, and
@@ -21,7 +22,8 @@ from music_assistant.providers.yandex_music.provider import YandexMusicProvider
 
 
 def _make_provider() -> tuple[YandexMusicProvider, mock.AsyncMock]:
-    """Return a YandexMusicProvider with a mocked Yandex API client.
+    """
+    Return a YandexMusicProvider with a mocked Yandex API client.
 
     The provider is constructed without calling ``__init__`` so the upstream
     base-class init does not run. ``client`` is a property over ``_client``,
@@ -41,7 +43,8 @@ def _make_provider() -> tuple[YandexMusicProvider, mock.AsyncMock]:
 
 
 async def test_get_playlist_tracks_continues_on_empty_batch() -> None:
-    """An empty batch mid-load must skip-and-continue, not discard prior batches.
+    """
+    An empty batch mid-load must skip-and-continue, not discard prior batches.
 
     With ``TRACK_BATCH_SIZE`` of 50, a 150-track playlist resolves in 3 batches.
     If batch 2 transiently returns an empty list, the previous behavior raised
@@ -116,7 +119,8 @@ async def test_get_playlist_tracks_raises_only_when_every_batch_is_empty() -> No
 
 
 async def test_unload_clears_all_per_session_caches() -> None:
-    """unload() must drop every state dict mirrored in handle_async_init().
+    """
+    unload() must drop every state dict mirrored in handle_async_init().
 
     Without this, stale ``asyncio.Lock`` instances bound to the previous
     event loop survive a provider reload and break wave-session locking

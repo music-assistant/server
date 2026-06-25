@@ -75,7 +75,8 @@ if TYPE_CHECKING:
 
 
 def get_player_option_translation_key(mc_key: str) -> str:
-    """Get translation key for player option.
+    """
+    Get translation key for player option.
 
     MC key has format like 'zone_ENHANCER' or 'zone_TONE_CONTROL_bass'
     """
@@ -91,7 +92,8 @@ def get_player_option_translation_key(mc_key: str) -> str:
 
 @dataclass
 class MusicCastMacAddresses(DataClassDictMixin):
-    """MusicCastMacAddresses.
+    """
+    MusicCastMacAddresses.
 
     The MAC addresses lack the colons.
     """
@@ -112,7 +114,8 @@ class MusicCastNetworkStatus(DataClassDictMixin):
 
 @dataclass(kw_only=True)
 class UpnpUpdateHelper:
-    """UpnpUpdateHelper.
+    """
+    UpnpUpdateHelper.
 
     See _update_player_attributes.
     """
@@ -132,7 +135,8 @@ class MusicCastPlayer(Player):
         physical_device: MusicCastPhysicalDevice,
         zone_device: MusicCastZoneDevice,
     ) -> None:
-        """Init MC Player.
+        """
+        Init MC Player.
 
         Keep reference to physical and zone device.
         """
@@ -165,7 +169,6 @@ class MusicCastPlayer(Player):
             PlayerFeature.PAUSE,  # for non MA control, see pause method
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
-            PlayerFeature.SET_MEMBERS,
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
@@ -433,6 +436,12 @@ class MusicCastPlayer(Player):
                 self._get_player_id_from_zone_device(x) for x in self.zone_device.musiccast_group
             ]
 
+        # disallow set members (i.e. a zone to become a group leader) if it is currently grouped to the main zone
+        if self.zone_device.source_id == MC_SOURCE_MAIN_SYNC:
+            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
+        else:
+            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+
         # PLAYER OPTIONS
         # see https://github.com/vigonotion/aiomusiccast/blob/main/aiomusiccast/capabilities.py
         # capability can be any instance of OptionSetter, BinarySetter, NumberSetter, NumberSensor,
@@ -619,7 +628,8 @@ class MusicCastPlayer(Player):
             ...
 
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
-        """Handle zone grouping.
+        """
+        Handle zone grouping.
 
         If a device has multiple zones, only a single zone can be net controlled.
         If another zone wants to join the group, the current net zone has to switch
@@ -908,7 +918,8 @@ class MusicCastPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Set multiple members.
+        """
+        Set multiple members.
 
         This function is called on the server.
         """

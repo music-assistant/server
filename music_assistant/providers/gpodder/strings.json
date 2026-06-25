@@ -11,11 +11,11 @@
       "description": "URL of gPodder instance."
     },
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "Username of gPodder instance."
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Password for gPodder instance."
     },
     "device_id": {
@@ -41,8 +41,8 @@
       "description": "Maximum number of episodes to sync per feed. Use 0 for unlimited"
     },
     "verify_ssl": {
-      "label": "Verify SSL",
-      "description": "Whether or not to verify the certificate of SSL/TLS connections."
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
     },
     "token": {
       "label": "token"

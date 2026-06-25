@@ -26,8 +26,5 @@
   },
   "manifest": {
     "description": "Play music and audiobooks stored on NFS connected network drives."
-  },
-  "errors": {
-    "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable."
   }
 }

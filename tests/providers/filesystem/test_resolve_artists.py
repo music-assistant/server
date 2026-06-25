@@ -28,7 +28,8 @@ def _make_album(*artists: Artist) -> Album:
 
 
 def _create_provider(mb_provider: object | None = None) -> LocalFileSystemProvider:
-    """Create a bare LocalFileSystemProvider with a mocked MusicBrainz lookup.
+    """
+    Create a bare LocalFileSystemProvider with a mocked MusicBrainz lookup.
 
     :param mb_provider: Object returned by ``mass.get_provider("musicbrainz")``;
         ``None`` simulates the provider not being loaded.
@@ -181,7 +182,8 @@ class TestMatchAlbumArtist:
         assert provider._match_album_artist(None, "Artist A", MBID_A) is None
 
     def test_matches_on_mbid_despite_different_name(self) -> None:
-        """The album artist is reused when MBIDs agree even if names differ.
+        """
+        The album artist is reused when MBIDs agree even if names differ.
 
         This is the mixed case: the album-artist tag count matched its MBID
         count (so it kept the tag-parsed name), while the track-artist count
@@ -206,7 +208,8 @@ class TestMatchAlbumArtist:
         assert provider._match_album_artist(album, "Artist B", MBID_B) is None
 
     def test_name_match_still_applies_with_unset_album_mbid(self) -> None:
-        """A track MBID does not prevent the legacy name match when album has none.
+        """
+        A track MBID does not prevent the legacy name match when album has none.
 
         Matching is additive (MBID or name), so an album artist with no MBID is
         still reused by name even when the track artist carries one.

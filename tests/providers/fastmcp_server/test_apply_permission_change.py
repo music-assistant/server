@@ -1,4 +1,5 @@
-"""Tests for ``MCPServerRuntime.apply_permission_change`` hot-swap vs restart routing.
+"""
+Tests for ``MCPServerRuntime.apply_permission_change`` hot-swap vs restart routing.
 
 The provider's :meth:`update_config` strips ``values/`` prefixes from MA's
 ``changed_keys`` set and passes the normalised set to
@@ -22,7 +23,8 @@ import pytest
 async def test_resource_toggle_triggers_full_restart(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """A ``res_*`` toggle must restart the runtime (resources are bound at start time).
+    """
+    A ``res_*`` toggle must restart the runtime (resources are bound at start time).
 
     The runtime can hot-swap only permission tags; resource registration
     happens once during :meth:`start`. If a resource toggle is mis-routed
@@ -44,7 +46,8 @@ async def test_resource_toggle_triggers_full_restart(
 async def test_empty_changed_keys_does_not_restart(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """A no-op call (``changed_keys=set()``) must not force a restart.
+    """
+    A no-op call (``changed_keys=set()``) must not force a restart.
 
     MA's ``ConfigController`` short-circuits when there are no diffs, but the
     guard belongs here too: an empty set is by definition a subset of the
@@ -68,7 +71,8 @@ async def test_empty_changed_keys_does_not_restart(
 async def test_permission_only_change_hot_swaps(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """A permission-key-only change rebuilds ``_allowed_tags`` from the new config.
+    """
+    A permission-key-only change rebuilds ``_allowed_tags`` from the new config.
 
     The preset tag (``edit:queue``) is intentionally NOT enabled in
     ``mock_config``'s defaults, while ``query:library`` IS — so a passing
@@ -106,7 +110,8 @@ async def test_permission_only_change_hot_swaps(
 async def test_start_rolls_back_on_partial_mount_failure(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """If ``start()`` raises mid-mount, the in-progress state is torn down.
+    """
+    If ``start()`` raises mid-mount, the in-progress state is torn down.
 
     Previously the well-known route could be registered while the main
     MCP mount failed, leaving the provider half-mounted: no MCP endpoint
@@ -130,7 +135,8 @@ async def test_start_rolls_back_on_partial_mount_failure(
 async def test_start_rollback_swallows_stop_failure(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """A rollback that itself errors must not hide the original exception.
+    """
+    A rollback that itself errors must not hide the original exception.
 
     The wrapper uses ``contextlib.suppress(Exception)`` around the rollback
     call so a failing teardown can't mask the actual start-failure cause —

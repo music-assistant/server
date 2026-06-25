@@ -8,7 +8,7 @@ import asyncio
 import copy
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, get_args, get_origin
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -34,9 +34,18 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant_models.unique_list import UniqueList
-from sounds import Container, LiveStation, Menu, MenuRecommendationOptions, PlayStatus
+from sounds import (
+    Container,
+    LiveStation,
+    Menu,
+    MenuRecommendationOptions,
+    PlayStatus,
+    RadioShow,
+    Segment,
+    SoundsClient,
+    exceptions,
+)
 from sounds import PodcastEpisode as SoundsPodcastEpisode
-from sounds import RadioShow, Segment, SoundsClient, exceptions
 from sounds.models import Playlist
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PASSWORD, CONF_USERNAME
@@ -93,8 +102,6 @@ async def get_config_entries(
         ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,
-            label="A BBC Sounds account is optional, but some UK-only content may not work without"
-            " it",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
@@ -110,17 +117,15 @@ async def get_config_entries(
             key=_Constants.CONF_SHOW_LOCAL,
             advanced=True,
             type=ConfigEntryType.BOOLEAN,
-            label="Show local radio stations?",
             default_value=False,
         ),
         ConfigEntry(
             key=_Constants.CONF_STREAM_FORMAT,
             advanced=True,
-            label="Preferred stream format",
             type=ConfigEntryType.STRING,
             options=[
-                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS, title="HLS"),
-                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH, title="MPEG-DASH"),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
             ],
             default_value=_Constants.CONF_STREAM_FORMAT_HLS,
         ),
@@ -198,7 +203,8 @@ class BBCSoundsProvider(MusicProvider):
         self.menu = await self.client.get_menu(recommendations=MenuRecommendationOptions.EXCLUDE)
 
     async def _request_pool(self, key: str, coro: Awaitable[Any]) -> Any:
-        """Reuse API calls for multiple players/streams.
+        """
+        Reuse API calls for multiple players/streams.
 
         If we are streaming the same station to multiple players, we end
         """
@@ -232,41 +238,34 @@ class BBCSoundsProvider(MusicProvider):
         fetcher: Callable[[], Awaitable[T]],
         expiration: int | None = None,
         expected_type: type[T] | None = None,
-    ) -> T | dict[str, Any]:
-        """Provides a thin wrapper around MA's cache.
+    ) -> T:
+        """
+        Provides a thin wrapper around MA's cache.
 
-        Handles retrieving a dict vs object which happens with database vs in-memory cache.
         Allows a fetcher function to be provided in the instance of a cache miss.
         """
-        data: T | dict[str, Any] | None = await self.mass.cache.get(
-            key=key, provider=self.instance_id
-        )
+        origin = get_origin(expected_type)
+        base_class = get_args(expected_type)[0] if origin is list else expected_type
+
+        data = await self.mass.cache.get(key=key, provider=self.instance_id, base_class=base_class)
 
         if data is not None:
             self.logger.debug(f"Found item for key {key} in cache")
-            if isinstance(data, dict) and expected_type:
-                self.logger.debug(f"Converting back to {expected_type}")
-                return expected_type(**cast("dict[str, Any]", data))
-            if isinstance(data, dict) or (expected_type and type(data) is expected_type):
-                self.logger.debug(f"Returning as type{data} as expected")
-                return cast("T | dict[str, Any]", data)
-            raise MusicAssistantError(f"Cache returned unexpected type {type(data)}")
+            return cast("T", data)
 
         data = await fetcher()
 
+        if isinstance(data, list):
+            to_store: SerializableType = [item.to_dict() for item in data]  # ty:ignore[unresolved-attribute]
+        else:
+            to_store = data.to_dict()  # ty:ignore[unresolved-attribute]
+
         if expiration:
             await self.mass.cache.set(
-                key=key,
-                data=cast("SerializableType", data),
-                provider=self.instance_id,
-                expiration=expiration,
+                key=key, data=to_store, provider=self.instance_id, expiration=expiration
             )
         else:
-            await self.mass.cache.set(
-                key=key,
-                data=cast("SerializableType", data),
-                provider=self.instance_id,
-            )
+            await self.mass.cache.set(key=key, data=to_store, provider=self.instance_id)
 
         return data
 
@@ -431,7 +430,7 @@ class BBCSoundsProvider(MusicProvider):
 
     async def _get_programme_segments(self, vpid: str) -> list[Segment] | None:
         """Get on demand segments from cache or API."""
-        cache_key = f"segments_{vpid}"
+        cache_key = f"programme_segments_{vpid}"
 
         async def get_segments() -> list[Segment] | None:
             segments = await self.client.streaming.get_show_segments(
@@ -443,17 +442,15 @@ class BBCSoundsProvider(MusicProvider):
             self.logger.warning(f"No show segments found for vpid: {vpid}")
             return None
 
-        return cast(
-            "list[Segment] | None",
-            await self._get_cached_item(
-                key=cache_key, fetcher=get_segments, expected_type=list[Segment]
-            ),
+        return await self._get_cached_item(
+            key=cache_key, fetcher=get_segments, expected_type=list[Segment]
         )
 
     async def _update_on_demand_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
     ) -> None:
-        """Get the currently playing segment (song) for on-demand episodes.
+        """
+        Get the currently playing segment (song) for on-demand episodes.
 
         Called by the callback function in StreamDetails.
         """
@@ -598,6 +595,23 @@ class BBCSoundsProvider(MusicProvider):
             if isinstance(new_item, (MediaItemType | ItemMapping | BrowseFolder)):
                 menu_items.append(new_item)
 
+        # The Sounds default menu doesn't include listings as they are linked elsewhere
+        menu_items.insert(
+            1,
+            BrowseFolder(
+                item_id="stations",
+                provider=self.domain,
+                name="Schedule and Programmes",
+                translation_key="provider.bbc_sounds.schedule_programmes",
+                path=f"{self.domain}://stations",
+                image=MediaItemImage(
+                    path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
+                    remotely_accessible=True,
+                    provider=self.domain,
+                    type=ImageType.THUMB,
+                ),
+            ),
+        )
         return menu_items
 
     async def _render_browse_item(
@@ -700,7 +714,8 @@ class BBCSoundsProvider(MusicProvider):
         return []
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """

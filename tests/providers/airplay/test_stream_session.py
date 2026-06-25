@@ -15,7 +15,8 @@ def _make_session(
     start_time: float,
     seconds_streamed: float,
 ) -> AirPlayStreamSession:
-    """Create a stream session for testing.
+    """
+    Create a stream session for testing.
 
     :param start_time: The wall-clock time when the stream was started.
     :param seconds_streamed: How many seconds of audio have been streamed.

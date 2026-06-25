@@ -1,4 +1,5 @@
-"""gPodder provider for Music Assistant.
+"""
+gPodder provider for Music Assistant.
 
 Tested against opodsync, https://github.com/kd2org/opodsync
 and nextcloud-gpodder, https://github.com/thrillfall/nextcloud-gpodder
@@ -581,10 +582,12 @@ class GPodder(MusicProvider):
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         podcast = await self._cache_get_podcast(podcast_id)
         episodes = podcast.get("episodes", [])
-        for cnt, episode in enumerate(episodes):
+        for episode in episodes:
             episode_enclosures = episode.get("enclosures", [])
             if len(episode_enclosures) < 1:
-                raise MediaNotFoundError
+                # episode without an enclosure carries no stream; skip it instead of
+                # aborting the lookup for the (potentially later) requested episode
+                continue
             stream_url: str | None = episode_enclosures[0].get("url", None)
             guid = episode.get("guid")
             if guid is not None and len(guid.split(" ")) == 1:

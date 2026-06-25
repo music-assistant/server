@@ -246,6 +246,7 @@ class MusicDatabaseSetupMixin:
                 [userid] TEXT NOT NULL,
                 [queue_id] TEXT,
                 [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                [playback_speed] REAL NOT NULL DEFAULT 1.0,
                 UNIQUE(item_id, provider, media_type, userid));"""
         )
         await self.database.execute(
@@ -309,6 +310,8 @@ class MusicDatabaseSetupMixin:
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
+            [translation_key] TEXT,
+            [translation_params] json,
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
@@ -402,7 +405,8 @@ class MusicDatabaseSetupMixin:
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
             [is_excluded] BOOLEAN NOT NULL DEFAULT 0,
-            [is_default] BOOLEAN NOT NULL DEFAULT 0
+            [is_default] BOOLEAN NOT NULL DEFAULT 0,
+            [content_type] TEXT
             );"""
         )
         await self.database.execute(

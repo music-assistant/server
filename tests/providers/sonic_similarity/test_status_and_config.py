@@ -196,7 +196,8 @@ class TestConfigEntriesActions:
 
 
 def _build_plugin_for_init(mock_mass: MagicMock) -> Any:
-    """Construct a plugin without going through handle_async_init / loaded_in_mass.
+    """
+    Construct a plugin without going through handle_async_init / loaded_in_mass.
 
     Returned as ``Any`` to match the project's existing test convention for
     plugin instances whose private methods get mock-swapped.

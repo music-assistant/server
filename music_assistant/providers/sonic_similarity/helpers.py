@@ -116,7 +116,8 @@ def apply_filters(
     exclude_track_ids: set[str] | None,
     filter_providers: set[str] | None,
 ) -> list[ScoredCandidate]:
-    """Apply cheap post-ANN filters to candidate list.
+    """
+    Apply cheap post-ANN filters to candidate list.
 
     :param candidates: ScoredCandidate results from the ANN search.
     :param seed_ids: Seed track IDs to exclude.

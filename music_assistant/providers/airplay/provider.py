@@ -130,6 +130,14 @@ class AirPlayProvider(PlayerProvider):
         if self._dacp_info:
             await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
 
+    def get_players(self) -> list[AirPlayPlayer]:
+        """Return all airplay players belonging to this instance."""
+        return cast("list[AirPlayPlayer]", self.players)
+
+    def get_player(self, player_id: str) -> AirPlayPlayer | None:
+        """Return AirplayPlayer by id."""
+        return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
+
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
     ) -> None:
@@ -415,11 +423,3 @@ class AirPlayProvider(PlayerProvider):
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
-
-    def get_players(self) -> list[AirPlayPlayer]:
-        """Return all airplay players belonging to this instance."""
-        return cast("list[AirPlayPlayer]", self.players)
-
-    def get_player(self, player_id: str) -> AirPlayPlayer | None:
-        """Return AirplayPlayer by id."""
-        return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))

@@ -11,6 +11,8 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
 from music_assistant_models.enums import TaskScheduleType, TaskStatus
 
+from music_assistant.helpers.datetime import utc
+
 from .constants import ACTIVE_TASK_ID
 from .models import ManagedTask
 
@@ -24,7 +26,7 @@ TASK_LOG_FORMATTER = logging.Formatter(TASK_LOG_FORMAT, datefmt=TASK_LOG_DATE_FO
 
 def utcnow() -> datetime:
     """Return current UTC datetime."""
-    return datetime.now(UTC)
+    return utc()
 
 
 def get_task_timer_id(task_id: str) -> str:

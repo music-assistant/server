@@ -18,6 +18,10 @@ SENDSPIN_CAST_APP_ID = "DD107DDB"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
 
+# Interval (seconds) before an unavailable player is re-evaluated as a possible
+# passive multichannel endpoint that should be removed from the setup.
+MULTICHANNEL_RECHECK_INTERVAL = 600
+
 # Devices known to not work with the Sendspin Cast bridge.
 # Tuple of (manufacturer, model) where "*" is a wildcard.
 # These devices will not get a Sendspin bridge, allowing other protocols
@@ -68,7 +72,8 @@ CAST_FALLBACK_STATIC_DELAY = 330
 
 
 def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
-    """Look up the default static delay for a Cast device model.
+    """
+    Look up the default static delay for a Cast device model.
 
     :param manufacturer: Device manufacturer (e.g., "Google Inc.").
     :param model: Device model name (e.g., "Google Nest Mini").

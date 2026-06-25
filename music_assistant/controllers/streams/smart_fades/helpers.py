@@ -57,7 +57,8 @@ def extrapolate_downbeats(
     buffer_size: float = SMART_CROSSFADE_DURATION,
     bpm: float | None = None,
 ) -> npt.NDArray[np.float32]:
-    """Extrapolate downbeats based on actual intervals when detection is incomplete.
+    """
+    Extrapolate downbeats based on actual intervals when detection is incomplete.
 
     This is needed when we want to perform beat alignment in an 'atmospheric' outro
     that does not have any detected downbeats.
@@ -138,7 +139,8 @@ def compute_gradual_tempo_steps(
     downbeats: npt.NDArray[np.float32],
     max_step_pct: float = 0.005,
 ) -> list[tuple[float, float]]:
-    """Compute S-curve tempo steps aligned to downbeats.
+    """
+    Compute S-curve tempo steps aligned to downbeats.
 
     :param start_ratio: Starting tempo ratio (e.g., 1.0).
     :param end_ratio: Target tempo ratio (e.g., 1.05).
@@ -199,7 +201,8 @@ def generate_synthetic_timestamps(
     bpm: float,
     n_min: int = 4,
 ) -> npt.NDArray[np.float32]:
-    """Generate evenly-spaced synthetic timing points for gradual stretch.
+    """
+    Generate evenly-spaced synthetic timing points for gradual stretch.
 
     Used when real beat/downbeat detection provides fewer than 2 timestamps
     in the stretch window.
