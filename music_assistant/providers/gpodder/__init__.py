@@ -434,6 +434,7 @@ class GPodder(MusicProvider):
                 prov_podcast_id=prov_podcast_id,
                 episode_cnt=cnt,
                 podcast_cover=podcast_cover,
+                podcast_name=podcast.get("title"),
                 domain=self.domain,
                 instance_id=self.instance_id,
             )

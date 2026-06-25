@@ -144,6 +144,7 @@ def parse_podcast_episode(
     prov_podcast_id: str,
     episode_cnt: int,
     podcast_cover: str | None = None,
+    podcast_name: str | None = None,
     instance_id: str,
     domain: str,
     mass_item_id: str | None = None,
@@ -152,7 +153,8 @@ def parse_podcast_episode(
     Podcast Episode -> Mass Podcast Episode.
 
     The item_id is {prov_podcast_id} {guid_or_stream_url} by default, or the optional mass_item_id
-    instead. The podcast_cover is used, if the episode should not have its own cover.
+    instead. The podcast_cover is used, if the episode should not have its own cover. The
+    podcast_name names the parent podcast reference (falls back to the episode title if unset).
 
     The function returns None, if the episode enclosure is missing, i.e. there is no stream
     information present.
@@ -185,7 +187,7 @@ def parse_podcast_episode(
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,
-            name=episode_title,
+            name=podcast_name or episode_title,
             media_type=MediaType.PODCAST,
         ),
         provider_mappings={

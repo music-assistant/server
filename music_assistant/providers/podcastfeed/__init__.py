@@ -243,6 +243,7 @@ class PodcastMusicprovider(MusicProvider):
             prov_podcast_id=self.podcast_id,
             episode_cnt=fallback_position,
             podcast_cover=self.parsed_podcast.get("cover_url"),
+            podcast_name=self.parsed_podcast.get("title"),
             instance_id=self.instance_id,
             domain=self.domain,
             mass_item_id=episode_obj["guid"],

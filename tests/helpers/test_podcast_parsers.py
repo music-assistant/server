@@ -89,6 +89,31 @@ def test_missing_description_left_unset() -> None:
     assert mass_episode.metadata.description is None
 
 
+# --- parent podcast reference ----------------------------------------------------------------
+
+
+def test_podcast_reference_uses_podcast_name() -> None:
+    """The parent-podcast reference is named after the podcast, not the episode."""
+    mass_episode = parse_podcast_episode(
+        episode=_episode(title="Episode 1"),
+        prov_podcast_id="podcast-1",
+        episode_cnt=1,
+        podcast_name="My Show",
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
+    assert mass_episode is not None
+    assert mass_episode.podcast.name == "My Show"
+    assert mass_episode.name == "Episode 1"
+
+
+def test_podcast_reference_falls_back_to_episode_title() -> None:
+    """Without a podcast name, the reference falls back to the episode title."""
+    mass_episode = _parse(_episode(title="Some Episode"))
+    assert mass_episode is not None
+    assert mass_episode.podcast.name == "Some Episode"
+
+
 # --- inline (Podlove Simple Chapters) --------------------------------------------------------
 
 
