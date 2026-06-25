@@ -1,3 +1,5 @@
+"""Metadata-related functions for BBC Sounds provider."""
+
 from typing import Any, cast
 
 from music_assistant_models.streamdetails import StreamMetadata
@@ -33,8 +35,9 @@ def _segment_to_metadata(now_playing: Segment | dict[str, Any]) -> StreamMetadat
         if image_url and _Constants.BLANK_IMAGE_NAME in image_url:
             image_url = None
     elif isinstance(now_playing, dict):
-        title = now_playing.get("titles").get("secondary", "") if now_playing else "Unknown title"
-        artist = now_playing.get("titles").get("primary", "") if now_playing else "Unknown artist"
+        titles = now_playing.get("titles") if now_playing else None
+        title = titles.get("secondary", "") if titles else "Unknown title"
+        artist = titles.get("primary", "") if titles else "Unknown artist"
         image_url = now_playing.get("image_url")
         if image_url and _Constants.BLANK_IMAGE_NAME in image_url:
             image_url = None

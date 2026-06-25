@@ -1,3 +1,5 @@
+"""Constants for BBC Sounds provider."""
+
 from typing import Literal
 
 
