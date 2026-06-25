@@ -27,8 +27,7 @@ if TYPE_CHECKING:
     from .provider import UniversalPlayerProvider
 
 
-# Volume, mute and power are intentionally excluded: the base Player resolves
-# those to the protocol player itself, so advertising them here is not needed.
+# Volume and mute are excluded: the base Player resolves those to the protocol player.
 FORWARDED_FEATURES = {
     PlayerFeature.PAUSE,
     PlayerFeature.SEEK,
