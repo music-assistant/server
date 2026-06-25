@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant.helpers.podcast_parsers import parse_podcast_episode
+from aiohttp.client import ClientError
+
+from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
+    parse_chapters_from_json,
+    parse_podcast_episode,
+)
 
 if TYPE_CHECKING:
+    import aiohttp
     from music_assistant_models.media_items import PodcastEpisode
 
 
@@ -31,6 +38,36 @@ def _parse(episode: dict[str, Any]) -> PodcastEpisode | None:
     )
 
 
+class _FakeResponse:
+    """Minimal stand-in for an aiohttp response yielding a fixed JSON payload."""
+
+    def __init__(self, payload: Any) -> None:
+        self._payload = payload
+
+    async def json(self, **kwargs: Any) -> Any:
+        return self._payload
+
+
+class _FakeSession:
+    """Minimal stand-in for an aiohttp ClientSession used by chapter enrichment."""
+
+    def __init__(self, *, payload: Any = None, error: Exception | None = None) -> None:
+        self._payload = payload
+        self._error = error
+        self.calls = 0
+        self.last_url: str | None = None
+
+    async def get(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self.calls += 1
+        self.last_url = url
+        if self._error is not None:
+            raise self._error
+        return _FakeResponse(self._payload)
+
+
+# --- description -----------------------------------------------------------------------------
+
+
 def test_description_is_populated() -> None:
     """A non-empty episode description ends up on the episode metadata."""
     mass_episode = _parse(_episode(description="All about parsing podcasts."))
@@ -50,3 +87,116 @@ def test_missing_description_left_unset() -> None:
     mass_episode = _parse(_episode())
     assert mass_episode is not None
     assert mass_episode.metadata.description is None
+
+
+# --- inline (Podlove Simple Chapters) --------------------------------------------------------
+
+
+def test_inline_chapters_populated() -> None:
+    """Inline chapters are attached, including a chapter that starts at 0."""
+    episode = _episode(
+        chapters=[
+            {"title": "Intro", "start": 0},
+            {"title": "Topic", "start": 90.0},
+        ]
+    )
+    mass_episode = _parse(episode)
+    assert mass_episode is not None
+    chapters = mass_episode.metadata.chapters
+    assert chapters is not None
+    assert [c.name for c in chapters] == ["Intro", "Topic"]
+    # the opening chapter (start == 0) must survive; a truthiness check would drop it
+    assert chapters[0].start == 0
+
+
+def test_inline_chapters_absent_leaves_none() -> None:
+    """No inline chapters key leaves metadata.chapters as None."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    assert mass_episode.metadata.chapters is None
+
+
+# --- podcast:chapters JSON parsing -----------------------------------------------------------
+
+
+def test_parse_chapters_from_json_maps_fields() -> None:
+    """Valid chapters JSON maps startTime/endTime/title onto MediaItemChapters."""
+    data = {
+        "version": "1.2.0",
+        "chapters": [
+            {"startTime": 0, "title": "Intro"},
+            {"startTime": 90, "endTime": 120, "title": "Sponsor"},
+        ],
+    }
+    chapters = parse_chapters_from_json(data)
+    assert [(c.position, c.name, c.start, c.end) for c in chapters] == [
+        (1, "Intro", 0.0, None),
+        (2, "Sponsor", 90.0, 120.0),
+    ]
+
+
+def test_parse_chapters_from_json_skips_invalid_and_hidden() -> None:
+    """Entries missing startTime/title, hidden (toc: false), or non-dict are skipped."""
+    data = {
+        "chapters": [
+            {"title": "no start"},
+            {"startTime": 10},
+            {"startTime": 20, "title": "hidden", "toc": False},
+            "not-a-dict",
+            {"startTime": 30, "title": "kept"},
+        ]
+    }
+    chapters = parse_chapters_from_json(data)
+    assert [c.name for c in chapters] == ["kept"]
+    assert chapters[0].position == 1
+
+
+def test_parse_chapters_from_json_malformed_returns_empty() -> None:
+    """A missing or non-list chapters key yields no chapters."""
+    assert parse_chapters_from_json({}) == []
+    assert parse_chapters_from_json({"chapters": "nope"}) == []
+
+
+# --- chapter enrichment (external JSON fetch) ------------------------------------------------
+
+
+async def test_enrich_fetches_json_chapters() -> None:
+    """Chapters are fetched from chapters_json_url when the episode has none inline."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    session = _FakeSession(payload={"chapters": [{"startTime": 0, "title": "Intro"}]})
+    await enrich_episode_chapters(
+        session=cast("aiohttp.ClientSession", session),
+        episode={"chapters_json_url": "https://example.com/ch.json"},
+        mass_episode=mass_episode,
+    )
+    assert mass_episode.metadata.chapters is not None
+    assert [c.name for c in mass_episode.metadata.chapters] == ["Intro"]
+
+
+async def test_enrich_swallows_fetch_error() -> None:
+    """A failed chapter fetch is ignored and leaves the episode without chapters."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    session = _FakeSession(error=ClientError("boom"))
+    await enrich_episode_chapters(
+        session=cast("aiohttp.ClientSession", session),
+        episode={"chapters_json_url": "https://example.com/ch.json"},
+        mass_episode=mass_episode,
+    )
+    assert mass_episode.metadata.chapters is None
+
+
+async def test_enrich_skips_when_inline_chapters_present() -> None:
+    """Inline chapters win: no JSON fetch is performed when chapters already exist."""
+    mass_episode = _parse(_episode(chapters=[{"title": "Inline", "start": 0}]))
+    assert mass_episode is not None
+    session = _FakeSession(payload={"chapters": [{"startTime": 5, "title": "FromJson"}]})
+    await enrich_episode_chapters(
+        session=cast("aiohttp.ClientSession", session),
+        episode={"chapters_json_url": "https://example.com/ch.json"},
+        mass_episode=mass_episode,
+    )
+    assert session.calls == 0
+    assert mass_episode.metadata.chapters is not None
+    assert [c.name for c in mass_episode.metadata.chapters] == ["Inline"]

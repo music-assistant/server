@@ -1,5 +1,6 @@
 """Podcastfeed -> Mass."""
 
+import logging
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,8 @@ from music_assistant_models.media_items import (
 
 if TYPE_CHECKING:
     import aiohttp
+
+LOGGER = logging.getLogger(__name__)
 
 
 async def get_podcastparser_dict(
@@ -204,7 +207,7 @@ def parse_podcast_episode(
     if description := episode.get("description"):
         mass_episode.metadata.description = description
 
-    # chapter
+    # inline chapters (Podlove Simple Chapters, parsed by podcastparser)
     if chapters := episode.get("chapters"):
         _chapters = []
         for cnt, chapter in enumerate(chapters):
@@ -212,8 +215,11 @@ def parse_podcast_episode(
                 continue
             title = chapter.get("title")
             start = chapter.get("start")
-            if title and start:
+            # start may legitimately be 0 (opening chapter), so test against None
+            if title and start is not None:
                 _chapters.append(MediaItemChapter(position=cnt + 1, name=title, start=start))
+        if _chapters:
+            mass_episode.metadata.chapters = _chapters
 
     # cover image
     if episode_cover is not None:
@@ -229,3 +235,75 @@ def parse_podcast_episode(
         )
 
     return mass_episode
+
+
+def _coerce_seconds(value: Any) -> float | None:
+    """Coerce a chapter time value to float seconds, or None if not parseable."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except TypeError, ValueError:
+        return None
+
+
+def parse_chapters_from_json(data: dict[str, Any]) -> list[MediaItemChapter]:
+    """
+    Parse a Podcasting 2.0 ``podcast:chapters`` JSON document into chapters.
+
+    Spec: https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md#chapters
+    Entries without a usable ``startTime``/``title`` are skipped, as are entries
+    explicitly hidden from the table of contents (``toc: false``).
+    """
+    chapters: list[MediaItemChapter] = []
+    raw_chapters = data.get("chapters")
+    if not isinstance(raw_chapters, list):
+        return chapters
+    for raw_chapter in raw_chapters:
+        if not isinstance(raw_chapter, dict):
+            continue
+        if raw_chapter.get("toc") is False:
+            continue
+        title = raw_chapter.get("title")
+        start = _coerce_seconds(raw_chapter.get("startTime"))
+        if not title or start is None:
+            continue
+        chapters.append(
+            MediaItemChapter(
+                position=len(chapters) + 1,
+                name=title,
+                start=start,
+                end=_coerce_seconds(raw_chapter.get("endTime")),
+            )
+        )
+    return chapters
+
+
+async def enrich_episode_chapters(
+    *,
+    session: aiohttp.ClientSession,
+    episode: dict[str, Any],
+    mass_episode: PodcastEpisode,
+) -> None:
+    """
+    Attach ``podcast:chapters`` (external JSON) to an episode lacking inline chapters.
+
+    Chapter data is supplementary: any fetch/parse failure is logged and ignored so
+    it can never break episode resolution or playback. Intended for the single-episode
+    path only, to avoid a network request per episode when listing a whole podcast.
+    """
+    if mass_episode.metadata.chapters:
+        return
+    url = episode.get("chapters_json_url")
+    if not url:
+        return
+    try:
+        response = await session.get(
+            url, headers={"User-Agent": "Mozilla/5.0"}, raise_for_status=True
+        )
+        data = await response.json(content_type=None)
+    except (ClientError, ValueError, TypeError) as err:
+        LOGGER.warning("Failed to fetch podcast chapters from %s: %s", url, err)
+        return
+    if isinstance(data, dict) and (chapters := parse_chapters_from_json(data)):
+        mass_episode.metadata.chapters = chapters

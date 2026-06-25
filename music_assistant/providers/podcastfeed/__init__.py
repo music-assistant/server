@@ -35,6 +35,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
     get_podcastparser_dict,
     parse_podcast,
     parse_podcast_episode,
@@ -151,6 +152,11 @@ class PodcastMusicprovider(MusicProvider):
         for idx, episode in enumerate(self.parsed_podcast["episodes"]):
             if prov_episode_id == episode["guid"]:
                 if mass_episode := self._parse_episode(episode, idx):
+                    await enrich_episode_chapters(
+                        session=self.mass.http_session,
+                        episode=episode,
+                        mass_episode=mass_episode,
+                    )
                     return mass_episode
         raise MediaNotFoundError("Episode not found")
 
