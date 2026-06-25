@@ -923,7 +923,7 @@ async def get_source_ip_for_target(
                 _sock.settimeout(1.0)
                 _sock.connect(route_target)
                 routed_ip = str(_sock.getsockname()[0])
-                if routed_ip and routed_ip not in ("0.0.0.0", ""):
+                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
                     return routed_ip
             except OSError:
                 pass
