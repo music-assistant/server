@@ -11,6 +11,7 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio_analysis import (
+    ANALYSIS_QUEUE_MAXSIZE,
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -496,3 +497,122 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
 
     assert "test_session" not in provider._sessions
     provider.logger.error.assert_called_once()
+
+
+async def _cancel_created_tasks(mock_mass: MagicMock) -> None:
+    """Cancel and drain any tasks created during the test (cleanup helper)."""
+    for task in mock_mass._created_tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*mock_mass._created_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_chunk_delivery_does_not_block_producer_when_queue_full(
+    controller: AudioAnalysisController,
+    audio_buffer: AudioBuffer,
+    mock_stream_details: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """
+    A full analysis queue must not stall the audio producer.
+
+    The chunk callback is awaited inline by the buffer, so it must return
+    promptly (dropping the chunk) when the worker cannot keep up — never wait.
+    """
+
+    # Replace the worker so the queue is never drained, guaranteeing it fills.
+    async def _never_drain(*_args: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    controller._chunk_worker = _never_drain  # type: ignore[method-assign]
+
+    await controller.start_analysis(audio_buffer, mock_stream_details)
+    cb = audio_buffer._chunk_callbacks[0]
+    for i in range(ANALYSIS_QUEUE_MAXSIZE):
+        await cb(i, ONE_SECOND_CHUNK, False)
+
+    # The next chunk hits a full queue. It must return promptly, not block on it.
+    await asyncio.wait_for(cb(ANALYSIS_QUEUE_MAXSIZE, ONE_SECOND_CHUNK, False), timeout=1.0)
+
+    await _cancel_created_tasks(mock_mass)
+
+
+@pytest.mark.asyncio
+async def test_eof_does_not_block_producer_when_queue_full(
+    controller: AudioAnalysisController,
+    audio_buffer: AudioBuffer,
+    mock_stream_details: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """
+    EOF must not stall the producer when the worker has stopped draining a full queue.
+
+    The EOF sentinel is enqueued by the same inline callback; if the queue is
+    full and the worker has exited, an unguarded put would block _set_eof forever.
+    """
+
+    async def _never_drain(*_args: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    controller._chunk_worker = _never_drain  # type: ignore[method-assign]
+
+    await controller.start_analysis(audio_buffer, mock_stream_details)
+    cb = audio_buffer._chunk_callbacks[0]
+    for i in range(ANALYSIS_QUEUE_MAXSIZE):
+        await cb(i, ONE_SECOND_CHUNK, False)
+
+    # EOF on a full, undrained queue must return promptly.
+    await asyncio.wait_for(cb(ANALYSIS_QUEUE_MAXSIZE, b"", True), timeout=1.0)
+
+    await _cancel_created_tasks(mock_mass)
+
+
+@pytest.mark.asyncio
+async def test_live_session_times_out_and_cancels_wedged_worker(
+    controller: AudioAnalysisController,
+    audio_buffer: AudioBuffer,
+    mock_stream_details: MagicMock,
+    mock_provider: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """
+    A live worker that never finishes after EOF is cancelled once its budget elapses.
+
+    Mirrors the overall timeout the background-analysis path already has, so a
+    provider stuck just under the per-chunk timeout cannot leak the session.
+    """
+    never_done = asyncio.Event()
+
+    async def _hang(_session_id: str, _chunk: bytes) -> None:
+        await never_done.wait()
+
+    mock_provider.process_pcm_chunk = AsyncMock(side_effect=_hang)
+    mock_stream_details.duration = 0
+
+    session_key = "test_prov://track/test_123"
+
+    with (
+        unittest.mock.patch(
+            "music_assistant.controllers.streams.audio_analysis."
+            "BACKGROUND_PER_TRACK_TIMEOUT_SECONDS",
+            0.2,
+        ),
+        unittest.mock.patch(
+            "music_assistant.controllers.streams.audio_analysis."
+            "REAL_TIME_PACE_INTERVAL_SECONDS_CEILING",
+            100.0,  # keep the hung provider from being evicted by the per-chunk timeout
+        ),
+    ):
+        await controller.start_analysis(audio_buffer, mock_stream_details)
+        worker = controller._workers[session_key]
+        cb = audio_buffer._chunk_callbacks[0]
+        await cb(0, ONE_SECOND_CHUNK, False)  # worker pulls this and wedges in _distribute_chunk
+        await cb(1, b"", True)  # EOF → schedules _finalize_session
+        # Bounded so an unguarded await would surface as a clean failure, not a hang.
+        await asyncio.wait_for(_await_tasks(mock_mass), timeout=3.0)
+
+    assert worker.cancelled() or worker.done()
+    mock_provider.finalize.assert_not_called()
+    mock_provider.cancel.assert_called()
+    assert session_key not in controller._active_sessions
