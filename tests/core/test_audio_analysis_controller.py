@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import unittest.mock
+from collections.abc import Coroutine
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +13,7 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio_analysis import (
+    ANALYSIS_QUEUE_MAXSIZE,
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -494,3 +497,86 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
 
     assert "test_session" not in provider._sessions
     provider.logger.error.assert_called_once()
+
+
+async def _cancel_created_tasks(mock_mass: MagicMock) -> None:
+    """Cancel and drain any tasks created during the test (cleanup helper)."""
+    for task in mock_mass._created_tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*mock_mass._created_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_chunk_delivery_does_not_block_producer_when_queue_full(
+    controller: AudioAnalysisController,
+    audio_buffer: AudioBuffer,
+    mock_stream_details: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """
+    A full analysis queue must not stall the audio producer.
+
+    The chunk callback is awaited inline by the buffer, so it must return
+    promptly (dropping the chunk) when the worker cannot keep up — never wait.
+    """
+
+    # Replace the worker so the queue is never drained, guaranteeing it fills.
+    async def _never_drain(*_args: object, **_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    controller._chunk_worker = _never_drain  # type: ignore[method-assign]
+
+    await controller.start_analysis(audio_buffer, mock_stream_details)
+    cb = audio_buffer._chunk_callbacks[0]
+    for i in range(ANALYSIS_QUEUE_MAXSIZE):
+        await cb(i, ONE_SECOND_CHUNK, False)
+
+    # The next chunk hits a full queue. It must return promptly, not block on it.
+    await asyncio.wait_for(cb(ANALYSIS_QUEUE_MAXSIZE, ONE_SECOND_CHUNK, False), timeout=1.0)
+
+    await _cancel_created_tasks(mock_mass)
+
+
+@pytest.mark.asyncio
+async def test_eof_sentinel_lands_even_when_queue_full(
+    controller: AudioAnalysisController,
+    audio_buffer: AudioBuffer,
+    mock_stream_details: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """
+    The EOF terminator must always reach the worker, even on a full queue.
+
+    The producer bursts the whole decoded buffer in, so the queue is full at EOF
+    for any track longer than the queue depth. A plain drop-on-full would lose the
+    sentinel and the worker would block forever on get(), leaking the session. The
+    callback evicts one chunk to guarantee the terminator lands; it must also still
+    return promptly, since it is awaited inline by the producer.
+    """
+    captured: dict[str, asyncio.Queue[bytes | None]] = {}
+
+    def _capture_and_never_drain(*args: Any, **_kwargs: Any) -> Coroutine[Any, Any, None]:
+        # Capture synchronously at the call site: _on_chunk no longer awaits, so the
+        # worker coroutine itself never gets a turn to run before we inspect the queue.
+        captured["queue"] = args[1]
+        return asyncio.sleep(3600)
+
+    controller._chunk_worker = _capture_and_never_drain  # type: ignore[method-assign]
+
+    await controller.start_analysis(audio_buffer, mock_stream_details)
+    cb = audio_buffer._chunk_callbacks[0]
+    for i in range(ANALYSIS_QUEUE_MAXSIZE):
+        await cb(i, ONE_SECOND_CHUNK, False)
+
+    # EOF on a full, undrained queue must return promptly (never block the producer).
+    await asyncio.wait_for(cb(ANALYSIS_QUEUE_MAXSIZE, b"", True), timeout=1.0)
+
+    # ...and the terminator must be present, not dropped, so the worker can stop.
+    queue = captured["queue"]
+    drained: list[bytes | None] = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    assert None in drained
+
+    await _cancel_created_tasks(mock_mass)

@@ -288,15 +288,17 @@ class AudioAnalysisController:
                 return
             if is_last_chunk:
                 finalized = True
-                await queue.put(None)
+                # The terminator must always land or the worker blocks forever on get().
+                # Sole producer, no await before put_nowait, so evicting to make room is race-free.
+                if queue.full():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
+                queue.put_nowait(None)
                 self.mass.create_task(_finalize_session())
                 return
-            try:
-                await asyncio.wait_for(
-                    queue.put(pcm_data), timeout=REAL_TIME_PACE_INTERVAL_SECONDS_CEILING
-                )
-            except (TimeoutError, asyncio.QueueFull):
-                return
+            # Awaited inline by the audio producer — drop rather than ever block playback.
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(pcm_data)
 
         async def _finalize_session() -> None:
             """Await the worker, then dispatch finalize to each provider."""
