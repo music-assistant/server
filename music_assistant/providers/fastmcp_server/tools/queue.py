@@ -29,7 +29,25 @@ if TYPE_CHECKING:
 MAX_QUEUE_ITEMS = 500
 
 
-def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
+def _queue_items_window_offset(queue: object | None, queue_option: QueueOption) -> int:
+    """Return the ``items()`` offset for locating newly added rows in long queues."""
+    if queue is None:
+        return 0
+    total = int(getattr(queue, "items", 0) or 0)
+    current_index = int(getattr(queue, "current_index", 0) or 0)
+    if queue_option is QueueOption.ADD:
+        return max(0, total - MAX_QUEUE_ITEMS)
+    if queue_option is QueueOption.REPLACE:
+        return 0
+    return max(0, current_index)
+
+
+def build_queue_server(
+    mass: MusicAssistant,
+    *,
+    require_confirmation: bool = True,
+    delete_queue_enabled: bool = True,
+) -> FastMCP:
     """Construct the ``queue/*`` sub-server."""
     sub: FastMCP = FastMCP(name="queue")
 
@@ -152,7 +170,7 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         annotations=ToolAnnotations(
             title="Add media to queue",
             readOnlyHint=False,
-            destructiveHint=False,
+            destructiveHint=True,
             idempotentHint=False,
             openWorldHint=False,
         ),
@@ -196,10 +214,21 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             valid = ", ".join(f"``{e.value}``" for e in QueueOption if e is not QueueOption.UNKNOWN)
             raise ToolError(f"Invalid option {option!r}. Valid options: {valid}")
 
-        before_items = mass.player_queues.items(queue_id, limit=MAX_QUEUE_ITEMS)
+        if (
+            queue_option in {QueueOption.REPLACE, QueueOption.REPLACE_NEXT}
+            and not delete_queue_enabled
+        ):
+            raise ToolError(
+                "Option requires delete:queue permission "
+                "(``replace`` and ``replace_next`` clear queue items)."
+            )
+
+        queue = mass.player_queues.get(queue_id)
+        offset = _queue_items_window_offset(queue, queue_option)
+        before_items = mass.player_queues.items(queue_id, limit=MAX_QUEUE_ITEMS, offset=offset)
         before_item_ids = frozenset(str(getattr(it, "queue_item_id", "")) for it in before_items)
         await mass.player_queues.play_media(queue_id, uri, option=queue_option)
-        after_items = mass.player_queues.items(queue_id, limit=MAX_QUEUE_ITEMS)
+        after_items = mass.player_queues.items(queue_id, limit=MAX_QUEUE_ITEMS, offset=offset)
         added = resolve_added_queue_item(after_items, uri, before_item_ids=before_item_ids)
         if added is None:
             raise ToolError(

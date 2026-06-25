@@ -29,6 +29,14 @@ def mounted_queue(mock_mass: Any) -> FastMCP:
     return mcp
 
 
+@pytest.fixture
+def mounted_queue_no_delete(mock_mass: Any) -> FastMCP:
+    """Queue server with delete:queue permission disabled."""
+    mcp: FastMCP = FastMCP(name="test")
+    mcp.mount(build_queue_server(mock_mass, delete_queue_enabled=False), namespace="queue")
+    return mcp
+
+
 def _queue_item(*, item_id: str, uri: str, name: str) -> SimpleNamespace:
     return SimpleNamespace(queue_item_id=item_id, uri=uri, name=name, media_item=None)
 
@@ -126,3 +134,61 @@ async def test_add_to_queue_raises_when_row_not_found(
                 "queue_add_to_queue",
                 {"queue_id": "q1", "uri": "spotify://track/1", "option": "add"},
             )
+
+
+async def test_add_to_queue_finds_album_expanded_track_by_id(
+    mounted_queue: FastMCP, mock_mass: MagicMock
+) -> None:
+    """Album URIs expand to track rows — detection uses id-diff, not input URI."""
+    album_uri = "library://album/42"
+    track_uri = "library://track/99"
+    _mock_items_before_after(
+        mock_mass,
+        before=[_queue_item(item_id="old-1", uri=track_uri, name="Existing")],
+        after=[
+            _queue_item(item_id="old-1", uri=track_uri, name="Existing"),
+            _queue_item(item_id="new-album-track", uri=track_uri, name="From Album"),
+        ],
+    )
+    async with Client(mounted_queue) as client:
+        result = await client.call_tool(
+            "queue_add_to_queue", {"queue_id": "q1", "uri": album_uri, "option": "add"}
+        )
+    assert result.data.item_id == "new-album-track"
+    assert result.data.uri == album_uri
+
+
+async def test_add_to_queue_uses_tail_window_for_long_queues(
+    mounted_queue: FastMCP, mock_mass: MagicMock
+) -> None:
+    """Queues longer than 500 items fetch the tail window to locate appended rows."""
+    uri = "spotify://track/1"
+    mock_mass.player_queues.get = MagicMock(
+        return_value=SimpleNamespace(items=501, current_index=0, queue_id="q1")
+    )
+    mock_mass.player_queues.items = MagicMock(
+        side_effect=[
+            [],
+            [_queue_item(item_id="tail-new", uri=uri, name="Tail Track")],
+        ]
+    )
+    async with Client(mounted_queue) as client:
+        result = await client.call_tool(
+            "queue_add_to_queue", {"queue_id": "q1", "uri": uri, "option": "add"}
+        )
+    assert result.data.item_id == "tail-new"
+    assert mock_mass.player_queues.items.call_args_list[0].kwargs["offset"] == 1
+    assert mock_mass.player_queues.items.call_args_list[1].kwargs["offset"] == 1
+
+
+async def test_add_to_queue_replace_requires_delete_permission(
+    mounted_queue_no_delete: FastMCP,
+) -> None:
+    """Replace and replace_next require delete:queue permission."""
+    async with Client(mounted_queue_no_delete) as client:
+        for opt in ("replace", "replace_next"):
+            with pytest.raises(ToolError, match="delete:queue"):
+                await client.call_tool(
+                    "queue_add_to_queue",
+                    {"queue_id": "q1", "uri": "spotify://track/1", "option": opt},
+                )

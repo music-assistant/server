@@ -143,9 +143,15 @@ class MCPServerRuntime:
         )
 
         require_confirmation = bool(self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False)
+        from .tags import Tag  # noqa: PLC0415
+
         mcp.mount(build_library_server(self._mass), namespace="library")
         mcp.mount(
-            build_queue_server(self._mass, require_confirmation=require_confirmation),
+            build_queue_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                delete_queue_enabled=Tag.DELETE_QUEUE in enabled_tags(self._config),
+            ),
             namespace="queue",
         )
         mcp.mount(build_playback_server(self._mass), namespace="playback")
