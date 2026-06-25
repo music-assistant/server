@@ -46,27 +46,26 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
 
         Returns ``QueueBrief`` with ``queue_id``, ``current_index``,
         ``item_count``, shuffle / repeat flags, ``available`` and up to
-        ``include_items`` lookahead ``items``. Note that
-        ``QueueBrief.queue_id`` is the identifier the mutation tools
-        (``set_shuffle``, ``set_repeat``, ``clear_queue``, ``transfer_queue``)
-        expect — it is
-        distinct from ``player_id``. For a queue fed by an external plugin
-        source (Connect / AirPlay / Ynison), the current item's ``name`` is
-        the real track title rather than the source wrapper name.
+        ``include_items`` lookahead ``items``. Mutation tools
+        (``queue_set_shuffle``, ``queue_clear_queue``, etc.) expect
+        ``QueueBrief.queue_id``; for a standard player-backed queue that
+        value equals ``PlayerBrief.player_id``. For a queue fed by an external
+        plugin source (Connect / AirPlay / Ynison), the current item's
+        ``name`` is the real track title rather than the source wrapper name.
 
-        :param player_id: Player identifier from ``PlayerBrief.player_id``. The
-            ``queue_id`` used by the playback/queue tools is accepted as an
-            alias here, since for a normal player queue the two are the same
-            value.
+        :param player_id: Preferred identifier — ``PlayerBrief.player_id``.
+            Either this or ``queue_id`` may be supplied; both resolve the same
+            active queue for a normal player.
         :param include_items: How many lookahead items to materialise. Clamped
             to the ``[0, 500]`` range — 500 matches MA's own queue page size
             and the ``queue://`` resource cap, preventing a hostile or
             sloppy client from forcing the server to load thousands of rows
             on every call.
-        :param queue_id: Alias for ``player_id`` — provide either one.
+        :param queue_id: Convenience alias for ``player_id`` when an agent
+            passes the queue identifier instead. Provide one or the other.
         """
-        # ponytail: alias covers agents mislabeling player_id as queue_id; when MA's
-        # queue_id genuinely differs, this still needs a player_id-shaped value.
+        # Accept queue_id when agents pass the queue label instead of player_id;
+        # for normal player queues the values coincide.
         target = player_id or queue_id
         if not target:
             raise ToolError(
