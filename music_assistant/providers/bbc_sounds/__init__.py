@@ -34,18 +34,9 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant_models.unique_list import UniqueList
-from sounds import (
-    Container,
-    LiveStation,
-    Menu,
-    MenuRecommendationOptions,
-    PlayStatus,
-    RadioShow,
-    Segment,
-    SoundsClient,
-    exceptions,
-)
+from sounds import Container, LiveStation, Menu, MenuRecommendationOptions, PlayStatus
 from sounds import PodcastEpisode as SoundsPodcastEpisode
+from sounds import RadioShow, Segment, SoundsClient, exceptions
 from sounds.models import Playlist
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PASSWORD, CONF_USERNAME
