@@ -28,7 +28,10 @@ from music_assistant.controllers.streams.audio_analysis import (
 )
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis_provider import (
+    AudioAnalysisProvider,
+    InstrumentedSemaphore,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 
@@ -92,6 +95,34 @@ async def test_analysis_concurrency_capped_at_half_cores(
     for _ in range(expected_permits):
         await semaphore.acquire()
     assert semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_instrumented_semaphore_tracks_in_flight_and_waiters() -> None:
+    """InstrumentedSemaphore exposes live permit-in-use and queued-acquirer counts."""
+    sem = InstrumentedSemaphore(2)
+    assert (sem.capacity, sem.in_flight, sem.waiters) == (2, 0, 0)
+
+    await sem.acquire()
+    await sem.acquire()
+    assert sem.in_flight == 2
+    assert sem.locked()
+
+    # A third acquire blocks behind the cap and registers as a waiter.
+    blocked = asyncio.ensure_future(sem.acquire())
+    await asyncio.sleep(0)
+    assert sem.waiters == 1
+    assert sem.in_flight == 2
+
+    # Freeing a permit lets the queued acquirer through; the queue drains.
+    sem.release()
+    await blocked
+    assert sem.waiters == 0
+    assert sem.in_flight == 2
+
+    sem.release()
+    sem.release()
+    assert sem.in_flight == 0
 
 
 @pytest.mark.asyncio

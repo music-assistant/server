@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import platform
-import socket
 import time
-from ipaddress import ip_address
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType
@@ -16,6 +13,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
+from music_assistant.helpers.util import get_source_ip_for_target
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_2_DEFAULT_MODELS,
     BROKEN_AIRPLAY_MODELS,
@@ -49,41 +47,14 @@ async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
         iface = candidate.strip()
         if iface and iface not in ("default", "all"):
             return iface
-    # 2. Use the stream server's bind_ip directly. The stream server is on the same
-    #    subnet as the players by design, so this should always be correct.
-    bind_ip = str(mass.streams.bind_ip)
-    if bind_ip not in ("0.0.0.0", "::", ""):
-        return bind_ip
-
-    # 3. Only when bind_ip is 0.0.0.0 (e.g. Docker/OrbStack), use the routing table
-    #    to find the actual outbound interface for this specific target.
-    #    Wrapped in asyncio.to_thread to avoid blocking the event loop.
-    def _routing_lookup() -> str:
-        try:
-            is_ipv6_target = ip_address(target_ip).version == 6
-        except ValueError:
-            is_ipv6_target = False
-        route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
-        route_target: tuple[str, int] | tuple[str, int, int, int] = (
-            (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
-        )
-        with socket.socket(route_family, socket.SOCK_DGRAM) as _s:
-            try:
-                _s.settimeout(1.0)
-                _s.connect(route_target)
-                routed_ip = str(_s.getsockname()[0])
-                if routed_ip and routed_ip not in ("0.0.0.0", ""):
-                    return routed_ip
-            except OSError:
-                pass
-        return ""
-
-    if routed := await asyncio.to_thread(_routing_lookup):
-        return routed
-    # 4. Fall back to publish_ip as a concrete, bindable address (Docker scenario).
-    if publish_ip := str(mass.streams.publish_ip or ""):
-        return publish_ip
-    return bind_ip
+    # 2. Otherwise resolve a bindable, device-reachable source IP: an explicit
+    #    stream bind_ip, else a routing-table lookup to this specific device,
+    #    else publish_ip. Shared with the other providers that need this.
+    return await get_source_ip_for_target(
+        target_ip,
+        bind_ip=str(mass.streams.bind_ip),
+        publish_ip=str(mass.streams.publish_ip or ""),
+    )
 
 
 def convert_airplay_volume(value: float) -> int:
