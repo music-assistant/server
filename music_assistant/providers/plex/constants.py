@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Final
+
+# Identity announced to Plex / plex.tv. Without this, plexapi falls back to the host
+# machine's name (e.g. in the plex.tv "authorized devices" list and during auth).
+PLEX_PRODUCT: Final = "Music Assistant"
+
 CONF_ACTION_AUTH_MYPLEX = "auth_myplex"
 CONF_ACTION_AUTH_LOCAL = "auth_local"
 CONF_ACTION_CLEAR_AUTH = "auth"

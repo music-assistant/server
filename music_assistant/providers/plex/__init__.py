@@ -89,8 +89,10 @@ from music_assistant.providers.plex.constants import (
     ERR_NO_LIBRARIES,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
+    PLEX_PRODUCT,
 )
 from music_assistant.providers.plex.helpers import (
+    configure_plex_identity,
     discover_local_servers,
     get_favorite_from_rating,
     get_libraries,
@@ -133,6 +135,7 @@ async def setup(
     if not config.get_value(CONF_AUTH_TOKEN):
         raise LoginFailed(ERR_INVALID_CREDENTIALS)
 
+    configure_plex_identity(mass.server_id)
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -149,6 +152,10 @@ async def get_config_entries(  # noqa: PLR0915
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    # ensure plexapi announces "Music Assistant" with a stable client identifier before
+    # any auth/connection happens (so OAuth tokens stay valid across restarts)
+    configure_plex_identity(mass.server_id)
+
     # handle action GDM discovery
     if action == CONF_ACTION_GDM:
         server_details = await discover_local_servers()
@@ -179,7 +186,7 @@ async def get_config_entries(  # noqa: PLR0915
         assert values
         values[CONF_AUTH_TOKEN] = None
         async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
-            plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
+            plex_auth = MyPlexPinLogin(oauth=True)
             # Generate the PIN/code by calling the Plex API
             await asyncio.to_thread(plex_auth._getCode)
             auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
@@ -417,12 +424,14 @@ class PlexProvider(MusicProvider):
                     if self.config.get_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
-                # Add Music Assistant client identification headers
+                # Add Music Assistant client identification headers. The client identifier
+                # is announced globally via configure_plex_identity() (plexapi rebuilds it
+                # from BASE_HEADERS per request, overriding any session-level value), so we
+                # only set the per-connection product/platform/version here.
                 session.headers.update(
                     {
-                        "X-Plex-Client-Identifier": self.instance_id,
-                        "X-Plex-Product": "Music Assistant",
-                        "X-Plex-Platform": "Music Assistant",
+                        "X-Plex-Product": PLEX_PRODUCT,
+                        "X-Plex-Platform": PLEX_PRODUCT,
                         "X-Plex-Version": self.mass.version,
                     }
                 )
