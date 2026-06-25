@@ -294,9 +294,7 @@ class AudioAnalysisController:
             if is_last_chunk:
                 finalized = True
                 # The terminator must always land or the worker blocks forever on get().
-                # _on_chunk is the sole producer and runs single-threaded with no await
-                # between the full() check and put_nowait, so evicting one chunk to make
-                # room is race-free.
+                # Sole producer, no await before put_nowait, so evicting to make room is race-free.
                 if queue.full():
                     with contextlib.suppress(asyncio.QueueEmpty):
                         queue.get_nowait()
