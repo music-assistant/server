@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
@@ -11,7 +12,7 @@ from .provider import Provider
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from typing import Any
+    from typing import Any, Literal
 
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
@@ -23,6 +24,43 @@ if TYPE_CHECKING:
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 _T = TypeVar("_T")
+
+# Permit waits longer than this (seconds) are DEBUG-logged: a slow offload that
+# spent its time queued behind the concurrency cap rather than computing.
+_PERMIT_WAIT_DEBUG_THRESHOLD = 0.5
+
+
+class InstrumentedSemaphore(asyncio.Semaphore):
+    """
+    asyncio.Semaphore that exposes live in-flight/waiter counts for diagnostics.
+
+    Subclasses rather than wraps so existing ``isinstance(..., asyncio.Semaphore)``
+    checks keep working; the counters are maintained on acquire/release so callers can
+    read contention state (``in_flight``/``capacity``/``waiters``) without poking at
+    asyncio internals like ``_value`` or ``_waiters``.
+    """
+
+    def __init__(self, value: int) -> None:
+        """Initialize with ``value`` permits and zeroed gauges."""
+        super().__init__(value)
+        self.capacity = value
+        self.in_flight = 0
+        self.waiters = 0
+
+    async def acquire(self) -> Literal[True]:
+        """Acquire a permit, tracking queued acquirers and permits in use."""
+        self.waiters += 1
+        try:
+            acquired = await super().acquire()
+        finally:
+            self.waiters -= 1
+        self.in_flight += 1
+        return acquired
+
+    def release(self) -> None:
+        """Release a permit and decrement the in-use count."""
+        self.in_flight -= 1
+        super().release()
 
 
 @dataclass
@@ -220,7 +258,19 @@ class AudioAnalysisProvider(Provider):
             if not done.cancelled():
                 done.exception()
 
+        wait_start = time.monotonic()
         await semaphore.acquire()
+        wait_seconds = time.monotonic() - wait_start
+        if wait_seconds >= _PERMIT_WAIT_DEBUG_THRESHOLD and isinstance(
+            semaphore, InstrumentedSemaphore
+        ):
+            self.logger.debug(
+                "Analysis offload waited %.1fs for a permit (%d/%d permits in use, %d queued)",
+                wait_seconds,
+                semaphore.in_flight,
+                semaphore.capacity,
+                semaphore.waiters,
+            )
         try:
             future: asyncio.Future[_T] = asyncio.ensure_future(
                 asyncio.to_thread(func, *args, **kwargs)
