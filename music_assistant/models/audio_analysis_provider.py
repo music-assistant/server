@@ -25,30 +25,26 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
-# Permit waits longer than this (seconds) are DEBUG-logged: a slow offload that
-# spent its time queued behind the concurrency cap rather than computing.
+# DEBUG-log offloads that wait longer than this (seconds) for a permit -- time
+# spent queued behind the concurrency cap rather than computing.
 _PERMIT_WAIT_DEBUG_THRESHOLD = 0.5
 
 
+# Subclass rather than wrap so existing isinstance(..., asyncio.Semaphore) checks keep
+# working, and keep the counters here so callers read contention state without touching
+# asyncio internals (_value/_waiters).
 class InstrumentedSemaphore(asyncio.Semaphore):
-    """
-    asyncio.Semaphore that exposes live in-flight/waiter counts for diagnostics.
-
-    Subclasses rather than wraps so existing ``isinstance(..., asyncio.Semaphore)``
-    checks keep working; the counters are maintained on acquire/release so callers can
-    read contention state (``in_flight``/``capacity``/``waiters``) without poking at
-    asyncio internals like ``_value`` or ``_waiters``.
-    """
+    """asyncio.Semaphore that also exposes live in_flight/capacity/waiters counts."""
 
     def __init__(self, value: int) -> None:
-        """Initialize with ``value`` permits and zeroed gauges."""
+        """Initialize with ``value`` permits."""
         super().__init__(value)
         self.capacity = value
         self.in_flight = 0
         self.waiters = 0
 
     async def acquire(self) -> Literal[True]:
-        """Acquire a permit, tracking queued acquirers and permits in use."""
+        """Acquire a permit."""
         self.waiters += 1
         try:
             acquired = await super().acquire()
@@ -58,7 +54,7 @@ class InstrumentedSemaphore(asyncio.Semaphore):
         return acquired
 
     def release(self) -> None:
-        """Release a permit and decrement the in-use count."""
+        """Release a permit."""
         self.in_flight -= 1
         super().release()
 
