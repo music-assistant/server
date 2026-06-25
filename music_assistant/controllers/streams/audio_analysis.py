@@ -287,21 +287,20 @@ class AudioAnalysisController:
 
         finalized = False
 
-        # Reuse the background path's per-track budget to bound the live session too.
-        session_timeout_seconds = max(
-            BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
-            int((streamdetails.duration or 0) * BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER),
-        )
-
         async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
             nonlocal finalized
             if finalized or session_key not in self._active_sessions:
                 return
             if is_last_chunk:
                 finalized = True
-                # Don't block _set_eof; _finalize_session still cleans up if this drops.
-                with contextlib.suppress(asyncio.QueueFull):
-                    queue.put_nowait(None)
+                # The terminator must always land or the worker blocks forever on get().
+                # _on_chunk is the sole producer and runs single-threaded with no await
+                # between the full() check and put_nowait, so evicting one chunk to make
+                # room is race-free.
+                if queue.full():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
+                queue.put_nowait(None)
                 self.mass.create_task(_finalize_session())
                 return
             # Awaited inline by the audio producer — drop rather than ever block playback.
@@ -309,20 +308,11 @@ class AudioAnalysisController:
                 queue.put_nowait(pcm_data)
 
         async def _finalize_session() -> None:
-            """Await the worker within the session budget, then finalize each provider."""
+            """Await the worker, then dispatch finalize to each provider."""
             worker = self._workers.pop(session_key, None)
             if worker is not None:
-                try:
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await asyncio.wait_for(worker, timeout=session_timeout_seconds)
-                except TimeoutError:
-                    self.logger.warning(
-                        "Live analysis exceeded %ds budget for %s, cancelling",
-                        session_timeout_seconds,
-                        session_key,
-                    )
-                    self._cancel_providers(session_key)
-                    return
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
             self._finalize_providers(session_key)
 
         def _on_cancel() -> None:
