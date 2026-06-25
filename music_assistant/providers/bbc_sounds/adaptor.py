@@ -33,6 +33,7 @@ from sounds.models import (
     Collection,
     LiveStation,
     MenuItem,
+    Playlist,
     Podcast,
     PodcastEpisode,
     RadioClip,
@@ -622,8 +623,10 @@ class PodcastConverter(BaseConverter):
 class BrowseConverter(BaseConverter):
     """Converts browsable objects like menus, categories, collections."""
 
-    type ConvertableTypes = MenuItem | Category | Collection | Schedule | RecommendedMenuItem
-    convertable_types = (MenuItem, Category, Collection, Schedule, RecommendedMenuItem)
+    type ConvertableTypes = (
+        MenuItem | Category | Collection | Schedule | RecommendedMenuItem | Playlist
+    )
+    convertable_types = (MenuItem, Category, Collection, Schedule, RecommendedMenuItem, Playlist)
     type OutputTypes = BrowseFolder | RecommendationFolder
     output_types = (BrowseFolder, RecommendationFolder)
 
@@ -644,7 +647,7 @@ class BrowseConverter(BaseConverter):
         """Convert browsable objects."""
         if isinstance(source_obj, MenuItem) and self.context.force_type is not RecommendationFolder:
             return self._convert_menu_item(source_obj)
-        if isinstance(source_obj, (Category, Collection)):
+        if isinstance(source_obj, (Category, Collection, Playlist)):
             return self._convert_category_or_collection(source_obj)
         if isinstance(source_obj, Schedule):
             return self._convert_schedule(source_obj)
@@ -682,10 +685,15 @@ class BrowseConverter(BaseConverter):
             image=image,
         )
 
-    def _convert_category_or_collection(self, item: Category | Collection) -> BrowseFolder:
-        """Convert Category or Collection to BrowseFolder."""
-        path_prefix = "categories" if isinstance(item, Category) else "collections"
-        path = f"{self.context.provider_domain}://{path_prefix}/{item.item_id}"
+    def _convert_category_or_collection(
+        self, item: Category | Collection | Playlist
+    ) -> BrowseFolder:
+        """Convert Category, Collection or Playlist to BrowseFolder."""
+        if isinstance(item, Playlist):
+            path = "/".join([*self.context.path_parts, item.item_id])
+        else:
+            path_prefix = "categories" if isinstance(item, Category) else "collections"
+            path = f"{self.context.provider_domain}://{path_prefix}/{item.item_id}"
 
         return BrowseFolder(
             item_id=item.item_id,
@@ -882,4 +890,5 @@ class Adaptor:
             self.logger.debug(f"Converter {converter} could not convert {type(source_obj)}")
 
         self.logger.warning(f"No converter found for type {type(source_obj).__name__}")
+        self.logger.debug(str(source_obj))
         return None
