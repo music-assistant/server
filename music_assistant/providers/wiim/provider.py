@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import socket
-from ipaddress import ip_address as parse_ip_address
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import IdentifierType
@@ -18,6 +15,7 @@ from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_L
 from music_assistant.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
+    get_source_ip_for_target,
 )
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -26,52 +24,6 @@ from .player import WiimPlayer
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
-
-    from music_assistant.mass import MusicAssistant
-
-
-async def _resolve_callback_host(mass: MusicAssistant, target_ip: str) -> str:
-    """
-    Resolve the local IP for the WiiM device's UPnP event callbacks.
-
-    The WiiM SDK binds its UPnP notify server to this address and advertises it
-    back to the device as the callback host, so it must be BOTH a locally
-    bindable interface address AND reachable by the device. ``streams.publish_ip``
-    is the *advertised* stream address and is not necessarily locally bindable
-    (a container behind a published IP, or a multi-homed host), so binding the
-    notify server to it fails with ``EADDRNOTAVAIL``. Resolve the source IP per
-    device via the routing table instead, mirroring the AirPlay provider's
-    ``resolve_if_ip`` helper. Falls back to ``publish_ip`` (the previous
-    behaviour) when the lookup is inconclusive, so this is never worse than before.
-    """
-    # Honour an explicitly configured, concrete stream bind IP first.
-    bind_ip = str(mass.streams.bind_ip)
-    if bind_ip not in ("0.0.0.0", "::", ""):
-        return bind_ip
-
-    def _routing_lookup() -> str:
-        try:
-            is_ipv6 = parse_ip_address(target_ip).version == 6
-        except ValueError:
-            is_ipv6 = False
-        family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
-        route_target: tuple[str, int] | tuple[str, int, int, int] = (
-            (target_ip, 80, 0, 0) if is_ipv6 else (target_ip, 80)
-        )
-        with socket.socket(family, socket.SOCK_DGRAM) as sock:
-            try:
-                sock.settimeout(1.0)
-                sock.connect(route_target)
-                routed_ip = str(sock.getsockname()[0])
-                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
-                    return routed_ip
-            except OSError:
-                pass
-        return ""
-
-    if routed := await asyncio.to_thread(_routing_lookup):
-        return routed
-    return str(mass.streams.publish_ip or "") or bind_ip
 
 
 class WiimProvider(PlayerProvider):
@@ -206,7 +158,11 @@ class WiimProvider(PlayerProvider):
                 upnp_location,
                 self.mass.http_session_no_ssl,
                 host=ip_address,
-                local_host=await _resolve_callback_host(self.mass, ip_address),
+                local_host=await get_source_ip_for_target(
+                    ip_address,
+                    bind_ip=str(self.mass.streams.bind_ip),
+                    publish_ip=str(self.mass.streams.publish_ip or ""),
+                ),
                 polling_interval=60,
             )
         except (WiimRequestException, WiimDeviceException) as err:
