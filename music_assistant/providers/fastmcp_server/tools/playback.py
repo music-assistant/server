@@ -39,7 +39,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Pause playback on the given queue.
 
-        Always pauses — unlike ``play_pause``, this does not toggle. Prefer this
+        Always pauses — unlike ``playback_play_pause``, this does not toggle. Prefer this
         when the user asks to pause. Returns nothing.
 
         :param queue_id: Queue identifier — same as ``player_id`` from
@@ -56,7 +56,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Resume paused playback on the given queue.
 
-        Always resumes — unlike ``play_pause``, this does not toggle. Prefer this
+        Always resumes — unlike ``playback_play_pause``, this does not toggle. Prefer this
         when the user asks to resume or unpause. Returns nothing.
 
         :param queue_id: Queue identifier — same as ``player_id`` from
@@ -73,9 +73,10 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Toggle play/pause on the given queue.
 
-        Playing → pauses, paused → resumes. Prefer ``pause`` or ``resume`` when
-        the user gives an explicit instruction — toggling can flip the wrong way
-        if state is unknown. Use ``stop`` to halt and reset position. Returns
+        Playing → pauses, paused → resumes. Prefer ``playback_pause`` or
+        ``playback_resume`` when the user gives an explicit instruction —
+        toggling can flip the wrong way if state is unknown. Use
+        ``playback_stop`` to halt and reset position. Returns
         nothing.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
@@ -91,7 +92,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Stop playback and reset the playback position. The queue is preserved.
 
-        Use ``play_pause`` to resume without losing position. Returns nothing.
+        Use ``playback_play_pause`` to resume without losing position. Returns nothing.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         """
@@ -107,7 +108,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         Skip to the next item in the queue.
 
         At the end of the queue the behaviour depends on the current repeat
-        mode. Use ``play_index`` to jump to a specific position. Returns
+        mode. Use ``playback_play_index`` to jump to a specific position. Returns
         nothing.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
@@ -184,7 +185,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Load and start playing an album, track, playlist, or radio station on a player queue.
 
-        Replaces whatever the queue was playing. Use ``play_index`` to start an
+        Replaces whatever the queue was playing. Use ``playback_play_index`` to start an
         item that is already in the queue. Returns nothing.
 
         :param queue_id: Queue identifier — for a player queue this is the same
@@ -207,7 +208,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Start playing the item at the given position in the existing queue.
 
-        Does not load new media — use ``play_media`` for that. Returns nothing.
+        Does not load new media — use ``playback_play_media`` for that. Returns nothing.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         :param index: Zero-based position in the queue (``>= 0``).
