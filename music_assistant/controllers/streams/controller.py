@@ -83,7 +83,11 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
+from music_assistant.helpers.util import (
+    format_ip_for_url,
+    get_ip_addresses,
+    get_source_ip_to_target,
+)
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
@@ -171,6 +175,27 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
+
+    async def resolve_local_ip(self, target_ip: str) -> str:
+        """
+        Resolve a locally-bindable interface IP reachable by the given device.
+
+        Providers that run a local server to receive events/callbacks FROM a device
+        (e.g. a UPnP notify server) must use an address that is BOTH locally bindable
+        AND reachable by the device. ``publish_ip`` is the *advertised* stream address
+        and is not necessarily locally bindable (a container behind a published IP, or
+        a multi-homed host). Prefer an explicitly configured concrete ``bind_ip``, else
+        resolve the source IP to the device via the routing table, else fall back to
+        ``publish_ip`` (so this is never worse than using ``publish_ip`` directly).
+
+        :param target_ip: The IP address of the target device to reach.
+        """
+        bind_ip = self.bind_ip
+        if bind_ip not in ("0.0.0.0", "::", ""):
+            return bind_ip
+        if routed := await get_source_ip_to_target(target_ip):
+            return routed
+        return str(self.publish_ip or "") or bind_ip
 
     @property
     def smart_fades_available(self) -> bool:

@@ -1,5 +1,6 @@
 """Tests for utility/helper functions."""
 
+import socket
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -726,3 +727,40 @@ def test_encoded_request_url(url: str, expected: str | URL) -> None:
     assert type(result) is type(expected)
     # the percent-escapes must survive intact for auth-bearing stream URLs
     assert str(result) == url
+
+
+async def test_get_source_ip_to_target_returns_routed_ip() -> None:
+    """The routing lookup returns the OS-selected source IP for the target."""
+    with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
+        sock = mock_socket.return_value.__enter__.return_value
+        sock.getsockname.return_value = ("10.10.20.106", 0)
+        result = await util.get_source_ip_to_target("10.10.20.31")
+    assert result == "10.10.20.106"
+
+
+async def test_get_source_ip_to_target_none_on_oserror() -> None:
+    """An unreachable target (connect raises OSError) resolves to None."""
+    with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
+        sock = mock_socket.return_value.__enter__.return_value
+        sock.connect.side_effect = OSError("no route to host")
+        result = await util.get_source_ip_to_target("10.10.20.31")
+    assert result is None
+
+
+async def test_get_source_ip_to_target_none_on_wildcard() -> None:
+    """A wildcard/unspecified source address is treated as inconclusive (None)."""
+    with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
+        sock = mock_socket.return_value.__enter__.return_value
+        sock.getsockname.return_value = ("0.0.0.0", 0)
+        result = await util.get_source_ip_to_target("10.10.20.31")
+    assert result is None
+
+
+async def test_get_source_ip_to_target_ipv6() -> None:
+    """An IPv6 target uses an AF_INET6 socket and resolves the IPv6 source."""
+    with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
+        sock = mock_socket.return_value.__enter__.return_value
+        sock.getsockname.return_value = ("fd00::abcd", 0, 0, 0)
+        result = await util.get_source_ip_to_target("fd00::1")
+    assert result == "fd00::abcd"
+    assert mock_socket.call_args.args[0] == socket.AF_INET6

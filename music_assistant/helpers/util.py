@@ -884,6 +884,42 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
+async def get_source_ip_to_target(target_ip: str) -> str | None:
+    """
+    Return the local source IP the OS would use to reach the given target.
+
+    Performs a routing-table lookup (the UDP ``connect`` sends no packets) to
+    find the outbound interface address for ``target_ip``. Useful to bind a local
+    server / callback host to an address that is BOTH locally bindable AND
+    reachable by the target on multi-homed or containerized hosts. Returns
+    ``None`` when the route cannot be resolved.
+
+    :param target_ip: The IP address of the target device to reach.
+    """
+
+    def _lookup() -> str | None:
+        try:
+            is_ipv6 = ip_address(target_ip).version == 6
+        except ValueError:
+            is_ipv6 = False
+        family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+        route_target: tuple[str, int] | tuple[str, int, int, int] = (
+            (target_ip, 80, 0, 0) if is_ipv6 else (target_ip, 80)
+        )
+        with socket.socket(family, socket.SOCK_DGRAM) as sock:
+            try:
+                sock.settimeout(1.0)
+                sock.connect(route_target)
+                routed_ip = str(sock.getsockname()[0])
+                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
+                    return routed_ip
+            except OSError:
+                return None
+        return None
+
+    return await asyncio.to_thread(_lookup)
+
+
 async def get_ip_pton(ip_string: str) -> bytes:
     """Return socket pton for a local ip."""
     try:
