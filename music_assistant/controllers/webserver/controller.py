@@ -749,6 +749,15 @@ class WebserverController(CoreController):
 
             # If return_url provided, append code parameter and return as redirect_to
             if return_url:
+                # SECURITY FIX (GHSA-j369-4c4w-7qmq): only forward the token to trusted
+                # destinations. is_allowed_redirect_url returns (True, "external") for any
+                # unknown external URL, so checking is_valid alone would still leak the JWT.
+                # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
+                # the token immediately with no consent step, so "external" must be rejected.
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category != "trusted":
+                    return web.Response(status=400, text="Invalid return_url")
+
                 # Insert code parameter before any hash fragment
                 code_param = f"code={quote(token, safe='')}"
                 if "#" in return_url:
