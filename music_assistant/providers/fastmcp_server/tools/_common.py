@@ -357,11 +357,13 @@ def resolve_added_queue_item(
     :param uri: URI passed to ``add_to_queue``.
     :param before_item_ids: ``queue_item_id`` values present before the add.
     """
-    matches = [it for it in items if queue_item_uri(it) == uri]
     new_items = [it for it in items if str(getattr(it, "queue_item_id", "")) not in before_item_ids]
     if new_items:
-        return new_items[-1]
-    return matches[-1] if matches else None
+        return new_items[0]
+    matches = [it for it in items if queue_item_uri(it) == uri]
+    if matches:
+        return matches[-1]
+    return None
 
 
 # ── private helpers ──────────────────────────────────────────────────────────

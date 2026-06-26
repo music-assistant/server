@@ -123,6 +123,30 @@ async def test_add_to_queue_returns_ack_for_new_row(
     assert result.data.option == "add"
 
 
+async def test_add_to_queue_expanded_album_uri(
+    mounted_queue: FastMCP, mock_mass: MagicMock
+) -> None:
+    """Album URIs expand to track rows; ack uses the first newly added row."""
+    album_uri = "library://album/203"
+    _mock_items_before_after(
+        mock_mass,
+        before=[_queue_item(item_id="playing", uri="library://track/93", name="Adrift")],
+        after=[
+            _queue_item(item_id="playing", uri="library://track/93", name="Adrift"),
+            _queue_item(item_id="stunt-1", uri="library://track/206", name="One Week"),
+            _queue_item(item_id="stunt-2", uri="library://track/207", name="It's All Been Done"),
+        ],
+    )
+    async with Client(mounted_queue) as client:
+        result = await client.call_tool(
+            "queue_add_to_queue", {"queue_id": "q1", "uri": album_uri, "option": "add"}
+        )
+    assert result.data.item_id == "stunt-1"
+    assert result.data.uri == album_uri
+    assert result.data.name == "One Week"
+    assert result.data.option == "add"
+
+
 async def test_add_to_queue_raises_when_row_not_found(
     mounted_queue: FastMCP, mock_mass: MagicMock
 ) -> None:
