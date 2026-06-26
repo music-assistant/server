@@ -47,20 +47,14 @@ BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
-# Live analysis reads PCM straight from the shared playback AudioBuffer (zero copy), paced by
-# that buffer filling — there is no separate dispatch interval. REALTIME_CHUNK_HANG_GUARD_SECONDS
-# is the per-chunk processing ceiling: only a genuinely stuck provider runs longer and is
-# evicted. It is deliberately generous because, while a player is streaming, analysis is
-# serialized to one offload and may legitimately wait behind other sessions' work. Playback is
-# protected by that serialization (the solo lock), the half-the-cores concurrency cap
-# (analysis_semaphore), and a niced worker pool — not by a tight per-chunk timeout. If analysis
-# falls a full buffer window behind playback the chunk it needs has already been evicted and the
-# session is dropped (re-analyzed on a later play); the buffer size is the catch-up allowance.
+# Per-chunk processing ceiling; a provider that exceeds it is treated as stuck and evicted.
+# Generous because, while a player streams, analysis runs one offload at a time and a chunk
+# may wait behind other sessions before it computes.
 REALTIME_CHUNK_HANG_GUARD_SECONDS = 120.0
 BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR = 0.250
 BACKGROUND_PACE_INTERVAL_SECONDS_CEILING = 4.0
-# OS nice value applied to analysis worker threads (Linux). Analysis is strictly lower
-# priority than playback, so the scheduler favors the event loop and ffmpeg under contention.
+# OS nice value for analysis worker threads (Linux): keeps analysis below playback so the
+# scheduler favors the event loop and ffmpeg under contention.
 ANALYSIS_THREAD_NICE = 10
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
@@ -144,9 +138,8 @@ def _nice_analysis_worker() -> None:
     """
     Lower the OS scheduling priority of the calling analysis worker thread.
 
-    Runs once per worker thread (ThreadPoolExecutor initializer). Best-effort and Linux-only,
-    where the nice value is per-thread so only the analysis pool is deprioritized; on other
-    platforms it is a no-op rather than risk deprioritizing the whole process.
+    Runs once per worker thread (ThreadPoolExecutor initializer). Linux-only, where the nice
+    value is per-thread and so affects just this pool; a no-op on other platforms.
     """
     if sys.platform != "linux" or not hasattr(os, "setpriority"):
         return
@@ -172,12 +165,11 @@ class AudioAnalysisController:
         # ensure_inference_runtime_configured once the core count is known (None until then),
         # and honored by AudioAnalysisProvider._run_offloaded.
         self.analysis_semaphore: InstrumentedSemaphore | None = None
-        # Serializes analysis to a single offload while any player is streaming, so it never
-        # competes with the playback event loop for more than one worker; created alongside
-        # the semaphore and honored by AudioAnalysisProvider._run_offloaded.
+        # Held by an analysis offload while any player streams, capping analysis to one offload
+        # at a time; honored by AudioAnalysisProvider._run_offloaded.
         self.analysis_solo_lock: asyncio.Lock | None = None
-        # Dedicated, niced worker pool for analysis offloads, kept off the default executor so
-        # only analysis threads are deprioritized; created in ensure_inference_runtime_configured.
+        # Niced worker pool that runs analysis offloads, so the lower priority applies to
+        # analysis threads only; created in ensure_inference_runtime_configured.
         self.analysis_executor: ThreadPoolExecutor | None = None
 
     def setup(self) -> None:
@@ -204,8 +196,7 @@ class AudioAnalysisController:
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
         if self.analysis_executor is not None:
-            # Don't wait on in-flight offloads: a running CPU-bound thread can't be cancelled,
-            # and shutdown must not block the event loop on a long inference.
+            # A running CPU-bound thread can't be cancelled, so shut down without waiting on it.
             self.analysis_executor.shutdown(wait=False, cancel_futures=True)
             self.analysis_executor = None
 
@@ -248,10 +239,9 @@ class AudioAnalysisController:
         # machine. Applies to every host; honored by AudioAnalysisProvider._run_offloaded.
         concurrency_cap = max(1, self._cpu_count() // 2)
         self.analysis_semaphore = InstrumentedSemaphore(concurrency_cap)
-        # Serializes analysis to a single offload while a player streams (see _run_offloaded).
         self.analysis_solo_lock = asyncio.Lock()
-        # Dedicated niced pool. The semaphore and solo lock bound how many offloads actually
-        # run; this just provides the threads (idle cap plus a little headroom).
+        # Niced pool sized to the idle cap plus headroom; the semaphore and solo lock bound
+        # how many of its threads run at once.
         self.analysis_executor = ThreadPoolExecutor(
             max_workers=max(2, self._cpu_count()),
             thread_name_prefix="analysis",
@@ -325,9 +315,9 @@ class AudioAnalysisController:
         self._workers[session_key] = worker
 
         def _on_cancel() -> None:
-            # Buffer torn down (track skipped / inactivity) before analysis finished. Cancel the
-            # providers here directly rather than via the worker's finally: a reader cancelled
-            # before it has started running never executes its body, so its finally never fires.
+            # Buffer torn down (track skipped / inactivity): stop the reader and cancel its
+            # providers here. A task cancelled before it first runs never executes its body, so
+            # provider cleanup must happen here.
             self.logger.debug("Cancelling analysis session %s", session_key)
             self._workers.pop(session_key, None)
             if not worker.done():

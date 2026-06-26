@@ -55,10 +55,9 @@ class AudioBufferEOF(Exception):
 
 class AudioBufferDiscarded(Exception):
     """
-    Raised when a passive (analysis) reader requests a chunk already evicted.
+    Raised when a passive (analysis) reader requests a chunk evicted from the retained window.
 
-    Signals that the reader fell a full retained window behind playback — i.e. it
-    cannot catch up — so its session should be dropped (and re-analyzed on a later play).
+    Means the reader is a full window behind playback, so its session is dropped.
     """
 
 
@@ -210,15 +209,14 @@ class AudioBuffer:
         """
         Return one PCM chunk for a passive (analysis) reader, waiting until it is available.
 
-        Unlike the playback consumer, this never mutates the buffer — it does not discard
-        chunks, free producer space, or reset the inactivity timer — so playback's own
-        buffering is entirely unaffected by an analysis reader sharing the buffer.
+        A read-only accessor: it leaves the buffer untouched — no discard, no producer-space
+        signalling, no inactivity-timer reset — so an analysis reader never affects playback's
+        buffering.
 
         :param chunk_number: Absolute chunk index to read.
-        :raises AudioBufferEOF: the stream ended cleanly before this chunk.
-        :raises AudioBufferDiscarded: the chunk has already been evicted from the retained
-            window (the reader fell a full window behind playback), or the buffer was torn
-            down before the reader finished — in both cases the analysis can't complete.
+        :raises AudioBufferEOF: the stream ended before this chunk.
+        :raises AudioBufferDiscarded: the chunk has been evicted from the retained window (the
+            reader is a full window behind playback) or the buffer was torn down.
         """
         async with self._data_available:
             while True:

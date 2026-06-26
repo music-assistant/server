@@ -231,18 +231,16 @@ class AudioAnalysisProvider(Provider):
 
     async def _run_offloaded(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
         """
-        Run a blocking analysis function in a worker thread, with playback priority.
+        Run a blocking analysis function on the niced analysis thread pool.
 
-        Route all CPU-heavy analysis work through this. The AudioAnalysisController bounds how
-        many of these run at once and, while any player is actively streaming audio, serializes
-        them to a single offload (the solo lock) so analysis never competes with playback for
-        more than one — lowest OS priority — worker thread. The worker runs on a dedicated,
-        niced thread pool; when neither is configured this is a plain asyncio.to_thread call.
+        Route all CPU-heavy analysis work through this. The controller's semaphore caps
+        concurrency, and while any player is streaming the solo lock holds analysis to one
+        offload at a time so it stays below playback. Falls back to asyncio.to_thread when the
+        controller has no pool configured.
 
-        The permit is held until the worker thread actually finishes, even if the awaiting
-        coroutine is cancelled (e.g. a provider evicted on timeout, or a cancelled session):
-        a running thread cannot be stopped, so releasing on cancellation would let extra
-        threads keep running and exceed the caps on exactly the hosts they protect.
+        The slot (semaphore permit and solo lock) is held until the worker thread finishes,
+        even if the awaiting coroutine is cancelled: the thread keeps running, so it must keep
+        counting against the caps.
 
         :param func: The blocking callable to run off the event loop.
         :param args: Positional arguments passed to func.
@@ -253,11 +251,9 @@ class AudioAnalysisProvider(Provider):
         if not isinstance(semaphore, asyncio.Semaphore):
             return await asyncio.to_thread(func, *args, **kwargs)
 
-        # While a player is streaming, serialize analysis to a single offload so it never
-        # competes with the playback event loop for more than one worker thread (the GIL only
-        # lets one thread run Python at a time, so concurrent inference starves the loop and
-        # stalls the audio served to players). When idle the solo lock is not taken and the
-        # semaphore alone bounds concurrency, letting background work use the spare cores.
+        # While a player streams, take the solo lock so analysis runs one offload at a time:
+        # the GIL serializes Python execution, so concurrent inference starves the playback
+        # loop. Idle, the semaphore alone caps concurrency and background work uses spare cores.
         solo = getattr(controller, "analysis_solo_lock", None)
         solo_lock = solo if isinstance(solo, asyncio.Lock) else None
         take_solo = False
@@ -308,13 +304,11 @@ class AudioAnalysisProvider(Provider):
             else:
                 future = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
         except Exception:
-            # Scheduling the worker failed (e.g. the loop is shutting down) — release what we
-            # took so it isn't leaked, which would shrink the caps over time.
+            # Scheduling failed (e.g. loop shutting down) — release the slot so it isn't leaked.
             if solo_held and solo_lock is not None:
                 solo_lock.release()
             semaphore.release()
             raise
         future.add_done_callback(_release)
-        # shield: if this coroutine is cancelled, the thread (and the slot) lives on until
-        # the work completes, rather than freeing the slot while the thread still runs.
+        # shield: a cancelled awaiter leaves the thread and its slot held until the work finishes.
         return await asyncio.shield(future)
