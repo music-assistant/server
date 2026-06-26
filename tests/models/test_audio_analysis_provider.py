@@ -128,6 +128,47 @@ async def test_finalize_swallows_post_analysis_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_analysis_skips_tracks_over_max_duration() -> None:
+    """A provider with max_analysis_duration set rejects longer tracks before any DB/work."""
+    provider = _make_provider()
+    provider.max_analysis_duration = 1800.0
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    streamdetails = MagicMock()
+    streamdetails.duration = 7200  # 2 hours
+
+    accepted = await provider.start_analysis("s", streamdetails, MagicMock())
+
+    assert accepted is False
+    provider._start_analysis.assert_not_awaited()
+    # The duration gate comes first, so the version lookup is skipped too.
+    provider.mass.streams.audio_analysis.get_audio_analysis_version.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_allows_tracks_under_max_duration() -> None:
+    """Tracks within the cap proceed to the provider's own _start_analysis."""
+    provider = _make_provider()
+    provider.max_analysis_duration = 1800.0
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    streamdetails = MagicMock()
+    streamdetails.duration = 240
+
+    assert await provider.start_analysis("s", streamdetails, MagicMock()) is True
+    provider._start_analysis.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_no_duration_cap_by_default() -> None:
+    """With max_analysis_duration unset, even a very long track is accepted."""
+    provider = _make_provider()
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    streamdetails = MagicMock()
+    streamdetails.duration = 99999
+
+    assert await provider.start_analysis("s", streamdetails, MagicMock()) is True
+
+
+@pytest.mark.asyncio
 async def test_run_offloaded_acquires_semaphore_when_present() -> None:
     """_run_offloaded holds the controller's analysis semaphore while the work runs."""
     provider = _make_provider()

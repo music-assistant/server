@@ -31,6 +31,12 @@ _T = TypeVar("_T")
 # spent queued behind the concurrency cap rather than computing.
 _PERMIT_WAIT_DEBUG_THRESHOLD = 0.5
 
+# Providers that accumulate whole-track feature state (beat grids, per-chunk VQT, CLAP windows)
+# cap analysis at this duration. Multi-hour mixes/audiobooks would hold hundreds of MB of
+# feature state and tie up the scan for hours, and smart crossfade/similarity carry no meaning
+# at that length. Providers opt in by setting max_analysis_duration.
+ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS = 1800.0
+
 
 # Subclass rather than wrap so existing isinstance(..., asyncio.Semaphore) checks keep
 # working, and keep the counters here so callers read contention state without touching
@@ -84,6 +90,10 @@ class AudioAnalysisProvider(Provider):
     # the stored version to decide whether to re-analyze a track.
     analysis_version: int = 1
 
+    # Maximum track duration (seconds) this provider will analyze; longer tracks are skipped by
+    # start_analysis. None means no limit. Providers that accumulate whole-track state set it.
+    max_analysis_duration: float | None = None
+
     def __init__(
         self,
         mass: MusicAssistant,
@@ -110,6 +120,18 @@ class AudioAnalysisProvider(Provider):
         :param streamdetails: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        if (
+            self.max_analysis_duration is not None
+            and streamdetails.duration
+            and streamdetails.duration > self.max_analysis_duration
+        ):
+            self.logger.debug(
+                "Skipping analysis for %s: %.0fs exceeds the %.0fs limit",
+                streamdetails.uri,
+                streamdetails.duration,
+                self.max_analysis_duration,
+            )
+            return False
         stored_version = await self.mass.streams.audio_analysis.get_audio_analysis_version(
             streamdetails.item_id,
             streamdetails.provider,
