@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import builtins
 import contextlib
 import logging
 import os
@@ -120,6 +121,7 @@ from music_assistant.constants import (
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
 )
+from music_assistant.controllers.player_queues.constants import CONF_AUTOPLAY_PLAYLIST
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
 from music_assistant.helpers.util import load_provider_module, validate_announcement_chime_url
@@ -479,50 +481,7 @@ class ConfigController:
         else:
             provider = None
             supported_features = getattr(prov_mod, "SUPPORTED_FEATURES", set())
-        extra_entries: list[ConfigEntry] = []
-        if manifest.type == ProviderType.MUSIC:
-            # library sync settings
-            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ARTISTS)
-            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUMS)
-                if (
-                    provider
-                    and isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider
-                ):
-                    extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS)
-            if ProviderFeature.LIBRARY_TRACKS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_TRACKS)
-            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS)
-                if (
-                    provider
-                    and isinstance(provider, MusicProvider)
-                    and provider.is_streaming_provider
-                ):
-                    extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS)
-            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS)
-            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
-            if ProviderFeature.LIBRARY_RADIOS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_RADIOS)
-            # sync export settings
-            if supported_features.intersection(
-                {
-                    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-                    ProviderFeature.LIBRARY_ALBUMS_EDIT,
-                    ProviderFeature.LIBRARY_TRACKS_EDIT,
-                    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-                    ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
-                    ProviderFeature.LIBRARY_PODCASTS_EDIT,
-                    ProviderFeature.LIBRARY_RADIOS_EDIT,
-                }
-            ):
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
-            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_DELETIONS)
+        extra_entries = self._build_sync_entries(manifest, supported_features, provider)
 
         all_entries = [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,
@@ -1016,20 +975,32 @@ class ConfigController:
         ]
 
     @api_command("config/player_queues/get")
+    async def get_player_queue_config_for_api(self, queue_id: str) -> PlayerQueueConfig:
+        """Return (full) configuration for a single queue, with dynamic options populated."""
+        # The frontend renders the queue settings form straight from this config, so the
+        # autoplay playlist dropdown options must be resolved here (the sync core is used by
+        # the streaming hot path and must stay free of library lookups).
+        config = self.get_player_queue_config(queue_id)
+        if (autoplay_playlist := config.values.get(CONF_AUTOPLAY_PLAYLIST)) is not None:
+            autoplay_playlist.options = await self._library_playlist_options()
+        return config
+
     def get_player_queue_config(self, queue_id: str) -> PlayerQueueConfig:
         """Return (full) configuration for a single queue."""
         raw_conf = self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}") or {"queue_id": queue_id}
         return self._parse_player_queue_config(queue_id, raw_conf)
 
     @api_command("config/player_queues/get_entries")
-    def get_player_queue_config_entries(
+    async def get_player_queue_config_entries(
         self,
         queue_id: str,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all Config Entries to configure a queue."""
-        entries = self.mass.player_queues.get_queue_config_entries()
+        entries = self.mass.player_queues.get_queue_config_entries(
+            playlist_options=await self._library_playlist_options()
+        )
         return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER, action, values)
 
     @api_command("config/player_queues/get_value")
@@ -1504,6 +1475,52 @@ class ConfigController:
             msg = "Password decryption failed"
             raise InvalidDataError(msg) from err
 
+    def _build_sync_entries(
+        self,
+        manifest: Any,
+        supported_features: builtins.set[ProviderFeature],
+        provider: Any,
+    ) -> list[ConfigEntry]:
+        """Build sync-related ConfigEntry list based on provider features."""
+        if manifest.type != ProviderType.MUSIC:
+            return []
+        extra_entries: list[ConfigEntry] = []
+        # library sync settings
+        if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ARTISTS)
+        if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUMS)
+            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS)
+        if ProviderFeature.LIBRARY_TRACKS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_TRACKS)
+        if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS)
+            if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS)
+        if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS)
+        if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
+        if ProviderFeature.LIBRARY_RADIOS in supported_features:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_RADIOS)
+        # sync export settings
+        if supported_features.intersection(
+            {
+                ProviderFeature.LIBRARY_ARTISTS_EDIT,
+                ProviderFeature.LIBRARY_ALBUMS_EDIT,
+                ProviderFeature.LIBRARY_TRACKS_EDIT,
+                ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+                ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+                ProviderFeature.LIBRARY_PODCASTS_EDIT,
+                ProviderFeature.LIBRARY_RADIOS_EDIT,
+            }
+        ):
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
+        if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+            extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_DELETIONS)
+        return extra_entries
+
     def _parse_player_queue_config(
         self, queue_id: str, raw_conf: dict[str, Any]
     ) -> PlayerQueueConfig:
@@ -1511,6 +1528,13 @@ class ConfigController:
         raw_conf = {**raw_conf, "queue_id": queue_id}
         entries = self.mass.player_queues.get_queue_config_entries()
         return cast("PlayerQueueConfig", PlayerQueueConfig.parse(entries, raw_conf))
+
+    async def _library_playlist_options(self) -> list[ConfigValueOption]:
+        """Return the library playlists as selectable config options (for autoplay playlist mode)."""
+        return [
+            ConfigValueOption(playlist.uri, title=playlist.name)
+            async for playlist in self.mass.music.playlists.iter_library_items()
+        ]
 
     async def _load(self) -> None:
         """Load data from persistent storage."""

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -765,6 +766,52 @@ class TestExternalSourcePlayPause:
 
         controller._handle_cmd_stop.assert_awaited_once()
         player.pause.assert_not_called()
+
+
+class TestMirrorsParentMedia:
+    """Tests for _mirrors_parent_media (palette-fetch gating for grouped players)."""
+
+    @staticmethod
+    def _fake_player(
+        *,
+        player_id: str = "p1",
+        active_group: str | None = None,
+        synced_to: str | None = None,
+        player_type: PlayerType = PlayerType.PLAYER,
+        protocol_parent_id: str | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            player_id=player_id,
+            state=SimpleNamespace(active_group=active_group, synced_to=synced_to, type=player_type),
+            protocol_parent_id=protocol_parent_id,
+        )
+
+    def test_standalone_player_owns_media(self, controller: PlayerController) -> None:
+        """A standalone player resolves its own media (and palette)."""
+        assert controller._mirrors_parent_media(self._fake_player()) is False  # type: ignore[arg-type]
+
+    def test_group_member_mirrors(self, controller: PlayerController) -> None:
+        """A group member borrows its parent's media."""
+        assert controller._mirrors_parent_media(self._fake_player(active_group="g1")) is True  # type: ignore[arg-type]
+
+    def test_synced_member_mirrors(self, controller: PlayerController) -> None:
+        """A synced member borrows its leader's media."""
+        assert controller._mirrors_parent_media(self._fake_player(synced_to="leader")) is True  # type: ignore[arg-type]
+
+    def test_protocol_child_mirrors(self, controller: PlayerController) -> None:
+        """A protocol child borrows its parent's media."""
+        player = self._fake_player(player_type=PlayerType.PROTOCOL, protocol_parent_id="parent")
+        assert controller._mirrors_parent_media(player) is True  # type: ignore[arg-type]
+
+    def test_protocol_player_without_parent_owns_media(self, controller: PlayerController) -> None:
+        """A protocol player with no parent resolves its own media."""
+        player = self._fake_player(player_type=PlayerType.PROTOCOL)
+        assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
+
+    def test_self_referential_parent_owns_media(self, controller: PlayerController) -> None:
+        """A self-referential active_group/synced_to is not a real parent, so resolve locally."""
+        player = self._fake_player(player_id="p1", synced_to="p1", active_group="p1")
+        assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

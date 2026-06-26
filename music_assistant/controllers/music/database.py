@@ -407,7 +407,8 @@ class MusicDatabaseSetupMixin:
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
             [is_excluded] BOOLEAN NOT NULL DEFAULT 0,
-            [is_default] BOOLEAN NOT NULL DEFAULT 0
+            [is_default] BOOLEAN NOT NULL DEFAULT 0,
+            [content_type] TEXT
             );"""
         )
         await self.database.execute(

@@ -674,8 +674,18 @@ async def migrate_database(  # noqa: PLR0915
                     raise
 
     if prev_version <= 43:
+        # add content_type column to the genres table to namespace spoken-word taxonomies
+        # (podcast/audiobook) apart from music genres. NULL = music/general; existing rows
+        # stay NULL so nothing re-keys.
+        try:
+            await database.execute(f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN [content_type] TEXT")
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
+    if prev_version <= 44:
         # add artist_type column to artist table, and make
-        # "artist the default, as this was the only artist type supported
+        # artist_type=ARTIST_TYPE.SINGER the default, as this was the only artist type supported
         try:
             await database.execute(
                 f"ALTER TABLE {DB_TABLE_ARTISTS} ADD COLUMN artist_type TEXT DEFAULT 'singer' NOT NULL"
