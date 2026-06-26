@@ -186,6 +186,11 @@ class SendspinLocalAudioBridge:
         self._write_queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._output_stream: Any | None = None
+        # Pre-warmed PA stream — opened during start() so PA stream-open
+        # latency is paid once at provider init, not at first play. Eliminates
+        # the ~200ms cold-start sync offset when all bridges in a group open
+        # their PA streams simultaneously for the first time.
+        self._pa_stream: PASimpleStream | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -298,6 +303,16 @@ class SendspinLocalAudioBridge:
             # stream volume into sink hardware volume on pa_simple_new open.
             await self._reset_sink_volume()
 
+        # Pre-warm the PA stream so the latency of pa_simple_new() is paid
+        # once at provider init rather than at first play. Without this, each
+        # bridge in a sync group opens its PA stream on the first play, and the
+        # spread in that per-bridge open latency (~50-200ms) becomes a fixed
+        # sync offset that persists for the session. Pre-warming means all
+        # streams are already open and idle when the first play starts, so
+        # play_at_us scheduling lands all bridges within a much tighter window.
+        if self.backend == "pulse" and self.pa_sink_name:
+            self.mass.create_task(self._prewarm_pa_stream())
+
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         async with self._lock:
@@ -306,6 +321,12 @@ class SendspinLocalAudioBridge:
                 await self.sendspin_server.remove_client(self._bridge_client_id)
                 self._sendspin_client = None
                 self._bridge_role = None
+        # Close the pre-warmed stream if it was never consumed by a writer.
+        if self._pa_stream is not None:
+            stream = self._pa_stream
+            self._pa_stream = None
+            with suppress(OSError):
+                await self.mass.loop.run_in_executor(None, stream.close)
         self.logger.debug("Sendspin bridge stopped for %s", self.device_name)
 
     def _get_sendspin_provider(self) -> SendspinProvider | None:
@@ -339,6 +360,56 @@ class SendspinLocalAudioBridge:
             # Master/base sink (software volume control): re-pin PA sink
             # volume to 100% after playback ends.
             self.mass.create_task(self._reset_sink_volume())
+        # Re-warm the PA stream for the next play so subsequent plays also
+        # benefit from pre-warmed stream-open timing.
+        if self.backend == "pulse" and self.pa_sink_name and self._pa_stream is None:
+            self.mass.create_task(self._prewarm_pa_stream())
+
+    async def _prewarm_pa_stream(self) -> None:
+        """
+        Open the PA stream early so stream-open latency doesn't affect sync.
+
+        Opens a PASimpleStream and keeps it alive with periodic silence writes
+        so PA's suspend-on-idle module doesn't close it before first play.
+        The pre-warmed stream is consumed by _audio_writer_pulse() on first
+        play; a new pre-warm is scheduled after each stream ends.
+        """
+        if not self.pa_sink_name:
+            return
+        pa_sink_name = self.pa_sink_name
+        # Small silence buffer: one chunk of silence at the bridge's native
+        # format, used to keep the idle stream alive.
+        bytes_per_sample = self.bit_depth // 8
+        silence = bytes(BRIDGE_CHANNELS * bytes_per_sample * 64)  # 64 frames
+        try:
+            stream = await self.mass.loop.run_in_executor(
+                None,
+                lambda: PASimpleStream(
+                    sink_name=pa_sink_name,
+                    app_name=f"music-assistant-{pa_sink_name}",
+                    rate=self.sample_rate,
+                    channels=BRIDGE_CHANNELS,
+                    bit_depth=self.bit_depth,
+                ),
+            )
+        except OSError as err:
+            self.logger.debug("PA stream pre-warm failed for %s: %s", pa_sink_name, err)
+            return
+        self._pa_stream = stream
+        self.logger.debug("PA stream pre-warmed for %s", pa_sink_name)
+        # Keep the stream alive with silence writes until _audio_writer_pulse
+        # takes ownership (sets self._pa_stream = None) or the bridge stops.
+        while self._pa_stream is stream and self._sendspin_client is not None:
+            try:
+                await self.mass.loop.run_in_executor(None, stream.write, silence)
+            except OSError:
+                break
+            await asyncio.sleep(0.5)
+        # If we still own it (writer never took it), close it cleanly.
+        if self._pa_stream is stream:
+            self._pa_stream = None
+            with suppress(OSError):
+                await self.mass.loop.run_in_executor(None, stream.close)
 
     async def _reset_sink_volume(self) -> None:
         """
@@ -543,26 +614,34 @@ class SendspinLocalAudioBridge:
         stream: PASimpleStream | None = None
         write_future: asyncio.Future[None] | None = None
         try:
-            self.logger.debug(
-                "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
-                self.pa_sink_name,
-                self.sample_rate,
-                BRIDGE_CHANNELS,
-                self.bit_depth,
-            )
-            assert self.pa_sink_name is not None
-            pa_sink_name = self.pa_sink_name
-            stream = await self.mass.loop.run_in_executor(
-                None,
-                lambda: PASimpleStream(
-                    sink_name=pa_sink_name,
-                    app_name=f"music-assistant-{pa_sink_name}",
-                    rate=self.sample_rate,
-                    channels=BRIDGE_CHANNELS,
-                    bit_depth=self.bit_depth,
-                ),
-            )
-            self.logger.debug("PA stream opened for %s", self.pa_sink_name)
+            # Use the pre-warmed stream if available (eliminates cold-start
+            # PA stream-open latency). If not ready yet (e.g. first play
+            # happens before pre-warm completes), fall back to opening fresh.
+            if self._pa_stream is not None:
+                stream = self._pa_stream
+                self._pa_stream = None  # take ownership
+                self.logger.debug("Using pre-warmed PA stream for %s", self.pa_sink_name)
+            else:
+                self.logger.debug(
+                    "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
+                    self.pa_sink_name,
+                    self.sample_rate,
+                    BRIDGE_CHANNELS,
+                    self.bit_depth,
+                )
+                assert self.pa_sink_name is not None
+                pa_sink_name = self.pa_sink_name
+                stream = await self.mass.loop.run_in_executor(
+                    None,
+                    lambda: PASimpleStream(
+                        sink_name=pa_sink_name,
+                        app_name=f"music-assistant-{pa_sink_name}",
+                        rate=self.sample_rate,
+                        channels=BRIDGE_CHANNELS,
+                        bit_depth=self.bit_depth,
+                    ),
+                )
+            self.logger.debug("PA stream ready for %s", self.pa_sink_name)
             assert stream is not None
 
             first_chunk_written = False
