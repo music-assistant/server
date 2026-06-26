@@ -141,7 +141,8 @@ async def test_start_analysis_skips_tracks_over_max_duration() -> None:
     assert accepted is False
     provider._start_analysis.assert_not_awaited()
     # The duration gate comes first, so the version lookup is skipped too.
-    provider.mass.streams.audio_analysis.get_audio_analysis_version.assert_not_awaited()
+    version_lookup = provider.mass.streams.audio_analysis.get_audio_analysis_version
+    version_lookup.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
