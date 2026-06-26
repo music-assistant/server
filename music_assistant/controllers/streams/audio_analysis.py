@@ -313,9 +313,8 @@ class AudioAnalysisController:
         self._workers[session_key] = worker
 
         def _on_cancel() -> None:
-            # Buffer torn down (track skipped / inactivity): stop the reader and cancel its
-            # providers here. A task cancelled before it first runs never executes its body, so
-            # provider cleanup must happen here.
+            # Buffer torn down (track skipped / inactivity). Cancel the reader and its providers
+            # here: a task cancelled before it first runs never executes its body (no finally).
             self.logger.debug("Cancelling analysis session %s", session_key)
             self._workers.pop(session_key, None)
             if not worker.done():
@@ -856,8 +855,6 @@ class AudioAnalysisController:
             return
         self._active_sessions[session_key] = accepted
 
-        # Dispatch as fast as the governed offloads allow; the niced half-cores cap keeps the
-        # scan off the rest of the box without an extra dispatch delay.
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
         async for chunk in audio_source:
             if session_key not in self._active_sessions:
