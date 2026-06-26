@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from abc import abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
@@ -229,26 +231,47 @@ class AudioAnalysisProvider(Provider):
 
     async def _run_offloaded(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
         """
-        Run a blocking analysis function in a worker thread, bounded by the CPU cap.
+        Run a blocking analysis function in a worker thread, with playback priority.
 
-        The AudioAnalysisController caps how many of these run at once (half the cores) so
-        analysis never occupies the whole box; when no cap is configured this is a plain
-        asyncio.to_thread call. Route all CPU-heavy analysis work through this.
+        Route all CPU-heavy analysis work through this. The AudioAnalysisController bounds how
+        many of these run at once and, while any player is actively streaming audio, serializes
+        them to a single offload (the solo lock) so analysis never competes with playback for
+        more than one — lowest OS priority — worker thread. The worker runs on a dedicated,
+        niced thread pool; when neither is configured this is a plain asyncio.to_thread call.
 
         The permit is held until the worker thread actually finishes, even if the awaiting
         coroutine is cancelled (e.g. a provider evicted on timeout, or a cancelled session):
-        asyncio.to_thread cannot stop a running thread, so releasing on cancellation would let
-        extra threads keep running and exceed the cap on exactly the hosts it protects.
+        a running thread cannot be stopped, so releasing on cancellation would let extra
+        threads keep running and exceed the caps on exactly the hosts they protect.
 
         :param func: The blocking callable to run off the event loop.
         :param args: Positional arguments passed to func.
         :param kwargs: Keyword arguments passed to func.
         """
-        semaphore = self.mass.streams.audio_analysis.analysis_semaphore
+        controller = self.mass.streams.audio_analysis
+        semaphore = controller.analysis_semaphore
         if not isinstance(semaphore, asyncio.Semaphore):
             return await asyncio.to_thread(func, *args, **kwargs)
 
+        # While a player is streaming, serialize analysis to a single offload so it never
+        # competes with the playback event loop for more than one worker thread (the GIL only
+        # lets one thread run Python at a time, so concurrent inference starves the loop and
+        # stalls the audio served to players). When idle the solo lock is not taken and the
+        # semaphore alone bounds concurrency, letting background work use the spare cores.
+        solo = getattr(controller, "analysis_solo_lock", None)
+        solo_lock = solo if isinstance(solo, asyncio.Lock) else None
+        take_solo = False
+        if solo_lock is not None:
+            try:
+                take_solo = bool(controller.playback_active())
+            except Exception:
+                take_solo = False
+
+        solo_held = False
+
         def _release(done: asyncio.Future[_T]) -> None:
+            if solo_held and solo_lock is not None:
+                solo_lock.release()
             semaphore.release()
             # Retrieve any exception so a cancelled awaiter doesn't leave it unretrieved.
             if not done.cancelled():
@@ -256,27 +279,42 @@ class AudioAnalysisProvider(Provider):
 
         wait_start = time.monotonic()
         await semaphore.acquire()
+        try:
+            if take_solo and solo_lock is not None:
+                await solo_lock.acquire()
+                solo_held = True
+        except BaseException:
+            # Cancelled (or failed) waiting for the solo lock — give the permit back.
+            semaphore.release()
+            raise
         wait_seconds = time.monotonic() - wait_start
         if wait_seconds >= _PERMIT_WAIT_DEBUG_THRESHOLD and isinstance(
             semaphore, InstrumentedSemaphore
         ):
             self.logger.debug(
-                "Analysis offload waited %.1fs for a permit (%d/%d permits in use, %d queued)",
+                "Analysis offload waited %.1fs for a slot (%d/%d permits in use, %d queued)",
                 wait_seconds,
                 semaphore.in_flight,
                 semaphore.capacity,
                 semaphore.waiters,
             )
+        executor = getattr(controller, "analysis_executor", None)
         try:
-            future: asyncio.Future[_T] = asyncio.ensure_future(
-                asyncio.to_thread(func, *args, **kwargs)
-            )
+            if isinstance(executor, ThreadPoolExecutor):
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future[_T] = asyncio.ensure_future(
+                    loop.run_in_executor(executor, functools.partial(func, *args, **kwargs))
+                )
+            else:
+                future = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
         except Exception:
-            # Scheduling the worker failed (e.g. the loop is shutting down) — release the
-            # permit we just took so it isn't leaked, which would shrink the cap over time.
+            # Scheduling the worker failed (e.g. the loop is shutting down) — release what we
+            # took so it isn't leaked, which would shrink the caps over time.
+            if solo_held and solo_lock is not None:
+                solo_lock.release()
             semaphore.release()
             raise
         future.add_done_callback(_release)
-        # shield: if this coroutine is cancelled, the thread (and the permit) lives on until
-        # the work completes, rather than freeing the permit while the thread still runs.
+        # shield: if this coroutine is cancelled, the thread (and the slot) lives on until
+        # the work completes, rather than freeing the slot while the thread still runs.
         return await asyncio.shield(future)

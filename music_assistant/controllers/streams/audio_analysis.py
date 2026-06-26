@@ -7,8 +7,10 @@ import contextlib
 import dataclasses
 import logging
 import os
+import sys
 import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from math import inf
 from typing import TYPE_CHECKING, Any
 
@@ -44,21 +46,22 @@ BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
-# Per-chunk dispatch interval bounds. One PCM chunk = one audio-second of decoded data:
-# the floor is the fastest pace allowed; the ceiling is both the slowest pace and the
-# per-chunk processing timeout that evicts unresponsive providers.
-#
-# Live analysis is paced to ~5x real-time, never faster, on every machine. The buffer fills
-# far ahead of playback (a whole track decodes in seconds), and draining that burst at full
-# speed only spikes CPU — at 5x the analysis still completes well ahead of the crossfade
-# point. The ceiling is generous enough that legitimately slow, serialized per-chunk work on a
-# small box isn't mistaken for a hung provider. A companion half-the-cores concurrency cap
-# (analysis_semaphore) keeps analysis off the rest of the box on every machine.
+# Per-chunk dispatch bounds for live analysis. One PCM chunk = one audio-second of decoded
+# data. The floor paces dispatch to ~5x real-time (the buffer fills far ahead of playback, so
+# draining that burst at full speed only spikes CPU; at 5x analysis still completes well ahead
+# of the crossfade point). The ceiling is a per-chunk hang guard: only a genuinely stuck
+# provider runs longer and is evicted — it is deliberately generous because, while a player is
+# streaming, analysis is serialized to one offload and may legitimately wait behind other work.
+# Playback is protected by that serialization (the solo lock), the half-the-cores concurrency
+# cap (analysis_semaphore), and a niced worker pool — not by a tight per-chunk timeout.
 REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR = 0.200
-REAL_TIME_PACE_INTERVAL_SECONDS_CEILING = 2.0
+REAL_TIME_PACE_INTERVAL_SECONDS_CEILING = 120.0
 BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR = 0.250
 BACKGROUND_PACE_INTERVAL_SECONDS_CEILING = 4.0
 ANALYSIS_QUEUE_MAXSIZE = 30
+# OS nice value applied to analysis worker threads (Linux). Analysis is strictly lower
+# priority than playback, so the scheduler favors the event loop and ffmpeg under contention.
+ANALYSIS_THREAD_NICE = 10
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -137,6 +140,20 @@ def _merged_from_rows(
     return merged if found else None
 
 
+def _nice_analysis_worker() -> None:
+    """
+    Lower the OS scheduling priority of the calling analysis worker thread.
+
+    Runs once per worker thread (ThreadPoolExecutor initializer). Best-effort and Linux-only:
+    there nice is per-thread, so only the analysis pool is deprioritized; elsewhere it is a
+    no-op rather than risk niceing the whole process.
+    """
+    if sys.platform != "linux" or not hasattr(os, "setpriority"):
+        return
+    with contextlib.suppress(OSError):
+        os.setpriority(os.PRIO_PROCESS, 0, ANALYSIS_THREAD_NICE)
+
+
 class AudioAnalysisController:
     """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
@@ -155,6 +172,13 @@ class AudioAnalysisController:
         # ensure_inference_runtime_configured once the core count is known (None until then),
         # and honored by AudioAnalysisProvider._run_offloaded.
         self.analysis_semaphore: InstrumentedSemaphore | None = None
+        # Serializes analysis to a single offload while any player is streaming, so it never
+        # competes with the playback event loop for more than one worker; created alongside
+        # the semaphore and honored by AudioAnalysisProvider._run_offloaded.
+        self.analysis_solo_lock: asyncio.Lock | None = None
+        # Dedicated, niced worker pool for analysis offloads, kept off the default executor so
+        # only analysis threads are deprioritized; created in ensure_inference_runtime_configured.
+        self.analysis_executor: ThreadPoolExecutor | None = None
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -179,6 +203,11 @@ class AudioAnalysisController:
             self._cancel_providers(session_key)
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
+        if self.analysis_executor is not None:
+            # Don't wait on in-flight offloads: a running CPU-bound thread can't be cancelled,
+            # and shutdown must not block the event loop on a long inference.
+            self.analysis_executor.shutdown(wait=False, cancel_futures=True)
+            self.analysis_executor = None
 
     def ensure_inference_runtime_configured(self) -> None:
         """
@@ -219,8 +248,18 @@ class AudioAnalysisController:
         # machine. Applies to every host; honored by AudioAnalysisProvider._run_offloaded.
         concurrency_cap = max(1, self._cpu_count() // 2)
         self.analysis_semaphore = InstrumentedSemaphore(concurrency_cap)
+        # Serializes analysis to a single offload while a player streams (see _run_offloaded).
+        self.analysis_solo_lock = asyncio.Lock()
+        # Dedicated niced pool. The semaphore and solo lock bound how many offloads actually
+        # run; this just provides the threads (idle cap plus a little headroom).
+        self.analysis_executor = ThreadPoolExecutor(
+            max_workers=max(2, self._cpu_count()),
+            thread_name_prefix="analysis",
+            initializer=_nice_analysis_worker,
+        )
         self.logger.info(
-            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%d, analysis concurrency<=%d, nnpack=%s",
+            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%d, "
+            "analysis concurrency<=%d (1 while a player streams), nnpack=%s",
             torch.get_num_threads(),
             torch.get_num_interop_threads(),
             budget,
@@ -243,6 +282,10 @@ class AudioAnalysisController:
     def smart_fades_provider_available(self) -> bool:
         """Return whether the smart fades audio analysis provider is loaded and available."""
         return any(prov.domain == SMART_FADES_ANALYSIS_DOMAIN for prov in self.providers)
+
+    def playback_active(self) -> bool:
+        """Return whether any player is actively streaming audio right now."""
+        return self.streams.output_stream_active()
 
     async def start_analysis(
         self,
