@@ -9,7 +9,11 @@ from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavai
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -47,7 +51,7 @@ class MusicBrainzAPIClient:
         async with self.mass.http_session.get(url, headers=headers, params=kwargs) as response:
             # handle rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers.get("Retry-After", 0))
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
