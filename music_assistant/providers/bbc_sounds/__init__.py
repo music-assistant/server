@@ -8,7 +8,7 @@ import asyncio
 import copy
 import time
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -70,7 +70,6 @@ SUPPORTED_FEATURES = {
 }
 
 type _StreamTypes = Literal["hls", "dash"]
-T = TypeVar("T")
 
 
 async def setup(
