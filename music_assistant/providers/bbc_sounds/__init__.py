@@ -656,12 +656,11 @@ class BBCSoundsProvider(MusicProvider):
         # The main menu fetch returns up to the schedule date folders, but no contents
         # so as not to show out of date information
         if sub_path == "stations" and sub_sub_path and sub_sub_sub_path:
-            station_menu = await self._get_station_schedule_menu(
+            return await self._get_station_schedule_menu(
                 path_parts=path_parts,
                 station_id=sub_sub_path,
                 date=sub_sub_sub_path,
             )
-            return station_menu
         # If no special cases, pass the rest of the path to iterate through
         return await self._get_subpath_menu(path_parts[1:])
 
