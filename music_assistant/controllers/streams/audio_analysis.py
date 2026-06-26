@@ -27,6 +27,7 @@ from music_assistant.constants import (
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     MASS_LOGGER_NAME,
 )
+from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarded, AudioBufferEOF
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_dumps, json_loads
@@ -46,19 +47,18 @@ BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
-# Per-chunk dispatch bounds for live analysis. One PCM chunk = one audio-second of decoded
-# data. The floor paces dispatch to ~5x real-time (the buffer fills far ahead of playback, so
-# draining that burst at full speed only spikes CPU; at 5x analysis still completes well ahead
-# of the crossfade point). The ceiling is a per-chunk hang guard: only a genuinely stuck
-# provider runs longer and is evicted — it is deliberately generous because, while a player is
-# streaming, analysis is serialized to one offload and may legitimately wait behind other work.
-# Playback is protected by that serialization (the solo lock), the half-the-cores concurrency
-# cap (analysis_semaphore), and a niced worker pool — not by a tight per-chunk timeout.
-REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR = 0.200
-REAL_TIME_PACE_INTERVAL_SECONDS_CEILING = 120.0
+# Live analysis reads PCM straight from the shared playback AudioBuffer (zero copy), paced by
+# that buffer filling — there is no separate dispatch interval. REALTIME_CHUNK_HANG_GUARD_SECONDS
+# is the per-chunk processing ceiling: only a genuinely stuck provider runs longer and is
+# evicted. It is deliberately generous because, while a player is streaming, analysis is
+# serialized to one offload and may legitimately wait behind other sessions' work. Playback is
+# protected by that serialization (the solo lock), the half-the-cores concurrency cap
+# (analysis_semaphore), and a niced worker pool — not by a tight per-chunk timeout. If analysis
+# falls a full buffer window behind playback the chunk it needs has already been evicted and the
+# session is dropped (re-analyzed on a later play); the buffer size is the catch-up allowance.
+REALTIME_CHUNK_HANG_GUARD_SECONDS = 120.0
 BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR = 0.250
 BACKGROUND_PACE_INTERVAL_SECONDS_CEILING = 4.0
-ANALYSIS_QUEUE_MAXSIZE = 30
 # OS nice value applied to analysis worker threads (Linux). Analysis is strictly lower
 # priority than playback, so the scheduler favors the event loop and ffmpeg under contention.
 ANALYSIS_THREAD_NICE = 10
@@ -295,7 +295,7 @@ class AudioAnalysisController:
         """
         Start analysis session for a track across all providers.
 
-        :param audio_buffer: The AudioBuffer to observe for PCM chunks.
+        :param audio_buffer: The shared playback AudioBuffer the analysis reads PCM from.
         :param streamdetails: The stream details for the item being analyzed.
         """
         providers = self.providers
@@ -321,52 +321,19 @@ class AudioAnalysisController:
             return
 
         self._active_sessions[session_key] = provider_ids
-        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=ANALYSIS_QUEUE_MAXSIZE)
-        self._workers[session_key] = self.mass.create_task(
-            self._chunk_worker(
-                session_key,
-                queue,
-                min_interval=REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR,
-                max_interval=REAL_TIME_PACE_INTERVAL_SECONDS_CEILING,
-            )
-        )
-
-        finalized = False
-
-        async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
-            nonlocal finalized
-            if finalized or session_key not in self._active_sessions:
-                return
-            if is_last_chunk:
-                finalized = True
-                # The terminator must always land or the worker blocks forever on get().
-                # Sole producer, no await before put_nowait, so evicting to make room is race-free.
-                if queue.full():
-                    with contextlib.suppress(asyncio.QueueEmpty):
-                        queue.get_nowait()
-                queue.put_nowait(None)
-                self.mass.create_task(_finalize_session())
-                return
-            # Awaited inline by the audio producer — drop rather than ever block playback.
-            with contextlib.suppress(asyncio.QueueFull):
-                queue.put_nowait(pcm_data)
-
-        async def _finalize_session() -> None:
-            """Await the worker, then dispatch finalize to each provider."""
-            worker = self._workers.pop(session_key, None)
-            if worker is not None:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await worker
-            self._finalize_providers(session_key)
+        worker = self.mass.create_task(self._buffer_reader_worker(session_key, audio_buffer))
+        self._workers[session_key] = worker
 
         def _on_cancel() -> None:
+            # Buffer torn down (track skipped / inactivity) before analysis finished. Cancel the
+            # providers here directly rather than via the worker's finally: a reader cancelled
+            # before it has started running never executes its body, so its finally never fires.
             self.logger.debug("Cancelling analysis session %s", session_key)
-            worker = self._workers.pop(session_key, None)
-            if worker is not None:
+            self._workers.pop(session_key, None)
+            if not worker.done():
                 worker.cancel()
             self._cancel_providers(session_key)
 
-        audio_buffer.register_chunk_callback(_on_chunk)
         audio_buffer.register_cancel_callback(_on_cancel)
 
     async def set_audio_analysis(
@@ -1099,7 +1066,7 @@ class AudioAnalysisController:
         self,
         session_key: str,
         pcm_data: bytes,
-        max_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS_CEILING,
+        max_interval: float = REALTIME_CHUNK_HANG_GUARD_SECONDS,
     ) -> None:
         """
         Fan a single PCM chunk to every provider in the session.
@@ -1156,37 +1123,47 @@ class AudioAnalysisController:
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
 
-    async def _chunk_worker(
-        self,
-        session_key: str,
-        queue: asyncio.Queue[bytes | None],
-        min_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR,
-        max_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS_CEILING,
-    ) -> None:
+    async def _buffer_reader_worker(self, session_key: str, audio_buffer: AudioBuffer) -> None:
         """
-        Background worker that processes queued PCM chunks via _distribute_chunk.
+        Read PCM straight from the shared playback buffer and distribute it to providers.
+
+        Reads at its own pace from the buffer's retained window. On clean end-of-stream the
+        providers are finalized; if the reader falls a full window behind playback (the chunk
+        it needs has been evicted) or the buffer is torn down first, the session is dropped.
 
         :param session_key: Active-session key for this worker.
-        :param queue: Queue receiving raw PCM chunks from the live producer.
-        :param min_interval: Floor on wall-seconds between consecutive chunk dispatches.
-        :param max_interval: Ceiling on wall-seconds between consecutive chunk dispatches.
+        :param audio_buffer: The shared playback buffer to read PCM from.
         """
-        next_allowed = time.monotonic()
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
-            if session_key not in self._active_sessions:
-                break
-            now = time.monotonic()
-            if now < next_allowed:
-                await asyncio.sleep(next_allowed - now)
-            await self._distribute_chunk(session_key, chunk, max_interval=max_interval)
-            next_allowed = time.monotonic() + min_interval
-            if session_key not in self._active_sessions:
-                # all providers evicted by _distribute_chunk
-                self._workers.pop(session_key, None)
-                break
+        cursor = audio_buffer.first_buffered_chunk
+        completed = False
+        try:
+            while session_key in self._active_sessions:
+                try:
+                    chunk = await audio_buffer.read_chunk_for_analysis(cursor)
+                except AudioBufferEOF:
+                    completed = True
+                    break
+                except AudioBufferDiscarded:
+                    self.logger.debug(
+                        "Analysis fell behind the playback buffer for %s (chunk %d evicted); "
+                        "dropping session",
+                        session_key,
+                        cursor,
+                    )
+                    break
+                except Exception as err:
+                    self.logger.debug("Analysis read failed for %s: %s", session_key, err)
+                    break
+                await self._distribute_chunk(
+                    session_key, chunk, max_interval=REALTIME_CHUNK_HANG_GUARD_SECONDS
+                )
+                cursor += 1
+        finally:
+            self._workers.pop(session_key, None)
+            if completed:
+                self._finalize_providers(session_key)
+            else:
+                self._cancel_providers(session_key)
 
     def _cpu_count(self) -> int:
         """Return the CPU core count available to this process (fallback 4 when unknown)."""
