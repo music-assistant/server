@@ -39,6 +39,7 @@ from sounds import (
     LiveStation,
     Menu,
     MenuRecommendationOptions,
+    PlayableItem,
     PlayStatus,
     RadioShow,
     Segment,
@@ -311,7 +312,7 @@ class BBCSoundsProvider(MusicProvider):
 
         stream_details = await self.adaptor.new_streamable_object(episode)
 
-        if not stream_details:
+        if not stream_details or not isinstance(episode, PlayableItem):
             raise self._stream_error(item_id, media_type)
 
         stream_details.data = {"vpid": programme["id"], "pid": episode.pid}
