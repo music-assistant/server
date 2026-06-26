@@ -603,38 +603,43 @@ class SendspinLocalAudioBridge:
         else:
             await self._audio_writer_sounddevice()
 
+    async def _get_pa_stream(self) -> PASimpleStream:
+        """
+        Return a ready PASimpleStream for this bridge's PA sink.
+
+        Uses the pre-warmed stream if available, otherwise opens a new one.
+        """
+        if self._pa_stream is not None:
+            stream = self._pa_stream
+            self._pa_stream = None  # take ownership
+            self.logger.debug("Using pre-warmed PA stream for %s", self.pa_sink_name)
+            return stream
+        self.logger.debug(
+            "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
+            self.pa_sink_name,
+            self.sample_rate,
+            BRIDGE_CHANNELS,
+            self.bit_depth,
+        )
+        assert self.pa_sink_name is not None
+        pa_sink_name = self.pa_sink_name
+        return await self.mass.loop.run_in_executor(
+            None,
+            lambda: PASimpleStream(
+                sink_name=pa_sink_name,
+                app_name=f"music-assistant-{pa_sink_name}",
+                rate=self.sample_rate,
+                channels=BRIDGE_CHANNELS,
+                bit_depth=self.bit_depth,
+            ),
+        )
+
     async def _audio_writer_pulse(self) -> None:
         """Write queued audio to a PA sink via PASimpleStream (Linux)."""
         stream: PASimpleStream | None = None
         write_future: asyncio.Future[None] | None = None
         try:
-            # Use the pre-warmed stream if available (eliminates cold-start
-            # PA stream-open latency). If not ready yet (e.g. first play
-            # happens before pre-warm completes), fall back to opening fresh.
-            if self._pa_stream is not None:
-                stream = self._pa_stream
-                self._pa_stream = None  # take ownership
-                self.logger.debug("Using pre-warmed PA stream for %s", self.pa_sink_name)
-            else:
-                self.logger.debug(
-                    "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
-                    self.pa_sink_name,
-                    self.sample_rate,
-                    BRIDGE_CHANNELS,
-                    self.bit_depth,
-                )
-                assert self.pa_sink_name is not None
-                pa_sink_name = self.pa_sink_name
-                stream = await self.mass.loop.run_in_executor(
-                    None,
-                    lambda: PASimpleStream(
-                        sink_name=pa_sink_name,
-                        app_name=f"music-assistant-{pa_sink_name}",
-                        rate=self.sample_rate,
-                        channels=BRIDGE_CHANNELS,
-                        bit_depth=self.bit_depth,
-                    ),
-                )
+            stream = await self._get_pa_stream()
             self.logger.debug("PA stream ready for %s", self.pa_sink_name)
             assert stream is not None
 
