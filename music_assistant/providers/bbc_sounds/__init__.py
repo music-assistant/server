@@ -7,8 +7,8 @@ TODO implement seeking of live stream
 import asyncio
 import copy
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, get_args, get_origin
+from collections.abc import AsyncGenerator, Sequence
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
