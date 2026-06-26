@@ -189,6 +189,22 @@ class MusicProvider(Provider):
         """Get full audiobook details by id."""
         raise NotImplementedError
 
+    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """
+        Get a list of all audiobooks for the given author.
+
+        Only called if provider supports ProviderFeature.AUTHOR_AUDIOBOOKS.
+        """
+        raise NotImplementedError
+
+    async def get_narrator_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """
+        Get a list of all audiobooks for the given narrator.
+
+        Only called if provider supports ProviderFeature.NARRATOR_AUDIOBOOKS.
+        """
+        raise NotImplementedError
+
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         raise NotImplementedError
@@ -978,6 +994,34 @@ class MusicProvider(Provider):
                 prov_item.provider_mappings,
             )
             try:
+                if ProviderFeature.AUTHOR_AUDIOBOOKS in self.supported_features and not all(
+                    isinstance(author, Artist) for author in prov_item.authors
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} supports ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide Artist instances."
+                    )
+                if ProviderFeature.NARRATOR_AUDIOBOOKS in self.supported_features and not all(
+                    isinstance(narrator, Artist) for narrator in prov_item.narrators
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} supports ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide Artist instances."
+                    )
+                if ProviderFeature.AUTHOR_AUDIOBOOKS not in self.supported_features and not all(
+                    isinstance(author, str) for author in prov_item.authors
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} does not support ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide strings."
+                    )
+                if ProviderFeature.NARRATOR_AUDIOBOOKS not in self.supported_features and not all(
+                    isinstance(narrator, str) for narrator in prov_item.narrators
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} does not support ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide strings."
+                    )
                 if not library_item:
                     # add item to the library
                     for prov_map in prov_item.provider_mappings:
@@ -993,6 +1037,33 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.audiobooks.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                else:
+                    # detect a change in ProviderFeature
+                    lib_author: str | Artist | ItemMapping | None = None
+                    prov_author: str | Artist | ItemMapping | None = None
+                    lib_narrator: str | Artist | ItemMapping | None = None
+                    prov_narrator: str | Artist | ItemMapping | None = None
+                    if len(library_item.authors) > 0:
+                        lib_author = library_item.authors[0]
+                    if len(prov_item.authors) > 0:
+                        prov_author = prov_item.authors[0]
+                    if len(library_item.narrators) > 0:
+                        lib_narrator = library_item.narrators[0]
+                    if len(prov_item.narrators) > 0:
+                        prov_narrator = prov_item.narrators[0]
+                    for possible_type in [Artist, str]:
+                        if (
+                            isinstance(lib_author, possible_type)
+                            and not isinstance(prov_author, possible_type)
+                        ) or (
+                            isinstance(lib_narrator, possible_type)
+                            and not isinstance(prov_narrator, possible_type)
+                        ):
+                            library_item = await self.mass.music.audiobooks.update_item_in_library(
+                                library_item.item_id, prov_item
+                            )
+                            break
+
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.audiobooks.set_favorite(library_item.item_id, True)
