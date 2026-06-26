@@ -19,6 +19,7 @@ from fastmcp.server.middleware import Middleware
 from .constants import (
     DIRECT_CALL_BLOCKED,
     DIRECT_CALL_BLOCKED_MESSAGE,
+    GET_TOOL_SCHEMA_NAME,
     INVOKE_TOOL_NAME,
     META_TOOL_NAMES,
     META_TOOLS_DISABLED_MESSAGE,
@@ -80,10 +81,8 @@ def _direct_call_blocked_error(tool_name: str) -> str:
             "tool": tool_name,
             "hint": {
                 "use": INVOKE_TOOL_NAME,
-                "example": {
-                    "tool_name": tool_name,
-                    "arguments": {},
-                },
+                "fetch_args_with": GET_TOOL_SCHEMA_NAME,
+                "example": {"tool_name": tool_name},
             },
         }
     )
@@ -95,30 +94,25 @@ Search the Music Assistant MCP tool catalog by keyword or natural phrase.
 Queries use token matching — spaces and underscores are equivalent, so
 "library search albums" matches ``library_search_albums``.
 
-Results are always lightweight (name, description, score) — to keep them cheap there
-is no option to inline schemas. Fetch a tool's arguments with get_tool_schema instead.
+Results are lightweight (name, description, score) with no inlined schemas.
+Use get_tool_schema for a tool's arguments, then invoke_tool to run it.
+Responses may include ``recommended`` or a task-specific ``workflow`` payload.
 
-WORKFLOW:
-1. Call search_tools (e.g. query="library search albums", "playback play media", "players list").
-   Prefer ``recommended`` when present and follow ``workflow`` for multi-step tasks.
-2. Call get_tool_schema with the chosen tool_name to fetch its arguments before invoking.
-3. Call invoke_tool with tool_name and arguments matching that schema.
-
-Playing music on a speaker is always multi-step: search URI → list players → playback_play_media."""
+Tool names use ``namespace_action`` (library_, players_, playback_, queue_, …).
+``search_*`` finds items by text; ``list_*`` enumerates (often no required args);
+``get_*`` resolves or drills down and usually needs a uri or id from a prior step —
+pass outputs forward rather than re-invoking with ``{}``."""
 
 
 GET_TOOL_SCHEMA_DESCRIPTION = """\
-Fetch the full schema for a single Music Assistant MCP tool.
+Fetch the full inputSchema for one catalog tool (name from search_tools).
 
-Pass the exact tool_name from search_tools (e.g. library_search_tracks) to get its
-name, description, inputSchema (and outputSchema/annotations when present). Use this
-after search_tools and before invoke_tool to learn a tool's arguments without paying
-for every search match's schema. RBAC permissions still apply."""
+Returns all argument properties and which are required — call before invoke_tool
+when args are not obvious. RBAC permissions still apply."""
 
 
 INVOKE_TOOL_DESCRIPTION = """\
 Invoke any Music Assistant MCP tool by name.
 
-Pass the exact tool_name from search_tools (e.g. library_search_tracks) and a JSON
-arguments object matching that tool's inputSchema (from get_tool_schema). RBAC
-permissions still apply — tools disabled in MCP Server settings cannot be invoked."""
+Pass tool_name from search_tools and arguments matching its inputSchema
+(check ``required``; include optional keys when useful). RBAC permissions still apply."""
