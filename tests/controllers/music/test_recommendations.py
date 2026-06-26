@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from music_assistant_models.enums import MediaType
+from music_assistant_models.media_items import ItemMapping
+
+from music_assistant.controllers.music.recommendations.sources.base import (
+    CallableRecommendationSource,
+)
 from music_assistant.mass import MusicAssistant
 
 EXPECTED_DEFAULT_ORDER = [
@@ -22,3 +28,39 @@ async def test_default_recommendations_order(mass: MusicAssistant) -> None:
     folders = await mass.music.recommendations()
     defaults = [f.item_id for f in folders if f.item_id in EXPECTED_DEFAULT_ORDER]
     assert defaults == EXPECTED_DEFAULT_ORDER
+
+
+def _fake_items() -> list[ItemMapping]:
+    return [
+        ItemMapping.from_dict(
+            {
+                "item_id": "a",
+                "provider": "library",
+                "media_type": MediaType.TRACK.value,
+                "name": "Track A",
+            }
+        )
+    ]
+
+
+async def test_callable_source_builds_folder(mass: MusicAssistant) -> None:
+    """A callable source builds a RecommendationFolder from its factory output."""
+    source = CallableRecommendationSource(
+        mass,
+        item_id="x",
+        name="X",
+        translation_key="x_key",
+        icon="mdi-x",
+        items_factory=lambda: _async_return(_fake_items()),
+    )
+    folder = await source.build()
+    assert folder is not None
+    assert folder.item_id == "x"
+    assert folder.name == "X"
+    assert folder.translation_key == "x_key"
+    assert folder.icon == "mdi-x"
+    assert [item.item_id for item in folder.items] == ["a"]
+
+
+async def _async_return(value: list[ItemMapping]) -> list[ItemMapping]:
+    return value
