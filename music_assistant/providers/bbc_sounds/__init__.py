@@ -50,7 +50,6 @@ from sounds.models import Playlist
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.cache.constants import SerializableType
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -173,7 +172,6 @@ class BBCSoundsProvider(MusicProvider):
         )
         self.adaptor = Adaptor(self)
         # Two simple internal caches to reduce API calls
-        self._concurrent_requests: dict[str, asyncio.Future[Any]] = {}
         self._stream_details_cache: dict[str, tuple[StreamDetails, float]] = {}
 
     async def loaded_in_mass(self) -> None:
@@ -201,73 +199,6 @@ class BBCSoundsProvider(MusicProvider):
     async def _fetch_menu(self) -> None:
         self.logger.debug("No cached menu, fetching from API")
         self.menu = await self.client.get_menu(recommendations=MenuRecommendationOptions.EXCLUDE)
-
-    async def _request_pool(self, key: str, coro: Awaitable[Any]) -> Any:
-        """
-        Reuse API calls for multiple players/streams.
-
-        If we are streaming the same station to multiple players, we end
-        """
-        # TODO: this will stop working once stream seeking is implemented
-        if key in self._concurrent_requests:
-            return await self._concurrent_requests[key]
-
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        self._concurrent_requests[key] = future
-
-        try:
-            result = await coro
-            if not future.done():
-                future.set_result(result)
-            return result
-        except asyncio.CancelledError as err:
-            # Explicitly cancelled
-            future.set_exception(err)
-            raise
-        except BaseException as err:
-            # Everything else
-            future.set_exception(err)
-            raise
-        finally:
-            self._concurrent_requests.pop(key, None)
-
-    async def _get_cached_item(
-        self,
-        key: str,
-        fetcher: Callable[[], Awaitable[T]],
-        expiration: int | None = None,
-        expected_type: type[T] | None = None,
-    ) -> T:
-        """
-        Provides a thin wrapper around MA's cache.
-
-        Allows a fetcher function to be provided in the instance of a cache miss.
-        """
-        origin = get_origin(expected_type)
-        base_class = get_args(expected_type)[0] if origin is list else expected_type
-
-        data = await self.mass.cache.get(key=key, provider=self.instance_id, base_class=base_class)
-
-        if data is not None:
-            self.logger.debug(f"Found item for key {key} in cache")
-            return cast("T", data)
-
-        data = await fetcher()
-
-        if isinstance(data, list):
-            to_store: SerializableType = [item.to_dict() for item in data]  # ty:ignore[unresolved-attribute]
-        else:
-            to_store = data.to_dict()  # ty:ignore[unresolved-attribute]
-
-        if expiration:
-            await self.mass.cache.set(
-                key=key, data=to_store, provider=self.instance_id, expiration=expiration
-            )
-        else:
-            await self.mass.cache.set(key=key, data=to_store, provider=self.instance_id)
-
-        return data
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_track(self, prov_track_id: str) -> Track:
@@ -396,13 +327,10 @@ class BBCSoundsProvider(MusicProvider):
 
     async def _get_station_stream_details(self, item_id: str) -> StreamDetails:
         """Fetch stream details for a live station."""
-        station = await self._request_pool(
-            f"station:{item_id}",
-            self.client.stations.get_station(
-                item_id,
-                include_stream=True,
-                stream_format=self.stream_format,
-            ),
+        station = await self.client.stations.get_station(
+            item_id,
+            include_stream=True,
+            stream_format=self.stream_format,
         )
 
         if not station:
@@ -507,10 +435,7 @@ class BBCSoundsProvider(MusicProvider):
         if not station_id:
             return
 
-        now_playing = await self._request_pool(
-            f"now_playing_{station_id}",
-            self.client.schedules.currently_playing_song(station_id),
-        )
+        now_playing = await self.client.schedules.currently_playing_song(station_id)
         if now_playing:
             self.logger.debug(f"Now playing for {station_id}: {now_playing}")
             stream_details.stream_metadata = _segment_to_metadata(now_playing)
