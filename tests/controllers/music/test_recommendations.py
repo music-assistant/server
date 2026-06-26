@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping
+from music_assistant_models.media_items import ItemMapping, RecommendationFolder
 
+from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.music.recommendations.sources.base import (
     CallableRecommendationSource,
 )
@@ -64,3 +65,47 @@ async def test_callable_source_builds_folder(mass: MusicAssistant) -> None:
 
 async def _async_return(value: list[ItemMapping]) -> list[ItemMapping]:
     return value
+
+
+async def _add_playlog_row(
+    mass: MusicAssistant,
+    *,
+    item_id: str,
+    media_type: MediaType,
+    timestamp: int,
+    user_initiated: bool,
+    userid: str = "user-a",
+) -> None:
+    await mass.music.database.insert(
+        DB_TABLE_PLAYLOG,
+        {
+            "item_id": item_id,
+            "provider": "library",
+            "media_type": media_type.value,
+            "name": f"{media_type.value} {item_id}",
+            "timestamp": timestamp,
+            "fully_played": True,
+            "seconds_played": 180,
+            "userid": userid,
+            "user_initiated": user_initiated,
+        },
+    )
+
+
+async def _recommendations_folder(mass: MusicAssistant, item_id: str) -> RecommendationFolder:
+    folders = await mass.music.recommendations.get_recommendations()
+    return next(f for f in folders if f.item_id == item_id)
+
+
+async def test_recently_played_rolls_up_to_container(mass: MusicAssistant) -> None:
+    """Playing an album shows the album, not its individual tracks."""
+    await _add_playlog_row(
+        mass, item_id="album-1", media_type=MediaType.ALBUM, timestamp=2000, user_initiated=True
+    )
+    await _add_playlog_row(
+        mass, item_id="track-1", media_type=MediaType.TRACK, timestamp=1999, user_initiated=False
+    )
+    folder = await _recommendations_folder(mass, "recently_played")
+    item_ids = {item.item_id for item in folder.items}
+    assert "album-1" in item_ids
+    assert "track-1" not in item_ids
