@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
@@ -54,6 +56,12 @@ def mock_mass() -> MagicMock:
 def controller(mock_mass: MagicMock) -> PlayerController:
     """Create a PlayerController instance."""
     return PlayerController(mock_mass)
+
+
+@pytest.fixture
+def provider(mock_mass: MagicMock) -> MockProvider:
+    """Create a mock provider."""
+    return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
 
 
 class TestSetMembersValidation:
@@ -670,6 +678,140 @@ class TestPlayMediaOverride:
         assert power_calls == []
         # ... and play_media was issued directly on the member
         assert played_on == ["member"]
+
+
+class TestExternalSourcePlayPause:
+    """Pause/play handling for externally-initiated sources (no active output protocol)."""
+
+    @staticmethod
+    def _make_external_source_player(
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+        *,
+        playback_state: PlaybackState,
+        can_play_pause: bool = True,
+        supports_pause: bool = True,
+    ) -> MockPlayer:
+        """Build a player playing a passive external source, with no active output protocol."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_supported_features = {PlayerFeature.PAUSE} if supports_pause else set()
+        player._attr_source_list = [
+            PlayerSource(
+                id="spotify",
+                name="Spotify",
+                passive=True,
+                can_play_pause=can_play_pause,
+                can_next_previous=True,
+                can_seek=True,
+            )
+        ]
+        player._attr_active_source = "spotify"
+        player._attr_playback_state = playback_state
+        player._cache.clear()
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        player.update_state(signal_event=False)
+        return player
+
+    def test_pause_external_source_forwards_to_player(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Pausing a pausable external source forwards to the player, not STOP."""
+        player = self._make_external_source_player(
+            provider, controller, mock_mass, playback_state=PlaybackState.PLAYING
+        )
+        player.pause = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_pause("player_1"))
+
+        player.pause.assert_awaited_once()
+        controller._handle_cmd_stop.assert_not_called()
+
+    def test_play_external_source_unpauses_player(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Unpausing a paused external source forwards to the player, not a restart."""
+        player = self._make_external_source_player(
+            provider, controller, mock_mass, playback_state=PlaybackState.PAUSED
+        )
+        player.play = AsyncMock()  # type: ignore[method-assign]
+        player.play_media = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_play("player_1"))
+
+        player.play.assert_awaited_once()
+        player.play_media.assert_not_called()
+        controller._handle_select_source.assert_not_called()
+
+    def test_pause_falls_back_to_stop_without_pause_support(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """A player that cannot pause natively still falls back to STOP."""
+        player = self._make_external_source_player(
+            provider,
+            controller,
+            mock_mass,
+            playback_state=PlaybackState.PLAYING,
+            supports_pause=False,
+        )
+        player.pause = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_pause("player_1"))
+
+        controller._handle_cmd_stop.assert_awaited_once()
+        player.pause.assert_not_called()
+
+
+class TestMirrorsParentMedia:
+    """Tests for _mirrors_parent_media (palette-fetch gating for grouped players)."""
+
+    @staticmethod
+    def _fake_player(
+        *,
+        player_id: str = "p1",
+        active_group: str | None = None,
+        synced_to: str | None = None,
+        player_type: PlayerType = PlayerType.PLAYER,
+        protocol_parent_id: str | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            player_id=player_id,
+            state=SimpleNamespace(active_group=active_group, synced_to=synced_to, type=player_type),
+            protocol_parent_id=protocol_parent_id,
+        )
+
+    def test_standalone_player_owns_media(self, controller: PlayerController) -> None:
+        """A standalone player resolves its own media (and palette)."""
+        assert controller._mirrors_parent_media(self._fake_player()) is False  # type: ignore[arg-type]
+
+    def test_group_member_mirrors(self, controller: PlayerController) -> None:
+        """A group member borrows its parent's media."""
+        assert controller._mirrors_parent_media(self._fake_player(active_group="g1")) is True  # type: ignore[arg-type]
+
+    def test_synced_member_mirrors(self, controller: PlayerController) -> None:
+        """A synced member borrows its leader's media."""
+        assert controller._mirrors_parent_media(self._fake_player(synced_to="leader")) is True  # type: ignore[arg-type]
+
+    def test_protocol_child_mirrors(self, controller: PlayerController) -> None:
+        """A protocol child borrows its parent's media."""
+        player = self._fake_player(player_type=PlayerType.PROTOCOL, protocol_parent_id="parent")
+        assert controller._mirrors_parent_media(player) is True  # type: ignore[arg-type]
+
+    def test_protocol_player_without_parent_owns_media(self, controller: PlayerController) -> None:
+        """A protocol player with no parent resolves its own media."""
+        player = self._fake_player(player_type=PlayerType.PROTOCOL)
+        assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
+
+    def test_self_referential_parent_owns_media(self, controller: PlayerController) -> None:
+        """A self-referential active_group/synced_to is not a real parent, so resolve locally."""
+        player = self._fake_player(player_id="p1", synced_to="p1", active_group="p1")
+        assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

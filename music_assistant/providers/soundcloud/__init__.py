@@ -110,7 +110,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
-    _me: dict[str, Any] = {}
+    _me: dict[str, Any]
 
     async def handle_async_init(self) -> None:
         """Set up the Soundcloud provider."""

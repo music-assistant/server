@@ -674,6 +674,16 @@ async def migrate_database(  # noqa: PLR0915
                     raise
 
     if prev_version <= 43:
+        # add content_type column to the genres table to namespace spoken-word taxonomies
+        # (podcast/audiobook) apart from music genres. NULL = music/general; existing rows
+        # stay NULL so nothing re-keys.
+        try:
+            await database.execute(f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN [content_type] TEXT")
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
+    if prev_version <= 44:
         # Pandora provider changes to serve dynamic playlists instead of radio streams.
         await database.execute(
             f"DELETE FROM {DB_TABLE_RADIOS} "
@@ -681,7 +691,6 @@ async def migrate_database(  # noqa: PLR0915
             f"  SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
             "  WHERE provider_domain = 'pandora' AND media_type = 'radio');"
         )
-
         await database.execute(
             f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
             "WHERE provider_domain = 'pandora' AND media_type = 'radio';"

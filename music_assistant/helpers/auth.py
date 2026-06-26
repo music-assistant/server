@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from aiohttp.web import Request, Response
 from music_assistant_models.enums import EventType
@@ -41,7 +41,7 @@ class AuthenticationHelper:
         """Return the callback URL."""
         return f"{self.mass.webserver.base_url}{self._cb_path}"
 
-    async def __aenter__(self) -> AuthenticationHelper:
+    async def __aenter__(self) -> Self:
         """Enter context manager."""
         self.mass.webserver.register_dynamic_route(
             self._cb_path, self._handle_callback, self._method

@@ -92,9 +92,10 @@ async def test_wait_for_media_returns_on_play(player: MSXPlayer) -> None:
         await asyncio.sleep(0.05)
         await player.play_media(media)
 
-    asyncio.create_task(delayed_play())
+    task = asyncio.create_task(delayed_play())
     result = await player.wait_for_media(timeout=2.0)
     assert result is media
+    await task
 
 
 async def test_wait_for_media_fast_path(player: MSXPlayer) -> None:

@@ -11,7 +11,7 @@ This adaptor maps those objects to the most sensible type for MA.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.media_items import (
@@ -89,7 +89,7 @@ class ImageProvider:
         "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid"
     )
 
-    ICON_MAPPING = {
+    ICON_MAPPING: ClassVar[dict[str, str]] = {
         "listen_live": "listen_live",
         "continue_listening": "continue",
         "editorial_collection": "editorial",

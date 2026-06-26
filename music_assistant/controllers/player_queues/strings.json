@@ -4,6 +4,29 @@
     "description": "Configuration of the core player queue management module"
   },
   "config_entries": {
+    "autoplay_label": {
+      "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen."
+    },
+    "autoplay_mode": {
+      "label": "Autoplay source",
+      "description": "How Autoplay picks new tracks once your queue runs out.",
+      "options": {
+        "auto": "Automatic — similar tracks, falling back to your library",
+        "similar": "Similar to what you played",
+        "library": "Infinite mix from your library",
+        "playlist": "Tracks from a playlist"
+      },
+      "disabled_reasons": {
+        "similar": "No music or metadata provider that can supply similar tracks is currently available."
+      }
+    },
+    "autoplay_playlist": {
+      "label": "Autoplay playlist",
+      "description": "The playlist Autoplay pulls tracks from to keep the music going."
+    },
+    "crossfade_label": {
+      "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. Turn crossfade on or off per queue from the player controls; the settings below control how it sounds: the length of the overlap and, on more powerful systems, a 'Smart crossfade' option that beat-matches the two tracks for even smoother, DJ-style transitions."
+    },
     "crossfade_duration": {
       "label": "Standard crossfade duration",
       "description": "Duration in seconds for the standard crossfade between tracks."
