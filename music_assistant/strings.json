@@ -319,6 +319,8 @@
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
     "playback": "Queue Playback",
+    "autoplay": "Autoplay",
+    "crossfade": "Crossfade",
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
     "dsp": "Digital Signal Processing (DSP)",

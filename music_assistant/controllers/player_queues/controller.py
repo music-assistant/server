@@ -42,7 +42,6 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     PlayerUnavailableError,
     QueueEmpty,
-    UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -77,9 +76,18 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
 )
+from music_assistant.controllers.player_queues.autoplay import (
+    AUTOPLAY_MODE_DEFAULT_VALUE,
+    AutoplayHelper,
+    AutoplayMode,
+)
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+    CONF_AUTOPLAY_LABEL,
+    CONF_AUTOPLAY_MODE,
+    CONF_AUTOPLAY_PLAYLIST,
+    CONF_CROSSFADE_LABEL,
     CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
     CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
     CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK,
@@ -139,6 +147,9 @@ class PlayerQueuesController(CoreController):
         self._transitioning_players: set[str] = set()
         self._play_action_refcount: dict[str, int] = {}
         self._last_counted_play: dict[str, str] = {}
+        # queue_id -> session_id whose flow stream was fully generated
+        self._flow_buffer_completed: dict[str, str] = {}
+        self._autoplay = AutoplayHelper(self)
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -249,14 +260,55 @@ class PlayerQueuesController(CoreController):
             ),
         )
 
-    def get_queue_config_entries(self) -> list[ConfigEntry]:
+    def get_queue_config_entries(
+        self, playlist_options: list[ConfigValueOption] | None = None
+    ) -> list[ConfigEntry]:
         """
         Return the per-queue config entries.
 
-        The crossfade_mode select's options and default depend on whether smart fades are
-        available: the smart option is disabled (shown but not selectable) and the default falls
-        back to standard crossfade when smart fades can't be used on this server.
+        The autoplay_mode select disables the 'similar' option when no provider can supply
+        similar tracks. The crossfade_mode select's options and default depend on whether smart
+        fades are available: the smart option is disabled (shown but not selectable) and the
+        default falls back to standard crossfade when smart fades can't be used on this server.
+
+        :param playlist_options: Library playlists to offer for the 'playlist' autoplay mode.
+            Only populated when serving the entries to the UI; the parse path can omit it.
         """
+        similar_tracks_available = any(
+            ProviderFeature.SIMILAR_TRACKS in provider.supported_features
+            for provider in self.mass.music.providers
+        )
+        autoplay_entries = [
+            ConfigEntry(
+                key=CONF_AUTOPLAY_LABEL,
+                type=ConfigEntryType.LABEL,
+                category="autoplay",
+            ),
+            ConfigEntry(
+                key=CONF_AUTOPLAY_MODE,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(AutoplayMode.AUTO.value),
+                    ConfigValueOption(
+                        AutoplayMode.SIMILAR.value, disabled=not similar_tracks_available
+                    ),
+                    ConfigValueOption(AutoplayMode.LIBRARY.value),
+                    ConfigValueOption(AutoplayMode.PLAYLIST.value),
+                ],
+                default_value=AUTOPLAY_MODE_DEFAULT_VALUE,
+                category="autoplay",
+            ),
+            ConfigEntry(
+                key=CONF_AUTOPLAY_PLAYLIST,
+                type=ConfigEntryType.STRING,
+                options=playlist_options or [],
+                default_value=None,
+                required=False,
+                depends_on=CONF_AUTOPLAY_MODE,
+                depends_on_value=AutoplayMode.PLAYLIST.value,
+                category="autoplay",
+            ),
+        ]
         smart_fades_available = self.mass.streams.smart_fades_available
         crossfade_mode_entry = ConfigEntry(
             key=CONF_CROSSFADE_MODE,
@@ -272,12 +324,21 @@ class PlayerQueuesController(CoreController):
                 if smart_fades_available
                 else CrossfadeMode.STANDARD_CROSSFADE.value
             ),
-            category="playback",
+            category="crossfade",
             requires_reload=True,
         )
-        return [
-            CONF_ENTRY_CROSSFADE_DURATION,
+        crossfade_entries = [
+            ConfigEntry(
+                key=CONF_CROSSFADE_LABEL,
+                type=ConfigEntryType.LABEL,
+                category="crossfade",
+            ),
             crossfade_mode_entry,
+            CONF_ENTRY_CROSSFADE_DURATION,
+        ]
+        return [
+            *autoplay_entries,
+            *crossfade_entries,
             CONF_ENTRY_VOLUME_NORMALIZATION,
         ]
 
@@ -343,27 +404,19 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/autoplay")
     def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
         """Configure Autoplay setting on the queue."""
-        providers_available_with_similar_tracks = any(
-            ProviderFeature.SIMILAR_TRACKS in provider.supported_features
-            for provider in self.mass.music.providers
-        )
-        if autoplay_enabled and not providers_available_with_similar_tracks:
-            raise UnsupportedFeaturedException(
-                "Autoplay is not supported by any of the available music providers"
-            )
         queue = self._queues[queue_id]
         queue.autoplay_enabled = autoplay_enabled
-        # if this happens to be the last track in the queue, fill the radio source
+        # if we're already at/near the end of the queue, kick off a refill right away
+        # (an active explicit radio source manages its own refills, so leave it be)
         if (
             queue.autoplay_enabled
             and queue.enqueued_media_items
+            and not queue.radio_source
             and queue.current_index is not None
-            and (queue.items - queue.current_index) <= 1
+            and (queue.items - queue.current_index) < 5
         ):
-            queue.radio_source = queue.enqueued_media_items
-            queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
-            task_id = f"fill_radio_tracks_{queue_id}"
-            self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
+            task_id = f"fill_autoplay_tracks_{queue_id}"
+            self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
         self.signal_update(queue_id=queue_id)
 
     @api_command("player_queues/dont_stop_the_music", alias=True)
@@ -907,6 +960,7 @@ class PlayerQueuesController(CoreController):
             # At this point index is guaranteed to be int
             queue.index_in_buffer = index
             queue.flow_mode_stream_log = []
+            self._flow_buffer_completed.pop(queue_id, None)
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -1327,6 +1381,9 @@ class PlayerQueuesController(CoreController):
 
         # capture session_id so we can bail out if playback restarts
         original_session_id = queue.session_id
+        # record so player providers can detect flow EOF without an idle report
+        if original_session_id is not None:
+            self._flow_buffer_completed[queue_id] = original_session_id
 
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
@@ -1358,6 +1415,20 @@ class PlayerQueuesController(CoreController):
 
         task_id = f"queue_buffer_completed_{queue_id}"
         self.mass.create_task(_resume_on_idle(), task_id=task_id)
+
+    def flow_stream_finished(self, queue_id: str) -> bool:
+        """
+        Return whether the flow stream for the current playback session is fully generated.
+
+        Lets player providers detect flow EOF when the device does not report idle
+        (e.g. a Cast group that underruns the LIVE flow stream and keeps reporting playing).
+
+        :param queue_id: The queue ID.
+        """
+        queue = self._queues.get(queue_id)
+        if queue is None or queue.session_id is None:
+            return False
+        return self._flow_buffer_completed.get(queue_id) == queue.session_id
 
     # Main queue manipulation methods
 
@@ -2359,6 +2430,61 @@ class PlayerQueuesController(CoreController):
             insert_at_index=len(self._queue_items[queue_id]) + 1,
         )
 
+    async def _fill_autoplay_tracks(self, queue_id: str) -> None:
+        """Fill a Queue with additional tracks based on the configured Autoplay mode."""
+        queue = self._queues.get(queue_id)
+        if queue is None or not queue.autoplay_enabled:
+            return
+        mode = self._autoplay.resolve_mode(queue_id)
+        self.logger.debug(
+            "Filling autoplay tracks (mode: %s) for queue %s", mode.value, queue.display_name
+        )
+        # Restore the queue owner's user context so provider filters and library access
+        # are respected during this background refill, mirroring _fill_radio_tracks.
+        playback_user = (
+            await self.mass.webserver.auth.get_user(queue.userid) if queue.userid else None
+        )
+        set_current_user(playback_user)
+        existing_tracks = {
+            item.media_item
+            for item in self._queue_items[queue_id]
+            if isinstance(item.media_item, Track)
+        }
+        try:
+            if mode == AutoplayMode.PLAYLIST:
+                tracks = await self._autoplay.get_playlist_tracks(queue, existing_tracks)
+            elif mode == AutoplayMode.LIBRARY:
+                tracks = await self._autoplay.get_library_tracks(queue, existing_tracks)
+            elif mode == AutoplayMode.SIMILAR:
+                tracks = await self._get_radio_tracks(
+                    queue_id, seed_items=queue.enqueued_media_items
+                )
+            else:
+                # AUTO: try similar tracks first, fall back to the library mix. The similar
+                # fetch raises when no provider can supply base/similar tracks, so suppress
+                # that here to make sure the library fallback still runs.
+                tracks = []
+                with suppress(MusicAssistantError):
+                    tracks = await self._get_radio_tracks(
+                        queue_id, seed_items=queue.enqueued_media_items
+                    )
+                if not tracks:
+                    tracks = await self._autoplay.get_library_tracks(queue, existing_tracks)
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Autoplay failed to fetch tracks for queue %s: %s", queue.display_name, err
+            )
+            return
+        queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
+        if not queue_items:
+            self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
+            return
+        await self.load(
+            queue_id,
+            queue_items,
+            insert_at_index=len(self._queue_items[queue_id]) + 1,
+        )
+
     def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
         """Enqueue the next item on the player."""
         if not next_item:
@@ -2608,22 +2734,34 @@ class PlayerQueuesController(CoreController):
         return False
 
     async def _get_radio_tracks(
-        self, queue_id: str, is_initial_radio_mode: bool = False
+        self,
+        queue_id: str,
+        is_initial_radio_mode: bool = False,
+        seed_items: list[MediaItemType] | None = None,
     ) -> list[Track]:
-        """Call the registered music providers for dynamic tracks."""
+        """
+        Call the registered music providers for dynamic tracks.
+
+        :param queue_id: The queue to fetch dynamic tracks for.
+        :param is_initial_radio_mode: True when seeding a fresh radio session (interleaves the
+            base tracks), False when refilling an existing one.
+        :param seed_items: Explicit seed items to base the dynamic tracks on. Defaults to the
+            queue's radio_source; Autoplay passes the enqueued media items instead.
+        """
         queue = self._queues[queue_id]
         queue_track_items: list[Track] = [
             q.media_item
             for q in self._queue_items[queue_id]
             if q.media_item and isinstance(q.media_item, Track)
         ]
-        if not queue.radio_source:
+        radio_source = seed_items if seed_items is not None else queue.radio_source
+        if not radio_source:
             # this may happen during race conditions as this method is called delayed
             return []
         self.logger.info(
             "Fetching radio tracks for queue %s based on: %s",
             queue.display_name,
-            ", ".join([x.name for x in queue.radio_source]),
+            ", ".join([x.name for x in radio_source]),
         )
 
         # Get user's preferred provider instances for steering provider selection
@@ -2639,8 +2777,8 @@ class PlayerQueuesController(CoreController):
         # a single track item. When we have a radio mode based on 1 track and we have to
         # refill the queue (ie not initial radio mode), we use the play history as base tracks
         if (
-            len(queue.radio_source) == 1
-            and queue.radio_source[0].media_type == MediaType.TRACK
+            len(radio_source) == 1
+            and radio_source[0].media_type == MediaType.TRACK
             and not is_initial_radio_mode
             and queue_track_items
         ):
@@ -2649,7 +2787,7 @@ class PlayerQueuesController(CoreController):
                 queue_track_items, min(len(queue_track_items), 10)
             )
         else:
-            seeds = list(queue.radio_source)
+            seeds = list(radio_source)
 
         radio_tracks = await self.mass.music.get_dynamic_radio_tracks(
             seeds,
@@ -2902,35 +3040,19 @@ class PlayerQueuesController(CoreController):
         if "state" in changed_keys and queue.state == PlaybackState.IDLE:
             self._handle_end_of_queue(queue, prev_state, new_state)
 
-        # watch dynamic radio items refill if needed
+        # refill the queue (radio mode or autoplay) when running low on tracks
         if "current_item_id" in changed_keys:
-            # auto enable radio mode if autoplay is enabled
-            if (
-                queue.autoplay_enabled
-                and queue.enqueued_media_items
-                and queue.current_index is not None
-                and (queue.items - queue.current_index) <= 1
-            ):
-                # We have received the last item in the queue and Autoplay is enabled
-                # set the played media item(s) as radio items (which will refill the queue)
-                # note that this will fail if there are no media items for which we have
-                # a dynamic radio source.
-                self.logger.debug(
-                    "End of queue detected and Autoplay is enabled for %s"
-                    " - setting enqueued media items as radio source: %s",
-                    queue.display_name,
-                    ", ".join([x.uri for x in queue.enqueued_media_items]),  # type: ignore[misc]  # uri set in __post_init__
-                )
-                queue.radio_source = queue.enqueued_media_items
-                queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
-            # auto fill radio tracks if less than 5 tracks left in the queue
-            if (
-                queue.radio_source
-                and queue.current_index is not None
-                and (queue.items - queue.current_index) < 5
-            ):
+            running_low = (
+                queue.current_index is not None and (queue.items - queue.current_index) < 5
+            )
+            if queue.radio_source and running_low:
+                # an explicit radio source (incl. dynamic playlists/stations) keeps itself going
                 task_id = f"fill_radio_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
+            elif queue.autoplay_enabled and queue.enqueued_media_items and running_low:
+                # autoplay refills using the per-queue configured Autoplay mode
+                task_id = f"fill_autoplay_tracks_{queue_id}"
+                self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player

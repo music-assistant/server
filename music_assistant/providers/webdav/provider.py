@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import aiohttp
-from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
@@ -20,10 +19,14 @@ from music_assistant_models.errors import (
     SetupFailedError,
 )
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.tags import async_parse_tags, get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
-from music_assistant.providers.filesystem_local.constants import SUPPORTED_EXTENSIONS
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    SUPPORTED_EXTENSIONS,
+)
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
@@ -39,6 +42,9 @@ if TYPE_CHECKING:
 
 class WebDAVFileSystemProvider(LocalFileSystemProvider):
     """WebDAV File System Provider for Music Assistant."""
+
+    # WebDAV servers often struggle with 16 parallel tag-parse GETs
+    _SYNC_CONCURRENCY = 4
 
     def __init__(
         self,
@@ -156,12 +162,15 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def _scandir(self, path: str) -> list[FileSystemItem]:
         """List WebDAV directory contents with caching."""
         cache_key = f"scandir_{path}"
-        if cached := await self.cache.get(
-            key=cache_key,
-            provider=self.instance_id,
-            category=0,
-        ):
-            return [FileSystemItem(**item) for item in cached]
+        # bypass the cache during sync so edits are picked up immediately;
+        # the fresh result is still written back for subsequent browse/exists calls
+        if not self.sync_running:
+            if cached := await self.cache.get(
+                key=cache_key,
+                provider=self.instance_id,
+                category=0,
+            ):
+                return [FileSystemItem(**item) for item in cached]
 
         path = self._normalize_path(path)
         webdav_url = build_webdav_url(self.base_url, path)
@@ -264,67 +273,64 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 raise MediaNotFoundError(f"Image not found: {path}")
             return await resp.read()
 
-    async def sync_library(self, media_type: MediaType) -> None:
-        """Run library sync for WebDAV provider."""
-        if media_type in (MediaType.ARTIST, MediaType.ALBUM):
-            return
-        assert self.mass.music.database
-        if self.sync_running:
-            self.logger.warning("Library sync already running for %s", self.name)
-            return
-
-        file_checksums: dict[str, str] = {}
-        query = (
-            f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-            f"WHERE provider_instance = '{self.instance_id}' "
-            "AND media_type in ('track', 'playlist', 'audiobook', 'podcast_episode')"
-        )
-        for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
-            file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
-
-        prev_filenames = set(file_checksums.keys())
-        cur_filenames: set[str] = set()
-
-        self.sync_running = True
-        try:
-            await self._scan_recursive("", cur_filenames, file_checksums, set())
-        finally:
-            self.sync_running = False
-
-        deleted_files = prev_filenames - cur_filenames
-        await self._process_deletions(deleted_files)
-        await self._process_orphaned_albums_and_artists()
-
-    async def _scan_recursive(
+    async def _enumerate_files_for_sync(
         self,
-        path: str,
-        cur_filenames: set[str],
+        *,
         file_checksums: dict[str, str],
-        visited: set[str],
+        cue_file_checksums: dict[str, str],
+        cur_filenames: set[str],
+        items_to_process: list[tuple[FileSystemItem, str | None]],
+        unchanged_cue_items: list[FileSystemItem],
+        cue_stems: set[str],
+        root_scan_errors: list[OSError],
     ) -> None:
-        """Recursively scan WebDAV directory."""
-        # Guard against directory cycles (e.g. server-side symlink loops) so a single
-        # bad path can never exhaust the recursion limit and abort the whole sync.
-        if path in visited:
-            return
-        visited.add(path)
-        try:
-            items = await self._scandir(path)
-        except LoginFailed, SetupFailedError, ProviderUnavailableError:
-            raise
-        except aiohttp.ClientError as err:
-            self.logger.warning("WebDAV error scanning %s: %s", path, err)
-            return
+        """Walk the WebDAV tree via PROPFIND and populate the sync buckets."""
+        ignore_album_playlists = self.media_content_type == "music" and bool(
+            self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
+        )
+        # mutable counter for the nested coroutine
+        scanned = [0]
+        # guard against directory cycles (e.g. server-side symlink loops) so a single
+        # bad path can never exhaust the recursion limit and abort the whole sync
+        visited: set[str] = set()
 
-        for item in items:
-            if item.is_dir:
-                await self._scan_recursive(
-                    item.relative_path, cur_filenames, file_checksums, visited
+        async def _walk(path: str, is_root: bool) -> None:
+            if path in visited:
+                return
+            visited.add(path)
+            try:
+                items = await self._scandir(path)
+            except LoginFailed, SetupFailedError, ProviderUnavailableError:
+                raise
+            except aiohttp.ClientError as err:
+                # only a root-level failure aborts the sync; subdir failures
+                # are logged and skipped, matching the local-filesystem walker
+                if is_root:
+                    root_scan_errors.append(OSError(str(err)))
+                else:
+                    self.logger.warning("WebDAV error scanning %s: %s", path, err)
+                return
+            for item in items:
+                if item.is_dir:
+                    await _walk(item.relative_path, is_root=False)
+                    continue
+                if item.ext not in SUPPORTED_EXTENSIONS:
+                    continue
+                scanned[0] += 1
+                if scanned[0] % 500 == 0:
+                    update_current_task_progress_text(f"Scanning files: {scanned[0]} found")
+                self._classify_scan_item(
+                    item,
+                    file_checksums=file_checksums,
+                    cue_file_checksums=cue_file_checksums,
+                    cur_filenames=cur_filenames,
+                    items_to_process=items_to_process,
+                    unchanged_cue_items=unchanged_cue_items,
+                    cue_stems=cue_stems,
+                    ignore_album_playlists=ignore_album_playlists,
                 )
-            else:
-                prev_checksum = file_checksums.get(item.relative_path)
-                if await self._process_item_async(item, prev_checksum):
-                    cur_filenames.add(item.relative_path)
+
+        await _walk("", is_root=True)
 
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
         """Try to parse a track from a playlist line."""

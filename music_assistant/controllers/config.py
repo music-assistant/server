@@ -121,6 +121,7 @@ from music_assistant.constants import (
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
 )
+from music_assistant.controllers.player_queues.constants import CONF_AUTOPLAY_PLAYLIST
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
 from music_assistant.helpers.util import load_provider_module, validate_announcement_chime_url
@@ -974,20 +975,32 @@ class ConfigController:
         ]
 
     @api_command("config/player_queues/get")
+    async def get_player_queue_config_for_api(self, queue_id: str) -> PlayerQueueConfig:
+        """Return (full) configuration for a single queue, with dynamic options populated."""
+        # The frontend renders the queue settings form straight from this config, so the
+        # autoplay playlist dropdown options must be resolved here (the sync core is used by
+        # the streaming hot path and must stay free of library lookups).
+        config = self.get_player_queue_config(queue_id)
+        if (autoplay_playlist := config.values.get(CONF_AUTOPLAY_PLAYLIST)) is not None:
+            autoplay_playlist.options = await self._library_playlist_options()
+        return config
+
     def get_player_queue_config(self, queue_id: str) -> PlayerQueueConfig:
         """Return (full) configuration for a single queue."""
         raw_conf = self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}") or {"queue_id": queue_id}
         return self._parse_player_queue_config(queue_id, raw_conf)
 
     @api_command("config/player_queues/get_entries")
-    def get_player_queue_config_entries(
+    async def get_player_queue_config_entries(
         self,
         queue_id: str,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all Config Entries to configure a queue."""
-        entries = self.mass.player_queues.get_queue_config_entries()
+        entries = self.mass.player_queues.get_queue_config_entries(
+            playlist_options=await self._library_playlist_options()
+        )
         return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER, action, values)
 
     @api_command("config/player_queues/get_value")
@@ -1515,6 +1528,13 @@ class ConfigController:
         raw_conf = {**raw_conf, "queue_id": queue_id}
         entries = self.mass.player_queues.get_queue_config_entries()
         return cast("PlayerQueueConfig", PlayerQueueConfig.parse(entries, raw_conf))
+
+    async def _library_playlist_options(self) -> list[ConfigValueOption]:
+        """Return the library playlists as selectable config options (for autoplay playlist mode)."""
+        return [
+            ConfigValueOption(playlist.uri, title=playlist.name)
+            async for playlist in self.mass.music.playlists.iter_library_items()
+        ]
 
     async def _load(self) -> None:
         """Load data from persistent storage."""
