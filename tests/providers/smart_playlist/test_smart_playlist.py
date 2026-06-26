@@ -879,7 +879,10 @@ async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) 
     mapping.item_id = "abc"
     library_item = MagicMock()
     library_item.provider_mappings = [mapping]
+    # Mock get_library_item for resolving "123" -> "abc"
     mass.music.playlists.get_library_item = AsyncMock(return_value=library_item)
+    # Mock get_library_item_by_prov_id to return None (no artwork)
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
 
     playlist = await plugin.get_playlist("123")
     assert playlist.item_id == "abc"
@@ -907,7 +910,10 @@ async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(
     mapping.item_id = "abc"
     library_item = MagicMock()
     library_item.provider_mappings = [mapping]
+    # Mock get_library_item for resolving "123" -> "abc"
     mass.music.playlists.get_library_item = AsyncMock(return_value=library_item)
+    # Mock get_library_item_by_prov_id to return None (no artwork)
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
 
     expected = [_make_mock_track("1", "library://track/1")]
     cached_dynamic_sample_mock = AsyncMock(return_value=expected)
