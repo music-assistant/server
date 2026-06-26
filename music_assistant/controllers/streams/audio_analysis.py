@@ -47,12 +47,12 @@ BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
-# Per-chunk processing ceiling; a provider that exceeds it is treated as stuck and evicted.
-# Generous because, while a player streams, analysis runs one offload at a time and a chunk
-# may wait behind other sessions before it computes.
-REALTIME_CHUNK_HANG_GUARD_SECONDS = 120.0
-BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR = 0.250
-BACKGROUND_PACE_INTERVAL_SECONDS_CEILING = 4.0
+# Per-chunk processing ceiling for live and background analysis; a provider that exceeds it is
+# treated as stuck and evicted. Generous because analysis runs one offload at a time while a
+# player streams, so a chunk may wait behind other work before it computes.
+CHUNK_HANG_GUARD_SECONDS = 120.0
+# Floor on wall-seconds between background dispatches: paces the nightly scan so it sips CPU.
+BACKGROUND_PACE_INTERVAL_SECONDS = 0.250
 # OS nice value for analysis worker threads (Linux): keeps analysis below playback so the
 # scheduler favors the event loop and ffmpeg under contention.
 ANALYSIS_THREAD_NICE = 10
@@ -778,16 +778,14 @@ class AudioAnalysisController:
         self,
         streamdetails: StreamDetails,
         providers: list[AudioAnalysisProvider],
-        min_interval: float = BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR,
-        max_interval: float = BACKGROUND_PACE_INTERVAL_SECONDS_CEILING,
+        pace_interval: float = BACKGROUND_PACE_INTERVAL_SECONDS,
     ) -> None:
         """
         Run a single track through the streaming pipeline using ffmpeg as the source.
 
         :param streamdetails: Stream details for the track being analyzed.
         :param providers: Audio analysis providers to dispatch chunks to.
-        :param min_interval: Floor on wall-seconds between consecutive chunk dispatches.
-        :param max_interval: Ceiling on wall-seconds between consecutive chunk dispatches.
+        :param pace_interval: Minimum wall-seconds between consecutive chunk dispatches.
         """
         session_key = streamdetails.uri
         if session_key in self._active_sessions:
@@ -808,8 +806,7 @@ class AudioAnalysisController:
                     session_key,
                     streamdetails,
                     providers,
-                    min_interval=min_interval,
-                    max_interval=max_interval,
+                    pace_interval=pace_interval,
                 ),
                 timeout=timeout_seconds,
             )
@@ -843,8 +840,7 @@ class AudioAnalysisController:
         session_key: str,
         streamdetails: StreamDetails,
         providers: list[AudioAnalysisProvider],
-        min_interval: float = BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR,
-        max_interval: float = BACKGROUND_PACE_INTERVAL_SECONDS_CEILING,
+        pace_interval: float = BACKGROUND_PACE_INTERVAL_SECONDS,
     ) -> None:
         """
         Inner body of _run_background_streaming_for_track, wrapped by wait_for.
@@ -852,8 +848,7 @@ class AudioAnalysisController:
         :param session_key: Active-session key for this track.
         :param streamdetails: Stream details for the track being analyzed.
         :param providers: Audio analysis providers to dispatch chunks to.
-        :param min_interval: Floor on wall-seconds between consecutive chunk dispatches.
-        :param max_interval: Ceiling on wall-seconds between consecutive chunk dispatches.
+        :param pace_interval: Minimum wall-seconds between consecutive chunk dispatches.
         """
         if not isinstance(streamdetails.path, str) or not streamdetails.path:
             return
@@ -881,8 +876,8 @@ class AudioAnalysisController:
             now = time.monotonic()
             if now < next_allowed:
                 await asyncio.sleep(next_allowed - now)
-            await self._distribute_chunk(session_key, chunk, max_interval=max_interval)
-            next_allowed = time.monotonic() + min_interval
+            await self._distribute_chunk(session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS)
+            next_allowed = time.monotonic() + pace_interval
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
@@ -1056,7 +1051,7 @@ class AudioAnalysisController:
         self,
         session_key: str,
         pcm_data: bytes,
-        max_interval: float = REALTIME_CHUNK_HANG_GUARD_SECONDS,
+        max_interval: float = CHUNK_HANG_GUARD_SECONDS,
     ) -> None:
         """
         Fan a single PCM chunk to every provider in the session.
@@ -1145,7 +1140,7 @@ class AudioAnalysisController:
                     self.logger.debug("Analysis read failed for %s: %s", session_key, err)
                     break
                 await self._distribute_chunk(
-                    session_key, chunk, max_interval=REALTIME_CHUNK_HANG_GUARD_SECONDS
+                    session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS
                 )
                 cursor += 1
         finally:
