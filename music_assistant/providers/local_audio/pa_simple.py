@@ -663,3 +663,39 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
             }
         )
     return sinks
+
+
+def suspend_resume_sink(sink_name: str) -> None:
+    """
+    Suspend then resume a PA sink to reset its underlying ALSA driver state.
+
+    Works around the snd_ctxfi mmap bug (kernel 6.12.x, commit 391e69143d0a)
+    where the X-Fi card's DMA transfer stalls after driver init, causing
+    pa_simple_write to timeout. A suspend/resume cycle re-initialises the
+    ALSA PCM device and clears the stall without requiring a PA or system
+    restart.
+
+    Called on ALSA-card master sinks after remap-sink topology creation at
+    provider load/reload time. No-op if pactl is not available.
+
+    :param sink_name: PA sink name to suspend and resume.
+    """
+    import subprocess  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    try:
+        subprocess.run(
+            ["pactl", "suspend-sink", sink_name, "1"],
+            check=True,
+            capture_output=True,
+            timeout=3,
+        )
+        time.sleep(0.5)
+        subprocess.run(
+            ["pactl", "suspend-sink", sink_name, "0"],
+            check=True,
+            capture_output=True,
+            timeout=3,
+        )
+    except FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired:
+        pass

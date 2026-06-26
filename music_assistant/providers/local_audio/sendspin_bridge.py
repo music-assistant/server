@@ -48,6 +48,7 @@ if sys.platform == "linux":
         PAVolumeController,
         enumerate_alsa_devices,
         enumerate_pa_sinks,
+        suspend_resume_sink,
     )
     from .remap_topology import (
         build_remap_sink_argument,
@@ -1026,6 +1027,15 @@ class LocalAudioBridgeManager:
                 self._loaded_remap_modules[spec.sink_name] = module_index
                 existing_names.add(spec.sink_name)
                 loaded_any = True
+
+            # Suspend/resume the master sink to reset the underlying ALSA
+            # driver state. Specifically works around the snd_ctxfi mmap bug
+            # (kernel 6.12.x, commit 391e69143d0a) where the X-Fi card's DMA
+            # stalls after init, causing pa_simple_write to timeout silently.
+            # Running this on every ALSA-card master at topology creation time
+            # is safe — it only takes ~0.5s and has no effect on cards that
+            # don't have the bug.
+            await self.mass.loop.run_in_executor(None, suspend_resume_sink, master_sink_name)
 
             # Pin the master sink to 100% so it never attenuates remap sinks
             # feeding through it. The master has no bridge of its own (it's
