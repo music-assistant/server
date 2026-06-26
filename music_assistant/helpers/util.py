@@ -884,6 +884,56 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
+async def get_source_ip_for_target(
+    target_ip: str,
+    *,
+    bind_ip: str | None = None,
+    publish_ip: str | None = None,
+) -> str:
+    """
+    Resolve a local, bindable source IP that routes to ``target_ip``.
+
+    For providers that must bind a socket to, or advertise a callback URL
+    reachable by, one specific device. ``publish_ip`` (the server's advertised
+    address) is not necessarily a locally bindable interface address — e.g. a
+    container behind a published IP, or a multi-homed host — so binding to it
+    directly can fail with ``EADDRNOTAVAIL``.
+
+    Resolution order:
+      1. an explicitly configured, concrete (non-wildcard) ``bind_ip``;
+      2. a routing-table lookup to ``target_ip`` (the interface that would
+         actually egress to it);
+      3. ``publish_ip`` as a concrete fallback;
+      4. ``bind_ip`` (even if a wildcard) as a last resort.
+    """
+    if bind_ip and bind_ip not in ("0.0.0.0", "::"):
+        return bind_ip
+
+    def _routing_lookup() -> str:
+        try:
+            is_ipv6_target = ip_address(target_ip).version == 6
+        except ValueError:
+            is_ipv6_target = False
+        route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
+        route_target: tuple[str, int] | tuple[str, int, int, int] = (
+            (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
+        )
+        with socket.socket(route_family, socket.SOCK_DGRAM) as _sock:
+            try:
+                _sock.settimeout(1.0)
+                _sock.connect(route_target)
+                routed_ip = str(_sock.getsockname()[0])
+                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
+                    return routed_ip
+            except OSError:
+                pass
+        return ""
+
+    if routed := await asyncio.to_thread(_routing_lookup):
+        return routed
+    return str(publish_ip or "") or str(bind_ip or "")
+
+
 async def get_ip_pton(ip_string: str) -> bytes:
     """Return socket pton for a local ip."""
     try:

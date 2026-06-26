@@ -30,7 +30,10 @@ from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis_provider import (
+    AudioAnalysisProvider,
+    InstrumentedSemaphore,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
@@ -151,7 +154,7 @@ class AudioAnalysisController:
         # Bounds how many analysis offloads run concurrently to half the cores; created in
         # ensure_inference_runtime_configured once the core count is known (None until then),
         # and honored by AudioAnalysisProvider._run_offloaded.
-        self.analysis_semaphore: asyncio.Semaphore | None = None
+        self.analysis_semaphore: InstrumentedSemaphore | None = None
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -215,7 +218,7 @@ class AudioAnalysisController:
         # never occupies the whole box and starves playback/the host — slow and steady on any
         # machine. Applies to every host; honored by AudioAnalysisProvider._run_offloaded.
         concurrency_cap = max(1, self._cpu_count() // 2)
-        self.analysis_semaphore = asyncio.Semaphore(concurrency_cap)
+        self.analysis_semaphore = InstrumentedSemaphore(concurrency_cap)
         self.logger.info(
             "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%d, analysis concurrency<=%d, nnpack=%s",
             torch.get_num_threads(),
@@ -293,15 +296,17 @@ class AudioAnalysisController:
                 return
             if is_last_chunk:
                 finalized = True
-                await queue.put(None)
+                # The terminator must always land or the worker blocks forever on get().
+                # Sole producer, no await before put_nowait, so evicting to make room is race-free.
+                if queue.full():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
+                queue.put_nowait(None)
                 self.mass.create_task(_finalize_session())
                 return
-            try:
-                await asyncio.wait_for(
-                    queue.put(pcm_data), timeout=REAL_TIME_PACE_INTERVAL_SECONDS_CEILING
-                )
-            except TimeoutError, asyncio.QueueFull:
-                return
+            # Awaited inline by the audio producer — drop rather than ever block playback.
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(pcm_data)
 
         async def _finalize_session() -> None:
             """Await the worker, then dispatch finalize to each provider."""
@@ -1076,10 +1081,20 @@ class AudioAnalysisController:
                     timeout=max_interval,
                 )
             except TimeoutError:
+                sem = self.analysis_semaphore
+                contention = (
+                    f"{sem.in_flight}/{sem.capacity} permits in use, {sem.waiters} queued"
+                    if isinstance(sem, InstrumentedSemaphore)
+                    else "concurrency gauge unavailable"
+                )
                 self.logger.warning(
-                    "Provider %s timed out processing chunk for %s, removing from session",
+                    "Provider %s timed out after %.1fs processing chunk for %s "
+                    "(%s, %d active sessions), removing from session",
                     prov_id,
+                    max_interval,
                     session_key,
+                    contention,
+                    len(self._active_sessions),
                 )
                 return prov_id
             except Exception as err:
