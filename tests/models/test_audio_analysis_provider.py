@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis_provider import (
+    AudioAnalysisProvider,
+    InstrumentedSemaphore,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -127,7 +130,7 @@ async def test_finalize_swallows_post_analysis_exception() -> None:
 async def test_run_offloaded_acquires_semaphore_when_present() -> None:
     """_run_offloaded holds the controller's analysis semaphore while the work runs."""
     provider = _make_provider()
-    semaphore = asyncio.Semaphore(1)
+    semaphore = InstrumentedSemaphore(1)
     provider.mass.streams.audio_analysis.analysis_semaphore = semaphore
 
     def _work() -> bool:
@@ -152,7 +155,7 @@ async def test_run_offloaded_without_cap_runs_plainly() -> None:
 async def test_run_offloaded_holds_permit_until_thread_finishes_on_cancel() -> None:
     """Cancelling the awaiter must not free the permit while the worker thread is still running."""
     provider = _make_provider()
-    semaphore = asyncio.Semaphore(1)
+    semaphore = InstrumentedSemaphore(1)
     provider.mass.streams.audio_analysis.analysis_semaphore = semaphore
 
     started = threading.Event()
@@ -185,7 +188,7 @@ async def test_run_offloaded_holds_permit_until_thread_finishes_on_cancel() -> N
 async def test_run_offloaded_releases_permit_if_scheduling_fails() -> None:
     """A failure to schedule the worker must release the permit, not leak it."""
     provider = _make_provider()
-    semaphore = asyncio.Semaphore(1)
+    semaphore = InstrumentedSemaphore(1)
     provider.mass.streams.audio_analysis.analysis_semaphore = semaphore
 
     with (

@@ -92,7 +92,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
           check-latest: true
@@ -123,7 +123,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
           check-latest: true
@@ -169,7 +169,14 @@ jobs:
             targets="tests/"
             cov="--cov=music_assistant"
           fi
-          pytest -o addopts="" --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
+          # -p numpy: pre-import numpy before pytest-cov starts coverage. Scoping
+          # --cov to a submodule (partial mode) makes coverage import the parent
+          # music_assistant package inside its sys_modules_saved() block, which then
+          # evicts numpy from sys.modules. Re-importing numpy reinitialises its C
+          # extension and creates a second _NoValue sentinel, breaking ndarray
+          # reductions (sum/mean) on py3.14. Loading numpy as an early plugin keeps
+          # it in the saved snapshot so it is never evicted.
+          pytest -p numpy -o addopts="" --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7

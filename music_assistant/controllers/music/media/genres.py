@@ -1186,6 +1186,7 @@ class GenreController(MediaControllerBase[Genre]):
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": UNSET,
                 "is_default": 0,
+                "content_type": item.content_type.value if item.content_type else None,
             },
         )
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -1217,6 +1218,8 @@ class GenreController(MediaControllerBase[Genre]):
         else:
             merged_aliases = self._dedup_aliases(existing_aliases, [*update_aliases, name])
 
+        content_type = update.content_type if overwrite else cur_item.content_type
+
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -1236,6 +1239,7 @@ class GenreController(MediaControllerBase[Genre]):
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
                 "timestamp_added": UNSET,
+                "content_type": content_type.value if content_type else None,
             },
         )
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)

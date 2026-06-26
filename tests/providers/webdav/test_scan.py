@@ -19,7 +19,28 @@ def _make_provider() -> WebDAVFileSystemProvider:
     provider.username = None
     provider.password = None
     provider.logger = MagicMock()
+    provider.media_content_type = "music"
+    provider.config = MagicMock()
+    provider.config.get_value = MagicMock(return_value=False)
     return provider
+
+
+async def _run_enumerate(
+    provider: WebDAVFileSystemProvider,
+    *,
+    file_checksums: dict[str, str] | None = None,
+    cur_filenames: set[str] | None = None,
+) -> None:
+    """Drive _enumerate_files_for_sync with empty sync buckets."""
+    await provider._enumerate_files_for_sync(
+        file_checksums=file_checksums or {},
+        cue_file_checksums={},
+        cur_filenames=cur_filenames if cur_filenames is not None else set(),
+        items_to_process=[],
+        unchanged_cue_items=[],
+        cue_stems=set(),
+        root_scan_errors=[],
+    )
 
 
 def test_convert_skips_scanned_directory_with_special_chars() -> None:
@@ -83,7 +104,7 @@ def test_convert_skips_base_directory_at_root() -> None:
     assert [item.relative_path for item in result] == ["Artist"]
 
 
-async def test_scan_recursive_stops_on_directory_cycle() -> None:
+async def test_enumerate_stops_on_directory_cycle() -> None:
     """A directory cycle must not exhaust the recursion limit."""
     provider = _make_provider()
     # A -> A/B -> A (back-edge to an ancestor); only the guard can break this
@@ -100,17 +121,17 @@ async def test_scan_recursive_stops_on_directory_cycle() -> None:
 
     provider._scandir = AsyncMock(side_effect=fake_scandir)  # type: ignore[method-assign]
 
-    await provider._scan_recursive("", set(), {}, set())
+    await _run_enumerate(provider)
 
     # each directory is scanned exactly once despite the cycle
     assert sorted(scanned) == ["", "A", "A/B"]
 
 
 @pytest.mark.parametrize("special", ["Live; Unplugged", "Die drei ???", "Rock #1"])
-async def test_scan_recursive_does_not_loop_on_special_chars(special: str) -> None:
+async def test_enumerate_does_not_loop_on_special_chars(special: str) -> None:
     """Folders with reserved characters must be traversed without looping."""
     provider = _make_provider()
-    track = FileSystemItem("t.mp3", f"{special}/t.mp3", "", is_dir=False)
+    track = FileSystemItem("t.mp3", f"{special}/t.mp3", "", is_dir=False, checksum="1")
     listing = {
         "": [FileSystemItem(special, special, "", is_dir=True)],
         special: [track],
@@ -120,9 +141,11 @@ async def test_scan_recursive_does_not_loop_on_special_chars(special: str) -> No
         return listing[path]
 
     provider._scandir = AsyncMock(side_effect=fake_scandir)  # type: ignore[method-assign]
-    provider._process_item_async = AsyncMock(return_value=True)  # type: ignore[method-assign]
     cur_filenames: set[str] = set()
 
-    await provider._scan_recursive("", cur_filenames, {}, set())
+    # the track is unchanged (checksum matches), so reaching it records it as present
+    await _run_enumerate(
+        provider, file_checksums={f"{special}/t.mp3": "1"}, cur_filenames=cur_filenames
+    )
 
     assert cur_filenames == {f"{special}/t.mp3"}
