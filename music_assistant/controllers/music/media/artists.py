@@ -106,7 +106,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         album_artists_only: bool = False,
-        artist_type: ArtistType = ArtistType.SINGER,
+        artist_type: ArtistType | None = None,
         **kwargs: Any,
     ) -> list[Artist]:
         """
@@ -123,7 +123,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param artist_type: The artist's type
         """
         extra_query_params: dict[str, Any] = {}
-        extra_query_parts = [f"artist_type = '{artist_type}'"]
+        extra_query_parts: list[str] = []
+        if artist_type:
+            extra_query_parts = [f"artist_type = '{artist_type}'"]
         if album_artists_only and artist_type == ArtistType.SINGER:
             extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
