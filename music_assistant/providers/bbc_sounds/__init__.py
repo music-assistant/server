@@ -359,21 +359,24 @@ class BBCSoundsProvider(MusicProvider):
 
     async def _get_programme_segments(self, vpid: str) -> list[Segment] | None:
         """Get on demand segments from cache or API."""
-        cache_key = f"programme_segments_{vpid}"
-
-        async def get_segments() -> list[Segment] | None:
-            segments = await self.client.streaming.get_show_segments(
-                vpid, fetch_missing_images=True
-            )
-
-            if isinstance(segments, list) and isinstance(segments[0], Segment):
-                return segments
-            self.logger.warning(f"No show segments found for vpid: {vpid}")
-            return None
-
-        return await self._get_cached_item(
-            key=cache_key, fetcher=get_segments, expected_type=list[Segment]
+        cached = await self.mass.cache.get(
+            provider=self.domain, key=f"programme_segments_{vpid}", default=False
         )
+        if cached is False:
+            self.logger.debug(f"No cache for programme segments for {vpid}")
+            segments = await self.client.streaming.get_show_segments(vpid)
+            if isinstance(segments, list):
+                await self.mass.cache.set(
+                    provider=self.domain,
+                    key=f"programme_segments_{vpid}",
+                    data=[Segment.to_dict(s) for s in segments],
+                )
+                return segments
+            return None
+        if isinstance(cached, list):
+            self.logger.debug(f"Cache hit for programme segments for {vpid}")
+            return [Segment(**item) for item in cached]
+        return None
 
     async def _update_on_demand_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
