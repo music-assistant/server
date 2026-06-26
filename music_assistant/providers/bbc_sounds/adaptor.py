@@ -231,15 +231,16 @@ class BaseConverter(ABC):
 class StationConverter(BaseConverter):
     """Converts Station-related objects."""
 
-    type ConvertableTypes = Station | LiveStation | StationSearchResult
-    convertable_types = (Station, LiveStation, StationSearchResult)
+    ConvertableTypes = Station | LiveStation | StationSearchResult
 
-    def can_convert(self, source_obj: ConvertableTypes) -> bool:
+    def can_convert(self, source_obj: Any) -> bool:
         """Check if this converter can convert to a Station object."""
-        return isinstance(source_obj, self.convertable_types)
+        return isinstance(source_obj, self.ConvertableTypes)
 
-    async def get_stream_details(self, source_obj: Station | LiveStation) -> StreamDetails | None:
+    async def get_stream_details(self, source_obj: Any) -> StreamDetails | None:
         """Convert the source object to a stream."""
+        if not isinstance(source_obj, self.ConvertableTypes):
+            return None
         # TODO: can't seek this stream
         station = await self.convert(source_obj)
         if not station or not source_obj.stream:
@@ -275,7 +276,7 @@ class StationConverter(BaseConverter):
             )
         return stream_details
 
-    async def convert(self, source_obj: ConvertableTypes) -> Radio:
+    async def convert(self, source_obj: Any) -> Radio:
         """Convert the source object to target type."""
         if isinstance(source_obj, Station):
             return self._convert_station(source_obj)
@@ -335,10 +336,8 @@ class StationConverter(BaseConverter):
 class PodcastConverter(BaseConverter):
     """Converts podcast-related objects."""
 
-    type ConvertableTypes = Podcast | PodcastEpisode | RadioShow | RadioClip | RadioSeries
-    convertable_types = (Podcast, PodcastEpisode, RadioShow, RadioClip, RadioSeries)
-    type OutputTypes = MAPodcast | MAPodcastEpisode | Track
-    output_types = MAPodcast | MAPodcastEpisode | Track
+    ConvertableTypes = Podcast | PodcastEpisode | RadioShow | RadioClip | RadioSeries
+    OutputTypes = MAPodcast | MAPodcastEpisode | Track
     SCHEDULE_ITEM_FORMAT = "{start} {show_name} • {show_title} ({date})"
     SCHEDULE_ITEM_DEFAULT_FORMAT = "{show_name} • {show_title}"
     PODCAST_EPISODE_DEFAULT_FORMAT = "{episode_title} ({date})"
@@ -389,14 +388,13 @@ class PodcastConverter(BaseConverter):
             title = str(episode.titles.get("secondary")) if episode.titles else "Unknown episode"
         return title
 
-    def can_convert(self, source_obj: ConvertableTypes) -> bool:
+    def can_convert(self, source_obj: Any) -> bool:
         """Check if this converter can convert to a Podcast object."""
-        # Can't use type alias here https://github.com/python/mypy/issues/11673
         if self.context.force_type:
-            return issubclass(self.context.force_type, self.output_types)
-        return isinstance(source_obj, self.convertable_types)
+            return issubclass(self.context.force_type, self.OutputTypes)
+        return isinstance(source_obj, self.ConvertableTypes)
 
-    async def get_stream_details(self, source_obj: ConvertableTypes) -> StreamDetails | None:
+    async def get_stream_details(self, source_obj: Any) -> StreamDetails | None:
         """Convert the source object to a stream."""
         if isinstance(source_obj, (Podcast, RadioSeries)):
             return None
@@ -462,7 +460,7 @@ class PodcastConverter(BaseConverter):
             )
         return stream_details
 
-    async def convert(self, source_obj: ConvertableTypes) -> OutputTypes:
+    async def convert(self, source_obj: Any) -> OutputTypes:
         """Convert podcast objects."""
         if isinstance(source_obj, (Podcast, RadioSeries)) or self.context.force_type is Podcast:
             return await self._convert_podcast(source_obj)
@@ -625,27 +623,23 @@ class PodcastConverter(BaseConverter):
 class BrowseConverter(BaseConverter):
     """Converts browsable objects like menus, categories, collections."""
 
-    type ConvertableTypes = (
-        MenuItem | Category | Collection | Schedule | RecommendedMenuItem | Playlist
-    )
-    convertable_types = (MenuItem, Category, Collection, Schedule, RecommendedMenuItem, Playlist)
-    type OutputTypes = BrowseFolder | RecommendationFolder
-    output_types = (BrowseFolder, RecommendationFolder)
+    ConvertableTypes = MenuItem | Category | Collection | Schedule | RecommendedMenuItem | Playlist
+    OutputTypes = BrowseFolder | RecommendationFolder
 
-    def can_convert(self, source_obj: ConvertableTypes) -> bool:
+    def can_convert(self, source_obj: Any) -> bool:
         """Check if this converter can convert to a Browsable object."""
         can_convert = False
         if self.context.force_type:
-            can_convert = issubclass(self.context.force_type, self.output_types)
+            can_convert = issubclass(self.context.force_type, self.OutputTypes)
         else:
-            can_convert = isinstance(source_obj, self.convertable_types)
+            can_convert = isinstance(source_obj, self.ConvertableTypes)
         return can_convert
 
-    async def get_stream_details(self, source_obj: ConvertableTypes) -> StreamDetails | None:
+    async def get_stream_details(self, source_obj: Any) -> StreamDetails | None:
         """Convert the source object to a stream."""
         return None
 
-    async def convert(self, source_obj: ConvertableTypes) -> OutputTypes:
+    async def convert(self, source_obj: Any) -> OutputTypes:
         """Convert browsable objects."""
         if isinstance(source_obj, MenuItem) and self.context.force_type is not RecommendationFolder:
             return self._convert_menu_item(source_obj)
@@ -766,7 +760,13 @@ class Adaptor:
         path_parts: list[str] | None = None,
         force_type: (
             type[
-                Track | Any | Radio | Podcast | PodcastEpisode | BrowseFolder | RecommendationFolder
+                Track
+                | Radio
+                | MAPodcast
+                | MAPodcastEpisode
+                | BrowseFolder
+                | RecommendationFolder
+                | RecommendedMenuItem
             ]
             | None
         ) = None,
