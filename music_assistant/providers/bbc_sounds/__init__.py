@@ -561,17 +561,16 @@ class BBCSoundsProvider(MusicProvider):
                             item_list.append(new_item)
                 # TODO: probably need a better way of handling this
                 elif isinstance(sub_menu, Playlist):
-
-                    async def get_playlist_items(pid: str):
-                        return await self.client.streaming.get_playlist_contents(pid=pid)
-
-                    playlist_items = await get_playlist_items(sub_menu.item_id)
+                    playlist_items = await self.client.streaming.get_playlist_contents(
+                        pid=sub_menu.item_id
+                    )
                     if playlist_items:
-                        item_list = [
+                        rendered_items = [
                             await self._render_browse_item(playlist_item)
                             for playlist_item in playlist_items
                             if playlist_item is not None
                         ]
+                    item_list += [item for item in rendered_items if item is not None]
 
         else:
             self.logger.warning(f"Sub menu not a container: {sub_menu}")
