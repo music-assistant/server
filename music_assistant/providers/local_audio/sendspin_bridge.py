@@ -361,26 +361,25 @@ class SendspinLocalAudioBridge:
             # Master/base sink (software volume control): re-pin PA sink
             # volume to 100% after playback ends.
             self.mass.create_task(self._reset_sink_volume())
-        # Re-warm the PA stream for the next play so subsequent plays also
-        # benefit from pre-warmed stream-open timing.
-        if self.backend == "pulse" and self.pa_sink_name and self._pa_stream is None:
-            self.mass.create_task(self._prewarm_pa_stream())
 
     async def _prewarm_pa_stream(self) -> None:
         """
         Open the PA stream early so stream-open latency doesn't affect sync.
 
-        Opens a PASimpleStream and keeps it alive with periodic silence writes
-        so PA's suspend-on-idle module doesn't close it before first play.
-        The pre-warmed stream is consumed by _audio_writer_pulse() on first
-        play; a new pre-warm is scheduled after each stream ends.
+        Opens a PASimpleStream and writes a single silence chunk to trigger
+        the idle->RUNNING ALSA transition (paying the mmap init cost once at
+        provider startup rather than at first play). The stream is then held
+        open and idle — PA may suspend it via suspend-on-idle, but the ALSA
+        driver remains initialised so the first real write reconnects with
+        negligible latency. No keepalive writes are used to avoid interfering
+        with real audio when the writer takes ownership.
         """
         if not self.pa_sink_name:
             return
         pa_sink_name = self.pa_sink_name
-        # Small silence buffer: one chunk of silence at the bridge's native
-        # format, used to keep the idle stream alive.
         bytes_per_sample = self.bit_depth // 8
+        # One chunk of silence to trigger idle->RUNNING and initialise the
+        # ALSA DMA buffer — just enough to pay the mmap init cost.
         silence = bytes(BRIDGE_CHANNELS * bytes_per_sample * 64)  # 64 frames
         try:
             stream = await self.mass.loop.run_in_executor(
@@ -396,21 +395,15 @@ class SendspinLocalAudioBridge:
         except OSError as err:
             self.logger.debug("PA stream pre-warm failed for %s: %s", pa_sink_name, err)
             return
-        self._pa_stream = stream
-        self.logger.debug("PA stream pre-warmed for %s", pa_sink_name)
-        # Keep the stream alive with silence writes until _audio_writer_pulse
-        # takes ownership (sets self._pa_stream = None) or the bridge stops.
-        while self._pa_stream is stream and self._sendspin_client is not None:
-            try:
-                await self.mass.loop.run_in_executor(None, stream.write, silence)
-            except OSError:
-                break
-            await asyncio.sleep(0.5)
-        # If we still own it (writer never took it), close it cleanly.
-        if self._pa_stream is stream:
-            self._pa_stream = None
+        # Write one silence chunk to trigger the ALSA DMA init cycle.
+        try:
+            await self.mass.loop.run_in_executor(None, stream.write, silence)
+        except OSError:
             with suppress(OSError):
                 await self.mass.loop.run_in_executor(None, stream.close)
+            return
+        self._pa_stream = stream
+        self.logger.debug("PA stream pre-warmed for %s", pa_sink_name)
 
     async def _reset_sink_volume(self) -> None:
         """
