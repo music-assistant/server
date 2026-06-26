@@ -10,7 +10,10 @@ import pytest
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.audio_analysis import (
+    REALTIME_ANALYSIS_MAX_SESSIONS,
+    AudioAnalysisController,
+)
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer, AudioBufferDiscarded
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -291,6 +294,37 @@ async def test_worker_cancelled_on_buffer_clear(
     await audio_buffer.clear()
     await _await_tasks(mock_mass)
     assert worker.cancelled() or worker.done()
+
+
+@pytest.mark.asyncio
+async def test_realtime_sessions_capped_evicting_oldest(
+    controller: AudioAnalysisController,
+    mock_provider: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """Starting past the cap evicts the oldest realtime session and cancels its providers."""
+    keys: list[str] = []
+    for i in range(REALTIME_ANALYSIS_MAX_SESSIONS + 1):
+        sd = MagicMock()
+        sd.uri = f"test://track/{i}"
+        sd.provider = "test"
+        sd.item_id = f"t{i}"
+        sd.media_type = MediaType.TRACK
+        keys.append(sd.uri)
+        await controller.start_analysis(AudioBuffer(TEST_PCM_FORMAT), sd)
+
+    # Only the cap's worth survive; the oldest was evicted, the newest kept.
+    assert len(controller._workers) == REALTIME_ANALYSIS_MAX_SESSIONS
+    assert keys[0] not in controller._workers
+    assert keys[0] not in controller._active_sessions
+    assert keys[-1] in controller._workers
+    mock_provider.cancel.assert_any_call(keys[0])
+
+    # Drain the pending reader/cancel tasks so nothing leaks past the test.
+    for task in mock_mass._created_tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*mock_mass._created_tasks, return_exceptions=True)
 
 
 # -- Edge cases --

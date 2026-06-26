@@ -54,6 +54,10 @@ CHUNK_HANG_GUARD_SECONDS = 120.0
 # OS nice value for analysis worker threads (Linux): keeps analysis below playback so the
 # scheduler favors the event loop and ffmpeg under contention.
 ANALYSIS_THREAD_NICE = 10
+# Cap on concurrent realtime analysis sessions (the playing track plus the preloaded next).
+# Rapid track skipping would otherwise spawn an analysis per abandoned track; the oldest is
+# evicted to keep the count bounded.
+REALTIME_ANALYSIS_MAX_SESSIONS = 2
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -307,6 +311,11 @@ class AudioAnalysisController:
         if not provider_ids:
             self.logger.debug("No providers accepted analysis for %s", session_key)
             return
+
+        # Bound concurrent realtime sessions, evicting the oldest (the current track and its
+        # preloaded next are the youngest, so they survive a burst of skips).
+        while len(self._workers) >= REALTIME_ANALYSIS_MAX_SESSIONS:
+            self._evict_realtime_session(next(iter(self._workers)))
 
         self._active_sessions[session_key] = provider_ids
         worker = self.mass.create_task(self._buffer_reader_worker(session_key, audio_buffer))
@@ -1029,6 +1038,14 @@ class AudioAnalysisController:
             provider = self.mass.get_provider(provider_id)
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
                 self.mass.create_task(provider.cancel(session_key))
+
+    def _evict_realtime_session(self, session_key: str) -> None:
+        """Stop a realtime analysis worker and cancel its providers to free a session slot."""
+        worker = self._workers.pop(session_key, None)
+        if worker is not None and not worker.done():
+            worker.cancel()
+        self._cancel_providers(session_key)
+        self.logger.debug("Evicted realtime analysis session %s", session_key)
 
     async def _distribute_chunk(
         self,
