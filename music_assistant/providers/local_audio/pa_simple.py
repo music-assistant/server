@@ -697,5 +697,5 @@ def suspend_resume_sink(sink_name: str) -> None:
             capture_output=True,
             timeout=3,
         )
-    except FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired:
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):  # fmt: skip
         pass
