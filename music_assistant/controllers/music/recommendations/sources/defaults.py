@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import MediaType
+
 from .base import CallableRecommendationSource, RecommendationSource
 
 if TYPE_CHECKING:
@@ -97,6 +99,26 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             icon="mdi-access-point",
             items_factory=lambda: mass.music.radio.library_items(
                 favorite=True, limit=10, order_by="play_count_desc"
+            ),
+        ),
+        CallableRecommendationSource(
+            mass,
+            item_id="recent_artists",
+            name="Recent artists",
+            translation_key="recent_artists",
+            icon="mdi-account-music",
+            items_factory=lambda: mass.music.recently_played(
+                limit=10, media_types=[MediaType.ARTIST], user_initiated_only=False
+            ),
+        ),
+        CallableRecommendationSource(
+            mass,
+            item_id="recent_tracks",
+            name="Recent tracks",
+            translation_key="recent_tracks",
+            icon="mdi-music-note",
+            items_factory=lambda: mass.music.recently_played(
+                limit=10, media_types=[MediaType.TRACK], user_initiated_only=False
             ),
         ),
     ]

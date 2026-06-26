@@ -109,3 +109,21 @@ async def test_recently_played_rolls_up_to_container(mass: MusicAssistant) -> No
     item_ids = {item.item_id for item in folder.items}
     assert "album-1" in item_ids
     assert "track-1" not in item_ids
+
+
+async def test_recent_artists_and_tracks_rows_present(mass: MusicAssistant) -> None:
+    """Recent Artists shows played artists; Recent Tracks shows played tracks."""
+    await _add_playlog_row(
+        mass, item_id="artist-1", media_type=MediaType.ARTIST, timestamp=3000, user_initiated=True
+    )
+    await _add_playlog_row(
+        mass, item_id="track-9", media_type=MediaType.TRACK, timestamp=2999, user_initiated=False
+    )
+
+    artists_folder = await _recommendations_folder(mass, "recent_artists")
+    tracks_folder = await _recommendations_folder(mass, "recent_tracks")
+
+    assert "artist-1" in {item.item_id for item in artists_folder.items}
+    assert "artist-1" not in {item.item_id for item in tracks_folder.items}
+    assert "track-9" in {item.item_id for item in tracks_folder.items}
+    assert "track-9" not in {item.item_id for item in artists_folder.items}
