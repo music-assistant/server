@@ -105,7 +105,7 @@ async def test_recommendations_runs_under_context(mock_mass: MagicMock) -> None:
         name="Hits",
         items=[SimpleNamespace(uri="library://track/1")],
     )
-    mock_mass.music.recommendations = AsyncMock(return_value=[folder])
+    mock_mass.music.recommendations.get_recommendations = AsyncMock(return_value=[folder])
     mcp: FastMCP = FastMCP(name="t")
     mcp.mount(build_metadata_server(mock_mass), namespace="metadata")
 

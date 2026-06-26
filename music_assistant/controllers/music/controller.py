@@ -43,7 +43,6 @@ from music_assistant_models.media_items import (
     Podcast,
     ProviderMapping,
     Radio,
-    RecommendationFolder,
     SearchResults,
     Track,
 )
@@ -76,6 +75,9 @@ from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
+from music_assistant.controllers.music.recommendations.controller import (
+    RecommendationsController,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
     get_current_user,
@@ -100,12 +102,10 @@ if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
-    from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
     from music_assistant.models import ProviderInstanceType
-    from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
     from music_assistant.providers.builtin import BuiltinProvider
 
@@ -128,6 +128,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.genres = GenreController(self.mass)
+        self.recommendations = RecommendationsController(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         self.manifest.name = "Music controller"
@@ -780,26 +781,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             allow_update_metadata=allow_update_metadata,
         )
-
-    @api_command("music/recommendations")
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get all recommendations."""
-        providers_with_recommendations = self.mass.get_providers_supporting_feature(
-            ProviderFeature.RECOMMENDATIONS,
-        )
-        recommendation_providers = self._apply_user_provider_filter(providers_with_recommendations)
-        results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
-            self._get_default_recommendations(),
-            *[
-                self._get_provider_recommendations(
-                    cast("MusicProvider | MetadataProvider | PluginProvider", provider_instance)
-                )
-                for provider_instance in recommendation_providers
-            ],
-        )
-        # return result from all providers while keeping index
-        # so the result is sorted as each provider delivered
-        return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
 
     async def get_dynamic_radio_tracks(
         self,
@@ -2199,129 +2180,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if not provider.library_sync_album_tracks_enabled():
                 continue
             self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album.name))
-
-    async def _get_default_recommendations(self) -> list[RecommendationFolder]:
-        """Return default recommendations."""
-        return [
-            RecommendationFolder(
-                item_id="in_progress",
-                provider="library",
-                name="In progress",
-                translation_key="in_progress_items",
-                icon="mdi-motion-play",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.in_progress_items(limit=10),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="recently_played",
-                provider="library",
-                name="Recently played",
-                translation_key="recently_played",
-                icon="mdi-motion-play",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.recently_played(limit=10, user_initiated_only=False),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="recently_added_tracks",
-                provider="library",
-                name="Recently added tracks",
-                translation_key="recently_added_tracks",
-                icon="music-note-plus",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="recently_added_albums",
-                provider="library",
-                name="Recently added albums",
-                translation_key="recently_added_albums",
-                icon="music-note-plus",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="random_artists",
-                provider="library",
-                name="Random artists",
-                translation_key="random_artists",
-                icon="mdi-account-music",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.artists.library_items(limit=10, order_by="random_play_count"),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="random_albums",
-                provider="library",
-                name="Random albums",
-                translation_key="random_albums",
-                icon="mdi-album",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(limit=10, order_by="random_play_count"),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="recent_favorite_tracks",
-                provider="library",
-                name="Recently favorited tracks",
-                translation_key="recent_favorite_tracks",
-                icon="mdi-file-music",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.tracks.library_items(
-                        favorite=True, limit=10, order_by="timestamp_modified_desc"
-                    ),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="favorite_playlists",
-                provider="library",
-                name="Favorite playlists",
-                translation_key="favorite_playlists",
-                icon="mdi-playlist-music",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.playlists.library_items(favorite=True, limit=10, order_by="random"),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="favorite_radio",
-                provider="library",
-                name="Favorite Radio stations",
-                translation_key="favorite_radio_stations",
-                icon="mdi-access-point",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.radio.library_items(
-                        favorite=True, limit=10, order_by="play_count_desc"
-                    ),
-                ),
-            ),
-        ]
-
-    async def _get_provider_recommendations(
-        self, provider: MusicProvider | MetadataProvider | PluginProvider
-    ) -> list[RecommendationFolder]:
-        """Return recommendations from a provider."""
-        try:
-            return await provider.recommendations()
-        except Exception as err:
-            self.logger.warning(
-                "Error while fetching recommendations from %s: %s",
-                provider.name,
-                str(err),
-                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-            )
-            return []
 
     def _create_provider_sync_handler(
         self, provider: MusicProvider, media_type: MediaType

@@ -56,7 +56,7 @@ def build_metadata_server(mass: MusicAssistant) -> FastMCP:
         """
         if ctx is not None:
             await ctx.info("Fetching MA curated recommendations…")
-        folders = await mass.music.recommendations()
+        folders = await mass.music.recommendations.get_recommendations()
         result: list[RecommendationFolderBrief] = []
         for folder in folders:
             folder_items = getattr(folder, "items", None) or []

@@ -25,7 +25,7 @@ EXPECTED_DEFAULT_ORDER = [
 
 async def test_default_recommendations_order(mass: MusicAssistant) -> None:
     """The default library rows appear in their canonical order."""
-    folders = await mass.music.recommendations()
+    folders = await mass.music.recommendations.get_recommendations()
     defaults = [f.item_id for f in folders if f.item_id in EXPECTED_DEFAULT_ORDER]
     assert defaults == EXPECTED_DEFAULT_ORDER
 
