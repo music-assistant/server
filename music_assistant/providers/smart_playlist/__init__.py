@@ -483,8 +483,11 @@ class SmartPlaylistProvider(PluginProvider):
             await self._update_playlist_description(
                 library_item.item_id, self._description_for(prov_id, parsed_rules)
             )
-            # Trigger metadata refresh to regenerate artwork based on new rules
-            self.mass.metadata.schedule_update_metadata(library_item)
+            # Force metadata refresh to regenerate artwork immediately after rule changes
+            self.mass.call_later(
+                5,
+                lambda: self.mass.metadata.update_metadata(library_item, force_refresh=True),
+            )
         self._schedule_ai_description_refresh(prov_id)
 
     async def list_smart_playlists(self) -> list[dict[str, Any]]:

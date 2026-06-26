@@ -8,10 +8,17 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import AlbumType, ProviderFeature
+from music_assistant_models.enums import AlbumType, ImageType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Genre, Playlist, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Genre,
+    MediaItemImage,
+    Playlist,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.media_items.metadata import MediaItemMetadata
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.music.recency import RecencySnapshot
@@ -886,6 +893,44 @@ async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) 
 
     playlist = await plugin.get_playlist("123")
     assert playlist.item_id == "abc"
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_copies_library_artwork(
+    tmp_path: Any,
+) -> None:
+    """get_playlist copies artwork from library item when available."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=10, is_dynamic=False)
+
+    # Create library item with artwork
+    library_artwork = MediaItemImage(
+        type=ImageType.THUMB,
+        path="generated_artwork.jpg",
+        provider="playlist_art",
+        remotely_accessible=False,
+    )
+    library_item_with_artwork = MagicMock()
+    library_item_with_artwork.metadata.images = UniqueList([library_artwork])
+
+    # Mock get_library_item_by_prov_id to return library item with artwork
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=library_item_with_artwork
+    )
+
+    playlist = await plugin.get_playlist("abc")
+    assert playlist.metadata.images is not None
+    assert len(playlist.metadata.images) == 1
+    assert playlist.metadata.images[0].path == "generated_artwork.jpg"
+    assert playlist.metadata.images[0].provider == "playlist_art"
 
 
 @pytest.mark.asyncio
