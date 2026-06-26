@@ -524,23 +524,6 @@ class BBCSoundsProvider(MusicProvider):
             if isinstance(new_item, (MediaItemType | ItemMapping | BrowseFolder)):
                 menu_items.append(new_item)
 
-        # The Sounds default menu doesn't include listings as they are linked elsewhere
-        menu_items.insert(
-            1,
-            BrowseFolder(
-                item_id="stations",
-                provider=self.domain,
-                name="Schedule and Programmes",
-                translation_key="provider.bbc_sounds.schedule_programmes",
-                path=f"{self.domain}://stations",
-                image=MediaItemImage(
-                    path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
-                    remotely_accessible=True,
-                    provider=self.domain,
-                    type=ImageType.THUMB,
-                ),
-            ),
-        )
         return menu_items
 
     async def _render_browse_item(
