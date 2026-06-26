@@ -156,8 +156,9 @@ class StreamsController(CoreController):
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
         self._audio_analysis = AudioAnalysisController(self)
-        # Number of player streams actively pulling audio right now. Audio analysis reads this
-        # (via audio_analysis.playback_active) to yield CPU to playback while a stream is live.
+        # Number of queue streams (single item or flow) actively serving a player right now.
+        # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
+        # queue stream is live. Announcements are a separate path that never runs analysis.
         self._active_output_streams = 0
 
     @property
@@ -166,7 +167,7 @@ class StreamsController(CoreController):
         return self._audio_analysis
 
     def output_stream_active(self) -> bool:
-        """Return whether any player is actively pulling an audio stream right now."""
+        """Return whether a queue stream (single item or flow) is actively serving a player."""
         return self._active_output_streams > 0
 
     @property

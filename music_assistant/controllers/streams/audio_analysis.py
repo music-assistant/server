@@ -274,7 +274,7 @@ class AudioAnalysisController:
         return any(prov.domain == SMART_FADES_ANALYSIS_DOMAIN for prov in self.providers)
 
     def playback_active(self) -> bool:
-        """Return whether any player is actively streaming audio right now."""
+        """Return whether a queue stream is actively serving a player right now."""
         return self.streams.output_stream_active()
 
     async def start_analysis(
