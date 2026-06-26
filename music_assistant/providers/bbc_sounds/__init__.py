@@ -47,7 +47,7 @@ from sounds import (
     exceptions,
 )
 from sounds import PodcastEpisode as SoundsPodcastEpisode
-from sounds.models import Playlist
+from sounds.models import MenuItem, Playlist
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
@@ -549,16 +549,19 @@ class BBCSoundsProvider(MusicProvider):
 
         if isinstance(sub_menu, Container):
             for part in path_parts[1:]:
+                if not isinstance(sub_menu, MenuItem):
+                    break
                 sub_menu = sub_menu.get(part)
                 if sub_menu is None:
                     break
             else:
-                if sub_menu.sub_items is not None:
+                if isinstance(sub_menu, MenuItem) and sub_menu.sub_items is not None:
                     for item in sub_menu.sub_items:
                         if new_item := await self._render_browse_item(
                             item, path_parts=[f"{self.domain}:/", *path_parts]
                         ):
                             item_list.append(new_item)
+                # Playlists are returned empty in the main menu API
                 # TODO: probably need a better way of handling this
                 elif isinstance(sub_menu, Playlist):
                     playlist_items = await self.client.streaming.get_playlist_contents(
@@ -570,8 +573,7 @@ class BBCSoundsProvider(MusicProvider):
                             for playlist_item in playlist_items
                             if playlist_item is not None
                         ]
-                    item_list += [item for item in rendered_items if item is not None]
-
+                        item_list += [item for item in rendered_items if item is not None]
         else:
             self.logger.warning(f"Sub menu not a container: {sub_menu}")
         return item_list
