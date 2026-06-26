@@ -144,9 +144,9 @@ def _nice_analysis_worker() -> None:
     """
     Lower the OS scheduling priority of the calling analysis worker thread.
 
-    Runs once per worker thread (ThreadPoolExecutor initializer). Best-effort and Linux-only:
-    there nice is per-thread, so only the analysis pool is deprioritized; elsewhere it is a
-    no-op rather than risk niceing the whole process.
+    Runs once per worker thread (ThreadPoolExecutor initializer). Best-effort and Linux-only,
+    where the nice value is per-thread so only the analysis pool is deprioritized; on other
+    platforms it is a no-op rather than risk deprioritizing the whole process.
     """
     if sys.platform != "linux" or not hasattr(os, "setpriority"):
         return
