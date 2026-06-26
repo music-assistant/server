@@ -127,3 +127,24 @@ async def test_recent_artists_and_tracks_rows_present(mass: MusicAssistant) -> N
     assert "artist-1" not in {item.item_id for item in tracks_folder.items}
     assert "track-9" in {item.item_id for item in tracks_folder.items}
     assert "track-9" not in {item.item_id for item in artists_folder.items}
+
+
+async def test_register_adds_a_custom_source(mass: MusicAssistant) -> None:
+    """Registering a custom source adds it to the extension API."""
+    before = len(mass.music.recommendations.sources)
+
+    source = CallableRecommendationSource(
+        mass,
+        item_id="custom_test_row",
+        name="Custom Test Row",
+        translation_key="custom_test_key",
+        icon="mdi-custom",
+        items_factory=lambda: _async_return([]),
+    )
+    mass.music.recommendations.register(source)
+
+    assert len(mass.music.recommendations.sources) == before + 1
+
+    folder = await _recommendations_folder(mass, "custom_test_row")
+    assert folder.item_id == "custom_test_row"
+    assert folder.name == "Custom Test Row"
