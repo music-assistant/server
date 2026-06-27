@@ -17,7 +17,7 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import LoginFailed, MusicAssistantError
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
@@ -37,6 +37,7 @@ from music_assistant_models.unique_list import UniqueList
 from sounds import (
     Container,
     LiveStation,
+    LoginFailedError,
     Menu,
     MenuRecommendationOptions,
     PlayableItem,
@@ -154,6 +155,12 @@ class BBCSoundsProvider(MusicProvider):
                 username=str(username),
                 password=str(password),
             )
+            try:
+                await self.client.login()
+                self.logged_in = True
+            except LoginFailedError as e:
+                raise LoginFailed(e)
+
         else:
             self.client = SoundsClient(
                 session=self.mass.http_session,
@@ -162,6 +169,8 @@ class BBCSoundsProvider(MusicProvider):
             )
             # This seems odd, but e.g. clearing the username and password will result in a stuck session
             await self.client.logout()
+            self.logged_in = False
+
         self.show_local_stations: bool = bool(
             self.config.get_value(_Constants.CONF_SHOW_LOCAL, False)
         )
