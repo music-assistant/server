@@ -9,7 +9,7 @@ from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
@@ -104,6 +104,15 @@ if TYPE_CHECKING:
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
     from music_assistant.providers.builtin import BuiltinProvider
+
+
+class RecentPlayedTrack(NamedTuple):
+    """A recently played track from the playlog, with the artists recorded at play time."""
+
+    item_id: str
+    provider: str
+    name: str
+    artists: list[ItemMapping]
 
 
 class MusicController(MusicDatabaseSetupMixin, CoreController):
@@ -644,6 +653,47 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
             )
         return result
+
+    async def recently_played_tracks(
+        self,
+        limit: int,
+        played_after_timestamp: int,
+        userid: str | None = None,
+    ) -> list[RecentPlayedTrack]:
+        """
+        Return recently played, fully played tracks with their recorded artists, newest first.
+
+        :param limit: Maximum number of plays to return.
+        :param played_after_timestamp: Only include plays at or after this epoch-seconds timestamp.
+        :param userid: Restrict to this user (defaults to the current session user, else all users).
+        """
+        query = (
+            f"SELECT item_id, provider, name, artists FROM {DB_TABLE_PLAYLOG} "
+            "WHERE media_type = 'track' AND fully_played = 1 "
+            "AND timestamp >= :played_after_timestamp "
+        )
+        params: dict[str, Any] = {"played_after_timestamp": played_after_timestamp}
+        if userid:
+            query += "AND userid = :userid "
+            params["userid"] = userid
+        elif user := get_current_user():
+            query += "AND userid = :userid "
+            params["userid"] = user.user_id
+        query += "ORDER BY timestamp DESC"
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            query, params=params, limit=limit
+        )
+        return [
+            RecentPlayedTrack(
+                item_id=db_row["item_id"],
+                provider=db_row["provider"],
+                name=db_row["name"],
+                artists=[ItemMapping.from_dict(artist) for artist in json_loads(db_row["artists"])]
+                if db_row["artists"]
+                else [],
+            )
+            for db_row in db_rows
+        ]
 
     @api_command("music/recently_added_tracks", required_scope=Scope.LIBRARY_READ)
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
