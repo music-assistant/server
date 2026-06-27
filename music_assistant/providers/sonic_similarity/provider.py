@@ -467,7 +467,8 @@ class SonicSimilarityPlugin(PluginProvider):
         seed_weights: list[float] | None = None,
         diversity: float = 0.0,
         preset: str = "balanced",
-        candidates: int = 50,
+        # Candidate pool size for the weighted rerank (large enough for the aggressive presets).
+        candidates: int = 200,
         filter_genres: list[str] | None = None,
         filter_providers: list[str] | None = None,
         exclude_track_ids: list[str] | None = None,

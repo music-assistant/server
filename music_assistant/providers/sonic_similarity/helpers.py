@@ -55,7 +55,7 @@ def _parse_similar_params(  # noqa: PLR0913
     seed_weights: list[float] | None = None,
     diversity: float = 0.0,
     preset: str = "balanced",
-    candidates: int = 50,
+    candidates: int = 200,
     filter_genres: list[str] | None = None,
     filter_providers: list[str] | None = None,
     exclude_track_ids: list[str] | None = None,

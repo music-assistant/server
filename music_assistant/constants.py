@@ -188,6 +188,7 @@ DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
 DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
+DB_TABLE_AUDIOBOOK_ARTISTS: Final[str] = "audiobook_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
@@ -259,7 +260,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
-PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music")
+PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
 
 
 ####### REUSABLE CONFIG ENTRIES #######

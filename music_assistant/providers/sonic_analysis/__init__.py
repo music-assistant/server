@@ -18,6 +18,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
+    ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS,
     AnalysisSessionData,
     AudioAnalysisProvider,
 )
@@ -325,6 +326,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider running librosa scalars + CLAP zero-shot per track."""
 
     analysis_version: int = 1
+    max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
 
     def __init__(
         self,

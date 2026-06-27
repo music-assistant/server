@@ -73,11 +73,11 @@ Supporting modules in `helpers/`:
 
 ### Key Methods
 
-- `AudioBuffer.get_buffer()` - Static factory that creates or reuses a buffer. Reads config, determines mode, attaches analyze callbacks, starts filling
+- `AudioBuffer.get_buffer()` - Static factory that creates or reuses a buffer. Reads config, determines mode, starts the analysis reader, starts filling
 - `AudioBuffer.get_stream()` - Get processed audio with optional filters/resampling applied
-- `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio
+- `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio (playback consumer)
+- `AudioBuffer.read_chunk_for_analysis()` - Read one chunk for a passive analysis reader without mutating the buffer; raises when the chunk has been evicted (reader fell behind)
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
-- `AudioBuffer.register_chunk_callback()` - Register a callback to observe chunks as they are buffered
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
 
 ### Buffer Lifecycle
@@ -85,7 +85,7 @@ Supporting modules in `helpers/`:
 ```
 1. _load_item() fetches stream details, creates buffer with wait_ready=True
 2. Buffer starts filling from get_media_stream() in background
-3. Analyze callbacks (loudness, smart fades) process chunks as they arrive
+3. Analysis (loudness, smart fades) reads the same buffer in parallel, at lower priority
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
 5. ~30s before track end: _prepare_next_audio_buffer() pre-fills next track
 6. _cleanup_stale_queue_buffers() clears old buffers to free memory

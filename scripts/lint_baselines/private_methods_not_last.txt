@@ -18,8 +18,10 @@ music_assistant/providers/bandcamp/__init__.py	12
 music_assistant/providers/bbc_sounds/__init__.py	12
 music_assistant/providers/bbc_sounds/adaptor.py	5
 music_assistant/providers/bluesound/player.py	3
-music_assistant/providers/deezer/__init__.py	41
-music_assistant/providers/deezer/gw_client.py	6
+music_assistant/providers/deezer/browse.py	4
+music_assistant/providers/deezer/gw_client.py	5
+music_assistant/providers/deezer/media.py	27
+music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
 music_assistant/providers/emby/__init__.py	16
 music_assistant/providers/fastmcp_server/debug/log_reader.py	2

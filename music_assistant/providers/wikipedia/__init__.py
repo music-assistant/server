@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-    from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzRelation
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzRelation
 
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.ARTIST_METADATA}
