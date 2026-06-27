@@ -5,10 +5,8 @@ TODO implement seeking of live stream
 """
 
 import asyncio
-import copy
-import time
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -137,8 +135,6 @@ class BBCSoundsProvider(MusicProvider):
 
     client: SoundsClient
     menu: Menu | None = None
-    current_task: asyncio.Task[None] | None = None
-    # A weak proxy variable so we can track if we should be showing the full menu or not
     logged_in: bool = False
 
     async def handle_async_init(self) -> None:
@@ -180,8 +176,6 @@ class BBCSoundsProvider(MusicProvider):
             else _Constants.HLS
         )
         self.adaptor = Adaptor(self)
-        # Two simple internal caches to reduce API calls
-        self._stream_details_cache: dict[str, tuple[StreamDetails, float]] = {}
 
     async def loaded_in_mass(self) -> None:
         """Do post-loaded actions."""
@@ -282,17 +276,6 @@ class BBCSoundsProvider(MusicProvider):
 
     async def _catch_up_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for catch-up content."""
-        cached, expiry = self._stream_details_cache.get(item_id, (None, 0.0))
-
-        if cached is not None and time.time() < expiry:
-            self.logger.debug(f"Cache hit for {item_id}, returning")
-            return copy.copy(cached)
-
-        programme = await self._get_programme(item_id)
-
-        if not programme:
-            raise self._stream_error(item_id, media_type)
-
         episode = await self.client.streaming.get_by_pid(
             item_id,
             include_stream=True,
@@ -307,13 +290,7 @@ class BBCSoundsProvider(MusicProvider):
         stream_details.data = {"vpid": programme["id"], "pid": episode.pid}
         stream_details.stream_metadata_update_callback = self._update_on_demand_stream_metadata
         stream_details.stream_metadata_update_interval = _Constants.NOW_PLAYING_REFRESH_TIME
-        if item_id not in self._stream_details_cache:
-            self.logger.debug(f"Cache miss for {item_id}, adding")
-            self._stream_details_cache[item_id] = (
-                copy.copy(stream_details),
-                time.time() + _Constants.SHORT_EXPIRATION,
-            )
-        return copy.copy(stream_details)
+        return stream_details
 
     async def _get_station_stream_details(self, item_id: str) -> StreamDetails:
         """Fetch stream details for a live station."""
