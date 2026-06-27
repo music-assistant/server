@@ -7,13 +7,14 @@ from typing import TYPE_CHECKING, Any
 
 import podcastparser
 from aiohttp.client import ClientError, ClientTimeout
-from music_assistant_models.enums import ContentType, ImageType, MediaType
+from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemChapter,
     MediaItemImage,
+    MediaItemLink,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
@@ -212,6 +213,19 @@ def parse_podcast_episode(
     if description := episode.get("description"):
         mass_episode.metadata.description = description
 
+    # explicit flag (itunes:explicit); only set when the feed actually declared it
+    explicit = episode.get("explicit")
+    if explicit is not None:
+        mass_episode.metadata.explicit = bool(explicit)
+
+    # episode webpage (the item <link>)
+    if link := episode.get("link"):
+        mass_episode.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=link)}
+
+    # hosts/guests (podcast:person), mapped to performer names
+    if performers := parse_podcast_persons(episode.get("persons")):
+        mass_episode.metadata.performers = set(performers)
+
     # inline chapters (Podlove Simple Chapters, parsed by podcastparser)
     if chapters := episode.get("chapters"):
         _chapters = []
@@ -240,6 +254,34 @@ def parse_podcast_episode(
         )
 
     return mass_episode
+
+
+def parse_podcast_persons(persons: Any) -> list[str]:
+    """
+    Extract performer names from a Podcasting 2.0 ``podcast:person`` collection.
+
+    Accepts the persons list as produced by podcastparser (feeds) or by the Podcast
+    Index API; both expose a ``name`` per entry. Roles, links and images are dropped
+    (no corresponding metadata field). Order is preserved and duplicate names
+    (case-insensitive, trimmed) are removed. Any non-list input yields no names, so
+    callers can pass a raw ``.get("persons")`` without guarding.
+
+    :param persons: The raw persons collection, or any value (non-lists yield []).
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(persons, list):
+        return names
+    for person in persons:
+        name = person.get("name") if isinstance(person, dict) else person
+        if not isinstance(name, str) or not (name := name.strip()):
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
 
 
 def _coerce_seconds(value: Any) -> float | None:
@@ -287,19 +329,26 @@ def parse_chapters_from_json(data: dict[str, Any]) -> list[MediaItemChapter]:
 async def enrich_episode_chapters(
     *,
     session: aiohttp.ClientSession,
-    episode: dict[str, Any],
+    chapters_json_url: str | None,
     mass_episode: PodcastEpisode,
 ) -> None:
     """
     Attach ``podcast:chapters`` (external JSON) to an episode lacking inline chapters.
 
-    Chapter data is supplementary: any fetch/parse failure is logged and ignored so
-    it can never break episode resolution or playback. Intended for the single-episode
-    path only, to avoid a network request per episode when listing a whole podcast.
+    Transport-agnostic: the caller supplies the chapters JSON URL directly (e.g.
+    podcastparser's ``chapters_json_url`` or the Podcast Index API ``chaptersUrl``),
+    so any podcast provider can reuse it. Chapter data is supplementary: any
+    fetch/parse failure is logged and ignored so it can never break episode
+    resolution or playback. Intended for the single-episode path only, to avoid a
+    network request per episode when listing a whole podcast.
+
+    :param session: The aiohttp session used for the best-effort fetch.
+    :param chapters_json_url: The Podcasting 2.0 chapters JSON URL, or None to skip.
+    :param mass_episode: The episode to enrich; untouched if it already has chapters.
     """
     if mass_episode.metadata.chapters:
         return
-    url = episode.get("chapters_json_url")
+    url = chapters_json_url
     if not url:
         return
     # the Mozilla UA mirrors get_podcastparser_dict: some podcast hosts/CDNs reject

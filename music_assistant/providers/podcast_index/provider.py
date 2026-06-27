@@ -25,6 +25,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import enrich_episode_chapters
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -301,6 +302,14 @@ class PodcastIndexProvider(MusicProvider):
                     episode_data, podcast_id, 0, self.instance_id, self.domain
                 )
                 if episode:
+                    # single-episode path only: fetch external podcast:chapters JSON
+                    # (Podcasting 2.0) when present, to avoid a request per episode
+                    # during full-podcast listing
+                    await enrich_episode_chapters(
+                        session=self.mass.http_session,
+                        chapters_json_url=episode_data.get("chaptersUrl"),
+                        mass_episode=episode,
+                    )
                     return episode
 
         except ProviderUnavailableError, InvalidDataError:

@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client import ClientError
+from music_assistant_models.enums import LinkType
 
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     parse_chapters_from_json,
     parse_podcast_episode,
+    parse_podcast_persons,
 )
 
 if TYPE_CHECKING:
@@ -210,7 +212,7 @@ async def test_enrich_fetches_json_chapters() -> None:
     session = _FakeSession(payload={"chapters": [{"startTime": 0, "title": "Intro"}]})
     await enrich_episode_chapters(
         session=cast("aiohttp.ClientSession", session),
-        episode={"chapters_json_url": "https://example.com/ch.json"},
+        chapters_json_url="https://example.com/ch.json",
         mass_episode=mass_episode,
     )
     assert mass_episode.metadata.chapters is not None
@@ -224,7 +226,7 @@ async def test_enrich_swallows_fetch_error() -> None:
     session = _FakeSession(error=ClientError("boom"))
     await enrich_episode_chapters(
         session=cast("aiohttp.ClientSession", session),
-        episode={"chapters_json_url": "https://example.com/ch.json"},
+        chapters_json_url="https://example.com/ch.json",
         mass_episode=mass_episode,
     )
     assert mass_episode.metadata.chapters is None
@@ -237,7 +239,7 @@ async def test_enrich_swallows_timeout() -> None:
     session = _FakeSession(error=TimeoutError())
     await enrich_episode_chapters(
         session=cast("aiohttp.ClientSession", session),
-        episode={"chapters_json_url": "https://example.com/ch.json"},
+        chapters_json_url="https://example.com/ch.json",
         mass_episode=mass_episode,
     )
     assert mass_episode.metadata.chapters is None
@@ -250,9 +252,86 @@ async def test_enrich_skips_when_inline_chapters_present() -> None:
     session = _FakeSession(payload={"chapters": [{"startTime": 5, "title": "FromJson"}]})
     await enrich_episode_chapters(
         session=cast("aiohttp.ClientSession", session),
-        episode={"chapters_json_url": "https://example.com/ch.json"},
+        chapters_json_url="https://example.com/ch.json",
         mass_episode=mass_episode,
     )
     assert session.calls == 0
     assert mass_episode.metadata.chapters is not None
     assert [c.name for c in mass_episode.metadata.chapters] == ["Inline"]
+
+
+async def test_enrich_skips_when_no_url() -> None:
+    """A falsy chapters URL is a no-op: no fetch, no chapters."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    session = _FakeSession(payload={"chapters": [{"startTime": 0, "title": "Intro"}]})
+    await enrich_episode_chapters(
+        session=cast("aiohttp.ClientSession", session),
+        chapters_json_url=None,
+        mass_episode=mass_episode,
+    )
+    assert session.calls == 0
+    assert mass_episode.metadata.chapters is None
+
+
+# --- episode webpage, explicit flag, performers ----------------------------------------------
+
+
+def test_episode_link_maps_to_website_link() -> None:
+    """An item <link> becomes a WEBSITE link on the episode metadata."""
+    mass_episode = _parse(_episode(link="https://example.com/ep1"))
+    assert mass_episode is not None
+    assert mass_episode.metadata.links is not None
+    link = next(iter(mass_episode.metadata.links))
+    assert (link.type, link.url) == (LinkType.WEBSITE, "https://example.com/ep1")
+
+
+def test_episode_missing_link_leaves_links_unset() -> None:
+    """Without an item <link>, metadata.links stays None."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    assert mass_episode.metadata.links is None
+
+
+def test_episode_explicit_only_set_when_declared() -> None:
+    """The explicit flag is set from the feed value, and left untouched when absent."""
+    explicit_ep = _parse(_episode(explicit=True))
+    assert explicit_ep is not None
+    assert explicit_ep.metadata.explicit is True
+    not_explicit = _parse(_episode(explicit=False))
+    assert not_explicit is not None
+    assert not_explicit.metadata.explicit is False
+    # absent key must not coerce to False over the model default
+    unknown = _parse(_episode())
+    assert unknown is not None
+    assert unknown.metadata.explicit is None
+
+
+def test_episode_performers_from_persons() -> None:
+    """podcast:person entries land on metadata.performers as names."""
+    mass_episode = _parse(
+        _episode(persons=[{"name": "Jane Host", "role": "host"}, {"name": "Joe Guest"}])
+    )
+    assert mass_episode is not None
+    assert mass_episode.metadata.performers == {"Jane Host", "Joe Guest"}
+
+
+# --- parse_podcast_persons -------------------------------------------------------------------
+
+
+def test_parse_podcast_persons_dedupes_and_trims() -> None:
+    """Names are trimmed, de-duplicated case-insensitively, and order-preserved."""
+    persons = [{"name": "  Alice "}, {"name": "alice"}, {"name": "Bob"}]
+    assert parse_podcast_persons(persons) == ["Alice", "Bob"]
+
+
+def test_parse_podcast_persons_skips_blank_and_malformed() -> None:
+    """Blank names, missing names, and non-dict/non-str entries are skipped."""
+    persons = [{"name": ""}, {"role": "host"}, {"name": 123}, "Carol", 7]
+    assert parse_podcast_persons(persons) == ["Carol"]
+
+
+def test_parse_podcast_persons_non_list_returns_empty() -> None:
+    """Any non-list input yields no names, so callers need not guard."""
+    assert parse_podcast_persons(None) == []
+    assert parse_podcast_persons("nope") == []
