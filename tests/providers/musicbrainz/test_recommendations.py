@@ -99,7 +99,7 @@ def provider_mock() -> Mock:
     provider = Mock()
     provider.instance_id = "musicbrainz"
     provider.logger = Mock()
-    provider.config.get_value = Mock(return_value=False)
+    provider.config.get_value = Mock(return_value=3)
     provider.mass = Mock()
     return provider
 

@@ -43,9 +43,13 @@ class MusicBrainzRecommendationManager:
         today = datetime_utc().date()
         folders: list[RecommendationFolder] = []
 
-        # Get config values (cast to int for type safety)
+        # Get config values with type safety and range validation
         days_config = self.provider.config.get_value("recommendation_days", 3)
-        days_before_after = int(days_config) if isinstance(days_config, (int, float, str)) else 3
+        try:
+            days_before_after = int(str(days_config))
+        except TypeError, ValueError:
+            days_before_after = 3
+        days_before_after = max(1, min(15, days_before_after))
 
         self.logger.info(
             "MusicBrainz recommendations: scanning %d days before/after today",

@@ -87,7 +87,7 @@ class MusicbrainzProvider(MetadataProvider):
         self._recommendations = MusicBrainzRecommendationManager(self)
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Return birthday/memorial/anniversary recommendation folders."""
+        """Return birthday/memorial recommendation folders."""
         return await self._recommendations.get_recommendations()
 
     async def search(

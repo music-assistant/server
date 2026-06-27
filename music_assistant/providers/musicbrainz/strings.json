@@ -8,7 +8,8 @@
       "description": "Number of days before and after today to scan for birthdays and memorials. For example, 3 means 3 days before through 3 days after today (7 days total)."
     }
   },
-  "recommendations": {
+  "media": {
+    "recommendations": {
     "artist_birthdays_yesterday": {
       "name": "Birthdays · Yesterday"
     },
@@ -38,6 +39,7 @@
     },
     "artist_memoriam_in_n_days": {
       "name": "In Memoriam · In {0} days"
+    }
     }
   }
 }
