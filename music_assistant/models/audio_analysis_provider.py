@@ -94,6 +94,10 @@ class AudioAnalysisProvider(Provider):
     # start_analysis. None means no limit. Providers that accumulate whole-track state set it.
     max_analysis_duration: float | None = None
 
+    # Whether this provider holds heavy ML models that can be unloaded while idle and reloaded
+    # on demand. Providers that load such models set this True (see _load_models/_free_models).
+    has_unloadable_models: bool = False
+
     def __init__(
         self,
         mass: MusicAssistant,
@@ -104,6 +108,9 @@ class AudioAnalysisProvider(Provider):
         """Initialize AudioAnalysisProvider."""
         super().__init__(mass, manifest, config, supported_features)
         self._sessions: dict[str, AnalysisSessionData] = {}
+        # Serializes (re)loading of heavy models so concurrent session starts load them once.
+        self._models_lock = asyncio.Lock()
+        self._models_loaded = False
 
     async def start_analysis(
         self,
@@ -139,6 +146,8 @@ class AudioAnalysisProvider(Provider):
             media_type=streamdetails.media_type,
         )
         if stored_version is not None and stored_version >= self.analysis_version:
+            return False
+        if self.has_unloadable_models and not await self.ensure_models_loaded():
             return False
         self._sessions[session_id] = AnalysisSessionData(
             streamdetails=streamdetails,
@@ -218,10 +227,40 @@ class AudioAnalysisProvider(Provider):
         self._sessions.pop(session_id, None)
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload, cancelling any active analysis sessions."""
+        """Handle unload, cancelling any active analysis sessions and freeing models."""
         for session_id in list(self._sessions):
             await self.cancel(session_id)
+        async with self._models_lock:
+            self._free_models()
+            self._models_loaded = False
         await super().unload(is_removed)
+
+    async def ensure_models_loaded(self) -> bool:
+        """
+        Load this provider's heavy models if they are not resident, returning success.
+
+        Safe to call from concurrent sessions: the models are loaded once. Returns False
+        when loading fails, so the caller can decline the session.
+        """
+        async with self._models_lock:
+            if self._models_loaded:
+                return True
+            try:
+                await self._load_models()
+            except Exception as err:
+                self.logger.error("Failed to load analysis models: %s", err, exc_info=err)
+                return False
+            self._models_loaded = True
+            return True
+
+    async def unload_idle_models(self) -> None:
+        """Free heavy models to reclaim memory while idle; the next analysis reloads them."""
+        async with self._models_lock:
+            if not self._models_loaded:
+                return
+            self._free_models()
+            self._models_loaded = False
+            self.logger.debug("Unloaded idle analysis models")
 
     @abstractmethod
     async def _start_analysis(
@@ -250,6 +289,14 @@ class AudioAnalysisProvider(Provider):
 
         :param session_id: The analysis session ID.
         """
+
+    async def _load_models(self) -> None:
+        """Load heavy models into memory. Override when has_unloadable_models is True."""
+        return
+
+    def _free_models(self) -> None:
+        """Drop references to heavy models so memory can be reclaimed. Override as needed."""
+        return
 
     async def _run_offloaded(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
         """
