@@ -69,6 +69,7 @@ JSON_KEYS = (
     "genre_aliases",
     "supported_mediatypes",
     "translation_params",
+    "audiobook_artists",
 )
 
 # When set (task-local), per-item MEDIA_ITEM_UPDATED events are suppressed.
@@ -1271,6 +1272,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     ]
                 else:
                     db_row_dict["metadata"]["images"] = [album_thumb]
+
+        if audiobook_artists := db_row_dict.get("audiobook_artists"):
+            _narrators = []
+            _authors = []
+            for artist in audiobook_artists:
+                artist_type = artist.get("artist_type")
+                if artist_type == "author":
+                    _authors.append(artist)
+                elif artist_type == "narrator":
+                    _narrators.append(artist)
+            if _authors:
+                # prevent overwriting string values
+                db_row_dict["authors"] = _authors
+            if _narrators:
+                # prevent overwriting string values
+                db_row_dict["narrators"] = _narrators
 
         return db_row_dict
 

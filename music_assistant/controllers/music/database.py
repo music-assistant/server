@@ -25,6 +25,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
@@ -282,7 +283,8 @@ class MusicDatabaseSetupMixin:
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [artist_type] TEXT NOT NULL
             );"""
         )
         await self.database.execute(
@@ -478,6 +480,15 @@ class MusicDatabaseSetupMixin:
             FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
             FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
             UNIQUE(album_id, artist_id)
+            );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIOBOOK_ARTISTS}(
+            [audiobook_id] INTEGER NOT NULL,
+            [artist_id] INTEGER NOT NULL,
+            FOREIGN KEY([audiobook_id]) REFERENCES [audiobooks]([item_id]),
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+            UNIQUE(audiobook_id, artist_id)
             );"""
         )
 

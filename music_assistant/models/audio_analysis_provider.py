@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from abc import abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
@@ -28,6 +30,12 @@ _T = TypeVar("_T")
 # DEBUG-log offloads that wait longer than this (seconds) for a permit -- time
 # spent queued behind the concurrency cap rather than computing.
 _PERMIT_WAIT_DEBUG_THRESHOLD = 0.5
+
+# Providers that accumulate whole-track feature state (beat grids, per-chunk VQT, CLAP windows)
+# cap analysis at this duration. Multi-hour mixes/audiobooks would hold hundreds of MB of
+# feature state and tie up the scan for hours, and smart crossfade/similarity carry no meaning
+# at that length. Providers opt in by setting max_analysis_duration.
+ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS = 1800.0
 
 
 # Subclass rather than wrap so existing isinstance(..., asyncio.Semaphore) checks keep
@@ -82,6 +90,10 @@ class AudioAnalysisProvider(Provider):
     # the stored version to decide whether to re-analyze a track.
     analysis_version: int = 1
 
+    # Maximum track duration (seconds) this provider will analyze; longer tracks are skipped by
+    # start_analysis. None means no limit. Providers that accumulate whole-track state set it.
+    max_analysis_duration: float | None = None
+
     def __init__(
         self,
         mass: MusicAssistant,
@@ -108,6 +120,18 @@ class AudioAnalysisProvider(Provider):
         :param streamdetails: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        if (
+            self.max_analysis_duration is not None
+            and streamdetails.duration
+            and streamdetails.duration > self.max_analysis_duration
+        ):
+            self.logger.debug(
+                "Skipping analysis for %s: %.0fs exceeds the %.0fs limit",
+                streamdetails.uri,
+                streamdetails.duration,
+                self.max_analysis_duration,
+            )
+            return False
         stored_version = await self.mass.streams.audio_analysis.get_audio_analysis_version(
             streamdetails.item_id,
             streamdetails.provider,
@@ -229,26 +253,43 @@ class AudioAnalysisProvider(Provider):
 
     async def _run_offloaded(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
         """
-        Run a blocking analysis function in a worker thread, bounded by the CPU cap.
+        Run a blocking analysis function on the niced analysis thread pool.
 
-        The AudioAnalysisController caps how many of these run at once (half the cores) so
-        analysis never occupies the whole box; when no cap is configured this is a plain
-        asyncio.to_thread call. Route all CPU-heavy analysis work through this.
+        Route all CPU-heavy analysis work through this. The controller's semaphore caps
+        concurrency, and while any player is streaming the solo lock holds analysis to one
+        offload at a time so it stays below playback. Falls back to asyncio.to_thread when the
+        controller has no pool configured.
 
-        The permit is held until the worker thread actually finishes, even if the awaiting
-        coroutine is cancelled (e.g. a provider evicted on timeout, or a cancelled session):
-        asyncio.to_thread cannot stop a running thread, so releasing on cancellation would let
-        extra threads keep running and exceed the cap on exactly the hosts it protects.
+        The slot (semaphore permit and solo lock) is held until the worker thread finishes,
+        even if the awaiting coroutine is cancelled: the thread keeps running, so it must keep
+        counting against the caps.
 
         :param func: The blocking callable to run off the event loop.
         :param args: Positional arguments passed to func.
         :param kwargs: Keyword arguments passed to func.
         """
-        semaphore = self.mass.streams.audio_analysis.analysis_semaphore
+        controller = self.mass.streams.audio_analysis
+        semaphore = controller.analysis_semaphore
         if not isinstance(semaphore, asyncio.Semaphore):
             return await asyncio.to_thread(func, *args, **kwargs)
 
+        # While a player streams, take the solo lock so analysis runs one offload at a time:
+        # the GIL serializes Python execution, so concurrent inference starves the playback
+        # loop. Idle, the semaphore alone caps concurrency and background work uses spare cores.
+        solo = getattr(controller, "analysis_solo_lock", None)
+        solo_lock = solo if isinstance(solo, asyncio.Lock) else None
+        take_solo = False
+        if solo_lock is not None:
+            try:
+                take_solo = bool(controller.playback_active())
+            except Exception:
+                take_solo = False
+
+        solo_held = False
+
         def _release(done: asyncio.Future[_T]) -> None:
+            if solo_held and solo_lock is not None:
+                solo_lock.release()
             semaphore.release()
             # Retrieve any exception so a cancelled awaiter doesn't leave it unretrieved.
             if not done.cancelled():
@@ -256,27 +297,40 @@ class AudioAnalysisProvider(Provider):
 
         wait_start = time.monotonic()
         await semaphore.acquire()
+        try:
+            if take_solo and solo_lock is not None:
+                await solo_lock.acquire()
+                solo_held = True
+        except BaseException:
+            # Cancelled (or failed) waiting for the solo lock — give the permit back.
+            semaphore.release()
+            raise
         wait_seconds = time.monotonic() - wait_start
         if wait_seconds >= _PERMIT_WAIT_DEBUG_THRESHOLD and isinstance(
             semaphore, InstrumentedSemaphore
         ):
             self.logger.debug(
-                "Analysis offload waited %.1fs for a permit (%d/%d permits in use, %d queued)",
+                "Analysis offload waited %.1fs for a slot (%d/%d permits in use, %d queued)",
                 wait_seconds,
                 semaphore.in_flight,
                 semaphore.capacity,
                 semaphore.waiters,
             )
+        executor = getattr(controller, "analysis_executor", None)
         try:
-            future: asyncio.Future[_T] = asyncio.ensure_future(
-                asyncio.to_thread(func, *args, **kwargs)
-            )
+            if isinstance(executor, ThreadPoolExecutor):
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future[_T] = asyncio.ensure_future(
+                    loop.run_in_executor(executor, functools.partial(func, *args, **kwargs))
+                )
+            else:
+                future = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
         except Exception:
-            # Scheduling the worker failed (e.g. the loop is shutting down) — release the
-            # permit we just took so it isn't leaked, which would shrink the cap over time.
+            # Scheduling failed (e.g. loop shutting down) — release the slot so it isn't leaked.
+            if solo_held and solo_lock is not None:
+                solo_lock.release()
             semaphore.release()
             raise
         future.add_done_callback(_release)
-        # shield: if this coroutine is cancelled, the thread (and the permit) lives on until
-        # the work completes, rather than freeing the permit while the thread still runs.
+        # shield: a cancelled awaiter leaves the thread and its slot held until the work finishes.
         return await asyncio.shield(future)

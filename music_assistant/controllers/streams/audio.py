@@ -46,7 +46,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import AudioFormat, Track
 from music_assistant_models.player_queue import PlayLogEntry
-from music_assistant_models.streamdetails import StreamMetadata
+from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
@@ -130,6 +130,16 @@ WARMUP_DURATION = 8
 # Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
 # latency below ~50 ms while still amortising per-chunk overhead.
 AUDIO_SOURCE_CHUNK_SECONDS = 0.02
+
+# Terminal errors get_icy_radio_stream raises once a single mirror is exhausted; the
+# multi-mirror reader treats these as the signal to fail over to the next URL.
+RADIO_MIRROR_FAILOVER_ERRORS = (
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+    ProviderUnavailableError,
+    RetriesExhausted,
+    InvalidDataError,
+)
 
 
 @dataclass
@@ -418,8 +428,9 @@ class StreamsAudio:
             )
             seek_position = 0 if streamdetails.can_seek else seek_position
         elif stream_type == StreamType.ICY:
-            assert isinstance(streamdetails.path, str)
-            audio_source = self.get_icy_radio_stream(streamdetails.path, streamdetails)
+            assert streamdetails.path is not None
+            assert isinstance(streamdetails.path, (str, list))
+            audio_source = self.get_reconnecting_icy_radio_stream(streamdetails.path, streamdetails)
             seek_position = 0
         elif stream_type == StreamType.SHOUTCAST:
             assert isinstance(streamdetails.path, str)
@@ -767,6 +778,54 @@ class StreamsAudio:
                         err,
                     )
                 await asyncio.sleep(0.5)
+
+    async def get_reconnecting_icy_radio_stream(
+        self, url: str | list[MultiPartPath], streamdetails: StreamDetails
+    ) -> AsyncGenerator[bytes]:
+        """
+        Yield ICY radio audio with metadata, failing over across mirror URLs.
+
+        A single URL is delegated to :meth:`get_icy_radio_stream`, which already reconnects
+        on disconnect. Multiple URLs are treated as interchangeable mirrors and tried in turn;
+        a mirror that delivers audio resets the failover budget, so a healthy mirror keeps
+        streaming while a set of unreachable mirrors raises the last error instead of spinning.
+
+        :param url: One stream URL, or a list of mirror URLs to fail over between.
+        :param streamdetails: StreamDetails to update with metadata.
+        """
+        urls = self._normalize_reconnecting_urls(url)
+        if len(urls) == 1:
+            async for chunk in self.get_icy_radio_stream(urls[0], streamdetails):
+                yield chunk
+            return
+
+        url_index = 0
+        failed_rotations = 0
+        max_failed_rotations = len(urls) * 2
+        last_err: MusicAssistantError | None = None
+        while failed_rotations <= max_failed_rotations:
+            current_url = urls[url_index % len(urls)]
+            url_index += 1
+            delivered_audio = False
+            try:
+                async for chunk in self.get_icy_radio_stream(current_url, streamdetails):
+                    delivered_audio = True
+                    failed_rotations = 0
+                    yield chunk
+                return
+            except RADIO_MIRROR_FAILOVER_ERRORS as err:
+                last_err = err
+                if not delivered_audio:
+                    failed_rotations += 1
+                self.logger.warning(
+                    "ICY radio mirror %s failed, trying next url (%d/%d): %s",
+                    current_url,
+                    failed_rotations,
+                    max_failed_rotations,
+                    err,
+                )
+        if last_err is not None:
+            raise last_err
 
     async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes]:
         """
@@ -3077,3 +3136,13 @@ class StreamsAudio:
 
         except Exception as err:
             self.logger.debug("Error fetching HLS metadata: %s", err)
+
+    @staticmethod
+    def _normalize_reconnecting_urls(url: str | list[MultiPartPath]) -> list[str]:
+        """Normalize a single URL or a sequence into a non-empty list."""
+        if isinstance(url, str):
+            return [url]
+        if not url:
+            msg = "Radio stream requires at least one URL"
+            raise InvalidDataError(msg)
+        return [part.path for part in url]

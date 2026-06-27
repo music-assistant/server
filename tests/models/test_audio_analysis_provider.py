@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -127,6 +128,48 @@ async def test_finalize_swallows_post_analysis_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_analysis_skips_tracks_over_max_duration() -> None:
+    """A provider with max_analysis_duration set rejects longer tracks before any DB/work."""
+    provider = _make_provider()
+    provider.max_analysis_duration = 1800.0
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    streamdetails = MagicMock()
+    streamdetails.duration = 7200  # 2 hours
+
+    accepted = await provider.start_analysis("s", streamdetails, MagicMock())
+
+    assert accepted is False
+    provider._start_analysis.assert_not_awaited()
+    # The duration gate comes first, so the version lookup is skipped too.
+    version_lookup = provider.mass.streams.audio_analysis.get_audio_analysis_version
+    version_lookup.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_allows_tracks_under_max_duration() -> None:
+    """Tracks within the cap proceed to the provider's own _start_analysis."""
+    provider = _make_provider()
+    provider.max_analysis_duration = 1800.0
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    streamdetails = MagicMock()
+    streamdetails.duration = 240
+
+    assert await provider.start_analysis("s", streamdetails, MagicMock()) is True
+    provider._start_analysis.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_no_duration_cap_by_default() -> None:
+    """With max_analysis_duration unset, even a very long track is accepted."""
+    provider = _make_provider()
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    streamdetails = MagicMock()
+    streamdetails.duration = 99999
+
+    assert await provider.start_analysis("s", streamdetails, MagicMock()) is True
+
+
+@pytest.mark.asyncio
 async def test_run_offloaded_acquires_semaphore_when_present() -> None:
     """_run_offloaded holds the controller's analysis semaphore while the work runs."""
     provider = _make_provider()
@@ -182,6 +225,92 @@ async def test_run_offloaded_holds_permit_until_thread_finishes_on_cancel() -> N
             break
         await asyncio.sleep(0.02)
     assert not semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_run_offloaded_serializes_to_one_while_streaming() -> None:
+    """While a player is streaming, offloads run one at a time even if the semaphore allows more."""
+    provider = _make_provider()
+    ctrl = provider.mass.streams.audio_analysis
+    ctrl.analysis_semaphore = InstrumentedSemaphore(4)  # plenty of permits
+    ctrl.analysis_solo_lock = asyncio.Lock()
+    ctrl.analysis_executor = None  # fall back to asyncio.to_thread
+    ctrl.playback_active = MagicMock(return_value=True)  # type: ignore[method-assign]
+
+    first_started = threading.Event()
+    first_may_finish = threading.Event()
+    second_started = threading.Event()
+
+    def _first() -> str:
+        first_started.set()
+        first_may_finish.wait(timeout=5)
+        return "first"
+
+    def _second() -> str:
+        second_started.set()
+        return "second"
+
+    t1 = asyncio.create_task(provider._run_offloaded(_first))
+    assert await asyncio.to_thread(first_started.wait, 5)
+
+    # The second offload must block on the solo lock while the first holds it.
+    t2 = asyncio.create_task(provider._run_offloaded(_second))
+    await asyncio.sleep(0.1)
+    assert not second_started.is_set()
+
+    first_may_finish.set()
+    assert await t1 == "first"
+    assert await t2 == "second"
+    assert second_started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_run_offloaded_runs_concurrently_when_idle() -> None:
+    """With no player streaming, the solo lock is not taken and offloads overlap up to the cap."""
+    provider = _make_provider()
+    ctrl = provider.mass.streams.audio_analysis
+    ctrl.analysis_semaphore = InstrumentedSemaphore(4)
+    ctrl.analysis_solo_lock = asyncio.Lock()
+    ctrl.analysis_executor = None
+    ctrl.playback_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+
+    first_started = threading.Event()
+    first_may_finish = threading.Event()
+    second_started = threading.Event()
+
+    def _first() -> str:
+        first_started.set()
+        first_may_finish.wait(timeout=5)
+        return "first"
+
+    def _second() -> str:
+        second_started.set()
+        return "second"
+
+    t1 = asyncio.create_task(provider._run_offloaded(_first))
+    assert await asyncio.to_thread(first_started.wait, 5)
+    t2 = asyncio.create_task(provider._run_offloaded(_second))
+    # Idle: the second offload runs without waiting for the first to finish.
+    assert await asyncio.to_thread(second_started.wait, 5)
+
+    first_may_finish.set()
+    await asyncio.gather(t1, t2)
+
+
+@pytest.mark.asyncio
+async def test_run_offloaded_uses_dedicated_executor_when_present() -> None:
+    """Offloads run on the controller's dedicated (niced) analysis pool when configured."""
+    provider = _make_provider()
+    ctrl = provider.mass.streams.audio_analysis
+    ctrl.analysis_semaphore = InstrumentedSemaphore(1)
+    ctrl.analysis_solo_lock = None  # not an asyncio.Lock -> solo step skipped
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
+    ctrl.analysis_executor = executor
+    try:
+        thread_name = await provider._run_offloaded(lambda: threading.current_thread().name)
+    finally:
+        executor.shutdown(wait=False)
+    assert thread_name.startswith("analysis")
 
 
 @pytest.mark.asyncio
