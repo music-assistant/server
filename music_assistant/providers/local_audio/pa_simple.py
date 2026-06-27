@@ -680,22 +680,32 @@ def suspend_resume_sink(sink_name: str) -> None:
 
     :param sink_name: PA sink name to suspend and resume.
     """
+    import shutil  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
     import time  # noqa: PLC0415
 
+    if not (pactl_bin := shutil.which("pactl")):
+        return
+
+    env = {**os.environ}
+    if pulse_server := _get_pulse_server():
+        env["PULSE_SERVER"] = pulse_server
+
     try:
         subprocess.run(  # noqa: S603
-            ["pactl", "suspend-sink", sink_name, "1"],  # noqa: S607
+            [pactl_bin, "suspend-sink", sink_name, "1"],  # noqa: S607
             check=True,
             capture_output=True,
             timeout=3,
+            env=env,
         )
         time.sleep(0.5)
         subprocess.run(  # noqa: S603
-            ["pactl", "suspend-sink", sink_name, "0"],  # noqa: S607
+            [pactl_bin, "suspend-sink", sink_name, "0"],  # noqa: S607
             check=True,
             capture_output=True,
             timeout=3,
+            env=env,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):  # fmt: skip
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):  # fmt: skip
         pass
