@@ -1853,3 +1853,159 @@ async def test_refresh_ai_description_skips_flush_when_unchanged(tmp_path: Any) 
     await plugin._refresh_ai_description("abc")
 
     cast("Any", plugin)._flush_rules_to_disk.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Genre AND logic filtering tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_filter_tracks_with_all_genres_filters_correctly() -> None:
+    """_filter_tracks_with_all_genres returns only tracks that have ALL required genres."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # Create mock tracks with library provider mappings
+    track_1 = _make_mock_track("1", uri="library://track/1")
+    track_1_mapping = MagicMock()
+    track_1_mapping.provider_domain = "library"
+    track_1_mapping.item_id = "101"
+    track_1.provider_mappings = [track_1_mapping]
+
+    track_2 = _make_mock_track("2", uri="library://track/2")
+    track_2_mapping = MagicMock()
+    track_2_mapping.provider_domain = "library"
+    track_2_mapping.item_id = "102"
+    track_2.provider_mappings = [track_2_mapping]
+
+    track_3 = _make_mock_track("3", uri="library://track/3")
+    track_3_mapping = MagicMock()
+    track_3_mapping.provider_domain = "library"
+    track_3_mapping.item_id = "103"
+    track_3.provider_mappings = [track_3_mapping]
+
+    tracks = [track_1, track_2, track_3]
+
+    # Mock genres for each track:
+    # Track 101: has genres 10 and 20 (matches requirement)
+    # Track 102: has only genre 10 (missing 20, should be filtered out)
+    # Track 103: has genres 10, 20, and 30 (matches requirement with extra genre)
+    async def mock_get_genres(_media_type: Any, media_id: int) -> list[MagicMock]:
+        genre_10 = MagicMock()
+        genre_10.item_id = "10"
+        genre_20 = MagicMock()
+        genre_20.item_id = "20"
+        genre_30 = MagicMock()
+        genre_30.item_id = "30"
+
+        if media_id == 101:
+            return [genre_10, genre_20]
+        if media_id == 102:
+            return [genre_10]
+        if media_id == 103:
+            return [genre_10, genre_20, genre_30]
+        return []
+
+    cast("Any", plugin.mass.music.genres).get_genres_for_media_item = mock_get_genres
+
+    # Require genres 10 AND 20
+    result = await plugin._filter_tracks_with_all_genres(cast("Any", tracks), [10, 20])
+
+    # Only tracks 1 and 3 should be returned (have both genres 10 and 20)
+    assert len(result) == 2
+    result_uris = {t.uri for t in result}
+    assert "library://track/1" in result_uris
+    assert "library://track/3" in result_uris
+    assert "library://track/2" not in result_uris
+
+
+@pytest.mark.asyncio
+async def test_filter_tracks_with_all_genres_preserves_order() -> None:
+    """_filter_tracks_with_all_genres preserves the original track order."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # Create tracks in specific order: 103, 101, 102
+    track_3 = _make_mock_track("3", uri="library://track/3")
+    track_3_mapping = MagicMock()
+    track_3_mapping.provider_domain = "library"
+    track_3_mapping.item_id = "103"
+    track_3.provider_mappings = [track_3_mapping]
+
+    track_1 = _make_mock_track("1", uri="library://track/1")
+    track_1_mapping = MagicMock()
+    track_1_mapping.provider_domain = "library"
+    track_1_mapping.item_id = "101"
+    track_1.provider_mappings = [track_1_mapping]
+
+    track_2 = _make_mock_track("2", uri="library://track/2")
+    track_2_mapping = MagicMock()
+    track_2_mapping.provider_domain = "library"
+    track_2_mapping.item_id = "102"
+    track_2.provider_mappings = [track_2_mapping]
+
+    tracks = [track_3, track_1, track_2]
+
+    # All three tracks have both required genres
+    async def mock_get_genres(_media_type: Any, _media_id: int) -> list[MagicMock]:
+        genre_10 = MagicMock()
+        genre_10.item_id = "10"
+        genre_20 = MagicMock()
+        genre_20.item_id = "20"
+        return [genre_10, genre_20]
+
+    cast("Any", plugin.mass.music.genres).get_genres_for_media_item = mock_get_genres
+
+    result = await plugin._filter_tracks_with_all_genres(cast("Any", tracks), [10, 20])
+
+    # Order should be preserved: track 3, track 1, track 2
+    assert len(result) == 3
+    assert result[0].uri == "library://track/3"
+    assert result[1].uri == "library://track/1"
+    assert result[2].uri == "library://track/2"
+
+
+@pytest.mark.asyncio
+async def test_filter_tracks_with_all_genres_handles_non_numeric_genre_ids() -> None:
+    """_filter_tracks_with_all_genres ignores genres with non-numeric IDs."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    track_1 = _make_mock_track("1", uri="library://track/1")
+    track_1_mapping = MagicMock()
+    track_1_mapping.provider_domain = "library"
+    track_1_mapping.item_id = "101"
+    track_1.provider_mappings = [track_1_mapping]
+
+    tracks = [track_1]
+
+    # Return a mix of numeric and non-numeric genre IDs
+    async def mock_get_genres(_media_type: Any, _media_id: int) -> list[MagicMock]:
+        genre_10 = MagicMock()
+        genre_10.item_id = "10"
+        genre_20 = MagicMock()
+        genre_20.item_id = "20"
+        genre_invalid = MagicMock()
+        genre_invalid.item_id = "bandcamp:123-456"  # non-numeric
+        return [genre_10, genre_20, genre_invalid]
+
+    cast("Any", plugin.mass.music.genres).get_genres_for_media_item = mock_get_genres
+
+    # Should still match because track has genres 10 and 20 (ignoring the invalid one)
+    result = await plugin._filter_tracks_with_all_genres(cast("Any", tracks), [10, 20])
+
+    assert len(result) == 1
+    assert result[0].uri == "library://track/1"
