@@ -310,6 +310,7 @@ async def test_realtime_sessions_capped_evicting_oldest(
         sd.provider = "test"
         sd.item_id = f"t{i}"
         sd.media_type = MediaType.TRACK
+        sd.queue_id = "queue-1"  # same queue, so the per-queue cap applies
         keys.append(sd.uri)
         await controller.start_analysis(AudioBuffer(TEST_PCM_FORMAT), sd)
 
@@ -321,6 +322,44 @@ async def test_realtime_sessions_capped_evicting_oldest(
     mock_provider.cancel.assert_any_call(keys[0])
 
     # Drain the pending reader/cancel tasks so nothing leaks past the test.
+    for task in mock_mass._created_tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*mock_mass._created_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_realtime_session_cap_is_per_queue(
+    controller: AudioAnalysisController,
+    mock_provider: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """Concurrent queues are capped independently; one queue's burst can't evict another's."""
+
+    async def _start(uri: str, queue_id: str) -> None:
+        sd = MagicMock()
+        sd.uri = uri
+        sd.provider = "test"
+        sd.item_id = uri
+        sd.media_type = MediaType.TRACK
+        sd.queue_id = queue_id
+        await controller.start_analysis(AudioBuffer(TEST_PCM_FORMAT), sd)
+
+    # Fill two queues to the cap each (interleaved).
+    for i in range(REALTIME_ANALYSIS_MAX_SESSIONS):
+        await _start(f"a://{i}", "queueA")
+        await _start(f"b://{i}", "queueB")
+
+    # Both queues are fully populated and nothing was evicted across queues.
+    assert len(controller._workers) == 2 * REALTIME_ANALYSIS_MAX_SESSIONS
+    mock_provider.cancel.assert_not_called()
+
+    # One more in queueA evicts queueA's oldest only; queueB is untouched.
+    await _start("a://new", "queueA")
+    assert "a://0" not in controller._workers
+    assert "b://0" in controller._workers
+    mock_provider.cancel.assert_called_once_with("a://0")
+
     for task in mock_mass._created_tasks:
         if not task.done():
             task.cancel()
