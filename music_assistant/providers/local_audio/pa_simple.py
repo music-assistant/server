@@ -685,14 +685,14 @@ def suspend_resume_sink(sink_name: str) -> None:
 
     try:
         subprocess.run(  # noqa: S603
-            ["pactl", "suspend-sink", sink_name, "1"],
+            ["pactl", "suspend-sink", sink_name, "1"],  # noqa: S607
             check=True,
             capture_output=True,
             timeout=3,
         )
         time.sleep(0.5)
         subprocess.run(  # noqa: S603
-            ["pactl", "suspend-sink", sink_name, "0"],
+            ["pactl", "suspend-sink", sink_name, "0"],  # noqa: S607
             check=True,
             capture_output=True,
             timeout=3,
