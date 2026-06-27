@@ -330,3 +330,72 @@ async def test_run_offloaded_releases_permit_if_scheduling_fails() -> None:
         await provider._run_offloaded(lambda: "x")
 
     assert not semaphore.locked()  # permit released despite the failure
+
+
+@pytest.mark.asyncio
+async def test_ensure_models_loaded_loads_once() -> None:
+    """Concurrent ensure_models_loaded calls load the heavy models a single time."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    calls = 0
+
+    async def _load() -> None:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+
+    provider._load_models = _load  # type: ignore[method-assign]
+
+    results = await asyncio.gather(*(provider.ensure_models_loaded() for _ in range(5)))
+
+    assert all(results)
+    assert calls == 1
+    assert provider._models_loaded is True
+
+
+@pytest.mark.asyncio
+async def test_unload_idle_models_frees_then_reloads() -> None:
+    """unload_idle_models frees the models; the next ensure reloads them."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    load_calls = 0
+    free_calls = 0
+
+    async def _load() -> None:
+        nonlocal load_calls
+        load_calls += 1
+
+    def _free() -> None:
+        nonlocal free_calls
+        free_calls += 1
+
+    provider._load_models = _load  # type: ignore[method-assign]
+    provider._free_models = _free  # type: ignore[method-assign]
+
+    await provider.ensure_models_loaded()
+    await provider.unload_idle_models()
+    assert free_calls == 1
+    assert provider._models_loaded is False
+
+    await provider.ensure_models_loaded()
+    assert load_calls == 2  # reloaded on demand
+    assert provider._models_loaded is True
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_rejects_when_model_load_fails() -> None:
+    """A provider whose model load fails declines the session instead of starting it."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    async def _load() -> None:
+        raise RuntimeError("model load boom")
+
+    provider._load_models = _load  # type: ignore[method-assign]
+    streamdetails = MagicMock()
+    streamdetails.duration = 120
+
+    assert await provider.start_analysis("s", streamdetails, MagicMock()) is False
+    provider._start_analysis.assert_not_awaited()
+    assert provider._models_loaded is False
