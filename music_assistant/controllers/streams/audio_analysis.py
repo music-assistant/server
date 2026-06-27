@@ -54,6 +54,10 @@ CHUNK_HANG_GUARD_SECONDS = 120.0
 # OS nice value for analysis worker threads (Linux): keeps analysis below playback so the
 # scheduler favors the event loop and ffmpeg under contention.
 ANALYSIS_THREAD_NICE = 10
+# Cap on concurrent realtime analysis sessions (the playing track plus the preloaded next).
+# Rapid track skipping would otherwise spawn an analysis per abandoned track; the oldest is
+# evicted to keep the count bounded.
+REALTIME_ANALYSIS_MAX_SESSIONS = 2
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -155,6 +159,9 @@ class AudioAnalysisController:
         self.logger = self.mass.logger.getChild("audio_analysis")
         self._active_sessions: dict[str, set[str]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
+        # Realtime session key -> queue id, insertion-ordered, so the session cap is applied
+        # per queue (concurrent queues don't evict each other's still-playing analysis).
+        self._session_queues: dict[str, str] = {}
         self._inference_runtime_configured = False
         # Kept alive to persist the process-wide native BLAS thread cap (set in
         # ensure_inference_runtime_configured); never used as a context manager.
@@ -308,18 +315,22 @@ class AudioAnalysisController:
             self.logger.debug("No providers accepted analysis for %s", session_key)
             return
 
+        # Bound concurrent realtime sessions per queue, evicting the oldest in this queue (the
+        # current track and its preloaded next are the youngest, so they survive a burst of
+        # skips). Scoping per queue keeps simultaneous queues from evicting each other.
+        queue_id = streamdetails.queue_id or session_key
+        in_queue = [key for key, qid in self._session_queues.items() if qid == queue_id]
+        for stale_key in in_queue[: max(0, len(in_queue) - REALTIME_ANALYSIS_MAX_SESSIONS + 1)]:
+            self._evict_realtime_session(stale_key)
+
         self._active_sessions[session_key] = provider_ids
+        self._session_queues[session_key] = queue_id
         worker = self.mass.create_task(self._buffer_reader_worker(session_key, audio_buffer))
         self._workers[session_key] = worker
 
         def _on_cancel() -> None:
-            # Buffer torn down (track skipped / inactivity). Cancel the reader and its providers
-            # here: a task cancelled before it first runs never executes its body (no finally).
-            self.logger.debug("Cancelling analysis session %s", session_key)
-            self._workers.pop(session_key, None)
-            if not worker.done():
-                worker.cancel()
-            self._cancel_providers(session_key)
+            # Buffer torn down (track skipped / inactivity) — free the session.
+            self._evict_realtime_session(session_key)
 
         audio_buffer.register_cancel_callback(_on_cancel)
 
@@ -1029,6 +1040,16 @@ class AudioAnalysisController:
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
                 self.mass.create_task(provider.cancel(session_key))
 
+    def _evict_realtime_session(self, session_key: str) -> None:
+        """Stop a realtime analysis worker and cancel its providers, freeing the session slot."""
+        self._session_queues.pop(session_key, None)
+        worker = self._workers.pop(session_key, None)
+        if worker is not None and not worker.done():
+            worker.cancel()
+        # Cancel providers directly: a task cancelled before it first runs has no finally to run.
+        self._cancel_providers(session_key)
+        self.logger.debug("Stopped realtime analysis session %s", session_key)
+
     async def _distribute_chunk(
         self,
         session_key: str,
@@ -1117,6 +1138,7 @@ class AudioAnalysisController:
                 cursor += 1
         finally:
             self._workers.pop(session_key, None)
+            self._session_queues.pop(session_key, None)
             if completed:
                 self._finalize_providers(session_key)
             else:
