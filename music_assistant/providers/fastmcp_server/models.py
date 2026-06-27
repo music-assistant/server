@@ -118,6 +118,7 @@ class RemoveFromQueueResult:
 
     removed: list[str]
     skipped_buffered: list[str] = field(default_factory=list)
+    skipped_played: list[str] = field(default_factory=list)
 
 
 @dataclass

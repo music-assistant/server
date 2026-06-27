@@ -172,18 +172,24 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
         ctx: Context | None = None,
     ) -> RemoveFromQueueResult:
         """
-        Remove one or more items from a queue by ``item_id``.
+        Remove one or more **up-next** items from a queue by ``item_id``.
 
         Call ``get_active_queue`` first to list items and their stable
         ``item_id`` values. Pass all ids in a single call rather than
-        removing one at a time. The currently playing or buffered item
-        cannot be removed — those ids are returned in ``skipped_buffered``.
+        removing one at a time.
+
+        Only rows **after** the current playback position are removed.
+        Compare each ``QueueItemBrief.index`` to the queue's
+        ``current_index`` (from ``get_active_queue``): rows at or before
+        that index are already played or currently playing and are returned
+        in ``skipped_played`` without calling delete. The buffered lookahead
+        row (at ``index_in_buffer``) is returned in ``skipped_buffered``.
 
         When ``Confirm destructive operations`` is enabled the client is
         asked to confirm before items are removed.
 
-        Returns ``RemoveFromQueueResult`` with ``removed`` and
-        ``skipped_buffered`` item ids.
+        Returns ``RemoveFromQueueResult`` with ``removed``,
+        ``skipped_buffered``, and ``skipped_played`` item ids.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         :param item_ids: ``item_id`` values from ``QueueItemBrief`` returned
@@ -202,8 +208,10 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
         )
         queue = mass.player_queues.get(queue_id)
         index_in_buffer = getattr(queue, "index_in_buffer", None) if queue else None
+        current_index = getattr(queue, "current_index", None) if queue else None
         removed: list[str] = []
         skipped_buffered: list[str] = []
+        skipped_played: list[str] = []
         for item_id in item_ids:
             item_index = mass.player_queues.index_by_id(queue_id, item_id)
             if item_index is None:
@@ -212,12 +220,19 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
             if index_in_buffer is not None and item_index <= index_in_buffer:
                 skipped_buffered.append(item_id)
                 continue
+            if current_index is not None and item_index <= current_index:
+                skipped_played.append(item_id)
+                continue
             try:
                 mass.player_queues.delete_item(queue_id, item_id)
             except (KeyError, InvalidDataError) as exc:
                 raise ToolError(str(exc)) from exc
             removed.append(item_id)
-        return RemoveFromQueueResult(removed=removed, skipped_buffered=skipped_buffered)
+        return RemoveFromQueueResult(
+            removed=removed,
+            skipped_buffered=skipped_buffered,
+            skipped_played=skipped_played,
+        )
 
     @sub.tool(
         tags={Tag.EDIT_QUEUE},

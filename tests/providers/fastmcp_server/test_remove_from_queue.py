@@ -20,12 +20,13 @@ def _mock_removable_queue(
     queue_id: str,
     items: list[SimpleNamespace],
     index_in_buffer: int | None = None,
+    current_index: int | None = None,
 ) -> None:
-    """Wire get, index_by_id, and optional buffer guard for remove_item tests."""
+    """Wire get, index_by_id, and optional buffer/played guards for remove_item tests."""
     id_to_index = {it.queue_item_id: idx for idx, it in enumerate(items)}
     queue = SimpleNamespace(
         queue_id=queue_id,
-        current_index=0,
+        current_index=current_index,
         index_in_buffer=index_in_buffer,
         items=len(items),
     )
@@ -50,6 +51,7 @@ async def test_remove_item_deletes_each_id(mounted_queue: FastMCP, mock_mass: Ma
         )
     assert result.data.removed == ["abc", "def"]
     assert result.data.skipped_buffered == []
+    assert result.data.skipped_played == []
     assert mock_mass.player_queues.delete_item.call_args_list == [
         call("q1", "abc"),
         call("q1", "def"),
@@ -71,6 +73,7 @@ async def test_remove_item_returns_ack(mounted_queue: FastMCP, mock_mass: MagicM
         )
     assert result.data.removed == ["abc"]
     assert result.data.skipped_buffered == []
+    assert result.data.skipped_played == []
 
 
 async def test_remove_item_skips_buffered_row(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:
@@ -89,7 +92,56 @@ async def test_remove_item_skips_buffered_row(mounted_queue: FastMCP, mock_mass:
         )
     assert result.data.removed == []
     assert result.data.skipped_buffered == ["g0"]
+    assert result.data.skipped_played == []
     mock_mass.player_queues.delete_item.assert_not_called()
+
+
+async def test_remove_item_skips_played_row(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:
+    """Rows at or before current_index are skipped without calling delete_item."""
+    _mock_removable_queue(
+        mock_mass,
+        queue_id="q1",
+        items=[
+            _queue_item(item_id="played"),
+            _queue_item(item_id="upnext"),
+        ],
+        current_index=0,
+    )
+    mock_mass.player_queues.delete_item = MagicMock()
+    async with Client(mounted_queue) as client:
+        result = await client.call_tool(
+            "queue_remove_item",
+            {"queue_id": "q1", "item_ids": ["played"]},
+        )
+    assert result.data.removed == []
+    assert result.data.skipped_buffered == []
+    assert result.data.skipped_played == ["played"]
+    mock_mass.player_queues.delete_item.assert_not_called()
+
+
+async def test_remove_item_mixed_played_and_upnext(
+    mounted_queue: FastMCP, mock_mass: MagicMock
+) -> None:
+    """Played and up-next ids in one call land in separate ack buckets."""
+    _mock_removable_queue(
+        mock_mass,
+        queue_id="q1",
+        items=[
+            _queue_item(item_id="played"),
+            _queue_item(item_id="upnext"),
+        ],
+        current_index=0,
+    )
+    mock_mass.player_queues.delete_item = MagicMock()
+    async with Client(mounted_queue) as client:
+        result = await client.call_tool(
+            "queue_remove_item",
+            {"queue_id": "q1", "item_ids": ["played", "upnext"]},
+        )
+    assert result.data.removed == ["upnext"]
+    assert result.data.skipped_buffered == []
+    assert result.data.skipped_played == ["played"]
+    mock_mass.player_queues.delete_item.assert_called_once_with("q1", "upnext")
 
 
 async def test_remove_item_mixed_batch(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:
@@ -108,6 +160,7 @@ async def test_remove_item_mixed_batch(mounted_queue: FastMCP, mock_mass: MagicM
         )
     assert result.data.removed == ["g1"]
     assert result.data.skipped_buffered == ["g0"]
+    assert result.data.skipped_played == []
     mock_mass.player_queues.delete_item.assert_called_once_with("q1", "g1")
 
 
