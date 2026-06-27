@@ -518,6 +518,7 @@ class WebsocketClientHandler:
                     EventType.PLAYER_ADDED,
                     EventType.PLAYER_REMOVED,
                     EventType.PLAYER_UPDATED,
+                    EventType.PLAYER_SLEEP_TIMER_UPDATED,
                     EventType.QUEUE_ADDED,
                     EventType.QUEUE_ITEMS_UPDATED,
                     EventType.QUEUE_TIME_UPDATED,
