@@ -17,7 +17,10 @@ from torchaudio.transforms import SpectralCentroid
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis_provider import (
+    ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS,
+    AudioAnalysisProvider,
+)
 
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
@@ -58,6 +61,8 @@ class SmartFadesData:
 
 class SmartFadesProvider(AudioAnalysisProvider):
     """Smart fades audio analysis provider using Beat This for beat tracking."""
+
+    max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
 
     def __init__(
         self,

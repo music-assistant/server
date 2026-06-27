@@ -132,6 +132,7 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     stream_details.queue_id = "test"
     stream_details.uri = "test://120bpm"
     stream_details.media_type = MediaType.TRACK
+    stream_details.duration = 120
 
     session_id = "test:test:test_120bpm"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -193,6 +194,7 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     stream_details.queue_id = "test"
     stream_details.uri = "test://120bpm"
     stream_details.media_type = MediaType.TRACK
+    stream_details.duration = 120
 
     session_id = "test:test:test_120bpm_extended"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -260,6 +262,7 @@ async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider
     stream_details.queue_id = "test"
     stream_details.uri = "test://finalize_return"
     stream_details.media_type = MediaType.TRACK
+    stream_details.duration = 120
 
     session_id = "test:test:test_finalize_return"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -292,6 +295,7 @@ async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider)
     stream_details.queue_id = "test"
     stream_details.uri = "test://finalize_none"
     stream_details.media_type = MediaType.TRACK
+    stream_details.duration = 120
 
     session_id = "test:test:test_finalize_none"
     await provider.start_analysis(session_id, stream_details, audio_format)
