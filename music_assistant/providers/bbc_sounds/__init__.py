@@ -17,7 +17,7 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MusicAssistantError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
@@ -275,29 +275,10 @@ class BBCSoundsProvider(MusicProvider):
             if ma_radio and isinstance(ma_radio, Radio):
                 return ma_radio
         else:
-            raise MusicAssistantError(f"No station found: {prov_radio_id}")
+            raise MediaNotFoundError(f"No station found: {prov_radio_id}")
 
         self.logger.debug(f"{station} {ma_radio} {type(ma_radio)}")
-        raise MusicAssistantError("No valid radio stream found")
-
-    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
-    async def _get_programme(self, pid: str) -> dict[str, Any] | None:
-        """Fetch and normalise a programme from the API."""
-        episode = await self.client.streaming.get_by_pid(
-            pid,
-            # include_stream=False,
-            stream_format=self.stream_format,
-        )
-
-        if not episode:
-            return None
-
-        # Normalize object to dict to avoid cache serialization issues
-        return {
-            "id": episode.id,
-            "titles": getattr(episode, "titles", None),
-            "image_url": getattr(episode, "image_url", None),
-        }
+        raise MediaNotFoundError("No valid radio stream found")
 
     async def _catch_up_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for catch-up content."""
