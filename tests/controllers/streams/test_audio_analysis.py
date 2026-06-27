@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -63,6 +64,35 @@ def test_ensure_inference_runtime_configured_is_idempotent() -> None:
         controller.ensure_inference_runtime_configured()
     set_threads.assert_called_once()
     blas_limits.assert_called_once()
+    if controller.analysis_executor is not None:
+        controller.analysis_executor.shutdown(wait=False)
+
+
+def test_ensure_inference_runtime_creates_solo_lock_and_executor() -> None:
+    """Runtime config creates the playback-priority solo lock and a dedicated worker pool."""
+    controller = _make_controller()
+    with (
+        patch("torch.set_num_threads"),
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits"),
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+    try:
+        assert isinstance(controller.analysis_solo_lock, asyncio.Lock)
+        assert isinstance(controller.analysis_executor, ThreadPoolExecutor)
+    finally:
+        if controller.analysis_executor is not None:
+            controller.analysis_executor.shutdown(wait=False)
+
+
+def test_playback_active_delegates_to_streams() -> None:
+    """playback_active reflects the streams controller's active-output-stream gauge."""
+    controller = _make_controller()
+    controller.streams.output_stream_active = MagicMock(return_value=True)  # type: ignore[method-assign]
+    assert controller.playback_active() is True
+    controller.streams.output_stream_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+    assert controller.playback_active() is False
 
 
 @pytest.mark.parametrize(
