@@ -6,7 +6,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
-from aiohttp.client import ClientError
+from aiohttp.client import ClientError, ClientTimeout
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     import aiohttp
 
 LOGGER = logging.getLogger(__name__)
+
+# best-effort enrichment must never stall episode resolution, so cap the chapter fetch
+_CHAPTERS_FETCH_TIMEOUT = ClientTimeout(total=10)
 
 
 async def get_podcastparser_dict(
@@ -299,12 +302,19 @@ async def enrich_episode_chapters(
     url = episode.get("chapters_json_url")
     if not url:
         return
+    # the Mozilla UA mirrors get_podcastparser_dict: some podcast hosts/CDNs reject
+    # non-browser agents (music-assistant/support#3596), and chapter JSON is served
+    # from the same infrastructure. TimeoutError (raised on total-timeout) is not a
+    # ClientError, so it must be caught explicitly to keep this enrichment best-effort.
     try:
-        response = await session.get(
-            url, headers={"User-Agent": "Mozilla/5.0"}, raise_for_status=True
-        )
-        data = await response.json(content_type=None)
-    except (ClientError, ValueError, TypeError) as err:
+        async with session.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"},
+            raise_for_status=True,
+            timeout=_CHAPTERS_FETCH_TIMEOUT,
+        ) as response:
+            data = await response.json(content_type=None)
+    except (ClientError, TimeoutError, ValueError, TypeError) as err:
         LOGGER.warning("Failed to fetch podcast chapters from %s: %s", url, err)
         return
     if isinstance(data, dict) and (chapters := parse_chapters_from_json(data)):

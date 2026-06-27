@@ -48,6 +48,26 @@ class _FakeResponse:
         return self._payload
 
 
+class _FakeGetContext:
+    """
+    Stand-in for aiohttp's request context manager.
+
+    Mirrors aiohttp where the error (e.g. raise_for_status / timeout) surfaces on
+    entering the context, so enrichment must guard the ``async with`` itself.
+    """
+
+    def __init__(self, session: _FakeSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> _FakeResponse:
+        if self._session._error is not None:
+            raise self._session._error
+        return _FakeResponse(self._session._payload)
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
 class _FakeSession:
     """Minimal stand-in for an aiohttp ClientSession used by chapter enrichment."""
 
@@ -57,12 +77,10 @@ class _FakeSession:
         self.calls = 0
         self.last_url: str | None = None
 
-    async def get(self, url: str, **kwargs: Any) -> _FakeResponse:
+    def get(self, url: str, **kwargs: Any) -> _FakeGetContext:
         self.calls += 1
         self.last_url = url
-        if self._error is not None:
-            raise self._error
-        return _FakeResponse(self._payload)
+        return _FakeGetContext(self)
 
 
 # --- description -----------------------------------------------------------------------------
@@ -204,6 +222,19 @@ async def test_enrich_swallows_fetch_error() -> None:
     mass_episode = _parse(_episode())
     assert mass_episode is not None
     session = _FakeSession(error=ClientError("boom"))
+    await enrich_episode_chapters(
+        session=cast("aiohttp.ClientSession", session),
+        episode={"chapters_json_url": "https://example.com/ch.json"},
+        mass_episode=mass_episode,
+    )
+    assert mass_episode.metadata.chapters is None
+
+
+async def test_enrich_swallows_timeout() -> None:
+    """A timed-out chapter fetch is ignored: TimeoutError is not a ClientError."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    session = _FakeSession(error=TimeoutError())
     await enrich_episode_chapters(
         session=cast("aiohttp.ClientSession", session),
         episode={"chapters_json_url": "https://example.com/ch.json"},
