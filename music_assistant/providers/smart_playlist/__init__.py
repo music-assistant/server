@@ -45,7 +45,9 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
-from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.constants import (
+    DYNAMIC_PLAYLIST_SAMPLE_SIZE,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
@@ -610,14 +612,12 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter: list[str] | None = None,
     ) -> list[Track]:
         """Evaluate the rules and return a list of matching Track objects."""
-        has_genre_filter = bool(rules.genre_ids)
-
         seed_uris = rules.all_seed_uris()
         if seed_uris:
             # Seed mode: a similar-tracks pool derived from the seeds is the exclusive source.
             # artist_ids and album_ids are ignored per design.
             tracks = await self._tracks_from_seeds(seed_uris, target_size=rules.limit)
-            tracks = await self._apply_seed_post_filters(tracks, rules, has_genre_filter)
+            tracks = await self._apply_seed_post_filters(tracks, rules)
         else:
             if rules.logic == LOGIC_AND:
                 tracks = await self._evaluate_and(rules, user_provider_filter)
@@ -651,6 +651,11 @@ class SmartPlaylistProvider(PluginProvider):
             if rules.album_types:
                 allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
                 tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
+
+            # In non-seed mode, _evaluate_and/_evaluate_or already query by genre_ids.
+            # Only enrich if excluded_genre_ids is set (needs track.metadata.genres).
+            if rules.excluded_genre_ids:
+                await self._enrich_tracks_with_db_genres(tracks)
 
         # Apply exclusions and dedup regardless of source mode
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
@@ -693,9 +698,10 @@ class SmartPlaylistProvider(PluginProvider):
         self,
         tracks: list[Track],
         rules: SmartPlaylistRules,
-        has_genre_filter: bool,
     ) -> list[Track]:
         """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
+        has_genre_filter = bool(rules.genre_ids or rules.excluded_genre_ids)
+
         if rules.min_popularity is not None:
             tracks = [
                 t
@@ -706,11 +712,18 @@ class SmartPlaylistProvider(PluginProvider):
             ]
         if rules.favorites_only:
             tracks = [t for t in tracks if t.favorite]
+
         # Apply explicit filter in seed/discover mode post-filtering
         tracks = _filter_by_explicit(tracks, rules.explicit)
+
+        if has_genre_filter:
+            await self._enrich_tracks_with_db_genres(tracks)
+
         if has_genre_filter and rules.logic == LOGIC_AND:
-            # Best-effort genre filter: resolve names then match against track genre metadata.
-            # Tracks without genre metadata are kept (don't exclude for missing data).
+            # Genre filter: resolve names and match against track genre metadata.
+            # Note: Library tracks have been enriched with DB genres above.
+            # Non-library streaming tracks may still lack genre metadata and will be kept
+            # (don't exclude for missing data).
             genre_id_to_name = dict(rules.genre_names)
             for genre_id in rules.genre_ids:
                 if genre_id not in genre_id_to_name:
@@ -853,6 +866,54 @@ class SmartPlaylistProvider(PluginProvider):
                     genre = await self.mass.music.genres.get_library_item(genre_id)
                     genre_id_to_name[genre_id] = genre.name
         return {v.lower() for v in genre_id_to_name.values() if v}
+
+    async def _enrich_tracks_with_db_genres(self, tracks: list[Track]) -> None:
+        """
+        Enrich library tracks with genre data from the database.
+
+        For tracks missing genre metadata, retrieves genre associations from the database
+        and populates track.metadata.genres.
+        """
+        if not tracks:
+            return
+
+        # Build map of library_track_id -> list of track objects in single pass
+        # Check provider_mappings for library presence (tracks from Spotify/etc may also be in library)
+        track_id_to_tracks: dict[int, list[Track]] = {}
+        for t in tracks:
+            if t.metadata and t.metadata.genres:
+                continue
+            for mapping in t.provider_mappings or ():
+                if mapping.provider_domain == "library" and str(mapping.item_id).isdigit():
+                    track_id = int(mapping.item_id)
+                    if track_id not in track_id_to_tracks:
+                        track_id_to_tracks[track_id] = []
+                    track_id_to_tracks[track_id].append(t)
+                    break
+        if not track_id_to_tracks:
+            return
+
+        # Fetch genres for all track IDs in parallel
+        track_ids = list(track_id_to_tracks.keys())
+        genre_results = await asyncio.gather(
+            *(
+                self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
+                for track_id in track_ids
+            )
+        )
+
+        # Apply genres to tracks
+        for track_id, genres in zip(track_ids, genre_results, strict=True):
+            tracks_list = track_id_to_tracks[track_id]
+            if not genres:
+                continue
+            for track in tracks_list:
+                if not track.metadata:
+                    track.metadata = MediaItemMetadata()
+                if not track.metadata.genres:
+                    track.metadata.genres = set()
+                for genre in genres:
+                    track.metadata.genres.add(genre.name)
 
     async def _recently_played_keys(self, dedup_hours: int) -> set[tuple[str, str]]:
         """

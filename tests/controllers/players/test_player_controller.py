@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.enums import EventType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players import PlayerController
@@ -290,6 +291,93 @@ class TestStateForwarding:
             {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
         )
         on_sync_parent_updated.assert_not_called()
+
+
+class TestSleepTimer:
+    """Test native sleep timer handling."""
+
+    def test_set_and_clear_sleep_timer(self, mock_mass: MagicMock) -> None:
+        """Setting a sleep timer exposes state and schedules the stop callback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+
+        expires_at = controller.set_sleep_timer("player_1", 30)
+
+        assert controller.get_sleep_timer("player_1") == expires_at
+        assert player.sleep_timer_expires_at == expires_at
+        mock_mass.call_later.assert_called_with(
+            30,
+            controller._handle_sleep_timer_expired,
+            "player_1",
+            task_id="player_sleep_timer_player_1",
+        )
+        mock_mass.signal_event.assert_any_call(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id="player_1",
+            data=expires_at,
+        )
+
+        controller.clear_sleep_timer("player_1")
+
+        # get_sleep_timer reads the model field directly, so this also asserts it cleared
+        assert controller.get_sleep_timer("player_1") is None
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
+        mock_mass.signal_event.assert_any_call(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id="player_1",
+            data=None,
+        )
+
+    async def test_sleep_timer_removed_when_player_unregistered(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player cancels and clears its sleep timer."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_sleep_timer_expires_at(123.0)
+
+        await controller.unregister("player_1")
+
+        assert player.sleep_timer_expires_at is None
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
+
+    async def test_sleep_timer_expiry_stops_player(self, mock_mass: MagicMock) -> None:
+        """An expired sleep timer clears its state and stops playback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_sleep_timer_expires_at(123.0)
+        controller.cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_sleep_timer_expired("player_1")
+
+        assert controller.get_sleep_timer("player_1") is None
+        assert player.sleep_timer_expires_at is None
+        controller.cmd_stop.assert_awaited_once_with("player_1")
+        mock_mass.signal_event.assert_any_call(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id="player_1",
+            data=None,
+        )
+
+    def test_set_sleep_timer_rejects_invalid_duration(self, mock_mass: MagicMock) -> None:
+        """A non-positive or float-overflowing duration raises and schedules nothing."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+
+        # 0/-30 are non-positive; 10**400 exceeds the float range for the expiry math
+        for invalid in (0, -30, 10**400):
+            with pytest.raises(InvalidDataError):
+                controller.set_sleep_timer("player_1", invalid)
+
+        assert controller.get_sleep_timer("player_1") is None
+        mock_mass.call_later.assert_not_called()
 
 
 class TestUnregisterCleanup:
@@ -765,6 +853,52 @@ class TestExternalSourcePlayPause:
 
         controller._handle_cmd_stop.assert_awaited_once()
         player.pause.assert_not_called()
+
+
+class TestMirrorsParentMedia:
+    """Tests for _mirrors_parent_media (palette-fetch gating for grouped players)."""
+
+    @staticmethod
+    def _fake_player(
+        *,
+        player_id: str = "p1",
+        active_group: str | None = None,
+        synced_to: str | None = None,
+        player_type: PlayerType = PlayerType.PLAYER,
+        protocol_parent_id: str | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            player_id=player_id,
+            state=SimpleNamespace(active_group=active_group, synced_to=synced_to, type=player_type),
+            protocol_parent_id=protocol_parent_id,
+        )
+
+    def test_standalone_player_owns_media(self, controller: PlayerController) -> None:
+        """A standalone player resolves its own media (and palette)."""
+        assert controller._mirrors_parent_media(self._fake_player()) is False  # type: ignore[arg-type]
+
+    def test_group_member_mirrors(self, controller: PlayerController) -> None:
+        """A group member borrows its parent's media."""
+        assert controller._mirrors_parent_media(self._fake_player(active_group="g1")) is True  # type: ignore[arg-type]
+
+    def test_synced_member_mirrors(self, controller: PlayerController) -> None:
+        """A synced member borrows its leader's media."""
+        assert controller._mirrors_parent_media(self._fake_player(synced_to="leader")) is True  # type: ignore[arg-type]
+
+    def test_protocol_child_mirrors(self, controller: PlayerController) -> None:
+        """A protocol child borrows its parent's media."""
+        player = self._fake_player(player_type=PlayerType.PROTOCOL, protocol_parent_id="parent")
+        assert controller._mirrors_parent_media(player) is True  # type: ignore[arg-type]
+
+    def test_protocol_player_without_parent_owns_media(self, controller: PlayerController) -> None:
+        """A protocol player with no parent resolves its own media."""
+        player = self._fake_player(player_type=PlayerType.PROTOCOL)
+        assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
+
+    def test_self_referential_parent_owns_media(self, controller: PlayerController) -> None:
+        """A self-referential active_group/synced_to is not a real parent, so resolve locally."""
+        player = self._fake_player(player_id="p1", synced_to="p1", active_group="p1")
+        assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

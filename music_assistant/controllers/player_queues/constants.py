@@ -19,5 +19,11 @@ CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_episode"
 CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
+
+CONF_AUTOPLAY_LABEL = "autoplay_label"
+CONF_AUTOPLAY_MODE = "autoplay_mode"
+CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
+CONF_CROSSFADE_LABEL = "crossfade_label"
+
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1

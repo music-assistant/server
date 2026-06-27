@@ -174,6 +174,40 @@ class TestGenreCRUD:
         assert fetched.genre_aliases is not None
         assert "Funk" in fetched.genre_aliases
 
+    async def test_content_type_defaults_to_none(self, genre_ctrl: GenreController) -> None:
+        """A genre added without a content_type round-trips as None (music/general)."""
+        created = await genre_ctrl.add_item_to_library(_make_genre("Soul"))
+        fetched = await genre_ctrl.get_library_item(int(created.item_id))
+        assert fetched.content_type is None
+
+    async def test_content_type_persists_and_round_trips(self, genre_ctrl: GenreController) -> None:
+        """A genre's content_type is persisted to the DB column and read back as the enum."""
+        genre = Genre(
+            item_id="0",
+            provider="library",
+            name="True Crime",
+            provider_mappings=set(),
+            content_type=MediaType.PODCAST,
+        )
+        created = await genre_ctrl.add_item_to_library(genre)
+        fetched = await genre_ctrl.get_library_item(int(created.item_id))
+        assert fetched.content_type is MediaType.PODCAST
+
+    async def test_content_type_overwrite_update(self, genre_ctrl: GenreController) -> None:
+        """An overwrite update writes the new content_type for the genre."""
+        created = await genre_ctrl.add_item_to_library(_make_genre("Documentary"))
+        update = Genre(
+            item_id="0",
+            provider="library",
+            name="Documentary",
+            provider_mappings=set(),
+            content_type=MediaType.AUDIOBOOK,
+        )
+        updated = await genre_ctrl.update_item_in_library(created.item_id, update, overwrite=True)
+        assert updated.content_type is MediaType.AUDIOBOOK
+        fetched = await genre_ctrl.get_library_item(int(created.item_id))
+        assert fetched.content_type is MediaType.AUDIOBOOK
+
     async def test_get_library_item_not_found(self, genre_ctrl: GenreController) -> None:
         """Raises MediaNotFoundError for nonexistent id."""
         with pytest.raises(MediaNotFoundError):

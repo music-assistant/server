@@ -12,7 +12,13 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlayerFeature,
+)
 from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
 APPLICATION_NAME: Final = "Music Assistant"
@@ -254,7 +260,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
-PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music")
+PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
 
 
 ####### REUSABLE CONFIG ENTRIES #######
@@ -371,7 +377,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION,
     type=ConfigEntryType.BOOLEAN,
     default_value=True,
-    category="playback",
+    category="audio",
     requires_reload=True,
 )
 
@@ -403,8 +409,9 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(1, 15),
     default_value=8,
-    category="playback",
-    advanced=True,
+    category="crossfade",
+    depends_on=CONF_CROSSFADE_MODE,
+    depends_on_value=CrossfadeMode.STANDARD_CROSSFADE.value,
     requires_reload=True,
 )
 

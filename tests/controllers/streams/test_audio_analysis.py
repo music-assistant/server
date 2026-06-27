@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,7 +29,10 @@ from music_assistant.controllers.streams.audio_analysis import (
 )
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis_provider import (
+    AudioAnalysisProvider,
+    InstrumentedSemaphore,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 
@@ -63,6 +67,35 @@ def test_ensure_inference_runtime_configured_is_idempotent() -> None:
         controller.ensure_inference_runtime_configured()
     set_threads.assert_called_once()
     blas_limits.assert_called_once()
+    if controller.analysis_executor is not None:
+        controller.analysis_executor.shutdown(wait=False)
+
+
+def test_ensure_inference_runtime_creates_solo_lock_and_executor() -> None:
+    """Runtime config creates the playback-priority solo lock and a dedicated worker pool."""
+    controller = _make_controller()
+    with (
+        patch("torch.set_num_threads"),
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits"),
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+    try:
+        assert isinstance(controller.analysis_solo_lock, asyncio.Lock)
+        assert isinstance(controller.analysis_executor, ThreadPoolExecutor)
+    finally:
+        if controller.analysis_executor is not None:
+            controller.analysis_executor.shutdown(wait=False)
+
+
+def test_playback_active_delegates_to_streams() -> None:
+    """playback_active reflects the streams controller's active-output-stream gauge."""
+    controller = _make_controller()
+    controller.streams.output_stream_active = MagicMock(return_value=True)  # type: ignore[method-assign]
+    assert controller.playback_active() is True
+    controller.streams.output_stream_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+    assert controller.playback_active() is False
 
 
 @pytest.mark.parametrize(
@@ -92,6 +125,34 @@ async def test_analysis_concurrency_capped_at_half_cores(
     for _ in range(expected_permits):
         await semaphore.acquire()
     assert semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_instrumented_semaphore_tracks_in_flight_and_waiters() -> None:
+    """InstrumentedSemaphore exposes live permit-in-use and queued-acquirer counts."""
+    sem = InstrumentedSemaphore(2)
+    assert (sem.capacity, sem.in_flight, sem.waiters) == (2, 0, 0)
+
+    await sem.acquire()
+    await sem.acquire()
+    assert sem.in_flight == 2
+    assert sem.locked()
+
+    # A third acquire blocks behind the cap and registers as a waiter.
+    blocked = asyncio.ensure_future(sem.acquire())
+    await asyncio.sleep(0)
+    assert sem.waiters == 1
+    assert sem.in_flight == 2
+
+    # Freeing a permit lets the queued acquirer through; the queue drains.
+    sem.release()
+    await blocked
+    assert sem.waiters == 0
+    assert sem.in_flight == 2
+
+    sem.release()
+    sem.release()
+    assert sem.in_flight == 0
 
 
 @pytest.mark.asyncio

@@ -1,12 +1,16 @@
 """Tests for the per-queue config layer (migration + parsing)."""
 
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import MagicMock
 
-from music_assistant_models.config_entries import PlayerQueueConfig
+from music_assistant_models.config_entries import ConfigEntry, PlayerQueueConfig
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.player_queues.constants import CONF_AUTOPLAY_PLAYLIST
 
 
 def _migrate(data: dict[str, Any]) -> bool:
@@ -93,3 +97,32 @@ def test_player_queue_config_parse_roundtrip() -> None:
     )
     assert config.queue_id == "q1"
     assert config.get_value("crossfade_duration") == 9
+
+
+async def test_get_player_queue_config_for_api_populates_playlist_options() -> None:
+    """The 'get' command resolves the autoplay playlist dropdown from the library playlists."""
+    entry = ConfigEntry(
+        key=CONF_AUTOPLAY_PLAYLIST, type=ConfigEntryType.STRING, options=[], required=False
+    )
+    config = cast(
+        "PlayerQueueConfig",
+        PlayerQueueConfig.parse([entry], {"queue_id": "q1", "values": {}}),
+    )
+
+    async def _playlists() -> AsyncIterator[SimpleNamespace]:
+        yield SimpleNamespace(uri="library://playlist/1", name="Chill")
+        yield SimpleNamespace(uri="library://playlist/2", name="Party")
+
+    fake = MagicMock()
+    fake.get_player_queue_config = MagicMock(return_value=config)
+    fake.mass.music.playlists.iter_library_items = lambda: _playlists()
+    # bind the real helper so the command exercises the actual option-building logic
+    fake._library_playlist_options = lambda: ConfigController._library_playlist_options(fake)
+
+    result = await ConfigController.get_player_queue_config_for_api(fake, "q1")
+
+    options = result.values[CONF_AUTOPLAY_PLAYLIST].options
+    assert [(opt.title, opt.value) for opt in options] == [
+        ("Chill", "library://playlist/1"),
+        ("Party", "library://playlist/2"),
+    ]

@@ -1591,6 +1591,7 @@ class Player(ABC):
             output_protocols=self.output_protocols,
             active_output_protocol=self.__attr_active_output_protocol,
             needs_setup=self.needs_setup,
+            sleep_timer_expires_at=self.sleep_timer_expires_at,
         )
 
         # track stop called state
@@ -2275,6 +2276,23 @@ class Player(ABC):
         self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         self.__active_mass_source = value
         self.update_state()
+
+    __sleep_timer_expires_at: float | None = None
+
+    @final
+    def set_sleep_timer_expires_at(self, value: float | None) -> None:
+        """
+        Set the unix (utc) timestamp at which the active sleep timer stops playback.
+
+        :param value: The expiry timestamp, or None to clear the sleep timer.
+        """
+        self.__sleep_timer_expires_at = value
+
+    @property
+    @final
+    def sleep_timer_expires_at(self) -> float | None:
+        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
+        return self.__sleep_timer_expires_at
 
     __stop_called: bool = False
 

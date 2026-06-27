@@ -169,7 +169,6 @@ class MusicCastPlayer(Player):
             PlayerFeature.PAUSE,  # for non MA control, see pause method
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
-            PlayerFeature.SET_MEMBERS,
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
@@ -436,6 +435,12 @@ class MusicCastPlayer(Player):
             self._attr_group_members = [
                 self._get_player_id_from_zone_device(x) for x in self.zone_device.musiccast_group
             ]
+
+        # disallow set members (i.e. a zone to become a group leader) if it is currently grouped to the main zone
+        if self.zone_device.source_id == MC_SOURCE_MAIN_SYNC:
+            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
+        else:
+            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
 
         # PLAYER OPTIONS
         # see https://github.com/vigonotion/aiomusiccast/blob/main/aiomusiccast/capabilities.py
