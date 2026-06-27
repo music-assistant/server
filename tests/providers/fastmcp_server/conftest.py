@@ -177,6 +177,7 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.players.get_player = MagicMock(return_value=None)
     mass.players.cmd_power = AsyncMock()
     mass.players.cmd_group = AsyncMock()
+    mass.players.cmd_ungroup = AsyncMock()
     mass.players.cmd_volume_set = AsyncMock()
     mass.players.cmd_volume_up = AsyncMock()
     mass.players.cmd_volume_down = AsyncMock()
