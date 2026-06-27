@@ -9,12 +9,6 @@
     }
   },
   "recommendations": {
-    "artist_birthdays_3_days_ago": {
-      "name": "Birthdays · 3 days ago"
-    },
-    "artist_birthdays_2_days_ago": {
-      "name": "Birthdays · 2 days ago"
-    },
     "artist_birthdays_yesterday": {
       "name": "Birthdays · Yesterday"
     },
@@ -24,23 +18,11 @@
     "artist_birthdays_tomorrow": {
       "name": "Birthdays · Tomorrow"
     },
-    "artist_birthdays_in_2_days": {
-      "name": "Birthdays · In 2 days"
-    },
-    "artist_birthdays_in_3_days": {
-      "name": "Birthdays · In 3 days"
-    },
     "artist_birthdays_n_days_ago": {
       "name": "Birthdays · {0} days ago"
     },
     "artist_birthdays_in_n_days": {
       "name": "Birthdays · In {0} days"
-    },
-    "artist_memoriam_3_days_ago": {
-      "name": "In Memoriam · 3 days ago"
-    },
-    "artist_memoriam_2_days_ago": {
-      "name": "In Memoriam · 2 days ago"
     },
     "artist_memoriam_yesterday": {
       "name": "In Memoriam · Yesterday"
@@ -50,12 +32,6 @@
     },
     "artist_memoriam_tomorrow": {
       "name": "In Memoriam · Tomorrow"
-    },
-    "artist_memoriam_in_2_days": {
-      "name": "In Memoriam · In 2 days"
-    },
-    "artist_memoriam_in_3_days": {
-      "name": "In Memoriam · In 3 days"
     },
     "artist_memoriam_n_days_ago": {
       "name": "In Memoriam · {0} days ago"

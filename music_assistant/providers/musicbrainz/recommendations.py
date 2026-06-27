@@ -125,22 +125,13 @@ class MusicBrainzRecommendationManager:
 
         :param day_offset: Days from today (negative = past, 0 = today, positive = future).
         """
-        if day_offset == -3:
-            return "3_days_ago"
-        if day_offset == -2:
-            return "2_days_ago"
         if day_offset == -1:
             return "yesterday"
         if day_offset == 0:
             return "today"
         if day_offset == 1:
             return "tomorrow"
-        if day_offset == 2:
-            return "in_2_days"
-        if day_offset == 3:
-            return "in_3_days"
-        # For larger offsets, use generic format
-        if day_offset < -3:
+        if day_offset < 0:
             return "n_days_ago"
         return "in_n_days"
 
@@ -150,7 +141,7 @@ class MusicBrainzRecommendationManager:
 
         :param day_offset: Days from today (negative = past, 0 = today, positive = future).
         """
-        if -3 <= day_offset <= 3:
+        if day_offset in (-1, 0, 1):
             return None
         return [str(abs(day_offset))]
 
