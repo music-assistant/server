@@ -198,17 +198,18 @@ class AudioAnalysisController:
 
     async def close(self) -> None:
         """Drain in-flight sessions and chunk workers on shutdown."""
-        if self._idle_unload_task is not None and not self._idle_unload_task.done():
-            self._idle_unload_task.cancel()
-        workers = list(self._workers.values())
+        tasks = list(self._workers.values())
         self._workers.clear()
-        for worker in workers:
-            if not worker.done():
-                worker.cancel()
+        if self._idle_unload_task is not None:
+            tasks.append(self._idle_unload_task)
+            self._idle_unload_task = None
+        for task in tasks:
+            if not task.done():
+                task.cancel()
         for session_key in list(self._active_sessions):
             self._cancel_providers(session_key)
-        if workers:
-            await asyncio.gather(*workers, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if self.analysis_executor is not None:
             # A running CPU-bound thread can't be cancelled, so shut down without waiting on it.
             self.analysis_executor.shutdown(wait=False, cancel_futures=True)
@@ -1083,8 +1084,12 @@ class AudioAnalysisController:
     async def _unload_idle_models(self) -> None:
         """Free heavy models on every provider that supports unloading them."""
         for provider in self.providers:
-            if provider.has_unloadable_models:
+            if not provider.has_unloadable_models:
+                continue
+            try:
                 await provider.unload_idle_models()
+            except Exception as err:
+                self.logger.warning("Failed to unload models for %s: %s", provider.name, err)
 
     async def _distribute_chunk(
         self,
