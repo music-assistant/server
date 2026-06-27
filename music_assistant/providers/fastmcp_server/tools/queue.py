@@ -10,7 +10,7 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from music_assistant_models.errors import InvalidDataError
 
-from ..models import QueueBrief
+from ..models import QueueBrief, RemoveFromQueueResult
 from ..tags import Tag
 from ._common import TIMEOUT_FAST, TIMEOUT_MUTATION, confirm_or_raise, to_brief_queue
 
@@ -26,7 +26,9 @@ def _require_queue(mass: MusicAssistant, queue_id: str) -> None:
         raise ToolError(f"Queue {queue_id!r} not found.")
 
 
-def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
+def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue tools
+    mass: MusicAssistant, *, require_confirmation: bool = True
+) -> FastMCP:
     """Construct the ``queue/*`` sub-server."""
     sub: FastMCP = FastMCP(name="queue")
 
@@ -168,17 +170,20 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         queue_id: str,
         item_ids: list[str],
         ctx: Context | None = None,
-    ) -> None:
+    ) -> RemoveFromQueueResult:
         """
         Remove one or more items from a queue by ``item_id``.
 
         Call ``get_active_queue`` first to list items and their stable
         ``item_id`` values. Pass all ids in a single call rather than
         removing one at a time. The currently playing or buffered item
-        cannot be removed — MA ignores that request.
+        cannot be removed — those ids are returned in ``skipped_buffered``.
 
         When ``Confirm destructive operations`` is enabled the client is
-        asked to confirm before items are removed. Returns nothing.
+        asked to confirm before items are removed.
+
+        Returns ``RemoveFromQueueResult`` with ``removed`` and
+        ``skipped_buffered`` item ids.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         :param item_ids: ``item_id`` values from ``QueueItemBrief`` returned
@@ -195,11 +200,24 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             f"Remove {len(item_ids)} item(s) from queue {queue_id!r}?",
             enabled=require_confirmation,
         )
+        queue = mass.player_queues.get(queue_id)
+        index_in_buffer = getattr(queue, "index_in_buffer", None) if queue else None
+        removed: list[str] = []
+        skipped_buffered: list[str] = []
         for item_id in item_ids:
+            item_index = mass.player_queues.index_by_id(queue_id, item_id)
+            if item_index is None:
+                msg = f"Item {item_id} not found in queue"
+                raise ToolError(msg)
+            if index_in_buffer is not None and item_index <= index_in_buffer:
+                skipped_buffered.append(item_id)
+                continue
             try:
                 mass.player_queues.delete_item(queue_id, item_id)
             except (KeyError, InvalidDataError) as exc:
                 raise ToolError(str(exc)) from exc
+            removed.append(item_id)
+        return RemoveFromQueueResult(removed=removed, skipped_buffered=skipped_buffered)
 
     @sub.tool(
         tags={Tag.EDIT_QUEUE},

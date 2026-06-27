@@ -8,22 +8,107 @@ from unittest.mock import MagicMock, call
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
-from music_assistant_models.errors import InvalidDataError
+
+
+def _queue_item(*, item_id: str, name: str = "Track") -> SimpleNamespace:
+    return SimpleNamespace(queue_item_id=item_id, name=name, uri=f"library://track/{item_id}")
+
+
+def _mock_removable_queue(
+    mock_mass: MagicMock,
+    *,
+    queue_id: str,
+    items: list[SimpleNamespace],
+    index_in_buffer: int | None = None,
+) -> None:
+    """Wire get, index_by_id, and optional buffer guard for remove_item tests."""
+    id_to_index = {it.queue_item_id: idx for idx, it in enumerate(items)}
+    queue = SimpleNamespace(
+        queue_id=queue_id,
+        current_index=0,
+        index_in_buffer=index_in_buffer,
+        items=len(items),
+    )
+    mock_mass.player_queues.get = MagicMock(return_value=queue)
+    mock_mass.player_queues.index_by_id = MagicMock(
+        side_effect=lambda _qid, item_id: id_to_index.get(item_id)
+    )
 
 
 async def test_remove_item_deletes_each_id(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:
-    """Each item_id is forwarded to player_queues.delete_item."""
-    mock_mass.player_queues.get = MagicMock(return_value=SimpleNamespace(queue_id="q1"))
+    """Each removable item_id is forwarded to player_queues.delete_item."""
+    _mock_removable_queue(
+        mock_mass,
+        queue_id="q1",
+        items=[_queue_item(item_id="abc"), _queue_item(item_id="def")],
+    )
     mock_mass.player_queues.delete_item = MagicMock()
     async with Client(mounted_queue) as client:
-        await client.call_tool(
+        result = await client.call_tool(
             "queue_remove_item",
             {"queue_id": "q1", "item_ids": ["abc", "def"]},
         )
+    assert result.data.removed == ["abc", "def"]
+    assert result.data.skipped_buffered == []
     assert mock_mass.player_queues.delete_item.call_args_list == [
         call("q1", "abc"),
         call("q1", "def"),
     ]
+
+
+async def test_remove_item_returns_ack(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:
+    """A single successful remove returns RemoveFromQueueResult."""
+    _mock_removable_queue(
+        mock_mass,
+        queue_id="q1",
+        items=[_queue_item(item_id="abc")],
+    )
+    mock_mass.player_queues.delete_item = MagicMock()
+    async with Client(mounted_queue) as client:
+        result = await client.call_tool(
+            "queue_remove_item",
+            {"queue_id": "q1", "item_ids": ["abc"]},
+        )
+    assert result.data.removed == ["abc"]
+    assert result.data.skipped_buffered == []
+
+
+async def test_remove_item_skips_buffered_row(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:
+    """Rows at or before index_in_buffer are skipped without calling delete_item."""
+    _mock_removable_queue(
+        mock_mass,
+        queue_id="q1",
+        items=[_queue_item(item_id="g0"), _queue_item(item_id="g1")],
+        index_in_buffer=0,
+    )
+    mock_mass.player_queues.delete_item = MagicMock()
+    async with Client(mounted_queue) as client:
+        result = await client.call_tool(
+            "queue_remove_item",
+            {"queue_id": "q1", "item_ids": ["g0"]},
+        )
+    assert result.data.removed == []
+    assert result.data.skipped_buffered == ["g0"]
+    mock_mass.player_queues.delete_item.assert_not_called()
+
+
+async def test_remove_item_mixed_batch(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:
+    """Buffered and removable ids in one call land in separate ack buckets."""
+    _mock_removable_queue(
+        mock_mass,
+        queue_id="q1",
+        items=[_queue_item(item_id="g0"), _queue_item(item_id="g1")],
+        index_in_buffer=0,
+    )
+    mock_mass.player_queues.delete_item = MagicMock()
+    async with Client(mounted_queue) as client:
+        result = await client.call_tool(
+            "queue_remove_item",
+            {"queue_id": "q1", "item_ids": ["g0", "g1"]},
+        )
+    assert result.data.removed == ["g1"]
+    assert result.data.skipped_buffered == ["g0"]
+    mock_mass.player_queues.delete_item.assert_called_once_with("q1", "g1")
 
 
 async def test_remove_item_requires_ids(mounted_queue: FastMCP) -> None:
@@ -37,16 +122,15 @@ async def test_remove_item_raises_tool_error_on_missing_item(
     mounted_queue: FastMCP, mock_mass: MagicMock
 ) -> None:
     """Unknown item_id surfaces as ToolError."""
-    mock_mass.player_queues.get = MagicMock(return_value=SimpleNamespace(queue_id="q1"))
-    mock_mass.player_queues.delete_item = MagicMock(
-        side_effect=InvalidDataError("Item missing not found in queue")
-    )
+    _mock_removable_queue(mock_mass, queue_id="q1", items=[])
+    mock_mass.player_queues.delete_item = MagicMock()
     async with Client(mounted_queue) as client:
         with pytest.raises(ToolError, match="not found"):
             await client.call_tool(
                 "queue_remove_item",
                 {"queue_id": "q1", "item_ids": ["missing"]},
             )
+    mock_mass.player_queues.delete_item.assert_not_called()
 
 
 async def test_remove_item_raises_tool_error_on_unknown_queue(

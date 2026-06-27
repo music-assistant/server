@@ -113,6 +113,14 @@ class QueueBrief:
 
 
 @dataclass
+class RemoveFromQueueResult:
+    """Confirmation of a ``remove_item`` call."""
+
+    removed: list[str]
+    skipped_buffered: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RecommendationFolderBrief:
     """One curated recommendation folder (e.g. "Mood: Focus") with its track URIs."""
 
