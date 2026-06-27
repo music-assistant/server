@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import EventType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
 from music_assistant_models.player import PlayerSource
@@ -899,6 +900,91 @@ class TestMirrorsParentMedia:
         """A self-referential active_group/synced_to is not a real parent, so resolve locally."""
         player = self._fake_player(player_id="p1", synced_to="p1", active_group="p1")
         assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
+
+
+class TestVolumeScalingOnRedirect:
+    """min/max volume scaling must survive a redirect to a protocol player or external control."""
+
+    @staticmethod
+    def _volume_player(
+        player_id: str,
+        volume_control: str,
+        volume_set: AsyncMock | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            player_id=player_id,
+            type=PlayerType.PLAYER,
+            protocol_parent_id=None,
+            extra_data={},
+            volume_control=volume_control,
+            volume_set=volume_set or AsyncMock(),
+            update_state=MagicMock(),
+            provider=MagicMock(),
+            state=SimpleNamespace(
+                name=player_id,
+                volume_control=volume_control,
+                volume_muted=False,
+                mute_control=PLAYER_CONTROL_NONE,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_protocol_redirect_forwards_scaled_volume(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A volume command redirected to a protocol player honors the user-facing max_volume."""
+
+        def _conf(player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                # user-facing player caps at 50, the protocol player has no limits of its own
+                return 50 if player_id == "user_player" else 100
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+
+        protocol = self._volume_player("protocol_player", PLAYER_CONTROL_NATIVE)
+        user = self._volume_player("user_player", "protocol_player")
+        players = {"user_player": user, "protocol_player": protocol}
+
+        with (
+            patch.object(controller, "get_player", side_effect=players.get),
+            patch.object(controller, "_get_active_audio_source", return_value=None),
+        ):
+            controller._controls = {}
+            await controller._handle_cmd_volume_set("user_player", 100)
+
+        # logical 100 with a max_volume of 50 must reach the protocol player as 50, not the raw 100
+        protocol.volume_set.assert_awaited_once_with(50)
+
+    @pytest.mark.asyncio
+    async def test_external_control_redirect_forwards_scaled_volume(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A volume command redirected to an external control honors the user-facing max_volume."""
+
+        def _conf(_player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 50
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+
+        control = SimpleNamespace(name="External Amp", supports_volume=True, volume_set=AsyncMock())
+        user = self._volume_player("user_player", "ext_control")
+        players = {"user_player": user}
+
+        with (
+            patch.object(controller, "get_player", side_effect=players.get),
+            patch.object(controller, "_get_active_audio_source", return_value=None),
+        ):
+            controller._controls = {"ext_control": control}  # type: ignore[dict-item]
+            await controller._handle_cmd_volume_set("user_player", 100)
+
+        control.volume_set.assert_awaited_once_with(50)
 
 
 if __name__ == "__main__":
