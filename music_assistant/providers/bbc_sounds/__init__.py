@@ -260,6 +260,7 @@ class BBCSoundsProvider(MusicProvider):
                 if this_episode and isinstance(this_episode, PodcastEpisode):
                     yield this_episode
 
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         self.logger.debug(f"Getting radio for {prov_radio_id}")
@@ -274,6 +275,7 @@ class BBCSoundsProvider(MusicProvider):
         self.logger.debug(f"{station} {ma_radio} {type(ma_radio)}")
         raise MediaNotFoundError("No valid radio stream found")
 
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def _catch_up_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for catch-up content."""
         episode = await self.client.streaming.get_by_pid(
