@@ -1,6 +1,6 @@
 """Metadata-related functions for BBC Sounds provider."""
 
-from typing import Any, cast
+from typing import Any
 
 from music_assistant_models.streamdetails import StreamMetadata
 from sounds import Segment
@@ -16,10 +16,10 @@ def _find_segment(segments: list[Segment], elapsed_time: int) -> Segment | None:
                 s
                 for s in segments
                 if isinstance(s, Segment)
-                and s.offset
-                and int(cast("int", s.offset.get("start")))
-                <= elapsed_time
-                < int(cast("int", s.offset.get("end")))
+                and s.offset is not None
+                and (start := s.offset.get("start")) is not None
+                and (end := s.offset.get("end")) is not None
+                and int(start) <= elapsed_time < int(end)
             ),
             None,
         )
