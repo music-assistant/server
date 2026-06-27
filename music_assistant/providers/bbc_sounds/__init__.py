@@ -287,7 +287,7 @@ class BBCSoundsProvider(MusicProvider):
         if not stream_details or not isinstance(episode, PlayableItem):
             raise self._stream_error(item_id, media_type)
 
-        stream_details.data = {"vpid": programme["id"], "pid": episode.pid}
+        stream_details.data = {"vpid": episode.id, "pid": episode.pid}
         stream_details.stream_metadata_update_callback = self._update_on_demand_stream_metadata
         stream_details.stream_metadata_update_interval = _Constants.NOW_PLAYING_REFRESH_TIME
         return stream_details
