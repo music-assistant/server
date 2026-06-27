@@ -32,6 +32,40 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
 
     @sub.tool(
         tags={Tag.CONTROL_PLAYBACK},
+        annotations=_control_annotations(title="Pause playback"),
+        timeout=TIMEOUT_MUTATION,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def pause(queue_id: str) -> None:
+        """
+        Pause playback on the given queue.
+
+        Always pauses — unlike ``playback_play_pause``, this does not toggle. Prefer this
+        when the user asks to pause. Returns nothing.
+
+        :param queue_id: Queue identifier — same as ``player_id`` from
+            ``players_list_players``.
+        """
+        await mass.player_queues.pause(queue_id)
+
+    @sub.tool(
+        tags={Tag.CONTROL_PLAYBACK},
+        annotations=_control_annotations(title="Resume playback"),
+        timeout=TIMEOUT_MUTATION,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def resume(queue_id: str) -> None:
+        """
+        Resume paused playback on the given queue.
+
+        Always resumes — unlike ``playback_play_pause``, this does not toggle. Prefer this
+        when the user asks to resume or unpause. Returns nothing.
+
+        :param queue_id: Queue identifier — same as ``player_id`` from
+            ``players_list_players``.
+        """
+        await mass.player_queues.resume(queue_id)
+
+    @sub.tool(
+        tags={Tag.CONTROL_PLAYBACK},
         annotations=_control_annotations(title="Toggle play / pause"),
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
@@ -39,8 +73,11 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Toggle play/pause on the given queue.
 
-        Playing → pauses, paused → resumes. Use ``stop`` to halt playback and
-        reset the current position. Returns nothing.
+        Playing → pauses, paused → resumes. Prefer ``playback_pause`` or
+        ``playback_resume`` when the user gives an explicit instruction —
+        toggling can flip the wrong way if state is unknown. Use
+        ``playback_stop`` to halt and reset position. Returns
+        nothing.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         """
@@ -55,7 +92,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Stop playback and reset the playback position. The queue is preserved.
 
-        Use ``play_pause`` to resume without losing position. Returns nothing.
+        Use ``playback_play_pause`` to resume without losing position. Returns nothing.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         """
@@ -71,7 +108,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         Skip to the next item in the queue.
 
         At the end of the queue the behaviour depends on the current repeat
-        mode. Use ``play_index`` to jump to a specific position. Returns
+        mode. Use ``playback_play_index`` to jump to a specific position. Returns
         nothing.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
@@ -146,12 +183,13 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         radio_mode: bool = False,
     ) -> None:
         """
-        Load and start playing media on the given queue.
+        Load and start playing an album, track, playlist, or radio station on a player queue.
 
-        Replaces whatever the queue was playing. Use ``play_index`` to start an
+        Replaces whatever the queue was playing. Use ``playback_play_index`` to start an
         item that is already in the queue. Returns nothing.
 
-        :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
+        :param queue_id: Queue identifier — for a player queue this is the same
+            ``player_id`` returned by ``players_list_players``.
         :param uri: Music Assistant URI of the artist, album, track, playlist
             or radio station to play, of the form
             ``<provider>://<media_type>/<id>`` (e.g. as found on
@@ -170,7 +208,7 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
         """
         Start playing the item at the given position in the existing queue.
 
-        Does not load new media — use ``play_media`` for that. Returns nothing.
+        Does not load new media — use ``playback_play_media`` for that. Returns nothing.
 
         :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
         :param index: Zero-based position in the queue (``>= 0``).
