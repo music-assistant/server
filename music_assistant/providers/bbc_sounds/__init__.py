@@ -411,7 +411,9 @@ class BBCSoundsProvider(MusicProvider):
         segment = _find_segment(segments, elapsed_time)
 
         if segment:
-            stream_details.stream_metadata = _segment_to_metadata(segment)
+            metadata = _segment_to_metadata(segment)
+            if metadata:
+                stream_details.stream_metadata = metadata
             # As of June 2026, the API currently doesn't return images from this endpoint
             # We fill in missing images with the Spotify API, if any are still blank
             # then use the MA helpers here

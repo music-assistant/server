@@ -26,14 +26,16 @@ def _find_segment(segments: list[Segment], elapsed_time: int) -> Segment | None:
     return segment
 
 
-def _segment_to_metadata(now_playing: Segment | dict[str, Any]) -> StreamMetadata:
+def _segment_to_metadata(now_playing: Segment | dict[str, Any]) -> StreamMetadata | None:
     """Convert a now-playing segment to StreamMetadata."""
+    metadata = None
     if isinstance(now_playing, Segment):
         title = now_playing.titles.get("secondary", "")
         artist = now_playing.titles.get("primary", "")
         image_url = now_playing.image_url
         if image_url and _Constants.BLANK_IMAGE_NAME in image_url:
             image_url = None
+        metadata = StreamMetadata(title=title, artist=artist, image_url=image_url)
     elif isinstance(now_playing, dict):
         titles = now_playing.get("titles") if now_playing else None
         title = titles.get("secondary", "") if titles else "Unknown title"
@@ -41,4 +43,5 @@ def _segment_to_metadata(now_playing: Segment | dict[str, Any]) -> StreamMetadat
         image_url = now_playing.get("image_url")
         if image_url and _Constants.BLANK_IMAGE_NAME in image_url:
             image_url = None
-    return StreamMetadata(title=title, artist=artist, image_url=image_url)
+        metadata = StreamMetadata(title=title, artist=artist, image_url=image_url)
+    return metadata
