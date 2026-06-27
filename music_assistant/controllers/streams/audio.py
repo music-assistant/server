@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -130,6 +130,16 @@ WARMUP_DURATION = 8
 # Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
 # latency below ~50 ms while still amortising per-chunk overhead.
 AUDIO_SOURCE_CHUNK_SECONDS = 0.02
+
+# Terminal errors get_icy_radio_stream raises once a single mirror is exhausted; the
+# multi-mirror reader treats these as the signal to fail over to the next URL.
+RADIO_MIRROR_FAILOVER_ERRORS = (
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+    ProviderUnavailableError,
+    RetriesExhausted,
+    InvalidDataError,
+)
 
 
 @dataclass
@@ -684,171 +694,196 @@ class StreamsAudio:
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
         """
-        Stream radio audio with ICY metadata support.
+        Stream radio audio with ICY metadata support, reconnecting on disconnect.
 
         Requires icy-metaint header support. Stream type should be validated
         by resolve_radio_stream() before calling this function.
 
         :param url: Radio stream URL
         :param streamdetails: StreamDetails to update with metadata
-        :raises aiohttp.ClientResponseError: If the server returns an error status.
         """
         self.logger.debug("Start streaming radio with ICY metadata from url %s", url)
         timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+        # Budget for *consecutive* reconnects that delivered no audio. A connection
+        # that actually streamed data resets it, so a healthy long-running stream can
+        # reconnect indefinitely while a dead/looping one bails out instead of spinning.
+        failed_reconnects = 0
+        max_failed_reconnects = 25
 
-        async with self._connect_radio_stream(
-            url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
-        ) as resp:
-            resp.raise_for_status()
-            headers = resp.headers
-            meta_int = int(headers["icy-metaint"])
+        while True:
+            streamed_data = False
+            try:
+                async with self._connect_radio_stream(
+                    url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
+                ) as resp:
+                    # surface a non-200 (e.g. on reconnect) as a ClientResponseError so the
+                    # terminal/HTTP handling below applies instead of failing on the header
+                    resp.raise_for_status()
+                    meta_int_str = resp.headers.get("icy-metaint")
+                    if not meta_int_str:
+                        raise InvalidDataError(f"No icy-metaint header for radio stream: {url}")
+                    try:
+                        meta_int = int(meta_int_str)
+                    except ValueError as err:
+                        raise InvalidDataError(
+                            f"Invalid icy-metaint value for radio stream: {url}"
+                        ) from err
+                    if meta_int <= 0:
+                        raise InvalidDataError(f"Invalid icy-metaint value for radio stream: {url}")
+                    # readexactly raises IncompleteReadError when the server closes the
+                    # connection mid-frame; that (and the network errors below) drops us
+                    # out to the reconnect handler so a live stream survives the blip.
+                    while True:
+                        chunk = await resp.content.readexactly(meta_int)
+                        streamed_data = True
+                        yield chunk
+                        meta_byte = await resp.content.readexactly(1)
+                        if meta_byte == b"\x00":
+                            continue
+                        meta_length = ord(meta_byte) * 16
+                        meta_data = await resp.content.readexactly(meta_length)
+                        self._parse_icy_metadata(meta_data, streamdetails)
+            except asyncio.CancelledError:
+                self.logger.debug("ICY radio stream cancelled for %s", url)
+                raise
+            except aiohttp.ClientResponseError as err:
+                if err.status == 404:
+                    raise MediaNotFoundError(f"Radio stream not found: {url}") from err
+                if err.status == 403:
+                    raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
+                raise ProviderUnavailableError(
+                    f"Radio stream returned HTTP {err.status}: {err}"
+                ) from err
+            except (
+                asyncio.IncompleteReadError,
+                aiohttp.ClientConnectionError,
+                aiohttp.ClientPayloadError,
+                aiohttp.ServerDisconnectedError,
+            ) as err:
+                if streamed_data:
+                    # a healthy session that dropped - reconnect without spending budget
+                    failed_reconnects = 0
+                    self.logger.debug("ICY radio stream dropped, reconnecting: %s", err)
+                else:
+                    failed_reconnects += 1
+                    if failed_reconnects > max_failed_reconnects:
+                        raise RetriesExhausted(
+                            f"ICY radio stream failed after {max_failed_reconnects} "
+                            f"reconnects without data: {err}"
+                        ) from err
+                    self.logger.warning(
+                        "ICY radio stream reconnect produced no data (%d/%d): %s",
+                        failed_reconnects,
+                        max_failed_reconnects,
+                        err,
+                    )
+                await asyncio.sleep(0.5)
 
-            while True:
-                try:
-                    yield await resp.content.readexactly(meta_int)
-                    meta_byte = await resp.content.readexactly(1)
-                    if meta_byte == b"\x00":
-                        continue
-                    meta_length = ord(meta_byte) * 16
-                    meta_data = await resp.content.readexactly(meta_length)
-                    self._parse_icy_metadata(meta_data, streamdetails)
-                except asyncio.exceptions.IncompleteReadError:
-                    break
-
-    async def get_reconnecting_stream(
-        self,
-        url: str | list[MultiPartPath],
-        stream_chunks: Callable[[str], AsyncIterator[bytes]],
-        *,
-        stream_label: str = "Radio stream",
+    async def get_reconnecting_icy_radio_stream(
+        self, url: str | list[MultiPartPath], streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
         """
-        Yield bytes from a live stream, reconnecting until cancelled.
+        Yield ICY radio audio with metadata, failing over across mirror URLs.
 
-        When multiple URLs are given they are treated as interchangeable mirrors and rotated
-        on each reconnect or HTTP failure; once every mirror has failed, the last error is raised.
+        A single URL is delegated to :meth:`get_icy_radio_stream`, which already reconnects
+        on disconnect. Multiple URLs are treated as interchangeable mirrors and tried in turn;
+        a mirror that delivers audio resets the failover budget, so a healthy mirror keeps
+        streaming while a set of unreachable mirrors raises the last error instead of spinning.
 
-        :param url: One stream URL, or a list of mirror URLs to rotate through on reconnect.
-        :param stream_chunks: Callable returning an async iterator of chunks for one URL.
-        :param stream_label: Prefix for log messages.
+        :param url: One stream URL, or a list of mirror URLs to fail over between.
+        :param streamdetails: StreamDetails to update with metadata.
         """
         urls = self._normalize_reconnecting_urls(url)
+        if len(urls) == 1:
+            async for chunk in self.get_icy_radio_stream(urls[0], streamdetails):
+                yield chunk
+            return
+
+        url_index = 0
+        failed_rotations = 0
+        max_failed_rotations = len(urls) * 2
+        last_err: MusicAssistantError | None = None
+        while failed_rotations <= max_failed_rotations:
+            current_url = urls[url_index % len(urls)]
+            url_index += 1
+            delivered_audio = False
+            try:
+                async for chunk in self.get_icy_radio_stream(current_url, streamdetails):
+                    delivered_audio = True
+                    failed_rotations = 0
+                    yield chunk
+                return
+            except RADIO_MIRROR_FAILOVER_ERRORS as err:
+                last_err = err
+                if not delivered_audio:
+                    failed_rotations += 1
+                self.logger.warning(
+                    "ICY radio mirror %s failed, trying next url (%d/%d): %s",
+                    current_url,
+                    failed_rotations,
+                    max_failed_rotations,
+                    err,
+                )
+        if last_err is not None:
+            raise last_err
+
+    async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes]:
+        """
+        Yield continuous radio stream data, automatically reconnecting on disconnect.
+
+        :param url: URL of the radio stream.
+        """
+        timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
         reconnect_count = 0
         max_reconnects = 1000  # Allow many reconnects for long-running radio
-        url_index = 0
-        mirror_http_failures = 0
 
         while reconnect_count <= max_reconnects:
-            current_url = urls[url_index % len(urls)]
             try:
-                chunk_count = 0
-                async for chunk in stream_chunks(current_url):
-                    chunk_count += 1
-                    mirror_http_failures = 0
-                    yield chunk
+                async with self._connect_radio_stream(
+                    url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
+                ) as resp:
+                    chunk_count = 0
+                    async for chunk in resp.content.iter_any():
+                        chunk_count += 1
+                        yield chunk
 
-                self.logger.debug(
-                    "%s ended after %d chunks, reconnecting... (reconnect #%d, next url index %d)",
-                    stream_label,
-                    chunk_count,
-                    reconnect_count,
-                    (url_index + 1) % len(urls),
-                )
-                reconnect_count += 1
-                url_index += 1
-                await asyncio.sleep(0.1)  # Brief delay before reconnect
+                    # Connection closed normally - reconnect
+                    self.logger.debug(
+                        "Radio stream connection closed after %d chunks, reconnecting... "
+                        "(reconnect #%d)",
+                        chunk_count,
+                        reconnect_count,
+                    )
+                    reconnect_count += 1
+                    await asyncio.sleep(0.1)  # Brief delay before reconnect
 
             except asyncio.CancelledError:
-                self.logger.debug("%s cancelled for %s", stream_label, current_url)
+                self.logger.debug("Radio stream cancelled for %s", url)
                 raise
             except (
                 aiohttp.ClientConnectionError,
                 aiohttp.ClientPayloadError,
                 aiohttp.ServerDisconnectedError,
             ) as err:
-                mirror_http_failures = 0
-                self.logger.warning(
-                    "%s error for %s (reconnect #%d): %s",
-                    stream_label,
-                    current_url,
-                    reconnect_count,
-                    err,
-                )
+                # Transient network errors - retry
+                self.logger.warning("Radio stream error (reconnect #%d): %s", reconnect_count, err)
                 reconnect_count += 1
-                url_index += 1
                 if reconnect_count > max_reconnects:
                     raise RetriesExhausted(
-                        f"{stream_label} failed after {max_reconnects} reconnects: {err}"
+                        f"Radio stream failed after {max_reconnects} reconnects: {err}"
                     ) from err
                 await asyncio.sleep(0.5)
             except aiohttp.ClientResponseError as err:
-                if len(urls) == 1:
-                    self._raise_radio_stream_response_error(current_url, err)
-                mirror_http_failures += 1
-                self.logger.warning(
-                    "%s HTTP %s for %s (mirror failover %d/%d, reconnect #%d): %s",
-                    stream_label,
-                    err.status,
-                    current_url,
-                    mirror_http_failures,
-                    len(urls),
-                    reconnect_count,
-                    err,
-                )
-                reconnect_count += 1
-                url_index += 1
-                if mirror_http_failures >= len(urls):
-                    self._raise_radio_stream_response_error(current_url, err)
-                if reconnect_count > max_reconnects:
-                    raise RetriesExhausted(
-                        f"{stream_label} failed after {max_reconnects} reconnects: {err}"
-                    ) from err
-                await asyncio.sleep(0.5)
+                if err.status == 404:
+                    raise MediaNotFoundError(f"Radio stream not found: {url}") from err
+                if err.status == 403:
+                    raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
+                # Other HTTP errors (5xx etc) - could be temporary
+                raise ProviderUnavailableError(
+                    f"Radio stream returned HTTP {err.status}: {err}"
+                ) from err
 
-        self.logger.warning(
-            "%s reached max reconnects (%d) for urls=%s", stream_label, max_reconnects, urls
-        )
-
-    async def get_reconnecting_icy_radio_stream(
-        self, url: str | list[MultiPartPath], streamdetails: StreamDetails
-    ) -> AsyncGenerator[bytes]:
-        """
-        Yield ICY radio audio with metadata, reconnecting until cancelled.
-
-        :param url: One stream URL, or a list of mirror URLs to rotate through on reconnect.
-        :param streamdetails: Stream details; ``stream_title`` is updated from ICY metadata.
-        """
-
-        def icy_chunks(stream_url: str) -> AsyncIterator[bytes]:
-            return self.get_icy_radio_stream(stream_url, streamdetails)
-
-        async for chunk in self.get_reconnecting_stream(
-            url, icy_chunks, stream_label="ICY radio stream"
-        ):
-            yield chunk
-
-    async def get_reconnecting_radio_stream(
-        self, url: str | list[MultiPartPath]
-    ) -> AsyncGenerator[bytes]:
-        """
-        Yield continuous radio stream data, automatically reconnecting on disconnect.
-
-        :param url: URL of the radio stream, or a list of MultiPartPath objects.
-        """
-
-        async def http_chunks(stream_url: str) -> AsyncGenerator[bytes]:
-            timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
-            async with self._connect_radio_stream(
-                stream_url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
-            ) as resp:
-                resp.raise_for_status()
-                async for chunk in resp.content.iter_any():
-                    yield chunk
-
-        async for chunk in self.get_reconnecting_stream(
-            url, http_chunks, stream_label="HTTP radio stream"
-        ):
-            yield chunk
+        self.logger.warning("Radio stream reached max reconnects (%d) for %s", max_reconnects, url)
 
     async def get_hls_substream(self, url: str) -> PlaylistItem:
         """Select the (highest quality) HLS substream for given HLS playlist/URL."""
@@ -3111,12 +3146,3 @@ class StreamsAudio:
             msg = "Radio stream requires at least one URL"
             raise InvalidDataError(msg)
         return [part.path for part in url]
-
-    @staticmethod
-    def _raise_radio_stream_response_error(url: str, err: aiohttp.ClientResponseError) -> None:
-        """Raise the appropriate provider error for a failed HTTP radio response."""
-        if err.status == 404:
-            raise MediaNotFoundError(f"Radio stream not found: {url}") from err
-        if err.status == 403:
-            raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
-        raise ProviderUnavailableError(f"Radio stream returned HTTP {err.status}: {err}") from err

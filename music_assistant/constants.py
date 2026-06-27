@@ -12,7 +12,13 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlayerFeature,
+)
 from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
 APPLICATION_NAME: Final = "Music Assistant"
@@ -182,6 +188,7 @@ DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
 DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
+DB_TABLE_AUDIOBOOK_ARTISTS: Final[str] = "audiobook_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
@@ -370,7 +377,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION,
     type=ConfigEntryType.BOOLEAN,
     default_value=True,
-    category="playback",
+    category="audio",
     requires_reload=True,
 )
 
@@ -402,8 +409,9 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(1, 15),
     default_value=8,
-    category="playback",
-    advanced=True,
+    category="crossfade",
+    depends_on=CONF_CROSSFADE_MODE,
+    depends_on_value=CrossfadeMode.STANDARD_CROSSFADE.value,
     requires_reload=True,
 )
 
