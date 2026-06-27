@@ -312,7 +312,7 @@ class SendspinLocalAudioBridge:
         # streams are already open and idle when the first play starts, so
         # play_at_us scheduling lands all bridges within a much tighter window.
         if self.backend == "pulse" and self.pa_sink_name:
-            self.mass.create_task(self._prewarm_pa_stream())
+            await self._prewarm_pa_stream()
 
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
