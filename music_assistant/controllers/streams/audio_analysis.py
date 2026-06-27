@@ -58,6 +58,10 @@ ANALYSIS_THREAD_NICE = 10
 # Rapid track skipping would otherwise spawn an analysis per abandoned track; the oldest is
 # evicted to keep the count bounded.
 REALTIME_ANALYSIS_MAX_SESSIONS = 2
+# Free the heavy analysis models after this long with no analysis activity; they are reloaded
+# on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
+MODEL_IDLE_UNLOAD_SECONDS = 300
+MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -176,6 +180,9 @@ class AudioAnalysisController:
         # Niced worker pool that runs analysis offloads, so the lower priority applies to
         # analysis threads only; created in ensure_inference_runtime_configured.
         self.analysis_executor: ThreadPoolExecutor | None = None
+        # Monotonic time of the last analysis start, and the monitor that unloads idle models.
+        self._last_analysis_activity: float = 0.0
+        self._idle_unload_task: asyncio.Task[None] | None = None
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -191,15 +198,18 @@ class AudioAnalysisController:
 
     async def close(self) -> None:
         """Drain in-flight sessions and chunk workers on shutdown."""
-        workers = list(self._workers.values())
+        tasks = list(self._workers.values())
         self._workers.clear()
-        for worker in workers:
-            if not worker.done():
-                worker.cancel()
+        if self._idle_unload_task is not None:
+            tasks.append(self._idle_unload_task)
+            self._idle_unload_task = None
+        for task in tasks:
+            if not task.done():
+                task.cancel()
         for session_key in list(self._active_sessions):
             self._cancel_providers(session_key)
-        if workers:
-            await asyncio.gather(*workers, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if self.analysis_executor is not None:
             # A running CPU-bound thread can't be cancelled, so shut down without waiting on it.
             self.analysis_executor.shutdown(wait=False, cancel_futures=True)
@@ -1006,6 +1016,7 @@ class AudioAnalysisController:
         providers: list[AudioAnalysisProvider],
     ) -> set[str]:
         """Call start_analysis on each provider, returning IDs of those that accepted."""
+        self._mark_analysis_activity()
         provider_ids: set[str] = set()
         for provider in providers:
             try:
@@ -1050,6 +1061,35 @@ class AudioAnalysisController:
         # Cancel providers directly: a task cancelled before it first runs has no finally to run.
         self._cancel_providers(session_key)
         self.logger.debug("Stopped realtime analysis session %s", session_key)
+
+    def _mark_analysis_activity(self) -> None:
+        """Record analysis activity and ensure the idle-model monitor is running."""
+        self._last_analysis_activity = time.monotonic()
+        if self._idle_unload_task is None or self._idle_unload_task.done():
+            self._idle_unload_task = self.mass.create_task(self._monitor_idle_models())
+
+    async def _monitor_idle_models(self) -> None:
+        """Unload heavy models once no analysis has run for MODEL_IDLE_UNLOAD_SECONDS."""
+        while True:
+            await asyncio.sleep(MODEL_IDLE_CHECK_INTERVAL_SECONDS)
+            if self._active_sessions:
+                # Keep the timer fresh while analysis is running.
+                self._last_analysis_activity = time.monotonic()
+                continue
+            if time.monotonic() - self._last_analysis_activity < MODEL_IDLE_UNLOAD_SECONDS:
+                continue
+            await self._unload_idle_models()
+            return  # stop until the next analysis restarts the monitor
+
+    async def _unload_idle_models(self) -> None:
+        """Free heavy models on every provider that supports unloading them."""
+        for provider in self.providers:
+            if not provider.has_unloadable_models:
+                continue
+            try:
+                await provider.unload_idle_models()
+            except Exception as err:
+                self.logger.warning("Failed to unload models for %s: %s", provider.name, err)
 
     async def _distribute_chunk(
         self,

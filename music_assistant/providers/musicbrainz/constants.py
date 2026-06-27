@@ -6,7 +6,10 @@ from music_assistant_models.enums import LinkType, ProviderFeature
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
-SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.ARTIST_METADATA}
+SUPPORTED_FEATURES: set[ProviderFeature] = {
+    ProviderFeature.ARTIST_METADATA,
+    ProviderFeature.RECOMMENDATIONS,
+}
 
 # Mapping from MusicBrainz URL relation "type" slug to our LinkType enum.
 # See https://musicbrainz.org/relationships/artist-url for the full set.

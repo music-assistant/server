@@ -7,7 +7,8 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from mashumaro.exceptions import MissingField
-from music_assistant_models.enums import ExternalID, LinkType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ExternalID, LinkType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata
 
@@ -30,14 +31,18 @@ from .models import (
     MusicBrainzRelease,
     MusicBrainzReleaseGroup,
 )
+from .recommendations import MusicBrainzRecommendationManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-    from music_assistant_models.media_items import Album, Artist, Track
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.media_items import Album, Artist, RecommendationFolder, Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+# Config keys
+CONF_RECOMMENDATION_DAYS = "recommendation_days"
 
 
 async def setup(
@@ -61,7 +66,15 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return ()  # we do not have any config entries (yet)
+    return (
+        ConfigEntry(
+            key=CONF_RECOMMENDATION_DAYS,
+            type=ConfigEntryType.INTEGER,
+            default_value=3,
+            range=(1, 15),
+            advanced=True,
+        ),
+    )
 
 
 class MusicbrainzProvider(MetadataProvider):
@@ -71,6 +84,11 @@ class MusicbrainzProvider(MetadataProvider):
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self._api_client = MusicBrainzAPIClient(self.mass)
+        self._recommendations = MusicBrainzRecommendationManager(self)
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Return birthday/memorial recommendation folders."""
+        return await self._recommendations.get_recommendations()
 
     async def search(
         self, artistname: str, albumname: str, trackname: str, trackversion: str | None = None

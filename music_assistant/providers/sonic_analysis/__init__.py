@@ -327,6 +327,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     analysis_version: int = 1
     max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
+    has_unloadable_models = True
 
     def __init__(
         self,
@@ -348,7 +349,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         Blocks the provider's setup until the model is loaded (first-run downloads
         ~500MB). On failure the exception propagates and the provider stays
         available=False, which the AudioAnalysisController already honors when
-        scheduling work.
+        scheduling work. While idle the model is later unloaded and reloaded on demand.
         """
         verify_system_meets_requirements(
             feature_name="Sonic Analysis",
@@ -358,21 +359,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
         # Configure the inference runtime before loading the model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
-        (
-            self._clap_model,
-            self._clap_text_embeddings,
-            self._clap_prompt_order,
-        ) = await asyncio.to_thread(self._load_clap)
-        self.logger.info(
-            "CLAP model loaded; %d prompt pairs ready",
-            len(self._clap_prompt_order),
-        )
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Release the CLAP model."""
-        self._clap_model = None
-        self._clap_text_embeddings = None
-        await super().unload(is_removed)
+        await self._load_models()
+        self._models_loaded = True
 
     async def cancel(self, session_id: str) -> None:
         """Cancel pending CLAP inferences and free per-window buffers."""
@@ -420,6 +408,23 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             session.overlap = post_audio[-OVERLAP_SAMPLES:].copy()
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
+
+    async def _load_models(self) -> None:
+        """Load the CLAP model and prompt embeddings into memory."""
+        (
+            self._clap_model,
+            self._clap_text_embeddings,
+            self._clap_prompt_order,
+        ) = await asyncio.to_thread(self._load_clap)
+        self.logger.info(
+            "CLAP model loaded; %d prompt pairs ready",
+            len(self._clap_prompt_order),
+        )
+
+    def _free_models(self) -> None:
+        """Release the CLAP model and prompt embeddings."""
+        self._clap_model = None
+        self._clap_text_embeddings = None
 
     def _load_clap(
         self,

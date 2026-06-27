@@ -14,6 +14,7 @@ The Local Audio Out provider exposes locally attached soundcards as players in M
 - **Hardware Volume Control** *(Linux PulseAudio)*: Per-player volume and mute are applied as native PulseAudio sink volume via `libpulse`, using an exponential "audio taper" curve mapped from the MA 0-100 slider so slider position corresponds to a constant dB change per step (see Volume Control below). Each remap sink has an independent hardware volume that doesn't affect its master sink or sibling sinks. Falls back to software volume (PCM scaling) if hardware volume control is unavailable
 - **Stable Player IDs**: Uses UUIDv5 derived from device name + host API index so players persist across restarts
 - **Volume State Persistence**: Volume level is cached and restored on restart. Mute state is intentionally *not* restored on restart — a player never starts up silently muted
+- **PA Stream Pre-Warming** *(Linux PulseAudio)*: PA streams are opened at provider startup rather than at first play, eliminating the cold-start stream-open latency that causes a fixed sync offset when multiple bridges open their streams simultaneously on the first play in a sync group
 
 ## Architecture
 
@@ -59,11 +60,14 @@ asyncio.Queue
        │
        ▼
 PASimpleStream (libpulse-simple via ctypes)
+│  Pre-warmed at provider startup — stream-open latency paid once
+│  during init, not at first play, so sync group timing is tight
        │
        ▼
 PulseAudio Sink (hardware volume set via PAVolumeController —
        │           independent per-sink, audio-taper mapped from
-       │           MA volume slider)
+       │           MA volume slider; master sink pinned at 100%
+       │           so remap sinks are never doubly attenuated)
        ▼
 Physical Audio Device / remap-sink master
 ```
@@ -121,7 +125,7 @@ The ALSA direct backend always uses 16-bit int PCM (PortAudio `int16` dtype) reg
 | `__init__.py` | Provider entry point, config entries (backend selector on Linux), and setup |
 | `provider.py` | `LocalAudioProvider` class |
 | `sendspin_bridge.py` | Bridge manager and per-device bridge (PA on Linux PulseAudio, sounddevice on Linux ALSA and macOS); also owns remap-sink topology lifecycle |
-| `pa_simple.py` | ctypes wrapper around `libpulse-simple`/`libpulse` for direct PCM output, PA sink/module hardware volume control, and module load/unload; PA sink enumeration via `pactl`; ALSA device enumeration via PortAudio *(Linux only)* |
+| `pa_simple.py` | ctypes wrapper around `libpulse-simple`/`libpulse` for direct PCM output, PA sink/module hardware volume control, and module load/unload; PA sink enumeration via `pactl`; ALSA device enumeration via PortAudio; `suspend_resume_sink()` workaround in case a sound card stalls *(Linux only)* |
 | `remap_topology.py` | Computes the per-zone and full-channel passthrough `module-remap-sink` topology for multi-channel cards *(Linux PulseAudio only)* |
 | `constants.py` | Shared constants (UUID namespace, buffer sizes, backend selector values) and the `volume_pct_to_amplitude` audio taper used by both the hardware and software volume paths; taper range is configurable via `_TAPER_A` (default 40dB, suited for receiver/outdoor setups) |
 | `manifest.json` | Provider metadata and dependencies |
@@ -154,6 +158,11 @@ This topology is:
 - **Self-cleaning**: all remap sinks created by the provider are unloaded when the provider stops or reloads
 - **Automatic**: no addon, manual `pactl` setup, or configuration file is needed — card names are normalized from `alsa.card_name` (e.g. "Creative X-Fi" → `Creative_X_Fi`) to build sink names
 
+After creating the remap-sink topology for a master sink, the provider:
+
+- **Pins the master sink volume to 100%** via `PAVolumeController` so it never attenuates remap sinks feeding through it. The master has no bridge of its own, so without this explicit pin `module-device-restore` or any other PA client could leave it at an arbitrary level, stacking a hidden attenuation on top of every zone sink's volume
+- **Runs a suspend/resume cycle** on the ALSA master sink via `pactl suspend-sink`. This resets the ALSA driver state after remap-sink creation and works around driver mmap regressions (notably the `snd_ctxfi` regression in kernel 6.12.x, commit `391e69143d0a`) that cause `pa_simple_write` to timeout silently on first use. The cycle is safe to run on any ALSA-card master and has no effect on cards that don't have the issue
+
 ## Notes
 
 - On Linux, multi-channel sinks (5.1, 7.1) are supported on the PulseAudio backend via the self-managed remap-sink topology described above — the raw multi-channel master is not registered as a separate player once its zone sinks and passthrough sink exist.
@@ -165,6 +174,8 @@ This topology is:
 - On the ALSA direct backend, hardware ALSA mixer levels are not managed by MA. Set all relevant controls (Master, PCM) to 100% using `alsamixer -c <card>` and persist them with `sudo alsactl store <card>`.
 - Plugging or unplugging a USB audio device on Linux triggers a full provider reload (an upstream MA behavior, not specific to this provider). All active playback on all local audio players stops abruptly during the reload, which typically completes within a second; the new/removed device is reflected automatically and players resume normally on the next playback request. The remap-sink topology is recreated idempotently as part of this reload.
 - If a player provider reload is needed (e.g. after adding or removing PA sinks or ALSA devices), use **Settings → Providers → Local Audio Out → Reload** in the MA UI.
+- PA sinks remain in **RUNNING** state while the provider is active — pre-warmed streams are held open to enable warm stream handoff on play. Sinks return to IDLE when the provider is disabled or MA is stopped. This is intentional: the warm streams are what eliminates cold-start sync offset in sync groups.
+- On ALSA-card master sinks, the provider automatically runs a suspend/resume cycle at topology creation time to reset the ALSA driver state. This prevents silent output caused by driver mmap stalls (notably the `snd_ctxfi`) that can occur after a PA daemon restart or `daemon.conf` rate change. If you experience silent output from an ALSA card after a PA daemon restart without reloading the provider, manually run `pactl suspend-sink <master_sink_name> true && sleep 1 && pactl suspend-sink <master_sink_name> false` as a temporary workaround until the next provider reload.
 
 ## Related Documentation
 

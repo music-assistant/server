@@ -48,6 +48,7 @@ if sys.platform == "linux":
         PAVolumeController,
         enumerate_alsa_devices,
         enumerate_pa_sinks,
+        suspend_resume_sink,
     )
     from .remap_topology import (
         build_remap_sink_argument,
@@ -186,6 +187,11 @@ class SendspinLocalAudioBridge:
         self._write_queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._output_stream: Any | None = None
+        # Pre-warmed PA stream — opened during start() so PA stream-open
+        # latency is paid once at provider init, not at first play. Eliminates
+        # the ~200ms cold-start sync offset when all bridges in a group open
+        # their PA streams simultaneously for the first time.
+        self._pa_stream: PASimpleStream | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -298,6 +304,16 @@ class SendspinLocalAudioBridge:
             # stream volume into sink hardware volume on pa_simple_new open.
             await self._reset_sink_volume()
 
+        # Pre-warm the PA stream so the latency of pa_simple_new() is paid
+        # once at provider init rather than at first play. Without this, each
+        # bridge in a sync group opens its PA stream on the first play, and the
+        # spread in that per-bridge open latency (~50-200ms) becomes a fixed
+        # sync offset that persists for the session. Pre-warming means all
+        # streams are already open and idle when the first play starts, so
+        # play_at_us scheduling lands all bridges within a much tighter window.
+        if self.backend == "pulse" and self.pa_sink_name:
+            await self._prewarm_pa_stream()
+
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         async with self._lock:
@@ -306,6 +322,12 @@ class SendspinLocalAudioBridge:
                 await self.sendspin_server.remove_client(self._bridge_client_id)
                 self._sendspin_client = None
                 self._bridge_role = None
+        # Close the pre-warmed stream if it was never consumed by a writer.
+        if self._pa_stream is not None:
+            stream = self._pa_stream
+            self._pa_stream = None
+            with suppress(OSError):
+                await self.mass.loop.run_in_executor(None, stream.close)
         self.logger.debug("Sendspin bridge stopped for %s", self.device_name)
 
     def _get_sendspin_provider(self) -> SendspinProvider | None:
@@ -339,6 +361,49 @@ class SendspinLocalAudioBridge:
             # Master/base sink (software volume control): re-pin PA sink
             # volume to 100% after playback ends.
             self.mass.create_task(self._reset_sink_volume())
+
+    async def _prewarm_pa_stream(self) -> None:
+        """
+        Open the PA stream early so stream-open latency doesn't affect sync.
+
+        Opens a PASimpleStream and writes a single silence chunk to trigger
+        the idle->RUNNING ALSA transition (paying the mmap init cost once at
+        provider startup rather than at first play). The stream is then held
+        open and idle — PA may suspend it via suspend-on-idle, but the ALSA
+        driver remains initialised so the first real write reconnects with
+        negligible latency. No keepalive writes are used to avoid interfering
+        with real audio when the writer takes ownership.
+        """
+        if not self.pa_sink_name:
+            return
+        pa_sink_name = self.pa_sink_name
+        bytes_per_sample = self.bit_depth // 8
+        # One chunk of silence to trigger idle->RUNNING and initialise the
+        # ALSA DMA buffer — just enough to pay the mmap init cost.
+        silence = bytes(BRIDGE_CHANNELS * bytes_per_sample * 64)  # 64 frames
+        try:
+            stream = await self.mass.loop.run_in_executor(
+                None,
+                lambda: PASimpleStream(
+                    sink_name=pa_sink_name,
+                    app_name=f"music-assistant-{pa_sink_name}",
+                    rate=self.sample_rate,
+                    channels=BRIDGE_CHANNELS,
+                    bit_depth=self.bit_depth,
+                ),
+            )
+        except OSError as err:
+            self.logger.debug("PA stream pre-warm failed for %s: %s", pa_sink_name, err)
+            return
+        # Write one silence chunk to trigger the ALSA DMA init cycle.
+        try:
+            await self.mass.loop.run_in_executor(None, stream.write, silence)
+        except OSError:
+            with suppress(OSError):
+                await self.mass.loop.run_in_executor(None, stream.close)
+            return
+        self._pa_stream = stream
+        self.logger.debug("PA stream pre-warmed for %s", pa_sink_name)
 
     async def _reset_sink_volume(self) -> None:
         """
@@ -538,31 +603,44 @@ class SendspinLocalAudioBridge:
         else:
             await self._audio_writer_sounddevice()
 
+    async def _get_pa_stream(self) -> PASimpleStream:
+        """
+        Return a ready PASimpleStream for this bridge's PA sink.
+
+        Uses the pre-warmed stream if available, otherwise opens a new one.
+        """
+        if self._pa_stream is not None:
+            stream = self._pa_stream
+            self._pa_stream = None  # take ownership
+            self.logger.debug("Using pre-warmed PA stream for %s", self.pa_sink_name)
+            return stream
+        self.logger.debug(
+            "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
+            self.pa_sink_name,
+            self.sample_rate,
+            BRIDGE_CHANNELS,
+            self.bit_depth,
+        )
+        assert self.pa_sink_name is not None
+        pa_sink_name = self.pa_sink_name
+        return await self.mass.loop.run_in_executor(
+            None,
+            lambda: PASimpleStream(
+                sink_name=pa_sink_name,
+                app_name=f"music-assistant-{pa_sink_name}",
+                rate=self.sample_rate,
+                channels=BRIDGE_CHANNELS,
+                bit_depth=self.bit_depth,
+            ),
+        )
+
     async def _audio_writer_pulse(self) -> None:
         """Write queued audio to a PA sink via PASimpleStream (Linux)."""
         stream: PASimpleStream | None = None
         write_future: asyncio.Future[None] | None = None
         try:
-            self.logger.debug(
-                "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
-                self.pa_sink_name,
-                self.sample_rate,
-                BRIDGE_CHANNELS,
-                self.bit_depth,
-            )
-            assert self.pa_sink_name is not None
-            pa_sink_name = self.pa_sink_name
-            stream = await self.mass.loop.run_in_executor(
-                None,
-                lambda: PASimpleStream(
-                    sink_name=pa_sink_name,
-                    app_name=f"music-assistant-{pa_sink_name}",
-                    rate=self.sample_rate,
-                    channels=BRIDGE_CHANNELS,
-                    bit_depth=self.bit_depth,
-                ),
-            )
-            self.logger.debug("PA stream opened for %s", self.pa_sink_name)
+            stream = await self._get_pa_stream()
+            self.logger.debug("PA stream ready for %s", self.pa_sink_name)
             assert stream is not None
 
             first_chunk_written = False
@@ -947,6 +1025,15 @@ class LocalAudioBridgeManager:
                 self._loaded_remap_modules[spec.sink_name] = module_index
                 existing_names.add(spec.sink_name)
                 loaded_any = True
+
+            # Suspend/resume the master sink to reset the underlying ALSA
+            # driver state. Specifically works around the snd_ctxfi mmap bug
+            # (kernel 6.12.x, commit 391e69143d0a) where the X-Fi card's DMA
+            # stalls after init, causing pa_simple_write to timeout silently.
+            # Running this on every ALSA-card master at topology creation time
+            # is safe — it only takes ~0.5s and has no effect on cards that
+            # don't have the bug.
+            await self.mass.loop.run_in_executor(None, suspend_resume_sink, master_sink_name)
 
             # Pin the master sink to 100% so it never attenuates remap sinks
             # feeding through it. The master has no bridge of its own (it's
