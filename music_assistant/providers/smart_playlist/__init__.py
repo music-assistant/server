@@ -915,6 +915,57 @@ class SmartPlaylistProvider(PluginProvider):
                 for genre in genres:
                     track.metadata.genres.add(genre.name)
 
+    async def _filter_tracks_with_all_genres(
+        self, tracks: list[Track], required_genre_ids: list[int]
+    ) -> list[Track]:
+        """Filter tracks to only those that have ALL required genre IDs in the database."""
+        if not tracks or not required_genre_ids:
+            return tracks
+
+        required_ids = set(required_genre_ids)
+
+        # Build map of library_track_id -> list of track objects
+        track_id_to_tracks: dict[int, list[Track]] = {}
+        for track in tracks:
+            for mapping in track.provider_mappings or ():
+                if mapping.provider_domain == "library" and str(mapping.item_id).isdigit():
+                    track_id = int(mapping.item_id)
+                    if track_id not in track_id_to_tracks:
+                        track_id_to_tracks[track_id] = []
+                    track_id_to_tracks[track_id].append(track)
+                    break
+
+        if not track_id_to_tracks:
+            return []
+
+        # Fetch genres for all track IDs in parallel
+        # With typical limits (20-50 tracks), this results in 100-250 parallel DB calls
+        # which is acceptable. Only at very high limits would we approach the 2000 max.
+        track_ids = list(track_id_to_tracks.keys())
+        genre_results = await asyncio.gather(
+            *(
+                self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
+                for track_id in track_ids
+            )
+        )
+
+        # Build set of track IDs that have all required genres
+        matching_track_ids: set[int] = set()
+        for track_id, genres in zip(track_ids, genre_results, strict=True):
+            track_genre_ids = {
+                int(g.item_id) for g in genres if g.item_id and str(g.item_id).isdigit()
+            }
+            if required_ids.issubset(track_genre_ids):
+                matching_track_ids.add(track_id)
+
+        # Return tracks that match, preserving original order
+        result: list[Track] = []
+        for track_id in track_ids:
+            if track_id in matching_track_ids:
+                result.extend(track_id_to_tracks[track_id])
+
+        return result
+
     async def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
         """
         Filter out tracks fully played within dedup_hours (scoped to the current user).
@@ -958,6 +1009,10 @@ class SmartPlaylistProvider(PluginProvider):
             limit=min(rules.limit * 5, 2000),
             user_provider_filter=user_provider_filter,
         )
+
+        # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
+        if has_genre and len(rules.genre_ids) > 1:
+            base_tracks = await self._filter_tracks_with_all_genres(base_tracks, rules.genre_ids)
 
         if not has_artist and not has_album:
             return base_tracks
