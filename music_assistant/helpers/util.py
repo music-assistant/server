@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import sys
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -858,11 +859,40 @@ async def is_port_in_use(port: int) -> bool:
     return await asyncio.to_thread(_is_port_in_use)
 
 
+# In-process reservations for ports handed out by select_free_port. Provider
+# instances (and reloads) frequently call select_free_port at nearly the same
+# moment and only bind the returned port asynchronously afterwards, so a port
+# that was just handed out is not yet detectable as "in use". Keeping a
+# short-lived reservation per returned port stops concurrent/successive callers
+# from picking the same one. Reservations expire automatically after the grace
+# period so the range is never permanently exhausted across reloads.
+_PORT_RESERVATION_TTL = 60.0
+_reserved_ports: dict[int, float] = {}
+_select_free_port_lock = asyncio.Lock()
+
+
 async def select_free_port(range_start: int, range_end: int) -> int:
-    """Automatically find available port within range."""
-    for port in range(range_start, range_end):
-        if not await is_port_in_use(port):
-            return port
+    """
+    Find and reserve a free port within the given range.
+
+    The returned port is reserved so concurrent or successive callers are not
+    handed the same port.
+
+    :param range_start: First port (inclusive) of the range to search.
+    :param range_end: Port to stop before (exclusive) when searching the range.
+    """
+    async with _select_free_port_lock:
+        now = time.monotonic()
+        # drop expired reservations so their ports become reusable again
+        for reserved_port, deadline in list(_reserved_ports.items()):
+            if deadline <= now:
+                del _reserved_ports[reserved_port]
+        for port in range(range_start, range_end):
+            if port in _reserved_ports:
+                continue
+            if not await is_port_in_use(port):
+                _reserved_ports[port] = now + _PORT_RESERVATION_TTL
+                return port
     msg = "No free port available"
     raise OSError(msg)
 
