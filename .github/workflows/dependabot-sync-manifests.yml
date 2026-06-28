@@ -38,14 +38,20 @@ jobs:
       - name: Determine packages bumped in requirements_all.txt
         id: bumped
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
+          # Fetch the base branch so we can diff against the PR's true fork point and, later, run
+          # its current (trusted) tooling. base.ref (not base.sha) is used throughout: the base tip
+          # is the branch that actually carries the workflow + sync script, whereas base.sha may be
+          # an old fork point and is not reliably present in this shallow PR-head checkout.
+          git fetch --no-tags origin "$BASE_REF"
+          MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
           # Names of packages whose pin changed on the added side of the diff. The platform-
           # conditional entries gen_requirements_all synthesises for alternate-index packages (the
           # PyTorch CPU wheels, identified by their "platform_machine" marker) are excluded: those
           # are never authored in a manifest, so the sync script skips them and including them here
           # would only make gen_requirements_all revert the bump.
-          PACKAGES=$(git diff "$BASE_SHA" HEAD -- requirements_all.txt \
+          PACKAGES=$(git diff "$MERGE_BASE" HEAD -- requirements_all.txt \
             | grep -E '^\+[^+-]' \
             | grep -v 'platform_machine' \
             | grep -oiE '^\+[A-Za-z0-9._-]+' \
@@ -66,12 +72,12 @@ jobs:
           # Pass via env (not inline ${{ }}) to avoid shell injection; the names are already
           # constrained to [A-Za-z0-9._-] above, and word-splitting them into args is intended.
           PACKAGES: ${{ steps.bumped.outputs.packages }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          # Run the trusted base-branch tooling against the PR's data files: the PR branch may
-          # predate the sync script, and we must never execute scripts from the PR head. Unstage
-          # the overlay so it is never part of the commit pushed back to the branch.
-          git checkout "$BASE_SHA" -- scripts/
+          # Run the trusted base-branch tooling (fetched above) against the PR's data files: the PR
+          # branch may predate the sync script, and we must never execute scripts from the PR head.
+          # Unstage the overlay so it is never part of the commit pushed back to the branch.
+          git checkout "origin/$BASE_REF" -- scripts/
           git reset -q -- scripts/
           python -m scripts.sync_manifest_from_requirements $PACKAGES
           python -m scripts.gen_requirements_all
