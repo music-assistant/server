@@ -40,13 +40,14 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Names of packages whose pin changed on the added side of the diff. Lines carrying an
-          # environment marker (the synthesised "; sys_platform ..." entries, e.g. the PyTorch CPU
-          # wheels) are excluded: those are never authored in a manifest, so the sync script skips
-          # them and including them here would only make gen_requirements_all revert the bump.
+          # Names of packages whose pin changed on the added side of the diff. The platform-
+          # conditional entries gen_requirements_all synthesises for alternate-index packages (the
+          # PyTorch CPU wheels, identified by their "platform_machine" marker) are excluded: those
+          # are never authored in a manifest, so the sync script skips them and including them here
+          # would only make gen_requirements_all revert the bump.
           PACKAGES=$(git diff "$BASE_SHA" HEAD -- requirements_all.txt \
             | grep -E '^\+[^+-]' \
-            | grep -v ';' \
+            | grep -v 'platform_machine' \
             | grep -oiE '^\+[A-Za-z0-9._-]+' \
             | sed 's/^+//' | sort -u | tr '\n' ' ')
           echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"

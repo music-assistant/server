@@ -86,9 +86,11 @@ def _parse_requirements_all(content: str) -> dict[str, str]:
     wanted: dict[str, str] = {}
     for raw_line in content.splitlines():
         line = raw_line.strip()
-        # Skip the header comment, blank lines, index directives and the synthesised
-        # platform-conditional entries (which carry an environment marker after ';').
-        if not line or line.startswith(("#", "--")) or ";" in line:
+        # Skip the header comment, blank lines, index directives and the platform-conditional
+        # entries gen_requirements_all synthesises for alternate-index packages (the PyTorch CPU
+        # wheels), identified by their "platform_machine" marker. Those are never authored in a
+        # manifest verbatim; any other PEP 508 environment marker is kept so it can still be synced.
+        if not line or line.startswith(("#", "--")) or "platform_machine" in line:
             continue
         if (name := _package_name(line)) is not None:
             wanted[name] = line
