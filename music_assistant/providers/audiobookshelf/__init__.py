@@ -711,6 +711,7 @@ for more details.
             mass_episode = parse_podcast_episode(
                 episode=abs_episode,
                 prov_podcast_id=prov_podcast_id,
+                prov_podcast_name=abs_podcast.media.metadata.title,
                 fallback_episode_cnt=episode_cnt,
                 instance_id=self.instance_id,
                 domain=self.domain,
@@ -741,6 +742,7 @@ for more details.
                 return parse_podcast_episode(
                     episode=abs_episode,
                     prov_podcast_id=prov_podcast_id,
+                    prov_podcast_name=abs_podcast.media.metadata.title,
                     fallback_episode_cnt=episode_cnt,
                     instance_id=self.instance_id,
                     domain=self.domain,
