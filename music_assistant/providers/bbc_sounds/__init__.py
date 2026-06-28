@@ -668,7 +668,7 @@ class BBCSoundsProvider(MusicProvider):
         folders = []
 
         if self.logged_in:
-            recommendations = await self.client.personal.get_uk_menu(
+            recommendations = await self.client.personal.get_experience_menu(
                 recommendations=MenuRecommendationOptions.ONLY
             )
             self.logger.debug("Getting recommendations from API")
