@@ -161,6 +161,7 @@ def parse_podcast_episode(
     *,
     episode: AbsPodcastEpisode | AbsPodcastEpisodeExpanded,
     prov_podcast_id: str,
+    prov_podcast_name: str | None,
     fallback_episode_cnt: int | None = None,
     instance_id: str,
     domain: str,
@@ -180,6 +181,7 @@ def parse_podcast_episode(
     A PodcastEpisode has only limited information, and is currently only used
     within the recommendations.
     """
+    # ruff: noqa: PLR0913 (too many arguments)
     episode_id = f"{prov_podcast_id} {episode.id_}"
 
     if isinstance(episode, AbsPodcastEpisodeExpanded):
@@ -226,7 +228,7 @@ def parse_podcast_episode(
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,
-            name=episode.title,
+            name=prov_podcast_name or episode.title,
             media_type=MediaType.PODCAST,
         ),
         provider_mappings=provider_mappings,
