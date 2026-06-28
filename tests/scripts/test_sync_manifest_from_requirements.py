@@ -30,6 +30,8 @@ def test_package_name_handles_casing_extras_and_separators() -> None:
     assert _package_name("PyChromecast==14.0.10") == "pychromecast"
     assert _package_name("gql[all]==4.0.0") == "gql"
     assert _package_name("aiohttp_fast_zlib==0.3.0") == "aiohttp-fast-zlib"
+    # PEP 503: dot/underscore/dash all collapse to a single dash.
+    assert _package_name("niconico.py-ma==1.0.0") == "niconico-py-ma"
     assert _package_name("git+https://example.com/foo.git") is None
 
 

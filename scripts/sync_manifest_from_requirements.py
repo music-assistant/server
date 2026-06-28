@@ -63,8 +63,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _normalize(name: str) -> str:
-    """Normalize a distribution name for case/separator-insensitive matching."""
-    return name.strip().lower().replace("_", "-")
+    """Normalize a distribution name to its PEP 503 canonical form for matching."""
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
 
 
 def _package_name(spec: str) -> str | None:

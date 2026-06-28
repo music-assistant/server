@@ -24,14 +24,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Push with the music-assistant-machine credential (PRIVILEGED_GITHUB_TOKEN) so the pushed
-      # commit re-triggers the required checks; the default GITHUB_TOKEN is used as a fallback but
-      # its commit will not re-run CI (a maintainer must re-run or push).
+      # persist-credentials: false keeps the (privileged) push token out of the git config while
+      # the checked-out Dependabot branch contents are processed below. The push step re-attaches
+      # the music-assistant-machine credential (PRIVILEGED_GITHUB_TOKEN) only for the push itself,
+      # so the pushed commit re-triggers the required checks (the default GITHUB_TOKEN would not).
       - name: Check out the Dependabot branch
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.ref }}
-          token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Determine packages bumped in requirements_all.txt
@@ -39,9 +40,13 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Names of packages whose pin changed on the added side of the diff.
+          # Names of packages whose pin changed on the added side of the diff. Lines carrying an
+          # environment marker (the synthesised "; sys_platform ..." entries, e.g. the PyTorch CPU
+          # wheels) are excluded: those are never authored in a manifest, so the sync script skips
+          # them and including them here would only make gen_requirements_all revert the bump.
           PACKAGES=$(git diff "$BASE_SHA" HEAD -- requirements_all.txt \
             | grep -E '^\+[^+-]' \
+            | grep -v ';' \
             | grep -oiE '^\+[A-Za-z0-9._-]+' \
             | sed 's/^+//' | sort -u | tr '\n' ' ')
           echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
@@ -56,12 +61,20 @@ jobs:
 
       - name: Sync manifests and regenerate requirements_all.txt
         if: steps.bumped.outputs.packages != ''
+        env:
+          # Pass via env (not inline ${{ }}) to avoid shell injection; the names are already
+          # constrained to [A-Za-z0-9._-] above, and word-splitting them into args is intended.
+          PACKAGES: ${{ steps.bumped.outputs.packages }}
         run: |
-          python -m scripts.sync_manifest_from_requirements ${{ steps.bumped.outputs.packages }}
+          python -m scripts.sync_manifest_from_requirements $PACKAGES
           python -m scripts.gen_requirements_all
 
       - name: Commit and push the manifest sync
         if: steps.bumped.outputs.packages != ''
+        env:
+          PUSH_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          REPO: ${{ github.repository }}
         run: |
           if git diff --quiet; then
             echo "Manifests already in sync, nothing to push"
@@ -71,4 +84,4 @@ jobs:
           git config user.email "49699333+dependabot[bot]@users.noreply.github.com"
           git add music_assistant/providers/*/manifest.json requirements_all.txt
           git commit -m "Sync provider manifests with dependency bump"
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git" "HEAD:$HEAD_REF"
