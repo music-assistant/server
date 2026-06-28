@@ -100,17 +100,29 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    CONF_SMART_SHUFFLE_ARTIST_RECENCY,
+    CONF_SMART_SHUFFLE_DUPLICATE_GAP,
+    CONF_SMART_SHUFFLE_ENABLED,
+    CONF_SMART_SHUFFLE_LABEL,
+    CONF_SMART_SHUFFLE_SONG_RECENCY,
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+    SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT,
+    SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS,
+    SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT,
+    SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS,
+    SMART_SHUFFLE_ENABLED_DEFAULT,
+    SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
+    SMART_SHUFFLE_SONG_RECENCY_OPTIONS,
 )
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     get_current_playback_speed,
     handle_play_action,
     is_radio_source_dynamic,
-    smart_shuffle,
     sort_tracks,
 )
+from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffleHelper
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
@@ -170,6 +182,7 @@ class PlayerQueuesController(CoreController):
         # queue_id -> session_id whose flow stream was fully generated
         self._flow_buffer_completed: dict[str, str] = {}
         self._autoplay = AutoplayHelper(self)
+        self._smart_shuffle = SmartShuffleHelper(self)
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -356,7 +369,58 @@ class PlayerQueuesController(CoreController):
             crossfade_mode_entry,
             CONF_ENTRY_CROSSFADE_DURATION,
         ]
+        smart_shuffle_entries = [
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_LABEL,
+                type=ConfigEntryType.LABEL,
+                category="smart_shuffle",
+            ),
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=SMART_SHUFFLE_ENABLED_DEFAULT,
+                category="smart_shuffle",
+            ),
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_SONG_RECENCY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(str(seconds))
+                    for seconds in SMART_SHUFFLE_SONG_RECENCY_OPTIONS
+                ],
+                default_value=str(SMART_SHUFFLE_SONG_RECENCY_DEFAULT),
+                category="smart_shuffle",
+                depends_on=CONF_SMART_SHUFFLE_ENABLED,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_ARTIST_RECENCY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(str(seconds))
+                    for seconds in SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS
+                ],
+                default_value=str(SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT),
+                category="smart_shuffle",
+                depends_on=CONF_SMART_SHUFFLE_ENABLED,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_DUPLICATE_GAP,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(str(seconds))
+                    for seconds in SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS
+                ],
+                default_value=str(SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT),
+                category="smart_shuffle",
+                depends_on=CONF_SMART_SHUFFLE_ENABLED,
+                depends_on_value=True,
+                advanced=True,
+            ),
+        ]
         return [
+            *smart_shuffle_entries,
             *autoplay_entries,
             *crossfade_entries,
             CONF_ENTRY_VOLUME_NORMALIZATION,
@@ -400,6 +464,7 @@ class PlayerQueuesController(CoreController):
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
         queue.shuffle_enabled = shuffle_enabled
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue_items = self._queue_items[queue_id]
         cur_index = (
             queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
@@ -420,6 +485,19 @@ class PlayerQueuesController(CoreController):
             keep_remaining=False,
             shuffle=shuffle_enabled,
         )
+
+    def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool:
+        """
+        Return whether smart shuffle is currently in effect for the queue.
+
+        Radio mode implies smart selection, so it always counts as active; otherwise smart shuffle
+        is active when shuffle is on and the per-queue smart-shuffle setting is enabled.
+
+        :param queue: The queue to evaluate.
+        """
+        if queue.radio_source:
+            return True
+        return queue.shuffle_enabled and self._smart_shuffle.is_enabled(queue.queue_id)
 
     @api_command("player_queues/autoplay")
     def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
@@ -1136,6 +1214,7 @@ class PlayerQueuesController(CoreController):
         target_queue.autoplay_enabled = source_queue.autoplay_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.is_dynamic = source_queue.is_dynamic
+        target_queue.smart_shuffle_active = self.is_smart_shuffle_active(target_queue)
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
         target_queue.resume_pos = source_resume_pos
         target_queue.current_index = source_current_index
@@ -1480,9 +1559,13 @@ class PlayerQueuesController(CoreController):
         # we set the original insert order as attribute so we can un-shuffle
         for index, item in enumerate(next_items):
             item.sort_index += insert_at_index + index
-        # (re)shuffle the final batch if needed
+        # (re)shuffle the final batch if needed: smart shuffle when enabled, else pure random
         if shuffle:
-            next_items = await smart_shuffle(next_items)
+            queue = self._queues[queue_id]
+            if self._smart_shuffle.is_enabled(queue_id):
+                next_items = await self._smart_shuffle.arrange(queue, next_items)
+            else:
+                next_items = random.sample(next_items, len(next_items))
         self.update_items(queue_id, prev_items + next_items)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
@@ -2935,6 +3018,7 @@ class PlayerQueuesController(CoreController):
         queue.display_name = player.state.name
         queue.available = player.state.available
         queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue.items = len(self._queue_items[queue_id])
 
         queue.state = (

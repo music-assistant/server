@@ -1049,6 +1049,7 @@ class ConfigController:
             # refresh derived queue state (e.g. the effective smart-fades indicator) and notify
             # clients so they don't see a stale value until the next unrelated queue update
             queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+            queue.smart_shuffle_active = self.mass.player_queues.is_smart_shuffle_active(queue)
             self.mass.player_queues.signal_update(queue_id)
             # apply immediately: restart playback if a changed setting requires a reload
             requires_restart = any(
