@@ -56,15 +56,26 @@ class RecencySnapshot:
         """
         if not within_seconds:
             return False
-        cutoff = self.now - within_seconds
+        timestamp = self.last_played(item)
+        return timestamp is not None and timestamp >= self.now - within_seconds
+
+    def last_played(self, item: MediaItemType) -> int | None:
+        """
+        Return the most recent play timestamp for the track, or None if it has no play recorded.
+
+        Matched across the track's own ``(provider, item_id)`` and all of its provider mappings.
+
+        :param item: The track (or queue media item) to look up.
+        """
+        timestamps = []
         timestamp = self.song_ts.get((item.provider, item.item_id))
-        if timestamp is not None and timestamp >= cutoff:
-            return True
+        if timestamp is not None:
+            timestamps.append(timestamp)
         for mapping in getattr(item, "provider_mappings", None) or ():
             timestamp = self.song_ts.get((mapping.provider_instance, mapping.item_id))
-            if timestamp is not None and timestamp >= cutoff:
-                return True
-        return False
+            if timestamp is not None:
+                timestamps.append(timestamp)
+        return max(timestamps) if timestamps else None
 
     def artist_recent(self, name: str, within_seconds: int | None) -> bool:
         """
