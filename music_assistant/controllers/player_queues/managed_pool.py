@@ -1,19 +1,15 @@
 """
 Managed dynamic pool for the Player Queues controller.
 
-A radio-flagged enqueue turns the whole queue into a small, bounded *managed pool* fed by one or
-more *dynamic sources* instead of enqueuing thousands of tracks (so radio never fires). The pool is
-topped up near the end. Each dynamic source has a *fill mode*:
+A queue with one or more *dynamic sources* (its ``radio_source``) is kept as a small bounded pool
+that is topped up as it plays down. Each source has a *fill mode*:
 
-- ``SIMILAR`` — generate base + similar/discovery tracks (set today by the ``radio_mode`` flag);
-- ``TRACKS`` — rotate the source's own unplayed tracks (a normal playlist/album/artist mixed in).
+- ``SIMILAR`` — base + similar/discovery tracks (radio sources);
+- ``TRACKS`` — the source's own unplayed tracks (a playlist/album/artist mixed into the pool).
 
-Refills are apportioned across the sources by weight (per-base quota by default — multiplicity is
-the explicit "more often" knob), every candidate is gated against the shared ``RecencyEngine`` so a
-recently-heard song can't be pulled back in, and the least-recently-played candidates are preferred.
-
-The public/model surface (``radio_mode`` param, ``radio_source`` field) is the unchanged bridge to
-this internal model: a queue is in managed-pool mode when its ``radio_source`` is non-empty.
+Each top-up apportions slots across the sources by weight (per-base quota by default, so adding a
+source more than once weights it up), gates every candidate against the shared ``RecencyEngine`` so
+a recently-heard track isn't pulled back in, and prefers the least-recently-played candidates.
 """
 
 from __future__ import annotations
@@ -234,16 +230,14 @@ class ManagedPoolHelper:
         self, media_item: MediaItemType, *, preferred: list[str] | None
     ) -> list[Track]:
         """
-        Fetch base + similar tracks for a SIMILAR source via the dynamic-radio machinery.
+        Return base + similar tracks for a SIMILAR source.
 
-        Base (original) tracks are always requested so the pool keeps a steady original+similar
-        mix; the recency gate and already-in-pool dedup drop them once they are stale or used,
-        leaving similar-only when no base track can still be honoured.
-
-        :param media_item: The dynamic source to fetch base + similar tracks for.
+        :param media_item: The dynamic source to fetch tracks for.
         :param preferred: Preferred provider instance ids for the similar lookup.
         """
         with suppress(MusicAssistantError):
+            # always include the base tracks so the pool keeps a steady original+similar mix; the
+            # recency gate and in-pool dedup drop them once stale or already queued
             return await self.mass.music.get_dynamic_radio_tracks(
                 [media_item],
                 include_base_tracks=True,

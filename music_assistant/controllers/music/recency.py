@@ -61,10 +61,9 @@ class RecencySnapshot:
 
     def last_played(self, item: MediaItemType) -> int | None:
         """
-        Return the most recent play timestamp for the track, or None if not in the snapshot.
+        Return the most recent play timestamp for the track, or None if it has no play recorded.
 
-        Matched across the track's own ``(provider, item_id)`` and all of its provider mappings;
-        used for least-recently-played ordering (a missing timestamp sorts as least recent).
+        Matched across the track's own ``(provider, item_id)`` and all of its provider mappings.
 
         :param item: The track (or queue media item) to look up.
         """

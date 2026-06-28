@@ -2173,9 +2173,9 @@ class PlayerQueuesController(CoreController):
                     initial_tracks = await self.get_playlist_tracks(media_item, start_item=None)
                     media_items += initial_tracks
                 elif managed_pool:
-                    # Managed-pool mode: keep the item as a dynamic source instead of dumping all
-                    # its tracks (the bounded pool is built once below). The radio flag marks the
-                    # source SIMILAR (fetch base+similar); otherwise it rotates its own tracks.
+                    # Managed-pool mode: keep the item as a dynamic source (the bounded pool is
+                    # built from these sources below). The radio flag marks it SIMILAR (base +
+                    # similar); otherwise it rotates its own tracks.
                     if not isinstance(media_item, (ItemMapping, BrowseFolder)):
                         radio_source.append(media_item)
                         if radio_mode and media_item.uri:
@@ -2214,17 +2214,16 @@ class PlayerQueuesController(CoreController):
             )
 
         if already_managed and not media_items:
-            # Sources were registered onto an already-active managed pool (no tracks to dump): keep
-            # the playing pool intact and let it be topped up, incorporating the new sources.
+            # new sources were added to an already-active pool: leave the playing pool intact and
+            # let the next top-up incorporate them
             self.signal_update(queue_id)
             if queue.current_index is not None and (queue.items - queue.current_index) < 5:
                 task_id = f"fill_radio_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
             return
 
-        # Build the bounded managed pool (instead of dumping all source tracks) for a fresh radio
-        # start, so radio actually fires instead of enqueuing thousands of items. A dynamic
-        # station yields no pool tracks (it self-manages), so keep its own already-fetched tracks.
+        # Build the bounded managed pool for a fresh radio start. A dynamic station yields no pool
+        # tracks (it self-manages), so keep its own already-fetched tracks in that case.
         if managed_pool and not already_managed:
             pool_tracks = await self._managed_pool.fill(queue_id, is_initial=True)
             if pool_tracks:
