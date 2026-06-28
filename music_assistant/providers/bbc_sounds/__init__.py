@@ -556,7 +556,6 @@ class BBCSoundsProvider(MusicProvider):
         date: str,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Lookup a date schedule for a station."""
-        # TODO: look at this against 2.0 API
         self.logger.debug(f"Getting schedule for {station_id} for {date}")
         schedule = await self.client.schedules.get_schedule(
             station_id=station_id,
