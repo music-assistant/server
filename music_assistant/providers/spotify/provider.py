@@ -47,7 +47,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from orjson import JSONDecodeError
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
@@ -828,7 +828,7 @@ class SpotifyProvider(MusicProvider):
         try:
             auth_info = await get_spotify_token(
                 self.mass.http_session,
-                app_var(2),  # Always use MA's global client ID
+                app_var("spotify_client_id"),  # Always use MA's global client ID
                 cast("str", refresh_token),
                 "global",
             )
