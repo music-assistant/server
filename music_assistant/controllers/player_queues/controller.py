@@ -2206,9 +2206,12 @@ class PlayerQueuesController(CoreController):
         else:
             queue.radio_source += radio_source
         queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
-        self._managed_pool.register(
-            queue_id, queue.radio_source, similar_uris, replace=replace_sources
-        )
+        # only track fill modes when the queue actually has dynamic sources; a plain enqueue leaves
+        # radio_source empty and shouldn't write a cache entry (a REPLACE already cleared any prior)
+        if queue.radio_source:
+            self._managed_pool.register(
+                queue_id, queue.radio_source, similar_uris, replace=replace_sources
+            )
 
         if already_managed and not media_items:
             # Sources were registered onto an already-active managed pool (no tracks to dump): keep

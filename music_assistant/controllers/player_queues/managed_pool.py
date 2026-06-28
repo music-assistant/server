@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
@@ -59,15 +58,6 @@ class DynamicFillMode(StrEnum):
 
 # the shipped default; SIZE_MULTIPLICITY is a one-line switch if the feel needs revisiting
 POOL_WEIGHT_MODEL = PoolWeightModel.PER_BASE_QUOTA
-
-# media types that only make sense as similar-seeds (rotating their "own tracks" is degenerate)
-_SIMILAR_MEDIA_TYPES = (
-    MediaType.TRACK,
-    MediaType.ARTIST,
-    MediaType.ALBUM,
-    MediaType.RADIO,
-    MediaType.GENRE,
-)
 
 
 @dataclass(slots=True)
@@ -131,8 +121,9 @@ class ManagedPoolHelper:
         """
         Restore the fill modes for a queue from cache after a restart.
 
-        Falls back to deriving them from each source's media type when no cache entry exists
-        (e.g. queues persisted before this feature).
+        When no cache entry exists (a queue persisted before this feature) every radio_source item
+        was a similar/discovery seed, so all (non-station) sources default to SIMILAR to preserve
+        that pre-feature radio behaviour after an upgrade.
 
         :param queue_id: The queue being restored.
         :param radio_source: The queue's restored dynamic sources.
@@ -147,7 +138,9 @@ class ManagedPoolHelper:
             self._similar_sources[queue_id] = {uri for uri in stored if uri in valid}
         else:
             self._similar_sources[queue_id] = {
-                uri for item in radio_source if _derive_similar(item) and (uri := _uri(item))
+                uri
+                for item in radio_source
+                if not (isinstance(item, Playlist) and item.is_dynamic) and (uri := _uri(item))
             }
 
     def forget(self, queue_id: str, *, drop_cache: bool) -> None:
@@ -428,11 +421,6 @@ def _ungated_fallback(
         )
     )
     return pool[:slots]
-
-
-def _derive_similar(media_item: MediaItemType) -> bool:
-    """Return whether a source defaults to SIMILAR fill mode based on its media type."""
-    return media_item.media_type in _SIMILAR_MEDIA_TYPES
 
 
 def _uri(media_item: MediaItemType) -> str | None:
