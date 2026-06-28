@@ -3781,15 +3781,20 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     f"Player control {control_name} is not available"
                 )
             assert player_control.volume_set is not None
-            await player_control.volume_set(volume_level)
+            # forward the already-scaled device volume; the external control sets the
+            # raw device volume and does not apply min/max scaling of its own
+            await player_control.volume_set(device_volume)
             return
         if protocol_player := self.get_player(player.state.volume_control):
-            # redirect to protocol player volume control
+            # redirect to protocol player volume control.
+            # forward the already-scaled device volume so the min/max limits configured
+            # on this (user-facing) player are honored; the protocol player has no
+            # limits of its own, so its scaling is an identity pass-through.
             self.logger.debug(
                 "Redirecting volume command to protocol player %s",
                 protocol_player.provider.manifest.name,
             )
-            await self._handle_cmd_volume_set(protocol_player.player_id, volume_level)
+            await self._handle_cmd_volume_set(protocol_player.player_id, device_volume)
             return
 
     async def _handle_play_media(self, player_id: str, media: PlayerMedia) -> None:
