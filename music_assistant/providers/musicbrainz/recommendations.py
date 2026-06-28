@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ExternalID
@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
     from .provider import MusicbrainzProvider
 
+# Cache key for the precomputed recommendation folders (namespaced per provider instance).
+RECOMMENDATIONS_CACHE_KEY = "birthday_memoriam_recommendations"
+
 
 class MusicBrainzRecommendationManager:
     """Manages MusicBrainz-based recommendations (birthdays and memorials)."""
@@ -30,98 +33,162 @@ class MusicBrainzRecommendationManager:
         self.provider = provider
         self.logger = provider.logger
         self.mass = provider.mass
+        self._refresh_task_id = f"{provider.instance_id}_recommendations_refresh"
+        self._daily_task_id = f"{provider.instance_id}_recommendations_daily"
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Return recommendation folders for artists with dates in a configurable window.
+        Return the precomputed birthday/in-memoriam recommendation folders.
 
-        Scans configurable days before today through configurable days after today.
-        Includes:
-        - Birthday artists (born on these days)
-        - In-memoriam artists (passed away on these days)
+        The result is served from cache so the discover page is never blocked by the
+        rate-limited MusicBrainz library scan; the scan runs in the background and
+        populates the cache (see :meth:`schedule_refresh`).
+        """
+        cached: list[RecommendationFolder] | None = await self.mass.cache.get(
+            RECOMMENDATIONS_CACHE_KEY,
+            provider=self.provider.instance_id,
+            base_class=RecommendationFolder,
+            default=None,
+        )
+        if cached is not None:
+            return cached
+        # Nothing computed yet (first run or past the daily expiry): kick off the
+        # background scan and return empty for now; results appear on the next load.
+        self.schedule_refresh()
+        return []
+
+    def schedule_refresh(self) -> None:
+        """Compute and cache the recommendation folders in the background (deduplicated)."""
+        self.mass.create_task(self._refresh(), task_id=self._refresh_task_id)
+
+    def cancel(self) -> None:
+        """Cancel any pending background refresh work (called on provider unload)."""
+        self.mass.cancel_task(self._refresh_task_id)
+        self.mass.cancel_timer(self._daily_task_id)
+
+    # ------------------------------------------------------------------
+    # background refresh
+    # ------------------------------------------------------------------
+
+    async def _refresh(self) -> None:
+        """Scan the library once, cache the resulting folders, and re-arm for tomorrow."""
+        try:
+            folders = await self._compute_folders()
+        except Exception as err:
+            self.logger.warning("Failed to compute MusicBrainz recommendations: %s", err)
+            return
+        # Expire at the next UTC midnight so the relative day labels (today/tomorrow/...)
+        # stay correct; the daily timer below repopulates the cache right after.
+        await self.mass.cache.set(
+            RECOMMENDATIONS_CACHE_KEY,
+            [folder.to_dict() for folder in folders],
+            expiration=self._seconds_until_next_utc_midnight() + 60,
+            provider=self.provider.instance_id,
+        )
+        self.mass.call_later(
+            self._seconds_until_next_utc_midnight() + 60,
+            self.schedule_refresh,
+            task_id=self._daily_task_id,
+        )
+
+    async def _compute_folders(self) -> list[RecommendationFolder]:
+        """
+        Build recommendation folders for artists with dates in a configurable window.
+
+        Scans configurable days before today through configurable days after today,
+        fetching each library artist's MusicBrainz details once and bucketing it by
+        birthday (life-span ``begin``) and/or death day (life-span ``end``).
         """
         today = datetime_utc().date()
-        folders: list[RecommendationFolder] = []
-
-        # Get config values with type safety and range validation
-        days_config = self.provider.config.get_value("recommendation_days", 3)
-        try:
-            days_before_after = int(str(days_config))
-        except TypeError, ValueError:
-            days_before_after = 3
-        days_before_after = max(1, min(15, days_before_after))
-
+        days_before_after = self._days_window()
         self.logger.info(
             "MusicBrainz recommendations: scanning %d days before/after today",
             days_before_after,
         )
 
-        # Build MBID → library-artist mapping once, shared across all artist checks
-        mbid_to_artist: dict[str, Artist] = {}
+        # Map each MM-DD in the window to its day offset; the window never exceeds 31
+        # days so there are no month/day collisions.
+        mmdd_to_offset: dict[str, int] = {}
+        for offset in range(-days_before_after, days_before_after + 1):
+            target_date = today + timedelta(days=offset)
+            mmdd_to_offset[f"{target_date.month:02d}-{target_date.day:02d}"] = offset
+
+        birthdays: dict[int, list[Artist]] = {}
+        memoriam: dict[int, list[Artist]] = {}
+        scanned = 0
         async for artist in self.mass.music.artists.iter_library_items(order_by="name"):
-            if mbid := artist.get_external_id(ExternalID.MB_ARTIST):
-                mbid_to_artist[mbid] = artist
+            mbid = artist.get_external_id(ExternalID.MB_ARTIST)
+            if not mbid:
+                continue
+            scanned += 1
+            try:
+                mb_artist = await self.provider.get_artist_details(mbid)
+            except Exception as err:
+                self.logger.debug("Skipping artist %s: %s", mbid, err)
+                continue
+            life_span = mb_artist.life_span
+            if not life_span:
+                continue
+            begin = life_span.begin
+            # Only full "YYYY-MM-DD" dates are usable; partial dates like "1990" are skipped
+            if begin and len(begin) >= 10:
+                match_offset = mmdd_to_offset.get(begin[5:10])
+                if match_offset is not None:
+                    birthdays.setdefault(match_offset, []).append(artist)
+            end = life_span.end
+            if life_span.ended and end and len(end) >= 10:
+                match_offset = mmdd_to_offset.get(end[5:10])
+                if match_offset is not None:
+                    memoriam.setdefault(match_offset, []).append(artist)
 
-        self.logger.debug("Library contains %d artist(s) with MB IDs", len(mbid_to_artist))
+        self.logger.debug("Scanned %d library artist(s) with MB IDs", scanned)
 
-        # Scan configurable day window
-        for day_offset in range(-days_before_after, days_before_after + 1):
-            target_date = today + timedelta(days=day_offset)
-            target_mmdd = f"{target_date.month:02d}-{target_date.day:02d}"
-
-            # Determine translation key suffix based on day offset
-            day_suffix = self._get_day_suffix(day_offset)
-            day_params = self._get_day_params(day_offset)
-
-            # --- birthdays ---
-            birthday_mbids = await self._find_artist_mbids_by_date(
-                mbid_to_artist, target_mmdd, date_field="begin"
-            )
-            if birthday_mbids:
-                matching = [mbid_to_artist[m] for m in birthday_mbids if m in mbid_to_artist]
-                self.logger.debug(
-                    "Birthday scan for %s (%s) found %d artist(s)",
-                    target_mmdd,
-                    day_suffix,
-                    len(matching),
-                )
+        folders: list[RecommendationFolder] = []
+        for offset in range(-days_before_after, days_before_after + 1):
+            day_suffix = self._get_day_suffix(offset)
+            day_params = self._get_day_params(offset)
+            if matching := birthdays.get(offset):
                 folders.extend(
                     self._build_artist_folders(
                         matching,
-                        folder_id_prefix=f"birthdays_{day_offset}",
+                        folder_id_prefix=f"birthdays_{offset}",
                         translation_key=f"artist_birthdays_{day_suffix}",
                         icon="mdi-cake-variant",
                         translation_params=day_params,
                     )
                 )
-
-            # --- in memoriam ---
-            memoriam_mbids = await self._find_artist_mbids_by_date(
-                mbid_to_artist, target_mmdd, date_field="end"
-            )
-            if memoriam_mbids:
-                matching_mem = [mbid_to_artist[m] for m in memoriam_mbids if m in mbid_to_artist]
-                self.logger.debug(
-                    "In-memoriam scan for %s (%s) found %d artist(s)",
-                    target_mmdd,
-                    day_suffix,
-                    len(matching_mem),
-                )
+            if matching_mem := memoriam.get(offset):
                 folders.extend(
                     self._build_artist_folders(
                         matching_mem,
-                        folder_id_prefix=f"memoriam_{day_offset}",
+                        folder_id_prefix=f"memoriam_{offset}",
                         translation_key=f"artist_memoriam_{day_suffix}",
                         icon="mdi-candle",
                         translation_params=day_params,
                     )
                 )
-
         return folders
 
     # ------------------------------------------------------------------
-    # artist date helpers
+    # helpers
     # ------------------------------------------------------------------
+
+    def _days_window(self) -> int:
+        """Return the validated number of days to scan before/after today."""
+        days_config = self.provider.config.get_value("recommendation_days", 3)
+        try:
+            days_before_after = int(str(days_config))
+        except TypeError, ValueError:
+            days_before_after = 3
+        return max(1, min(15, days_before_after))
+
+    def _seconds_until_next_utc_midnight(self) -> int:
+        """Return the number of seconds until the next UTC midnight (at least 60)."""
+        now = datetime_utc()
+        next_midnight = datetime.combine(
+            now.date() + timedelta(days=1), time.min, tzinfo=now.tzinfo
+        )
+        return max(60, int((next_midnight - now).total_seconds()))
 
     def _get_day_suffix(self, day_offset: int) -> str:
         """
@@ -148,38 +215,6 @@ class MusicBrainzRecommendationManager:
         if day_offset in (-1, 0, 1):
             return None
         return [str(abs(day_offset))]
-
-    async def _find_artist_mbids_by_date(
-        self,
-        mbid_to_artist: dict[str, Artist],
-        today_mmdd: str,
-        *,
-        date_field: str,
-    ) -> list[str]:
-        """
-        Return MBIDs of library artists whose MB life-span field matches today's month/day.
-
-        :param mbid_to_artist: Mapping of MB artist ID to library Artist.
-        :param today_mmdd: Today's month-day string in ``MM-DD`` format.
-        :param date_field: Either ``"begin"`` (birthday) or ``"end"`` (death day).
-        """
-        matched: list[str] = []
-        for mbid in mbid_to_artist:
-            try:
-                mb_artist = await self.provider.get_artist_details(mbid)
-            except Exception as err:
-                self.logger.debug("Skipping artist %s: %s", mbid, err)
-                continue
-            life_span = mb_artist.life_span
-            if not life_span:
-                continue
-            raw_date = life_span.begin if date_field == "begin" else life_span.end
-            # Only full "YYYY-MM-DD" dates are usable; partial dates like "1990" are skipped
-            if raw_date and len(raw_date) >= 10 and raw_date[5:10] == today_mmdd:
-                if date_field == "end" and not life_span.ended:
-                    continue
-                matched.append(mbid)
-        return matched
 
     def _build_artist_folders(
         self,

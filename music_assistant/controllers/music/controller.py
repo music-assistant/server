@@ -64,6 +64,7 @@ from music_assistant.controllers.music.constants import (
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RADIO_TRACK_MAX_DURATION_SECS,
+    RECOMMENDATIONS_PROVIDER_TIMEOUT,
 )
 from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
 from music_assistant.controllers.music.helpers import sort_search_result
@@ -2313,7 +2314,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> list[RecommendationFolder]:
         """Return recommendations from a provider."""
         try:
-            return await provider.recommendations()
+            async with asyncio.timeout(RECOMMENDATIONS_PROVIDER_TIMEOUT):
+                return await provider.recommendations()
+        except TimeoutError:
+            self.logger.warning(
+                "Timeout while fetching recommendations from %s; skipping for this request",
+                provider.name,
+            )
+            return []
         except Exception as err:
             self.logger.warning(
                 "Error while fetching recommendations from %s: %s",

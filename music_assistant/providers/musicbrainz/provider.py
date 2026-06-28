@@ -86,6 +86,17 @@ class MusicbrainzProvider(MetadataProvider):
         self._api_client = MusicBrainzAPIClient(self.mass)
         self._recommendations = MusicBrainzRecommendationManager(self)
 
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        # Warm the recommendation cache in the background so the discover page is never
+        # blocked by the (rate-limited) initial MusicBrainz library scan.
+        self._recommendations.schedule_refresh()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        self._recommendations.cancel()
+
     async def recommendations(self) -> list[RecommendationFolder]:
         """Return birthday/memorial recommendation folders."""
         return await self._recommendations.get_recommendations()
