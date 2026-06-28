@@ -569,6 +569,7 @@ class BBCSoundsProvider(MusicProvider):
                     items.append(new_folder)
         return items
 
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def _get_category(
         self, category_name: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -582,6 +583,7 @@ class BBCSoundsProvider(MusicProvider):
             ]
         return []
 
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def _get_collection(
         self, pid: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
