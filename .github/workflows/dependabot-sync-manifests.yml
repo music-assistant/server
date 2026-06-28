@@ -65,7 +65,13 @@ jobs:
           # Pass via env (not inline ${{ }}) to avoid shell injection; the names are already
           # constrained to [A-Za-z0-9._-] above, and word-splitting them into args is intended.
           PACKAGES: ${{ steps.bumped.outputs.packages }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # Run the trusted base-branch tooling against the PR's data files: the PR branch may
+          # predate the sync script, and we must never execute scripts from the PR head. Unstage
+          # the overlay so it is never part of the commit pushed back to the branch.
+          git checkout "$BASE_SHA" -- scripts/
+          git reset -q -- scripts/
           python -m scripts.sync_manifest_from_requirements $PACKAGES
           python -m scripts.gen_requirements_all
 
@@ -76,12 +82,15 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           REPO: ${{ github.repository }}
         run: |
-          if git diff --quiet; then
+          # Stage only the data files (the base-branch scripts/ overlay is left unstaged) and key
+          # the "nothing to push" check off the staged set, so unrelated working-tree noise from
+          # the overlay never triggers a push or sneaks into the commit.
+          git add music_assistant/providers/*/manifest.json requirements_all.txt
+          if git diff --cached --quiet; then
             echo "Manifests already in sync, nothing to push"
             exit 0
           fi
           git config user.name "dependabot[bot]"
           git config user.email "49699333+dependabot[bot]@users.noreply.github.com"
-          git add music_assistant/providers/*/manifest.json requirements_all.txt
           git commit -m "Sync provider manifests with dependency bump"
           git push "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git" "HEAD:$HEAD_REF"
