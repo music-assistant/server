@@ -18,7 +18,6 @@ from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
-from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.helpers.compare import compare_strings
@@ -32,6 +31,7 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, Playlist, Podcast
+    from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
