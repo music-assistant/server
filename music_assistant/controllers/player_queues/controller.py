@@ -2595,7 +2595,9 @@ class PlayerQueuesController(CoreController):
         # recency-gated. fill() already sizes the batch to the pool target; the tail cap below is a
         # defensive ceiling so the unplayed tail never grows past MANAGED_POOL_MAX.
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
-        unplayed = max(len(self._queue_items[queue_id]) - ((queue.current_index or 0) + 1), 0)
+        # keep the unplayed tail within the bounded pool size (no current_index => nothing played yet)
+        played = 0 if queue.current_index is None else queue.current_index + 1
+        unplayed = max(len(self._queue_items[queue_id]) - played, 0)
         headroom = max(MANAGED_POOL_MAX - unplayed, 0)
         queue_items = [
             QueueItem.from_media_item(queue_id, x) for x in pool_tracks[:headroom] if x.available
