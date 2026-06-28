@@ -873,11 +873,10 @@ _select_free_port_lock = asyncio.Lock()
 
 async def select_free_port(range_start: int, range_end: int) -> int:
     """
-    Find and reserve an available port within the given range.
+    Find and reserve a free port within the given range.
 
-    The returned port is briefly reserved in-process so concurrent or successive
-    callers don't get handed the same port before it has been bound (binding
-    frequently happens asynchronously after this call returns).
+    The returned port is reserved so concurrent or successive callers are not
+    handed the same port.
 
     :param range_start: First port (inclusive) of the range to search.
     :param range_end: Port to stop before (exclusive) when searching the range.
