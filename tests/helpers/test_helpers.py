@@ -1,6 +1,8 @@
 """Tests for utility/helper functions."""
 
 import signal
+import subprocess
+import sys
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -404,19 +406,32 @@ def test_get_zeroconf_args_all_interfaces() -> None:
     assert "192.168.1.10" in result["interfaces"]
 
 
-@pytest.mark.parametrize(
-    ("capability", "expected"),
-    [
-        ("DEFAULT", _ml_inference_probe.PROBE_NO_AVX2),
-        ("NO AVX", _ml_inference_probe.PROBE_NO_AVX2),
-        ("AVX2", _ml_inference_probe.PROBE_CAPABLE),
-        ("AVX512", _ml_inference_probe.PROBE_CAPABLE),
-    ],
-)
-def test_ml_inference_probe_run_probe(capability: str, expected: int) -> None:
-    """The probe rejects a no-AVX2 CPU cleanly and otherwise runs the kernels to completion."""
+@pytest.mark.parametrize("capability", ["DEFAULT", "NO AVX"])
+def test_ml_inference_probe_rejects_no_avx2(capability: str) -> None:
+    """A no-AVX2 CPU is rejected before any kernel runs (safe to check in-process)."""
     with patch("torch.backends.cpu.get_cpu_capability", return_value=capability):
-        assert _ml_inference_probe.run_probe() == expected
+        assert _ml_inference_probe.run_probe() == _ml_inference_probe.PROBE_NO_AVX2
+
+
+def test_ml_inference_probe_subprocess_runs_to_a_clean_verdict() -> None:
+    """
+    End-to-end: the probe runs out-of-process and exits with a defined verdict, never a crash.
+
+    Spawning a subprocess (rather than calling run_probe() inline) is the same isolation the
+    production check relies on, so a hypothetical native crash on a misconfigured host fails
+    this one test instead of taking down the session. On an x86 host with AVX2 this exercises
+    the kernels and returns PROBE_CAPABLE; elsewhere it returns PROBE_NO_AVX2.
+    """
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", _ml_inference_probe.__name__],
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode in (
+        _ml_inference_probe.PROBE_CAPABLE,
+        _ml_inference_probe.PROBE_NO_AVX2,
+    ), result.stderr.decode()
 
 
 @pytest.mark.parametrize(

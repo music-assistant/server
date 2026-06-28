@@ -431,9 +431,12 @@ async def _run_ml_inference_probe() -> int | None:
     from music_assistant.helpers import _ml_inference_probe  # noqa: PLC0415
 
     try:
+        # Run with -m, not by file path: a path run puts the probe's own directory on
+        # sys.path, which would shadow the stdlib (e.g. helpers/logging.py over logging).
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
-            _ml_inference_probe.__file__,
+            "-m",
+            _ml_inference_probe.__name__,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
