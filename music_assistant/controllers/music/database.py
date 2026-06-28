@@ -629,6 +629,11 @@ class MusicDatabaseSetupMixin:
             f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_unique_idx "
             f"on {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid);"
         )
+        # speed up recency lookups (smart shuffle / dedup) by user and time window
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_userid_timestamp_idx "
+            f"on {DB_TABLE_PLAYLOG}(userid,timestamp);"
+        )
         await self.database.commit()
 
     async def __create_database_triggers(self) -> None:

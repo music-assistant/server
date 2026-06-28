@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import functools
-import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, TypeVar
 
@@ -95,42 +93,6 @@ def is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
         and isinstance(radio_source[0], Playlist)
         and radio_source[0].is_dynamic
     )
-
-
-async def smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
-    """
-    Shuffle queue items, avoiding identical tracks next to each other.
-
-    Best-effort approach to prevent the same track from appearing adjacent.
-    Does a random shuffle first, then makes a limited number of passes to
-    swap adjacent duplicates with a random item further in the list.
-
-    :param items: List of queue items to shuffle.
-    """
-    if len(items) <= 2:
-        return random.sample(items, len(items)) if len(items) == 2 else items
-
-    # Start with a random shuffle
-    shuffled = random.sample(items, len(items))
-
-    # Make a few passes to fix adjacent duplicates
-    max_passes = 3
-    for _ in range(max_passes):
-        swapped = False
-        for i in range(len(shuffled) - 1):
-            if shuffled[i].name == shuffled[i + 1].name:
-                # Found adjacent duplicate - swap with random position at least 2 away
-                swap_candidates = [j for j in range(len(shuffled)) if abs(j - i - 1) >= 2]
-                if swap_candidates:
-                    swap_pos = random.choice(swap_candidates)
-                    shuffled[i + 1], shuffled[swap_pos] = shuffled[swap_pos], shuffled[i + 1]
-                    swapped = True
-        if not swapped:
-            break
-        # Yield to event loop between passes
-        await asyncio.sleep(0)
-
-    return shuffled
 
 
 def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
