@@ -64,17 +64,18 @@ MA stores its data in `$HOME/.musicassistant/`. When debugging locally:
 - **Logs:** `$HOME/.musicassistant/musicassistant.log` (current), `musicassistant.log.1`, `.log.2`, etc. for older rotated logs.
 - **Database:** `$HOME/.musicassistant/library.db` — query via `sqlite3`. **Only execute SELECT queries** — never write to a live database.
 
-### Database Structure
+### Provider Mappings
 
-#### `provider_mappings` table
+Every `MediaItem` (track, album, artist, playlist) has a `provider_mappings` attribute containing mappings between library items and external providers:
 
-Critical structure for resolving tracks between library and external providers:
+- `item_id` (str): The external provider's item ID (e.g., `"spotify--track123"`)
+- `provider_domain` (str): The external provider identifier (e.g., `"spotify"`, `"apple_music"`, `"tidal"`)
+- `provider_instance` (str): Optional provider instance ID if multiple instances of same provider exist
+- `media_type` (MediaType): Type of media item (track, album, artist, playlist)
 
-- `item_id` (integer): **ALWAYS the library database ID** — this is the key for lookups
-- `provider_domain` (string): The external provider identifier (e.g., `"spotify"`, `"apple_music"`, `"tidal"`)
-- `provider_item_id` (string): The external provider's ID for this item
-- `media_type` (string): Type of media item (`"track"`, `"album"`, `"artist"`, `"playlist"`)
+**Important patterns:**
 
-**Important:** `provider_domain='library'` **never exists** in this table. Library items are identified by checking `track.provider == 'library'` where `track.item_id` is the library DB ID directly.
-
-For streaming provider tracks with library mappings, the `item_id` field in `provider_mappings` **IS** the library DB ID — use this to query genres, metadata, etc. from the library database.
+- Library items are identified by `item.provider == "library"` where `item.item_id` is the library DB ID
+- `provider_domain='library'` **never exists** in provider_mappings — library items don't have mappings to themselves
+- To resolve a provider item to its library equivalent, use: `await mass.music.tracks.get_library_item_by_prov_id(item_id, provider_instance_id_or_domain)`
+- Never assume you can use `mapping.item_id` directly as a library DB ID — always use the resolution method above
