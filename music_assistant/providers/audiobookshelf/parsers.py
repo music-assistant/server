@@ -165,7 +165,7 @@ def parse_podcast_episode(
     *,
     episode: AbsPodcastEpisode | AbsPodcastEpisodeExpanded,
     prov_podcast_id: str,
-    prov_podcast_name: str | None = None,
+    prov_podcast_name: str | None,
     fallback_episode_cnt: int | None = None,
     instance_id: str,
     domain: str,
