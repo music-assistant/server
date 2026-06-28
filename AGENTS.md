@@ -63,3 +63,18 @@ MA stores its data in `$HOME/.musicassistant/`. When debugging locally:
 
 - **Logs:** `$HOME/.musicassistant/musicassistant.log` (current), `musicassistant.log.1`, `.log.2`, etc. for older rotated logs.
 - **Database:** `$HOME/.musicassistant/library.db` — query via `sqlite3`. **Only execute SELECT queries** — never write to a live database.
+
+### Database Structure
+
+#### `provider_mappings` table
+
+Critical structure for resolving tracks between library and external providers:
+
+- `item_id` (integer): **ALWAYS the library database ID** — this is the key for lookups
+- `provider_domain` (string): The external provider identifier (e.g., `"spotify"`, `"apple_music"`, `"tidal"`)
+- `provider_item_id` (string): The external provider's ID for this item
+- `media_type` (string): Type of media item (`"track"`, `"album"`, `"artist"`, `"playlist"`)
+
+**Important:** `provider_domain='library'` **never exists** in this table. Library items are identified by checking `track.provider == 'library'` where `track.item_id` is the library DB ID directly.
+
+For streaming provider tracks with library mappings, the `item_id` field in `provider_mappings` **IS** the library DB ID — use this to query genres, metadata, etc. from the library database.
