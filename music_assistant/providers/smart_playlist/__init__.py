@@ -888,8 +888,12 @@ class SmartPlaylistProvider(PluginProvider):
                 track_id_to_tracks[track_id].append(t)
             elif t.provider_mappings:
                 for mapping in t.provider_mappings:
-                    if str(mapping.item_id).isdigit():
-                        track_id = int(mapping.item_id)
+                    if library_track := await self.mass.music.tracks.get_library_item_by_prov_id(
+                        item_id=mapping.item_id,
+                        provider_instance_id_or_domain=mapping.provider_instance
+                        or mapping.provider_domain,
+                    ):
+                        track_id = int(library_track.item_id)
                         if track_id not in track_id_to_tracks:
                             track_id_to_tracks[track_id] = []
                         track_id_to_tracks[track_id].append(t)
@@ -937,8 +941,12 @@ class SmartPlaylistProvider(PluginProvider):
                 track_id_to_tracks[track_id].append(track)
             elif track.provider_mappings:
                 for mapping in track.provider_mappings:
-                    if str(mapping.item_id).isdigit():
-                        track_id = int(mapping.item_id)
+                    if library_track := await self.mass.music.tracks.get_library_item_by_prov_id(
+                        item_id=mapping.item_id,
+                        provider_instance_id_or_domain=mapping.provider_instance
+                        or mapping.provider_domain,
+                    ):
+                        track_id = int(library_track.item_id)
                         if track_id not in track_id_to_tracks:
                             track_id_to_tracks[track_id] = []
                         track_id_to_tracks[track_id].append(track)
