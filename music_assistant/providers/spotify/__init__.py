@@ -9,7 +9,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 
 from .constants import (
     CALLBACK_REDIRECT_URL,
@@ -65,7 +65,9 @@ async def _handle_auth_actions(
         return
 
     if action == CONF_ACTION_AUTH:
-        refresh_token = await pkce_auth_flow(mass, cast("str", values["session_id"]), app_var(2))
+        refresh_token = await pkce_auth_flow(
+            mass, cast("str", values["session_id"]), app_var("spotify_client_id")
+        )
         values[CONF_REFRESH_TOKEN_GLOBAL] = refresh_token
         values[CONF_REFRESH_TOKEN_DEV] = None  # Clear dev token on new global auth
         values[CONF_CLIENT_ID] = None  # Clear client ID on new global auth

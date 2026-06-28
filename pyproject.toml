@@ -93,7 +93,7 @@ platforms = ["any"]
 zip-safe = false
 
 [tool.setuptools.package-data]
-music_assistant = ["py.typed"]
+music_assistant = ["py.typed", "helpers/app_secrets.json"]
 
 [tool.ruff]
 fix = true
@@ -143,7 +143,6 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
 ]
 extra_checks = false
