@@ -583,6 +583,76 @@ class TestCmdUngroupNewBranches:
         assert power_called == []  # powerless group → never goes through cmd_power
 
 
+class TestExternalPowerOffUnsync:
+    """
+    Tests for unsyncing a player when its power is turned off outside of MA.
+
+    When a player's (final) power state flips on->off because its linked power
+    control was switched off directly - rather than via an MA power command -
+    the player must be removed from any (sync)group it is part of.
+    """
+
+    def _make_synced_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer]:
+        """Build a controller with a player synced to a registered leader."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "p1"]
+        player = MockPlayer(provider, "p1", "Player")
+        controller._players = {"leader": leader, "p1": player}
+        mock_mass.players = controller
+        for _player in (leader, player):
+            _player.set_initialized()
+            _player._cache.clear()
+            _player.update_state(signal_event=False)
+        # isolate the unsync branch from the unrelated state-forwarding machinery
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
+        return controller, player
+
+    def test_power_off_unsyncs_synced_player(self, mock_mass: MagicMock) -> None:
+        """An on->off power transition ungroups a synced player."""
+        controller, player = self._make_synced_player(mock_mass)
+        assert player.state.synced_to == "leader"
+
+        controller.signal_player_state_update(player, {"powered": (True, False)})
+
+        controller.cmd_ungroup.assert_called_once_with("p1")  # type: ignore[attr-defined]
+
+    def test_power_on_does_not_unsync(self, mock_mass: MagicMock) -> None:
+        """An off->on power transition leaves the player synced."""
+        controller, player = self._make_synced_player(mock_mass)
+
+        controller.signal_player_state_update(player, {"powered": (False, True)})
+
+        controller.cmd_ungroup.assert_not_called()  # type: ignore[attr-defined]
+
+    def test_no_power_control_is_ignored(self, mock_mass: MagicMock) -> None:
+        """A None->off transition (player without power control) is ignored."""
+        controller, player = self._make_synced_player(mock_mass)
+
+        controller.signal_player_state_update(player, {"powered": (None, False)})
+
+        controller.cmd_ungroup.assert_not_called()  # type: ignore[attr-defined]
+
+    def test_power_off_ungrouped_player_is_noop(self, mock_mass: MagicMock) -> None:
+        """Powering off a player that is not in any group does nothing."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "p1", "Player")
+        controller._players = {"p1": player}
+        mock_mass.players = controller
+        player.set_initialized()
+        player._cache.clear()
+        player.update_state(signal_event=False)
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
+
+        controller.signal_player_state_update(player, {"powered": (True, False)})
+
+        controller.cmd_ungroup.assert_not_called()
+
+
 class TestPlayMediaOverride:
     """
     Tests for the new CONF_PLAY_MEDIA_OVERRIDES_GROUP behavior.
