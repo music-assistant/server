@@ -1870,23 +1870,28 @@ async def test_filter_tracks_with_all_genres_filters_correctly() -> None:
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    # Create mock tracks with library provider mappings
-    track_1 = _make_mock_track("1", uri="library://track/1")
-    track_1_mapping = MagicMock()
-    track_1_mapping.provider_domain = "library"
-    track_1_mapping.item_id = "101"
-    track_1.provider_mappings = [track_1_mapping]
+    # Create mock tracks:
+    # Track 1: Library track (direct)
+    track_1 = _make_mock_track("1", uri="library://track/101")
+    track_1.provider = "library"
+    track_1.item_id = "101"
 
-    track_2 = _make_mock_track("2", uri="library://track/2")
+    # Track 2: Spotify track with library mapping (item_id is library DB ID)
+    track_2 = _make_mock_track("2", uri="spotify://track/abc")
+    track_2.provider = "spotify"
+    track_2.item_id = "abc"
     track_2_mapping = MagicMock()
-    track_2_mapping.provider_domain = "library"
-    track_2_mapping.item_id = "102"
+    track_2_mapping.provider_domain = "spotify"
+    track_2_mapping.item_id = "102"  # This is the library DB ID
     track_2.provider_mappings = [track_2_mapping]
 
-    track_3 = _make_mock_track("3", uri="library://track/3")
+    # Track 3: Apple Music track with library mapping
+    track_3 = _make_mock_track("3", uri="apple_music://track/xyz")
+    track_3.provider = "apple_music"
+    track_3.item_id = "xyz"
     track_3_mapping = MagicMock()
-    track_3_mapping.provider_domain = "library"
-    track_3_mapping.item_id = "103"
+    track_3_mapping.provider_domain = "apple_music"
+    track_3_mapping.item_id = "103"  # This is the library DB ID
     track_3.provider_mappings = [track_3_mapping]
 
     tracks = [track_1, track_2, track_3]
@@ -1919,9 +1924,9 @@ async def test_filter_tracks_with_all_genres_filters_correctly() -> None:
     # Only tracks 1 and 3 should be returned (have both genres 10 and 20)
     assert len(result) == 2
     result_uris = {t.uri for t in result}
-    assert "library://track/1" in result_uris
-    assert "library://track/3" in result_uris
-    assert "library://track/2" not in result_uris
+    assert "library://track/101" in result_uris
+    assert "apple_music://track/xyz" in result_uris
+    assert "spotify://track/abc" not in result_uris
 
 
 @pytest.mark.asyncio
@@ -1935,21 +1940,23 @@ async def test_filter_tracks_with_all_genres_preserves_order() -> None:
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
     # Create tracks in specific order: 103, 101, 102
-    track_3 = _make_mock_track("3", uri="library://track/3")
-    track_3_mapping = MagicMock()
-    track_3_mapping.provider_domain = "library"
-    track_3_mapping.item_id = "103"
-    track_3.provider_mappings = [track_3_mapping]
+    track_3 = _make_mock_track("3", uri="library://track/103")
+    track_3.provider = "library"
+    track_3.item_id = "103"
 
-    track_1 = _make_mock_track("1", uri="library://track/1")
+    track_1 = _make_mock_track("1", uri="spotify://track/abc")
+    track_1.provider = "spotify"
+    track_1.item_id = "abc"
     track_1_mapping = MagicMock()
-    track_1_mapping.provider_domain = "library"
+    track_1_mapping.provider_domain = "spotify"
     track_1_mapping.item_id = "101"
     track_1.provider_mappings = [track_1_mapping]
 
-    track_2 = _make_mock_track("2", uri="library://track/2")
+    track_2 = _make_mock_track("2", uri="apple_music://track/xyz")
+    track_2.provider = "apple_music"
+    track_2.item_id = "xyz"
     track_2_mapping = MagicMock()
-    track_2_mapping.provider_domain = "library"
+    track_2_mapping.provider_domain = "apple_music"
     track_2_mapping.item_id = "102"
     track_2.provider_mappings = [track_2_mapping]
 
@@ -1969,9 +1976,9 @@ async def test_filter_tracks_with_all_genres_preserves_order() -> None:
 
     # Order should be preserved: track 3, track 1, track 2
     assert len(result) == 3
-    assert result[0].uri == "library://track/3"
-    assert result[1].uri == "library://track/1"
-    assert result[2].uri == "library://track/2"
+    assert result[0].uri == "library://track/103"
+    assert result[1].uri == "spotify://track/abc"
+    assert result[2].uri == "apple_music://track/xyz"
 
 
 @pytest.mark.asyncio
@@ -1984,11 +1991,9 @@ async def test_filter_tracks_with_all_genres_handles_non_numeric_genre_ids() -> 
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    track_1 = _make_mock_track("1", uri="library://track/1")
-    track_1_mapping = MagicMock()
-    track_1_mapping.provider_domain = "library"
-    track_1_mapping.item_id = "101"
-    track_1.provider_mappings = [track_1_mapping]
+    track_1 = _make_mock_track("1", uri="library://track/101")
+    track_1.provider = "library"
+    track_1.item_id = "101"
 
     tracks = [track_1]
 
@@ -2008,4 +2013,4 @@ async def test_filter_tracks_with_all_genres_handles_non_numeric_genre_ids() -> 
     result = await plugin._filter_tracks_with_all_genres(cast("Any", tracks), [10, 20])
 
     assert len(result) == 1
-    assert result[0].uri == "library://track/1"
+    assert result[0].uri == "library://track/101"

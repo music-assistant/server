@@ -877,19 +877,23 @@ class SmartPlaylistProvider(PluginProvider):
         if not tracks:
             return
 
-        # Build map of library_track_id -> list of track objects in single pass
-        # Check provider_mappings for library presence (tracks from Spotify/etc may also be in library)
         track_id_to_tracks: dict[int, list[Track]] = {}
         for t in tracks:
             if t.metadata and t.metadata.genres:
                 continue
-            for mapping in t.provider_mappings or ():
-                if mapping.provider_domain == "library" and str(mapping.item_id).isdigit():
-                    track_id = int(mapping.item_id)
-                    if track_id not in track_id_to_tracks:
-                        track_id_to_tracks[track_id] = []
-                    track_id_to_tracks[track_id].append(t)
-                    break
+            if t.provider == "library" and str(t.item_id).isdigit():
+                track_id = int(t.item_id)
+                if track_id not in track_id_to_tracks:
+                    track_id_to_tracks[track_id] = []
+                track_id_to_tracks[track_id].append(t)
+            elif t.provider_mappings:
+                for mapping in t.provider_mappings:
+                    if str(mapping.item_id).isdigit():
+                        track_id = int(mapping.item_id)
+                        if track_id not in track_id_to_tracks:
+                            track_id_to_tracks[track_id] = []
+                        track_id_to_tracks[track_id].append(t)
+                        break
         if not track_id_to_tracks:
             return
 
@@ -924,16 +928,21 @@ class SmartPlaylistProvider(PluginProvider):
 
         required_ids = set(required_genre_ids)
 
-        # Build map of library_track_id -> list of track objects
         track_id_to_tracks: dict[int, list[Track]] = {}
         for track in tracks:
-            for mapping in track.provider_mappings or ():
-                if mapping.provider_domain == "library" and str(mapping.item_id).isdigit():
-                    track_id = int(mapping.item_id)
-                    if track_id not in track_id_to_tracks:
-                        track_id_to_tracks[track_id] = []
-                    track_id_to_tracks[track_id].append(track)
-                    break
+            if track.provider == "library" and str(track.item_id).isdigit():
+                track_id = int(track.item_id)
+                if track_id not in track_id_to_tracks:
+                    track_id_to_tracks[track_id] = []
+                track_id_to_tracks[track_id].append(track)
+            elif track.provider_mappings:
+                for mapping in track.provider_mappings:
+                    if str(mapping.item_id).isdigit():
+                        track_id = int(mapping.item_id)
+                        if track_id not in track_id_to_tracks:
+                            track_id_to_tracks[track_id] = []
+                        track_id_to_tracks[track_id].append(track)
+                        break
 
         if not track_id_to_tracks:
             return []
