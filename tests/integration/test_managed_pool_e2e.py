@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.player_queues.constants import (
@@ -109,3 +110,33 @@ async def test_refill_gates_recent_and_weights_by_multiplicity(e2e_mass: MusicAs
     single_count = sum(1 for tid in ids if tid.startswith("0_0_"))
     double_count = sum(1 for tid in ids if tid.startswith("1_0_"))
     assert double_count > single_count
+
+
+@pytest.mark.asyncio
+async def test_refill_dedupes_only_active_tail_not_played_history(e2e_mass: MusicAssistant) -> None:
+    """A track in the played history can return on refill; only the current+unplayed tail is deduped."""
+    queue_id = demo_players(e2e_mass)[0].player_id
+    test_prov = cast("MusicProvider", e2e_mass.get_provider("test"))
+    assert test_prov is not None
+    queue = e2e_mass.player_queues.get(queue_id)
+    assert queue is not None
+    queue.userid = TEST_USER
+
+    album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
+    queue.radio_source = cast("list[MediaItemType]", [album])
+    e2e_mass.player_queues._managed_pool.register(queue_id, queue.radio_source, set(), replace=True)
+
+    # simulate a queue with played history: 0_0_0..0_0_4 already played, 0_0_5 is the current track
+    queue_items = [
+        QueueItem.from_media_item(queue_id, await test_prov.get_track(f"0_0_{i}")) for i in range(6)
+    ]
+    e2e_mass.player_queues._queue_items[queue_id] = queue_items
+    queue.current_index = 5
+
+    pool = await e2e_mass.player_queues._managed_pool.fill(queue_id, is_initial=False)
+    ids = [track.item_id for track in pool]
+
+    # the active (current) track isn't duplicated into the upcoming pool
+    assert "0_0_5" not in ids
+    # but already-played history is not permanently excluded (no recency block in play here)
+    assert any(f"0_0_{i}" in ids for i in range(5))

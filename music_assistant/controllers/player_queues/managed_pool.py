@@ -179,10 +179,12 @@ class ManagedPoolHelper:
             return []
         windows = self.queues._smart_shuffle._windows(queue_id)
         snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+        # dedupe only against the active (current + unplayed) tail; played history is left out so
+        # recency, not permanent exclusion, decides when a track may return
+        items = self.queues._queue_items[queue_id]
+        start = queue.current_index if queue.current_index is not None else 0
         pool_keys = {
-            item.media_item
-            for item in self.queues._queue_items[queue_id]
-            if isinstance(item.media_item, Track)
+            item.media_item for item in items[start:] if isinstance(item.media_item, Track)
         }
         slots = (
             MANAGED_POOL_TARGET
