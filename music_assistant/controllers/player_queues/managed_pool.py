@@ -185,7 +185,7 @@ class ManagedPoolHelper:
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
         queue = self.queues._queues[queue_id]
-        sources = await self._collect_sources(queue_id, queue, is_initial=is_initial)
+        sources = await self._collect_sources(queue_id, queue)
         if not sources:
             return []
         windows = self.queues._smart_shuffle._windows(queue_id)
@@ -204,9 +204,7 @@ class ManagedPoolHelper:
             sources, slots=slots, pool_keys=pool_keys, snapshot=snapshot, windows=windows
         )
 
-    async def _collect_sources(
-        self, queue_id: str, queue: PlayerQueue, *, is_initial: bool
-    ) -> list[DynamicSource]:
+    async def _collect_sources(self, queue_id: str, queue: PlayerQueue) -> list[DynamicSource]:
         """Group the queue's radio_source into dynamic sources and fetch each one's candidates."""
         # multiplicity = how often a source was added; dynamic playlists/stations self-manage and
         # are handled by the dedicated dynamic-playlist refill path, so skip them here.
@@ -226,9 +224,7 @@ class ManagedPoolHelper:
         for uri, media_item in items.items():
             fill_mode = self.fill_mode(queue_id, uri)
             if fill_mode == DynamicFillMode.SIMILAR:
-                candidates = await self._fetch_similar(
-                    media_item, is_initial=is_initial, preferred=preferred
-                )
+                candidates = await self._fetch_similar(media_item, preferred=preferred)
             else:
                 candidates = await self._fetch_tracks(media_item, preferred=preferred)
             sources.append(
@@ -242,13 +238,22 @@ class ManagedPoolHelper:
         return sources
 
     async def _fetch_similar(
-        self, media_item: MediaItemType, *, is_initial: bool, preferred: list[str] | None
+        self, media_item: MediaItemType, *, preferred: list[str] | None
     ) -> list[Track]:
-        """Fetch base + similar tracks for a SIMILAR source via the dynamic-radio machinery."""
+        """
+        Fetch base + similar tracks for a SIMILAR source via the dynamic-radio machinery.
+
+        Base (original) tracks are always requested so the pool keeps a steady original+similar
+        mix; the recency gate and already-in-pool dedup drop them once they are stale or used,
+        leaving similar-only when no base track can still be honoured.
+
+        :param media_item: The dynamic source to fetch base + similar tracks for.
+        :param preferred: Preferred provider instance ids for the similar lookup.
+        """
         with suppress(MusicAssistantError):
             return await self.mass.music.get_dynamic_radio_tracks(
                 [media_item],
-                include_base_tracks=is_initial,
+                include_base_tracks=True,
                 target_size=POOL_PER_SOURCE_FETCH,
                 preferred_provider_instances=preferred,
             )
