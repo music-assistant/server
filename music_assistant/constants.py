@@ -70,6 +70,12 @@ GENRE_ICONS_DIR_NAME: Final[str] = "genres"
 GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
     GENRE_ICONS_DIR_NAME, "genre_mapping.json"
 )
+PODCAST_GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
+    GENRE_ICONS_DIR_NAME, "podcast_genre_mapping.json"
+)
+AUDIOBOOK_GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
+    GENRE_ICONS_DIR_NAME, "audiobook_genre_mapping.json"
+)
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
@@ -204,22 +210,23 @@ VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
 LOUDNESS_MEASUREMENT_MIN_LUFS: Final[float] = -50.0
 
 
-def load_genre_mapping() -> list[dict[str, Any]]:
+def load_genre_mapping(mapping_file: pathlib.Path) -> list[dict[str, Any]]:
     """
-    Load default genre mapping from JSON file.
+    Load a default genre mapping from a JSON file.
 
+    :param mapping_file: Path to the genre mapping JSON file (music / podcast / audiobook).
     :return: List of genre mapping dictionaries with 'genre' and 'aliases' keys.
-    :raises FileNotFoundError: If genre_mapping.json is missing.
+    :raises FileNotFoundError: If the mapping file is missing.
     :raises ValueError: If JSON is malformed or missing required fields.
     """
     try:
-        content = GENRE_MAPPING_FILE.read_text(encoding="utf-8")
+        content = mapping_file.read_text(encoding="utf-8")
         data = json.loads(content)
     except FileNotFoundError as err:
-        msg = f"Genre mapping file not found: {GENRE_MAPPING_FILE}"
+        msg = f"Genre mapping file not found: {mapping_file}"
         raise FileNotFoundError(msg) from err
     except json.JSONDecodeError as err:
-        msg = f"Invalid JSON in genre mapping file: {GENRE_MAPPING_FILE}"
+        msg = f"Invalid JSON in genre mapping file: {mapping_file}"
         raise ValueError(msg) from err
 
     if not isinstance(data, list):
@@ -240,7 +247,13 @@ def load_genre_mapping() -> list[dict[str, Any]]:
     return cast("list[dict[str, Any]]", data)
 
 
-DEFAULT_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping()
+DEFAULT_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping(GENRE_MAPPING_FILE)
+DEFAULT_PODCAST_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping(
+    PODCAST_GENRE_MAPPING_FILE
+)
+DEFAULT_AUDIOBOOK_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping(
+    AUDIOBOOK_GENRE_MAPPING_FILE
+)
 DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAULT_GENRE_MAPPING)
 
 

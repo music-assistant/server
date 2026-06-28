@@ -580,6 +580,170 @@
         "description": "Meditation music is music performed to aid in the practice of meditation. It can have a specific religious content, but also more recently has been associated with modern composers who use meditation techniques in their process of composition, or who compose such music with no particular religious group as a focus. The concept also includes music performed as an act of meditation."
       }
     },
+    "podcast_genre": {
+      "arts": {
+        "name": "Arts",
+        "description": "Podcasts about the arts — books and literature, design, fashion and beauty, food, and the performing and visual arts."
+      },
+      "business": {
+        "name": "Business",
+        "description": "Podcasts on business and the world of work, from careers and entrepreneurship to investing, management and marketing."
+      },
+      "comedy": {
+        "name": "Comedy",
+        "description": "Comedy podcasts, including stand-up, improv and comedic interviews made to entertain and make listeners laugh."
+      },
+      "education": {
+        "name": "Education",
+        "description": "Educational podcasts covering courses, how-to guides, language learning and self-improvement."
+      },
+      "fiction": {
+        "name": "Fiction",
+        "description": "Scripted and storytelling podcasts, including audio drama, comedy fiction and science fiction."
+      },
+      "government": {
+        "name": "Government",
+        "description": "Podcasts about government, public policy and the workings of the state."
+      },
+      "health_and_fitness": {
+        "name": "Health & Fitness",
+        "description": "Podcasts on health and fitness, covering nutrition, exercise, medicine, mental health and wellbeing."
+      },
+      "history": {
+        "name": "History",
+        "description": "Podcasts exploring history — events, people and eras from the ancient world to recent times."
+      },
+      "kids_and_family": {
+        "name": "Kids & Family",
+        "description": "Family-friendly podcasts for children and parents, including stories for kids, parenting and education."
+      },
+      "leisure": {
+        "name": "Leisure",
+        "description": "Podcasts about hobbies and pastimes, from games and crafts to automotive, aviation and home & garden."
+      },
+      "music": {
+        "name": "Music",
+        "description": "Podcasts about music — commentary, interviews and the history behind artists, songs and genres."
+      },
+      "news": {
+        "name": "News",
+        "description": "News podcasts covering daily headlines, politics, business, technology, sports and entertainment."
+      },
+      "religion_and_spirituality": {
+        "name": "Religion & Spirituality",
+        "description": "Podcasts on religion and spirituality across faiths and traditions, and on personal spiritual practice."
+      },
+      "science": {
+        "name": "Science",
+        "description": "Science podcasts spanning astronomy, physics, chemistry, the life and earth sciences, nature and more."
+      },
+      "society_and_culture": {
+        "name": "Society & Culture",
+        "description": "Podcasts about society and culture, including documentaries, personal journals, philosophy, travel and relationships."
+      },
+      "sports": {
+        "name": "Sports",
+        "description": "Sports podcasts covering teams, athletes and competitions across the world's games and pastimes."
+      },
+      "technology": {
+        "name": "Technology",
+        "description": "Podcasts about technology, gadgets, software and the people and ideas shaping the digital world."
+      },
+      "true_crime": {
+        "name": "True Crime",
+        "description": "Podcasts investigating real crimes, cases and the people behind them."
+      },
+      "tv_and_film": {
+        "name": "TV & Film",
+        "description": "Podcasts about television and film, including reviews, interviews, after-shows and screen history."
+      }
+    },
+    "audiobook_genre": {
+      "arts_and_entertainment": {
+        "name": "Arts & Entertainment",
+        "description": "Audiobooks on the arts, media and entertainment, from film and music to the performing and visual arts."
+      },
+      "biography_and_memoir": {
+        "name": "Biography & Memoir",
+        "description": "Life stories — biographies and memoirs of notable people and personal accounts of lived experience."
+      },
+      "business": {
+        "name": "Business",
+        "description": "Audiobooks on business, careers, money and finance, management, marketing and economics."
+      },
+      "classics": {
+        "name": "Classics",
+        "description": "Classic works of literature that have stood the test of time."
+      },
+      "comedy_and_humor": {
+        "name": "Comedy & Humor",
+        "description": "Humorous and comedic audiobooks written to entertain and amuse."
+      },
+      "drama_and_poetry": {
+        "name": "Drama & Poetry",
+        "description": "Dramatic works and poetry, including plays, verse and performance pieces."
+      },
+      "fantasy_and_science_fiction": {
+        "name": "Fantasy & Science Fiction",
+        "description": "Speculative fiction — fantasy, science fiction and imagined worlds."
+      },
+      "fiction": {
+        "name": "Fiction",
+        "description": "Fiction and literature — novels and stories spanning every style and genre."
+      },
+      "foreign_language": {
+        "name": "Foreign Language",
+        "description": "Language-learning audiobooks and works in or about foreign languages."
+      },
+      "history": {
+        "name": "History",
+        "description": "Audiobooks exploring history — events, people and eras across the ages."
+      },
+      "kids_and_young_adult": {
+        "name": "Kids & Young Adult",
+        "description": "Audiobooks for children, teens and young adults, from picture-book stories to young-adult fiction."
+      },
+      "mystery": {
+        "name": "Mystery",
+        "description": "Mystery, thriller and suspense — crime stories, whodunits and page-turners."
+      },
+      "nonfiction": {
+        "name": "Nonfiction",
+        "description": "Nonfiction across every subject — real events, ideas, people and knowledge."
+      },
+      "religion_and_spirituality": {
+        "name": "Religion & Spirituality",
+        "description": "Audiobooks on religion, faith and spirituality across traditions and personal practice."
+      },
+      "romance": {
+        "name": "Romance",
+        "description": "Romance audiobooks, from contemporary love stories to historical and steamy reads."
+      },
+      "science": {
+        "name": "Science",
+        "description": "Science and nature audiobooks spanning the natural world, discovery and how things work."
+      },
+      "self_help": {
+        "name": "Self Help",
+        "description": "Self-help and personal development — guidance for growth, habits, wellbeing and success."
+      },
+      "speakers_and_storytellers": {
+        "name": "Speakers & Storytellers",
+        "description": "Lectures, talks and storytelling performances by notable speakers and storytellers."
+      },
+      "sports": {
+        "name": "Sports",
+        "description": "Audiobooks about sport and recreation — athletes, teams, games and the outdoors."
+      },
+      "technology": {
+        "name": "Technology",
+        "description": "Audiobooks about technology, computing and the ideas shaping the digital world."
+      },
+      "travel_and_adventure": {
+        "name": "Travel & Adventure",
+        "description": "Travel writing and adventure — journeys, places and tales of exploration."
+      }
+    },
     "folder": {
       "artists": {
         "name": "Artists"

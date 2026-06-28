@@ -694,6 +694,17 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
+    if prev_version <= 45:
+        # seed the curated podcast & audiobook default genres into their namespaces so existing
+        # installs get them on upgrade (music defaults already exist and are skipped). A partial
+        # restore is idempotent; failures here are non-fatal — defaults can be restored later via
+        # the admin API rather than discarding the whole library.
+        await database.commit()
+        try:
+            await mass.music.genres.restore_default_genres(full_restore=False)
+        except Exception as err:
+            logger.warning("Could not seed default podcast/audiobook genres: %s", err)
+
     # save changes
     await database.commit()
 

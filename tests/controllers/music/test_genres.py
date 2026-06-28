@@ -37,7 +37,9 @@ from music_assistant.constants import (
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
+    DEFAULT_AUDIOBOOK_GENRE_MAPPING,
     DEFAULT_GENRE_MAPPING,
+    DEFAULT_PODCAST_GENRE_MAPPING,
 )
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.compare import create_safe_string
@@ -217,9 +219,18 @@ class TestGenreCRUD:
         fetched = await genre_ctrl.get_library_item(int(created.item_id))
         assert fetched.content_type is MediaType.PODCAST
 
-    async def test_content_type_overwrite_update(self, genre_ctrl: GenreController) -> None:
-        """An overwrite update writes the new content_type for the genre."""
-        created = await genre_ctrl.add_item_to_library(_make_genre("Documentary"))
+    async def test_content_type_immutable_on_overwrite_update(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """The taxonomy is set at creation and is not changed by an update, even with overwrite."""
+        genre = Genre(
+            item_id="0",
+            provider="library",
+            name="Documentary",
+            provider_mappings=set(),
+            content_type=MediaType.PODCAST,
+        )
+        created = await genre_ctrl.add_item_to_library(genre)
         update = Genre(
             item_id="0",
             provider="library",
@@ -228,9 +239,9 @@ class TestGenreCRUD:
             content_type=MediaType.AUDIOBOOK,
         )
         updated = await genre_ctrl.update_item_in_library(created.item_id, update, overwrite=True)
-        assert updated.content_type is MediaType.AUDIOBOOK
+        assert updated.content_type is MediaType.PODCAST
         fetched = await genre_ctrl.get_library_item(int(created.item_id))
-        assert fetched.content_type is MediaType.AUDIOBOOK
+        assert fetched.content_type is MediaType.PODCAST
 
     async def test_get_library_item_not_found(self, genre_ctrl: GenreController) -> None:
         """Raises MediaNotFoundError for nonexistent id."""
@@ -1013,6 +1024,24 @@ class TestPromoteAlias:
         )
         assert all(int(r["genre_id"]) != int(parent.item_id) for r in rows)
 
+    async def test_promote_alias_inherits_content_type(self, genre_ctrl: GenreController) -> None:
+        """A genre promoted from an alias stays in its source's taxonomy."""
+        parent = await genre_ctrl.add_item_to_library(
+            Genre(
+                item_id="0",
+                provider="library",
+                name="PromTrueCrime",
+                provider_mappings=set(),
+                content_type=MediaType.PODCAST,
+            )
+        )
+        await genre_ctrl.add_alias(parent.item_id, "PromSerialKillers")
+
+        new_genre = await genre_ctrl.promote_alias_to_genre(parent.item_id, "PromSerialKillers")
+        assert new_genre.content_type is MediaType.PODCAST
+        fetched = await genre_ctrl.get_library_item(int(new_genre.item_id))
+        assert fetched.content_type is MediaType.PODCAST
+
 
 # ===================================================================
 # Group F2: merge_genres (7 tests)
@@ -1153,6 +1182,23 @@ class TestMergeGenres:
         with pytest.raises(ValueError, match="No genre IDs provided"):
             await genre_ctrl.merge_genres([], target.item_id)
 
+    async def test_merge_cross_taxonomy_raises(self, genre_ctrl: GenreController) -> None:
+        """Raises ValueError when source and target belong to different taxonomies."""
+        target = await genre_ctrl.add_item_to_library(_make_genre("MergeMusicTarget"))
+        source = await genre_ctrl.add_item_to_library(
+            Genre(
+                item_id="0",
+                provider="library",
+                name="MergePodcastSource",
+                provider_mappings=set(),
+                content_type=MediaType.PODCAST,
+            )
+        )
+        with pytest.raises(ValueError, match="same taxonomy"):
+            await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        # the source genre must survive a rejected merge
+        assert await genre_ctrl.get_library_item(int(source.item_id)) is not None
+
 
 # ===================================================================
 # Group G: restore_default_genres (5 tests)
@@ -1196,7 +1242,12 @@ class TestRestoreDefaultGenres:
         items = await genre_ctrl.library_items(limit=0, hide_empty=False)
         names = {g.name for g in items}
         assert "MyCustomGenre" not in names
-        assert len(items) == len(DEFAULT_GENRE_MAPPING)
+        # full restore seeds every taxonomy (music + podcast + audiobook)
+        assert len(items) == (
+            len(DEFAULT_GENRE_MAPPING)
+            + len(DEFAULT_PODCAST_GENRE_MAPPING)
+            + len(DEFAULT_AUDIOBOOK_GENRE_MAPPING)
+        )
 
     async def test_restore_creates_configured_aliases(self, genre_ctrl: GenreController) -> None:
         """Genres have aliases from genre_mapping.json."""
@@ -2575,3 +2626,173 @@ class TestGenreContentTypeNamespacing:
             limit=0,
         )
         assert remaining == []
+
+    async def test_soft_delete_restore_scoped_by_content_type(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """
+        A re-add restores only a soft-deleted genre of the same taxonomy.
+
+        A soft-deleted podcast "Comedy" must not be revived (and re-tagged) when a music
+        "Comedy" is added; the music genre is inserted as a distinct, new row.
+        """
+        podcast = await genre_ctrl.add_item_to_library(
+            Genre(
+                item_id="0",
+                provider="library",
+                name="ScopedComedy",
+                provider_mappings=set(),
+                content_type=MediaType.PODCAST,
+            )
+        )
+        await genre_ctrl.mass.music.database.update(
+            DB_TABLE_GENRES, {"item_id": int(podcast.item_id)}, {"is_excluded": 1}
+        )
+
+        music = await genre_ctrl.add_item_to_library(_make_genre("ScopedComedy"))
+
+        assert int(music.item_id) != int(podcast.item_id)
+        assert music.content_type is None
+        # the podcast row is left untouched (still soft-deleted)
+        pod_rows = await genre_ctrl.mass.music.database.get_rows_from_query(
+            f"SELECT is_excluded FROM {DB_TABLE_GENRES} WHERE item_id = :id",
+            {"id": int(podcast.item_id)},
+            limit=1,
+        )
+        assert pod_rows[0]["is_excluded"] == 1
+
+        # re-adding within the same taxonomy DOES restore the soft-deleted row
+        revived = await genre_ctrl.add_item_to_library(
+            Genre(
+                item_id="0",
+                provider="library",
+                name="ScopedComedy",
+                provider_mappings=set(),
+                content_type=MediaType.PODCAST,
+            )
+        )
+        assert int(revived.item_id) == int(podcast.item_id)
+
+
+class TestDefaultTaxonomySeeding:
+    """restore_default_genres seeds curated music, podcast, and audiobook taxonomies (2c)."""
+
+    async def test_full_restore_seeds_every_taxonomy(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Full restore seeds the curated default genres of all three taxonomies."""
+        await genre_ctrl.restore_default_genres(full_restore=True)
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT content_type, COUNT(*) AS cnt FROM {DB_TABLE_GENRES} "
+            "WHERE is_default = 1 GROUP BY content_type",
+            limit=0,
+        )
+        counts = {row["content_type"]: row["cnt"] for row in rows}
+        assert counts.get(None) == len(DEFAULT_GENRE_MAPPING)
+        assert counts.get(MediaType.PODCAST.value) == len(DEFAULT_PODCAST_GENRE_MAPPING)
+        assert counts.get(MediaType.AUDIOBOOK.value) == len(DEFAULT_AUDIOBOOK_GENRE_MAPPING)
+
+    async def test_curated_genre_carries_translation_key_and_content_type(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """A seeded podcast default (True Crime) lands in the podcast namespace with its key."""
+        await genre_ctrl.restore_default_genres(full_restore=True)
+        items = await genre_ctrl.library_items(search="True Crime", hide_empty=False)
+        match = next((g for g in items if g.content_type is MediaType.PODCAST), None)
+        assert match is not None
+        assert match.translation_key == "true_crime"
+
+    async def test_same_name_distinct_per_taxonomy(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A name in both spoken-word lists (History) yields one genre per taxonomy."""
+        await genre_ctrl.restore_default_genres(full_restore=True)
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT content_type FROM {DB_TABLE_GENRES} WHERE search_name = :sn",
+            {"sn": create_safe_string("History", True, True)},
+            limit=0,
+        )
+        content_types = {row["content_type"] for row in rows}
+        assert MediaType.PODCAST.value in content_types
+        assert MediaType.AUDIOBOOK.value in content_types
+
+    async def test_partial_restore_is_idempotent(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Re-running a partial restore does not create duplicate genres."""
+        await genre_ctrl.restore_default_genres(full_restore=False)
+        before = await mass.music.database.get_count(DB_TABLE_GENRES)
+        await genre_ctrl.restore_default_genres(full_restore=False)
+        after = await mass.music.database.get_count(DB_TABLE_GENRES)
+        assert before == after
+
+    async def test_content_type_filter_composes_with_hide_empty(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """content_type narrows library_items to a taxonomy and composes with hide_empty."""
+        await genre_ctrl.restore_default_genres(full_restore=True)
+        # default-only (hide_empty=None) within the podcast taxonomy = the curated podcast defaults
+        podcast_defaults = await genre_ctrl.library_items(
+            content_type="podcast", hide_empty=None, limit=0
+        )
+        assert len(podcast_defaults) == len(DEFAULT_PODCAST_GENRE_MAPPING)
+        assert all(g.content_type is MediaType.PODCAST for g in podcast_defaults)
+
+    async def test_targeted_restore_seeds_only_requested_taxonomy(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A non-destructive restore scoped to one taxonomy touches only that taxonomy."""
+
+        async def default_counts() -> dict[str | None, int]:
+            rows = await mass.music.database.get_rows_from_query(
+                f"SELECT content_type, COUNT(*) AS cnt FROM {DB_TABLE_GENRES} "
+                "WHERE is_default = 1 GROUP BY content_type",
+                limit=0,
+            )
+            return {row["content_type"]: row["cnt"] for row in rows}
+
+        # establish a deterministic, fully-seeded baseline, then drop one podcast default
+        await genre_ctrl.restore_default_genres(full_restore=True)
+        before = await default_counts()
+        victim = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE content_type = :ct AND is_default = 1",
+            {"ct": MediaType.PODCAST.value},
+            limit=1,
+        )
+        await mass.music.database.delete(DB_TABLE_GENRES, {"item_id": victim[0]["item_id"]})
+
+        created = await genre_ctrl.restore_default_genres(
+            full_restore=False, content_type="podcast"
+        )
+        assert created
+        assert all(g.content_type is MediaType.PODCAST for g in created)
+
+        after = await default_counts()
+        # the podcast default was restored, the other taxonomies were left untouched
+        assert after[MediaType.PODCAST.value] == before[MediaType.PODCAST.value]
+        assert after.get(None) == before.get(None)
+        assert after.get(MediaType.AUDIOBOOK.value) == before.get(MediaType.AUDIOBOOK.value)
+
+    async def test_targeted_restore_unknown_taxonomy_raises(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """An unrecognised taxonomy is rejected rather than silently restoring nothing."""
+        with pytest.raises(ValueError, match="Unknown genre taxonomy"):
+            await genre_ctrl.restore_default_genres(full_restore=False, content_type="bogus")
+        # show-all within the taxonomy never leaks genres from another taxonomy
+        podcast_all = await genre_ctrl.library_items(
+            content_type="podcast", hide_empty=False, limit=0
+        )
+        assert podcast_all
+        assert all(g.content_type is MediaType.PODCAST for g in podcast_all)
+
+    async def test_content_type_music_filter(self, genre_ctrl: GenreController) -> None:
+        """content_type="music" returns only the music/general (NULL) taxonomy genres."""
+        await genre_ctrl.restore_default_genres(full_restore=True)
+        music = await genre_ctrl.library_items(content_type="music", hide_empty=False, limit=0)
+        assert music
+        assert all(g.content_type is None for g in music)
+        # spoken-word genres are distinct entities and never appear in the music taxonomy
+        podcast = await genre_ctrl.library_items(content_type="podcast", hide_empty=False, limit=0)
+        music_ids = {g.item_id for g in music}
+        assert not any(g.item_id in music_ids for g in podcast)
