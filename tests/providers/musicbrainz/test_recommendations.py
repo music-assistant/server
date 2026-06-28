@@ -64,8 +64,18 @@ async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:
 
 def _today_mmdd() -> str:
     """Return today's MM-DD string in UTC."""
-    today = datetime.now(UTC).date()
-    return f"{today.month:02d}-{today.day:02d}"
+    return _mmdd_for_offset(0)
+
+
+def _mmdd_for_offset(offset: int) -> str:
+    """Return the MM-DD string for today + offset days (UTC)."""
+    target = datetime.now(UTC).date() + timedelta(days=offset)
+    return f"{target.month:02d}-{target.day:02d}"
+
+
+def _match_entry(kind: str, offset: int, artist: Artist) -> dict[str, object]:
+    """Return a cached-match dict as stored by _refresh."""
+    return {"kind": kind, "mmdd": _mmdd_for_offset(offset), "artist": artist.to_dict()}
 
 
 def _set_library(provider_mock: Mock, artists: list[Artist]) -> None:
@@ -98,15 +108,15 @@ def manager(provider_mock: Mock) -> MusicBrainzRecommendationManager:
 
 
 # ---------------------------------------------------------------------------
-# _compute_folders — birthdays
+# _scan_matches — birthdays
 # ---------------------------------------------------------------------------
 
 
-async def test_compute_folders_birthday_match(
+async def test_scan_matches_birthday(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """Only artists whose full birth date matches today's MM-DD produce a folder."""
+    """Only artists whose full birth date matches a window MM-DD are returned."""
     today_mmdd = _today_mmdd()
     mbid_match = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
     mbid_no_match = "f59c5520-5f46-4d2c-b2c4-822eabf53419"
@@ -120,27 +130,26 @@ async def test_compute_folders_birthday_match(
             _make_artist("3", "Year-Only Artist", mbid=mbid_year_only),
         ],
     )
+    far_mmdd = _mmdd_for_offset(180)
 
     async def fake_get_artist_details(mbid: str) -> MusicBrainzArtist:
         dates = {
             mbid_match: f"1980-{today_mmdd}",
-            mbid_no_match: "1975-01-15",
+            mbid_no_match: f"1975-{far_mmdd}",
             mbid_year_only: "1990",  # partial date, must be skipped
         }
         return _make_mb_artist(mbid, dates[mbid])
 
     provider_mock.get_artist_details = fake_get_artist_details
 
-    folders = await manager._compute_folders()
+    matches = await manager._scan_matches()
 
-    birthday_folders = [f for f in folders if "birthdays" in (f.translation_key or "")]
-    assert len(birthday_folders) == 1
-    assert birthday_folders[0].translation_key == "artist_birthdays_today"
-    assert birthday_folders[0].translation_params is None
-    assert [a.name for a in birthday_folders[0].items] == ["Birthday Artist"]
+    assert [(kind, mmdd, a.name) for kind, mmdd, a in matches] == [
+        ("birthday", today_mmdd, "Birthday Artist")
+    ]
 
 
-async def test_compute_folders_no_life_span(
+async def test_scan_matches_no_life_span(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
@@ -149,10 +158,10 @@ async def test_compute_folders_no_life_span(
     _set_library(provider_mock, [_make_artist("1", "No Lifespan", mbid=mbid)])
     provider_mock.get_artist_details = AsyncMock(return_value=_make_mb_artist(mbid, None))
 
-    assert await manager._compute_folders() == []
+    assert await manager._scan_matches() == []
 
 
-async def test_compute_folders_api_error_skipped(
+async def test_scan_matches_api_error_skipped(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
@@ -176,22 +185,20 @@ async def test_compute_folders_api_error_skipped(
 
     provider_mock.get_artist_details = fake_get_artist_details
 
-    folders = await manager._compute_folders()
-    birthday_folders = [f for f in folders if "birthdays" in (f.translation_key or "")]
-    assert len(birthday_folders) == 1
-    assert [a.name for a in birthday_folders[0].items] == ["OK Artist"]
+    matches = await manager._scan_matches()
+    assert [a.name for _, _, a in matches] == ["OK Artist"]
 
 
 # ---------------------------------------------------------------------------
-# _compute_folders — in memoriam
+# _scan_matches — in memoriam
 # ---------------------------------------------------------------------------
 
 
-async def test_compute_folders_memoriam_match(
+async def test_scan_matches_memoriam(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """Artists who passed away on today's date (ended=True) produce a memoriam folder."""
+    """Artists who passed away on a window date (ended=True) are returned as memoriam."""
     today_mmdd = _today_mmdd()
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
     _set_library(provider_mock, [_make_artist("1", "Late Artist", mbid=mbid)])
@@ -199,14 +206,11 @@ async def test_compute_folders_memoriam_match(
         return_value=_make_mb_artist(mbid, begin="1933-01-01", end=f"2006-{today_mmdd}", ended=True)
     )
 
-    folders = await manager._compute_folders()
-    memoriam_folders = [f for f in folders if "memoriam" in (f.translation_key or "")]
-    assert len(memoriam_folders) == 1
-    assert memoriam_folders[0].translation_key == "artist_memoriam_today"
-    assert [a.name for a in memoriam_folders[0].items] == ["Late Artist"]
+    matches = await manager._scan_matches()
+    assert [(kind, a.name) for kind, _, a in matches] == [("memoriam", "Late Artist")]
 
 
-async def test_compute_folders_skips_living_artists(
+async def test_scan_matches_skips_living_artists(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
@@ -221,48 +225,102 @@ async def test_compute_folders_skips_living_artists(
         )
     )
 
-    assert await manager._compute_folders() == []
+    assert await manager._scan_matches() == []
 
 
 # ---------------------------------------------------------------------------
-# _compute_folders — empty / no match
+# _scan_matches — empty / no match
 # ---------------------------------------------------------------------------
 
 
-async def test_compute_folders_empty_library(
+async def test_scan_matches_empty_library(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """Empty library returns no folders."""
+    """Empty library returns no matches."""
     _set_library(provider_mock, [])
-    assert await manager._compute_folders() == []
+    assert await manager._scan_matches() == []
 
 
-async def test_compute_folders_no_mbid_artists_skipped(
+async def test_scan_matches_no_mbid_artists_skipped(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """Library artists without an MBID are not looked up and produce no folders."""
+    """Library artists without an MBID are not looked up and produce no matches."""
     _set_library(provider_mock, [_make_artist("1", "No MBID Artist")])
     provider_mock.get_artist_details = AsyncMock(side_effect=AssertionError("should not be called"))
-    assert await manager._compute_folders() == []
+    assert await manager._scan_matches() == []
 
 
-async def test_compute_folders_no_birthday_match(
+async def test_scan_matches_out_of_window(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """Library artist with MBID but a non-window birth date produces no folders."""
+    """A birth date outside the +/- window is not matched."""
     mbid = "c3c82bdc-d9e7-4836-9746-c24ead47ca19"
     _set_library(provider_mock, [_make_artist("1", "Wrong Birthday", mbid=mbid)])
-    # a date ~6 months out is always outside the +/- window (max 15 days)
-    far = datetime.now(UTC).date() + timedelta(days=180)
-    other_mmdd = f"{far.month:02d}-{far.day:02d}"
     provider_mock.get_artist_details = AsyncMock(
-        return_value=_make_mb_artist(mbid, f"1985-{other_mmdd}")
+        return_value=_make_mb_artist(mbid, f"1985-{_mmdd_for_offset(180)}")
     )
 
-    assert await manager._compute_folders() == []
+    assert await manager._scan_matches() == []
+
+
+# ---------------------------------------------------------------------------
+# _folders_from_matches — labelling for the current day
+# ---------------------------------------------------------------------------
+
+
+def test_folders_from_matches_today_birthday(
+    manager: MusicBrainzRecommendationManager,
+) -> None:
+    """A birthday match for today produces a folder labelled for today."""
+    matches = [_match_entry("birthday", 0, _make_artist("1", "Star"))]
+    folders = manager._folders_from_matches(matches)
+
+    assert len(folders) == 1
+    assert folders[0].translation_key == "artist_birthdays_today"
+    assert folders[0].translation_params is None
+    assert [a.name for a in folders[0].items] == ["Star"]
+
+
+def test_folders_from_matches_future_offset(
+    manager: MusicBrainzRecommendationManager,
+) -> None:
+    """A match two days out is labelled with the in-N-days key and the day count param."""
+    matches = [_match_entry("birthday", 2, _make_artist("1", "Future Star"))]
+    folders = manager._folders_from_matches(matches)
+
+    assert len(folders) == 1
+    assert folders[0].translation_key == "artist_birthdays_in_n_days"
+    assert folders[0].translation_params == ["2"]
+
+
+def test_folders_from_matches_memoriam(
+    manager: MusicBrainzRecommendationManager,
+) -> None:
+    """A memoriam match for today produces a memoriam folder."""
+    matches = [_match_entry("memoriam", 0, _make_artist("1", "Late Star"))]
+    folders = manager._folders_from_matches(matches)
+
+    assert len(folders) == 1
+    assert folders[0].translation_key == "artist_memoriam_today"
+    assert [a.name for a in folders[0].items] == ["Late Star"]
+
+
+def test_folders_from_matches_out_of_window_dropped(
+    manager: MusicBrainzRecommendationManager,
+) -> None:
+    """Stale matches whose date is no longer in the current window are dropped."""
+    far = datetime.now(UTC).date() + timedelta(days=180)
+    matches = [
+        {
+            "kind": "birthday",
+            "mmdd": f"{far.month:02d}-{far.day:02d}",
+            "artist": _make_artist("1", "Stale Star").to_dict(),
+        }
+    ]
+    assert manager._folders_from_matches(matches) == []
 
 
 # ---------------------------------------------------------------------------
@@ -310,35 +368,48 @@ def test_build_artist_folders_empty_returns_empty(
 
 
 # ---------------------------------------------------------------------------
-# get_recommendations — cache-backed hot path
+# get_recommendations — cache-backed hot path (stale-while-revalidate)
 # ---------------------------------------------------------------------------
 
 
-async def test_get_recommendations_returns_cached(
+async def test_get_recommendations_returns_fresh(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """A cached result is returned as-is without triggering a background refresh."""
-    cached = manager._build_artist_folders(
-        [_make_artist("1", "Cached Artist")],
-        folder_id_prefix="birthdays_0",
-        translation_key="artist_birthdays_today",
-        icon="mdi-cake-variant",
-    )
-    provider_mock.mass.cache.get = AsyncMock(return_value=cached)
+    """A fresh cache hit is built into folders without triggering a refresh."""
+    matches = [_match_entry("birthday", 0, _make_artist("1", "Cached"))]
+    provider_mock.mass.cache.get = AsyncMock(return_value=matches)
 
     result = await manager.get_recommendations()
 
-    assert result == cached
+    assert len(result) == 1
+    assert result[0].translation_key == "artist_birthdays_today"
     provider_mock.mass.cache.get.assert_awaited_once()
     provider_mock.mass.create_task.assert_not_called()
 
 
-async def test_get_recommendations_schedules_refresh_on_miss(
+async def test_get_recommendations_serves_stale_and_schedules(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """On a cache miss the hot path returns empty and schedules a background refresh."""
+    """When nothing fresh is cached, stale data is served and a refresh is scheduled."""
+    matches = [_match_entry("birthday", 0, _make_artist("1", "Stale-but-shown"))]
+    # first (fresh) lookup misses, second (allow_expired) returns stale data
+    provider_mock.mass.cache.get = AsyncMock(side_effect=[None, matches])
+
+    result = await manager.get_recommendations()
+
+    assert len(result) == 1
+    assert [a.name for a in result[0].items] == ["Stale-but-shown"]
+    provider_mock.mass.create_task.assert_called_once()
+    assert provider_mock.mass.cache.get.await_count == 2
+
+
+async def test_get_recommendations_empty_when_no_cache(
+    manager: MusicBrainzRecommendationManager,
+    provider_mock: Mock,
+) -> None:
+    """With no cached data at all, the hot path returns empty and schedules a refresh."""
     provider_mock.mass.cache.get = AsyncMock(return_value=None)
 
     result = await manager.get_recommendations()
@@ -352,11 +423,11 @@ async def test_get_recommendations_schedules_refresh_on_miss(
 # ---------------------------------------------------------------------------
 
 
-async def test_refresh_computes_caches_and_rearms(
+async def test_refresh_scans_and_caches(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """_refresh scans the library, stores serialized folders, and schedules the next run."""
+    """_refresh scans the library and stores serialized matches with stale fallback enabled."""
     today_mmdd = _today_mmdd()
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
     _set_library(provider_mock, [_make_artist("10", "Birthday Star", mbid=mbid)])
@@ -370,14 +441,13 @@ async def test_refresh_computes_caches_and_rearms(
     provider_mock.mass.cache.set.assert_awaited_once()
     args, kwargs = provider_mock.mass.cache.set.call_args
     assert args[0] == RECOMMENDATIONS_CACHE_KEY
-    # stored payload is a JSON-serializable list of folder dicts
     stored = args[1]
     assert isinstance(stored, list)
-    assert stored
-    assert isinstance(stored[0], dict)
+    assert stored[0]["kind"] == "birthday"
+    assert stored[0]["mmdd"] == today_mmdd
+    assert stored[0]["artist"]["name"] == "Birthday Star"
     assert kwargs["provider"] == "musicbrainz"
-    # next-day refresh re-armed
-    provider_mock.mass.call_later.assert_called_once()
+    assert kwargs["allow_expired_cache"] is True
 
 
 async def test_refresh_swallows_compute_errors(
