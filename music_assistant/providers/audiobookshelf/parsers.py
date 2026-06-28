@@ -255,6 +255,17 @@ def parse_podcast_episode(
         mass_episode.resume_position_ms = int(media_progress.current_time * 1000)
         mass_episode.fully_played = media_progress.is_finished
 
+    if episode.chapters:
+        mass_episode.metadata.chapters = [
+            MediaItemChapter(
+                position=position,
+                name=chapter.title,
+                start=chapter.start,
+                end=chapter.end,
+            )
+            for position, chapter in enumerate(episode.chapters, 1)
+        ]
+
     return mass_episode
 
 
