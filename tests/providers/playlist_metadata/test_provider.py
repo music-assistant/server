@@ -108,8 +108,8 @@ async def test_get_playlist_metadata_returns_none_when_insufficient_images(
         _force_refresh: bool = False,
         _allow_dynamic_tracks: bool = False,
     ) -> AsyncGenerator[Track]:
-        return
-        yield  # Make this an async generator
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]
 
     with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
         result = await provider.get_playlist_metadata(playlist)

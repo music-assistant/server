@@ -33,6 +33,7 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any, Final
 
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
@@ -73,7 +74,7 @@ TEMPLATE_ALBUM_FAN: Final[str] = "album_fan"
 TEMPLATE_ALBUM_GRID_TILTED: Final[str] = "album_grid_tilted"
 
 # Directory name inside the plugin's cache space
-_IMAGES_DIR: Final[str] = "playlist_art_images"
+_IMAGES_DIR: Final[str] = "playlist_metadata_images"
 
 
 async def setup(
@@ -131,10 +132,19 @@ class PlaylistMetadataProvider(MetadataProvider):
         """Set up the provider after it has been loaded into Music Assistant."""
         self._images_dir = os.path.join(self.mass.storage_path, _IMAGES_DIR)
         await asyncio.to_thread(os.makedirs, self._images_dir, exist_ok=True)
-        self.mass.call_later(120, self._cleanup_stale_images, task_id="playlist_art_cleanup")
+        self.mass.tasks.register_scheduled_task(
+            task_id=f"{self.instance_id}_cleanup",
+            name="Playlist metadata cleanup",
+            handler=self._cleanup_stale_images,
+            schedule=TaskSchedule.hourly(every=2),
+            initial_delay=120,
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider."""
+        self.mass.tasks.unregister_scheduled_task(
+            f"{self.instance_id}_cleanup", clear_persisted_state=is_removed
+        )
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve a playlist art image path to raw image bytes."""
@@ -197,11 +207,11 @@ class PlaylistMetadataProvider(MetadataProvider):
         Bare filenames without directory separators are treated as builtin assets, not
         plugin-generated images.
         """
-        if img.provider == self.instance_id:
-            return True
         # Remote URLs and data URIs are never ours, regardless of provider
         if img.path.startswith(("http://", "https://", "data:")):
             return False
+        if img.provider == self.instance_id:
+            return True
         # A bare filename without any directory separator (e.g. "logo.png", "fanart.jpg")
         # is a builtin provider asset, not something we generated.
         if "/" not in img.path and "\\" not in img.path:
@@ -449,11 +459,13 @@ class PlaylistMetadataProvider(MetadataProvider):
                     len(artist_images),
                     len(album_image_map),
                 )
-                if len(artist_images) >= 4 or len(album_image_map) >= 4:
-                    pass
-                else:
+                if len(artist_images) < 4 and len(album_image_map) < 4:
                     LOGGER.debug("Not enough images from rules, falling back to track analysis")
                     smart_rules = None
+                    artist_images.clear()
+                    artist_count.clear()
+                    album_image_map.clear()
+                    album_count.clear()
             else:
                 LOGGER.debug(
                     "No images found in smart playlist rules, falling back to track analysis"

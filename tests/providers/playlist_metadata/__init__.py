@@ -1,1 +1,1 @@
-"""Tests for the playlist_art metadata provider."""
+"""Tests for the playlist_metadata metadata provider."""
