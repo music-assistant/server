@@ -11,6 +11,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
     ProviderConfig,
+    ProviderError,
 )
 from music_assistant_models.enums import (
     EventType,
@@ -85,12 +86,18 @@ class ProviderConfigMixin:
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
         configs: list[ProviderConfig] = []
         for prov_conf in raw_values.values():
-            if provider_type is not None and prov_conf["type"] != provider_type:
+            # guard against malformed/partial entries (e.g. a removed provider that had an
+            # error written back to its key after removal, leaving a stub without a domain).
+            # Skip them rather than crash on a missing key. See #5728.
+            domain = prov_conf.get("domain")
+            if domain is None:
                 continue
-            if provider_domain is not None and prov_conf["domain"] != provider_domain:
+            if provider_type is not None and prov_conf.get("type") != provider_type:
+                continue
+            if provider_domain is not None and domain != provider_domain:
                 continue
             # guard for deleted providers
-            if prov_conf["domain"] not in prov_entries:
+            if domain not in prov_entries:
                 continue
             if include_values:
                 # get_provider_config already stamps the derived status
@@ -108,6 +115,10 @@ class ProviderConfigMixin:
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
+            if "domain" not in raw_conf:
+                # malformed/partial entry without a domain (see #5728)
+                msg = f"No valid config found for provider id {instance_id}"
+                raise KeyError(msg)
             config_entries = await self.get_provider_config_entries(
                 raw_conf["domain"],
                 instance_id=instance_id,
@@ -303,6 +314,19 @@ class ProviderConfigMixin:
         """Set (or update) the default name for a provider."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}/default_name"
         self.set(conf_key, default_name)
+
+    def update_provider_last_error(self, instance_id: str, error: ProviderError | None) -> None:
+        """
+        Persist (or clear) a provider's last_error.
+
+        Only writes if the provider config still exists; this avoids re-creating a
+        config entry that was removed while a load was still in flight, which would
+        leave a stub entry without a domain. See #5728.
+        """
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        if not self.get(conf_key):
+            return
+        self.set(f"{conf_key}/last_error", error.to_dict() if error else None)
 
     async def create_builtin_provider_config(self, provider_domain: str) -> None:
         """
