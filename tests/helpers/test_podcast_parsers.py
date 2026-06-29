@@ -202,6 +202,23 @@ def test_parse_chapters_from_json_malformed_returns_empty() -> None:
     assert parse_chapters_from_json({"chapters": "nope"}) == []
 
 
+def test_parse_chapters_from_json_skips_malformed_values() -> None:
+    """Non-numeric/non-finite startTimes and non-string titles are dropped, not stored."""
+    data = {
+        "chapters": [
+            {"startTime": "01:30", "title": "non-numeric start"},
+            {"startTime": float("nan"), "title": "nan start"},
+            {"startTime": float("inf"), "title": "inf start"},
+            {"startTime": 10, "title": {"x": 1}},
+            {"startTime": 20, "title": 123},
+            {"startTime": 30, "title": "kept", "endTime": float("nan")},
+        ]
+    }
+    chapters = parse_chapters_from_json(data)
+    # only the well-formed entry survives, and its non-finite endTime collapses to None
+    assert [(c.name, c.start, c.end) for c in chapters] == [("kept", 30.0, None)]
+
+
 # --- chapter enrichment (external JSON fetch) ------------------------------------------------
 
 
@@ -271,6 +288,34 @@ async def test_enrich_skips_when_no_url() -> None:
         mass_episode=mass_episode,
     )
     assert session.calls == 0
+    assert mass_episode.metadata.chapters is None
+
+
+async def test_enrich_ignores_non_dict_payload() -> None:
+    """A JSON payload that is not an object (e.g. a list) leaves the episode without chapters."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    session = _FakeSession(payload=[{"startTime": 0, "title": "Intro"}])
+    await enrich_episode_chapters(
+        session=cast("aiohttp.ClientSession", session),
+        chapters_json_url="https://example.com/ch.json",
+        mass_episode=mass_episode,
+    )
+    assert session.calls == 1
+    assert mass_episode.metadata.chapters is None
+
+
+async def test_enrich_ignores_empty_chapters_payload() -> None:
+    """A document whose chapters all filter out leaves metadata.chapters as None."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    session = _FakeSession(payload={"chapters": []})
+    await enrich_episode_chapters(
+        session=cast("aiohttp.ClientSession", session),
+        chapters_json_url="https://example.com/ch.json",
+        mass_episode=mass_episode,
+    )
+    assert session.calls == 1
     assert mass_episode.metadata.chapters is None
 
 

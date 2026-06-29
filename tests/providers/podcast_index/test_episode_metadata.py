@@ -104,8 +104,9 @@ def _provider(episode_data: dict[str, Any], session: _FakeSession) -> MagicMock:
 
 async def _call_get_episode(provider: MagicMock, prov_episode_id: str) -> PodcastEpisode:
     # bypass the @use_cache wrapper to drive the real method directly
-    func = PodcastIndexProvider.get_podcast_episode.__wrapped__
-    return await func(cast("PodcastIndexProvider", provider), prov_episode_id)
+    func: Any = PodcastIndexProvider.get_podcast_episode.__wrapped__  # type: ignore[attr-defined]
+    result = await func(cast("PodcastIndexProvider", provider), prov_episode_id)
+    return cast("PodcastEpisode", result)
 
 
 async def test_get_podcast_episode_enriches_chapters() -> None:

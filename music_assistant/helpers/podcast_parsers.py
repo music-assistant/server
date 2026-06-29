@@ -3,6 +3,7 @@
 import logging
 from datetime import UTC, datetime
 from io import BytesIO
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
@@ -228,15 +229,17 @@ def parse_podcast_episode(
 
     # inline chapters (Podlove Simple Chapters, parsed by podcastparser)
     if chapters := episode.get("chapters"):
-        _chapters = []
-        for cnt, chapter in enumerate(chapters):
+        _chapters: list[MediaItemChapter] = []
+        for chapter in chapters:
             if not isinstance(chapter, dict):
                 continue
             title = chapter.get("title")
             start = chapter.get("start")
             # start may legitimately be 0 (opening chapter), so test against None
             if title and start is not None:
-                _chapters.append(MediaItemChapter(position=cnt + 1, name=title, start=start))
+                _chapters.append(
+                    MediaItemChapter(position=len(_chapters) + 1, name=title, start=start)
+                )
         if _chapters:
             mass_episode.metadata.chapters = _chapters
 
@@ -261,10 +264,9 @@ def parse_podcast_persons(persons: Any) -> list[str]:
     Extract performer names from a Podcasting 2.0 ``podcast:person`` collection.
 
     Accepts the persons list as produced by podcastparser (feeds) or by the Podcast
-    Index API; both expose a ``name`` per entry. Roles, links and images are dropped
-    (no corresponding metadata field). Order is preserved and duplicate names
-    (case-insensitive, trimmed) are removed. Any non-list input yields no names, so
-    callers can pass a raw ``.get("persons")`` without guarding.
+    Index API. Returns the display names de-duplicated (case-insensitive) in feed
+    order; any non-list input yields no names, so callers can pass a raw
+    ``.get("persons")`` without guarding.
 
     :param persons: The raw persons collection, or any value (non-lists yield []).
     """
@@ -289,9 +291,10 @@ def _coerce_seconds(value: Any) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)
+        seconds = float(value)
     except TypeError, ValueError:
         return None
+    return seconds if isfinite(seconds) else None
 
 
 def parse_chapters_from_json(data: dict[str, Any]) -> list[MediaItemChapter]:
@@ -313,7 +316,7 @@ def parse_chapters_from_json(data: dict[str, Any]) -> list[MediaItemChapter]:
             continue
         title = raw_chapter.get("title")
         start = _coerce_seconds(raw_chapter.get("startTime"))
-        if not title or start is None:
+        if not isinstance(title, str) or not title or start is None:
             continue
         chapters.append(
             MediaItemChapter(
@@ -351,10 +354,12 @@ async def enrich_episode_chapters(
     url = chapters_json_url
     if not url:
         return
-    # the Mozilla UA mirrors get_podcastparser_dict: some podcast hosts/CDNs reject
-    # non-browser agents (music-assistant/support#3596), and chapter JSON is served
-    # from the same infrastructure. TimeoutError (raised on total-timeout) is not a
-    # ClientError, so it must be caught explicitly to keep this enrichment best-effort.
+    # send a browser UA: some podcast hosts/CDNs reject non-browser agents
+    # (music-assistant/support#3596). Chapter data is supplementary, so unlike
+    # get_podcastparser_dict we make a single best-effort attempt with no UA-less retry.
+    # TimeoutError (raised on total-timeout) is not a ClientError, so catch it explicitly
+    # to keep this enrichment best-effort. The parse stays inside the try so a malformed
+    # document can never break episode resolution either.
     try:
         async with session.get(
             url,
@@ -363,8 +368,7 @@ async def enrich_episode_chapters(
             timeout=_CHAPTERS_FETCH_TIMEOUT,
         ) as response:
             data = await response.json(content_type=None)
+        if isinstance(data, dict) and (chapters := parse_chapters_from_json(data)):
+            mass_episode.metadata.chapters = chapters
     except (ClientError, TimeoutError, ValueError, TypeError) as err:
         LOGGER.warning("Failed to fetch podcast chapters from %s: %s", url, err)
-        return
-    if isinstance(data, dict) and (chapters := parse_chapters_from_json(data)):
-        mass_episode.metadata.chapters = chapters
