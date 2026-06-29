@@ -21,6 +21,8 @@ EXPECTED_DEFAULT_ORDER = [
     "recent_favorite_tracks",
     "favorite_playlists",
     "favorite_radio",
+    "recent_artists",
+    "recent_tracks",
 ]
 
 
@@ -105,10 +107,18 @@ async def test_recently_played_rolls_up_to_container(mass: MusicAssistant) -> No
     await _add_playlog_row(
         mass, item_id="track-1", media_type=MediaType.TRACK, timestamp=1999, user_initiated=False
     )
+    await _add_playlog_row(
+        mass,
+        item_id="track-direct",
+        media_type=MediaType.TRACK,
+        timestamp=2001,
+        user_initiated=True,
+    )
     folder = await _recommendations_folder(mass, "recently_played")
     item_ids = {item.item_id for item in folder.items}
     assert "album-1" in item_ids
     assert "track-1" not in item_ids
+    assert "track-direct" in item_ids
 
 
 async def test_recent_artists_and_tracks_rows_present(mass: MusicAssistant) -> None:

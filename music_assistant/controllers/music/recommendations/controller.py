@@ -57,18 +57,34 @@ class RecommendationsController:
                 for provider in providers
             ],
         )
-        # keep each provider's index so the result is interleaved as today
+        # interleave: one folder per source per pass, preserving each source's ordering
         return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
 
     async def _default_recommendations(self) -> list[RecommendationFolder]:
         """Build the default library recommendation rows from the source registry."""
-        folders = await asyncio.gather(*[source.build() for source in self._sources])
-        return [folder for folder in folders if folder is not None]
+        folders = await asyncio.gather(
+            *[source.build() for source in self._sources],
+            return_exceptions=True,
+        )
+        result: list[RecommendationFolder] = []
+        for source, outcome in zip(self._sources, folders, strict=True):
+            if isinstance(outcome, Exception):
+                self.logger.warning(
+                    "Error building recommendation source '%s': %s",
+                    source.item_id,
+                    str(outcome),
+                    exc_info=outcome if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
+            elif isinstance(outcome, BaseException):
+                raise outcome
+            elif outcome is not None:
+                result.append(outcome)
+        return result
 
     async def _provider_recommendations(
         self, provider: MusicProvider | MetadataProvider | PluginProvider
     ) -> list[RecommendationFolder]:
-        """Return recommendations from a single provider, swallowing errors."""
+        """Return a provider's recommendations, or an empty list if it raises."""
         try:
             return await provider.recommendations()
         except Exception as err:

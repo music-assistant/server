@@ -46,7 +46,7 @@ class RecommendationSource(ABC):
         """Return the items for this recommendation row."""
 
     async def build(self) -> RecommendationFolder | None:
-        """Build the RecommendationFolder for this source (None to skip the row)."""
+        """Build this source's RecommendationFolder; subclasses may return None to suppress the row."""
         items = await self.get_items()
         return RecommendationFolder(
             item_id=self.item_id,
@@ -84,5 +84,5 @@ class CallableRecommendationSource(RecommendationSource):
         self._items_factory = items_factory
 
     async def get_items(self) -> RecommendationItems:
-        """Return the items by invoking the factory."""
+        """Return the items for this recommendation row."""
         return await self._items_factory()
