@@ -70,7 +70,8 @@ def build_config_entries(
     mass: MusicAssistant,
     values: dict[str, ConfigValueType],
 ) -> tuple[ConfigEntry, ...]:
-    """Return the full ConfigEntry schema for this provider.
+    """
+    Return the full ConfigEntry schema for this provider.
 
     :param mass: MusicAssistant instance, used to compose the info label.
     :param values: Current config values (may be empty on first setup).

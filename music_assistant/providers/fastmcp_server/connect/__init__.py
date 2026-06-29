@@ -1,4 +1,5 @@
-"""Connect Wizard — one-click onboarding UI for MCP-aware AI clients.
+"""
+Connect Wizard — one-click onboarding UI for MCP-aware AI clients.
 
 Provides a single-page web UI mounted under ``<mcp-mount>/connect`` that mints
 per-client long-lived MA tokens (``"MCP — <Client>"``) and renders ready-to-paste

@@ -1,4 +1,5 @@
-"""Tests for the lean-output-schema toggle on the config/debug namespaces.
+"""
+Tests for the lean-output-schema toggle on the config/debug namespaces.
 
 Spec: ``specs/done/0009-tool-schema-context-budget-policy.md``.
 
@@ -56,7 +57,8 @@ async def test_lean_schema_preserves_annotations(mock_mass: Any) -> None:
 
 
 async def test_lean_schema_reduces_total_schema_bytes(mock_mass: Any) -> None:
-    """Lean mode is a real context saving: serialized tool schemas shrink ≥25%.
+    """
+    Lean mode is a real context saving: serialized tool schemas shrink ≥25%.
 
     This doubles as the budget guard — it fails loudly if a future refactor
     inlines the output shape somewhere the toggle does not reach.
