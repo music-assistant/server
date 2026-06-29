@@ -21,7 +21,7 @@ from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, MediaItemType
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc_timestamp
 
 from .gw_client import DeezerGWError
@@ -366,7 +366,7 @@ class DeezerStreamingManager:
 
     def _get_blowfish_key(self, track_id: str) -> str:
         """Get blowfish key to decrypt a chunk of a track."""
-        secret = app_var(5)
+        secret = app_var("deezer_decrypt_key")
         id_md5 = self._md5(track_id)
         return "".join(
             chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i])) for i in range(16)

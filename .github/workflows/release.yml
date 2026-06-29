@@ -170,6 +170,14 @@ jobs:
 
           print(f"✅ Updated pyproject.toml version to ${{ inputs.version }}")
 
+      - name: Provision app secrets
+        env:
+          TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+        run: |
+          curl -fsSL -H "Authorization: token ${TOKEN}" \
+            https://raw.githubusercontent.com/music-assistant/appvars/main/app_secrets.json \
+            -o music_assistant/helpers/app_secrets.json
+
       - name: Build python package
         run: >-
           python3 -m build

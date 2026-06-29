@@ -64,6 +64,7 @@ from music_assistant.controllers.music.constants import (
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RADIO_TRACK_MAX_DURATION_SECS,
+    RECOMMENDATIONS_PROVIDER_TIMEOUT,
 )
 from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
 from music_assistant.controllers.music.helpers import sort_search_result
@@ -76,6 +77,7 @@ from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
+from music_assistant.controllers.music.recency import RecencyEngine
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
     get_current_user,
@@ -128,6 +130,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.genres = GenreController(self.mass)
+        self.recency = RecencyEngine(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         self.manifest.name = "Music controller"
@@ -2313,7 +2316,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> list[RecommendationFolder]:
         """Return recommendations from a provider."""
         try:
-            return await provider.recommendations()
+            async with asyncio.timeout(RECOMMENDATIONS_PROVIDER_TIMEOUT):
+                return await provider.recommendations()
+        except TimeoutError:
+            self.logger.warning(
+                "Timeout while fetching recommendations from %s; skipping for this request",
+                provider.name,
+            )
+            return []
         except Exception as err:
             self.logger.warning(
                 "Error while fetching recommendations from %s: %s",

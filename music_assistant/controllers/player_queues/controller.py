@@ -100,17 +100,31 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    CONF_SMART_SHUFFLE_ARTIST_RECENCY,
+    CONF_SMART_SHUFFLE_DUPLICATE_GAP,
+    CONF_SMART_SHUFFLE_ENABLED,
+    CONF_SMART_SHUFFLE_LABEL,
+    CONF_SMART_SHUFFLE_SONG_RECENCY,
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+    MANAGED_POOL_MAX,
+    SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT,
+    SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS,
+    SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT,
+    SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS,
+    SMART_SHUFFLE_ENABLED_DEFAULT,
+    SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
+    SMART_SHUFFLE_SONG_RECENCY_OPTIONS,
 )
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     get_current_playback_speed,
     handle_play_action,
     is_radio_source_dynamic,
-    smart_shuffle,
     sort_tracks,
 )
+from music_assistant.controllers.player_queues.managed_pool import ManagedPoolHelper, gate_tracks
+from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffleHelper
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
@@ -170,6 +184,8 @@ class PlayerQueuesController(CoreController):
         # queue_id -> session_id whose flow stream was fully generated
         self._flow_buffer_completed: dict[str, str] = {}
         self._autoplay = AutoplayHelper(self)
+        self._smart_shuffle = SmartShuffleHelper(self)
+        self._managed_pool = ManagedPoolHelper(self)
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -356,7 +372,58 @@ class PlayerQueuesController(CoreController):
             crossfade_mode_entry,
             CONF_ENTRY_CROSSFADE_DURATION,
         ]
+        smart_shuffle_entries = [
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_LABEL,
+                type=ConfigEntryType.LABEL,
+                category="smart_shuffle",
+            ),
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=SMART_SHUFFLE_ENABLED_DEFAULT,
+                category="smart_shuffle",
+            ),
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_SONG_RECENCY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(str(seconds))
+                    for seconds in SMART_SHUFFLE_SONG_RECENCY_OPTIONS
+                ],
+                default_value=str(SMART_SHUFFLE_SONG_RECENCY_DEFAULT),
+                category="smart_shuffle",
+                depends_on=CONF_SMART_SHUFFLE_ENABLED,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_ARTIST_RECENCY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(str(seconds))
+                    for seconds in SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS
+                ],
+                default_value=str(SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT),
+                category="smart_shuffle",
+                depends_on=CONF_SMART_SHUFFLE_ENABLED,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_SMART_SHUFFLE_DUPLICATE_GAP,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(str(seconds))
+                    for seconds in SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS
+                ],
+                default_value=str(SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT),
+                category="smart_shuffle",
+                depends_on=CONF_SMART_SHUFFLE_ENABLED,
+                depends_on_value=True,
+                advanced=True,
+            ),
+        ]
         return [
+            *smart_shuffle_entries,
             *autoplay_entries,
             *crossfade_entries,
             CONF_ENTRY_VOLUME_NORMALIZATION,
@@ -400,6 +467,7 @@ class PlayerQueuesController(CoreController):
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
         queue.shuffle_enabled = shuffle_enabled
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue_items = self._queue_items[queue_id]
         cur_index = (
             queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
@@ -420,6 +488,19 @@ class PlayerQueuesController(CoreController):
             keep_remaining=False,
             shuffle=shuffle_enabled,
         )
+
+    def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool:
+        """
+        Return whether smart shuffle is currently in effect for the queue.
+
+        Radio mode implies smart selection, so it always counts as active; otherwise smart shuffle
+        is active when shuffle is on and the per-queue smart-shuffle setting is enabled.
+
+        :param queue: The queue to evaluate.
+        """
+        if queue.radio_source:
+            return True
+        return queue.shuffle_enabled and self._smart_shuffle.is_enabled(queue.queue_id)
 
     @api_command("player_queues/autoplay")
     def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
@@ -657,6 +738,7 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         queue.radio_source = []
         queue.is_dynamic = False
+        self._managed_pool.forget(queue_id, drop_cache=True)
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
@@ -1136,6 +1218,8 @@ class PlayerQueuesController(CoreController):
         target_queue.autoplay_enabled = source_queue.autoplay_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.is_dynamic = source_queue.is_dynamic
+        self._managed_pool.transfer(source_queue_id, target_queue_id)
+        target_queue.smart_shuffle_active = self.is_smart_shuffle_active(target_queue)
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
         target_queue.resume_pos = source_resume_pos
         target_queue.current_index = source_current_index
@@ -1175,6 +1259,8 @@ class PlayerQueuesController(CoreController):
                 # recalculate is_dynamic after radio_source is restored from cache
                 # (old cache entries won't have is_dynamic set)
                 queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
+                # restore the per-source fill modes (SIMILAR vs rotate-own-tracks)
+                await self._managed_pool.restore(queue_id, queue.radio_source)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1302,6 +1388,7 @@ class PlayerQueuesController(CoreController):
         self._transitioning_players.discard(player_id)
         self._play_action_refcount.pop(player_id, None)
         self._last_counted_play.pop(player_id, None)
+        self._managed_pool.forget(player_id, drop_cache=permanent)
 
     async def load_next_queue_item(
         self,
@@ -1480,9 +1567,13 @@ class PlayerQueuesController(CoreController):
         # we set the original insert order as attribute so we can un-shuffle
         for index, item in enumerate(next_items):
             item.sort_index += insert_at_index + index
-        # (re)shuffle the final batch if needed
+        # (re)shuffle the final batch if needed: smart shuffle when enabled, else pure random
         if shuffle:
-            next_items = await smart_shuffle(next_items)
+            queue = self._queues[queue_id]
+            if self._smart_shuffle.is_enabled(queue_id):
+                next_items = await self._smart_shuffle.arrange(queue, next_items)
+            else:
+                next_items = random.sample(next_items, len(next_items))
         self.update_items(queue_id, prev_items + next_items)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
@@ -1994,8 +2085,16 @@ class PlayerQueuesController(CoreController):
         if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue.enqueued_media_items.clear()
 
+        # Decide whether this enqueue manages a bounded radio pool. radio_mode starts a fresh pool;
+        # an ADD/NEXT onto an already-active pool keeps managing it. A REPLACE cleared radio_source
+        # above, so it always exits managed mode and behaves as a normal queue.
+        already_managed = bool(queue.radio_source) and option in (QueueOption.ADD, QueueOption.NEXT)
+        managed_pool = radio_mode or already_managed
+
         media_items: list[MediaItemType] = []
         radio_source: list[MediaItemType] = []
+        # URIs of sources enqueued with the radio flag (SIMILAR fill mode); the rest rotate tracks
+        similar_uris: set[str] = set()
         # resolve all media items
         for item in media_list:
             try:
@@ -2040,11 +2139,8 @@ class PlayerQueuesController(CoreController):
                     queue.enqueued_media_items.append(media_item)
                     if len(queue.enqueued_media_items) > 10:
                         queue.enqueued_media_items.pop(0)
-                    if (
-                        isinstance(media_item, Playlist)
-                        and media_item.is_dynamic
-                        and not radio_mode
-                    ):
+                    if isinstance(media_item, Playlist) and media_item.is_dynamic:
+                        # a dynamic playlist/station is always a self-managing radio source
                         radio_source.append(media_item)
 
                 # handle default enqueue option if needed
@@ -2066,12 +2162,9 @@ class PlayerQueuesController(CoreController):
                         self.clear(queue_id, skip_stop=True)
 
                 # collect media_items to play
-                if radio_mode:
-                    # Type guard for mypy - only add full MediaItemType to radio_source
-                    if not isinstance(media_item, (ItemMapping, BrowseFolder)):
-                        radio_source.append(media_item)
-                elif isinstance(media_item, Playlist) and media_item.is_dynamic:
-                    # Dynamic playlists supply their own tracks on demand; fetch first batch now.
+                if isinstance(media_item, Playlist) and media_item.is_dynamic:
+                    # Dynamic playlists/stations supply their own tracks on demand and keep their
+                    # self-managing refill path even inside a managed pool; fetch first batch now.
                     self.mass.create_task(
                         self.mass.music.mark_item_played(
                             media_item, userid=queue.userid, queue_id=queue_id, user_initiated=True
@@ -2079,6 +2172,14 @@ class PlayerQueuesController(CoreController):
                     )
                     initial_tracks = await self.get_playlist_tracks(media_item, start_item=None)
                     media_items += initial_tracks
+                elif managed_pool:
+                    # Managed-pool mode: keep the item as a dynamic source (the bounded pool is
+                    # built from these sources below). The radio flag marks it SIMILAR (base +
+                    # similar); otherwise it rotates its own tracks.
+                    if not isinstance(media_item, (ItemMapping, BrowseFolder)):
+                        radio_source.append(media_item)
+                        if radio_mode and media_item.uri:
+                            similar_uris.add(media_item.uri)
                 else:
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
@@ -2099,17 +2200,34 @@ class PlayerQueuesController(CoreController):
                 self.logger.warning("Skipping %s: %s", item, str(err))
 
         # overwrite or append radio source items
-        if option not in (QueueOption.ADD, QueueOption.NEXT):
+        replace_sources = option not in (QueueOption.ADD, QueueOption.NEXT)
+        if replace_sources:
             queue.radio_source = radio_source
         else:
             queue.radio_source += radio_source
         queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
-        # Use collected media items to calculate the radio if radio mode is on
-        if radio_mode:
-            radio_tracks = await self._get_radio_tracks(
-                queue_id=queue_id, is_initial_radio_mode=True
+        # only track fill modes when the queue actually has dynamic sources; a plain enqueue leaves
+        # radio_source empty and shouldn't write a cache entry (a REPLACE already cleared any prior)
+        if queue.radio_source:
+            self._managed_pool.register(
+                queue_id, queue.radio_source, similar_uris, replace=replace_sources
             )
-            media_items = list(radio_tracks)
+
+        if already_managed and not media_items:
+            # new sources were added to an already-active pool: leave the playing pool intact and
+            # let the next top-up incorporate them
+            self.signal_update(queue_id)
+            if queue.current_index is not None and (queue.items - queue.current_index) < 5:
+                task_id = f"fill_radio_tracks_{queue_id}"
+                self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
+            return
+
+        # Build the bounded managed pool for a fresh radio start. A dynamic station yields no pool
+        # tracks (it self-manages), so keep its own already-fetched tracks in that case.
+        if managed_pool and not already_managed:
+            pool_tracks = await self._managed_pool.fill(queue_id, is_initial=True)
+            if pool_tracks:
+                media_items = list(pool_tracks)
 
         # only add valid/available items
         queue_items: list[QueueItem] = [
@@ -2121,8 +2239,8 @@ class PlayerQueuesController(CoreController):
         if not queue_items:
             raise MediaNotFoundError("No playable items found")
 
-        # load the items into the queue
-        await self._enqueue_with_option(queue_id, queue_items, option, radio_mode)
+        # load the items into the queue (managed-pool tracks are already ordered, so don't reshuffle)
+        await self._enqueue_with_option(queue_id, queue_items, option, managed_pool)
 
     async def _enqueue_with_option(
         self,
@@ -2443,9 +2561,16 @@ class PlayerQueuesController(CoreController):
             set_current_user(playback_user)
             try:
                 dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
-                queue_items = [
-                    QueueItem.from_media_item(queue_id, x) for x in dynamic_tracks if x.available
-                ]
+                # route the station batch through the recency engine (ungated fallback keeps the
+                # station playing if everything was recently heard)
+                windows = self._smart_shuffle._windows(queue_id)
+                snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+                gated = gate_tracks(
+                    [track for track in dynamic_tracks if isinstance(track, Track)],
+                    snapshot,
+                    windows,
+                )
+                queue_items = [QueueItem.from_media_item(queue_id, x) for x in gated if x.available]
                 if not queue_items:
                     self.logger.warning(
                         "Dynamic playlist %s returned no playable tracks for queue %s",
@@ -2468,9 +2593,19 @@ class PlayerQueuesController(CoreController):
                     err,
                 )
             return
-        radio_tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
-        # fill queue - filter out unavailable items
-        queue_items = [QueueItem.from_media_item(queue_id, x) for x in radio_tracks if x.available]
+        # Managed pool: top up from the queue's dynamic sources, weighted per source and
+        # recency-gated. fill() already sizes the batch to the pool target; the tail cap below is a
+        # defensive ceiling so the unplayed tail never grows past MANAGED_POOL_MAX.
+        pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
+        # keep the unplayed tail within the bounded pool size (no current_index => nothing played yet)
+        played = 0 if queue.current_index is None else queue.current_index + 1
+        unplayed = max(len(self._queue_items[queue_id]) - played, 0)
+        headroom = max(MANAGED_POOL_MAX - unplayed, 0)
+        queue_items = [
+            QueueItem.from_media_item(queue_id, x) for x in pool_tracks[:headroom] if x.available
+        ]
+        if not queue_items:
+            return
         await self.load(
             queue_id,
             queue_items,
@@ -2522,6 +2657,13 @@ class PlayerQueuesController(CoreController):
                 "Autoplay failed to fetch tracks for queue %s: %s", queue.display_name, err
             )
             return
+        # route the autoplay batch through the recency engine so a recently-heard track isn't
+        # immediately re-added (ungated fallback keeps autoplay going if everything is recent)
+        windows = self._smart_shuffle._windows(queue_id)
+        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+        tracks = gate_tracks(
+            [track for track in tracks if isinstance(track, Track)], snapshot, windows
+        )
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
@@ -2935,6 +3077,7 @@ class PlayerQueuesController(CoreController):
         queue.display_name = player.state.name
         queue.available = player.state.available
         queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue.items = len(self._queue_items[queue_id])
 
         queue.state = (

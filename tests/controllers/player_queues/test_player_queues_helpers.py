@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
@@ -17,7 +16,6 @@ from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
     is_radio_source_dynamic,
-    smart_shuffle,
 )
 
 if TYPE_CHECKING:
@@ -117,51 +115,6 @@ class TestGetCurrentPlaybackSpeed:
         queue = _queue()
         queue.current_item = _queue_item("Song", playback_speed=0)
         assert get_current_playback_speed(queue) == 1.0
-
-
-class TestSmartShuffle:
-    """Tests for smart_shuffle."""
-
-    async def test_empty_list(self) -> None:
-        """Shuffling an empty list returns an empty list."""
-        assert await smart_shuffle([]) == []
-
-    async def test_single_item(self) -> None:
-        """Shuffling a single item returns that item."""
-        items = [_queue_item("A")]
-        assert await smart_shuffle(items) == items
-
-    async def test_two_items_preserved(self) -> None:
-        """Shuffling two items keeps both items."""
-        items = [_queue_item("A"), _queue_item("B")]
-        result = await smart_shuffle(list(items))
-        assert {item.queue_item_id for item in result} == {"a", "b"}
-
-    async def test_preserves_all_items(self) -> None:
-        """Shuffling never drops or duplicates items, regardless of the random seed."""
-        items = [_queue_item(f"Name{i}", item_id=f"id{i}") for i in range(12)]
-        for seed in range(10):
-            random.seed(seed)
-            result = await smart_shuffle(list(items))
-            assert sorted(item.queue_item_id for item in result) == sorted(
-                item.queue_item_id for item in items
-            )
-
-    async def test_separates_adjacent_duplicates(self) -> None:
-        """Duplicate-named items are spread apart when a valid arrangement exists."""
-        items = [
-            _queue_item("Dup", item_id="d1"),
-            _queue_item("Dup", item_id="d2"),
-            _queue_item("A", item_id="a"),
-            _queue_item("B", item_id="b"),
-            _queue_item("C", item_id="c"),
-            _queue_item("D", item_id="d"),
-        ]
-        random.seed(42)
-        result = await smart_shuffle(items)
-        names = [item.name for item in result]
-        assert all(names[i] != names[i + 1] for i in range(len(names) - 1))
-        assert sorted(item.queue_item_id for item in result) == ["a", "b", "c", "d", "d1", "d2"]
 
 
 class _FakeLock:

@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-import time
 import uuid as _uuid
 from collections.abc import Callable
 from contextlib import suppress
@@ -49,6 +48,7 @@ from music_assistant.constants import (
     DYNAMIC_PLAYLIST_SAMPLE_SIZE,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import parse_uri
@@ -915,36 +915,20 @@ class SmartPlaylistProvider(PluginProvider):
                 for genre in genres:
                     track.metadata.genres.add(genre.name)
 
-    async def _recently_played_keys(self, dedup_hours: int) -> set[tuple[str, str]]:
-        """
-        Return ``(provider, item_id)`` keys of tracks fully played within dedup_hours.
-
-        Scoped to the current user. ``recently_played`` resolves the user from the active
-        context; during queue refills the player queue restores the queue owner's user
-        context before evaluating, so the dedup window is per user without resolving here.
-        """
-        cutoff = int(time.time()) - dedup_hours * 3600
-        played = await self.mass.music.recently_played(
-            limit=0,
-            media_types=[MediaType.TRACK],
-            fully_played_only=True,
-            played_after_timestamp=cutoff,
-        )
-        return {(item.provider, item.item_id) for item in played}
-
     async def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
-        """Filter out tracks fully played within dedup_hours (scoped to the current user)."""
-        played_keys = await self._recently_played_keys(dedup_hours)
-        if not played_keys:
+        """
+        Filter out tracks fully played within dedup_hours (scoped to the current user).
+
+        Uses the shared recency engine, whose membership test resolves a track across its
+        provider mappings and its own (provider, item_id) so both library and streaming plays
+        are matched. The engine resolves the current user (the queue owner's context is
+        restored during refills), keeping the dedup window per user.
+        """
+        window = dedup_hours * 3600
+        snapshot = await self.mass.music.recency.snapshot(RecencyWindows(song_seconds=window))
+        if not snapshot.song_ts:
             return list(tracks)
-        return [
-            t
-            for t in tracks
-            if not any(
-                (pm.provider_instance, pm.item_id) in played_keys
-                for pm in (t.provider_mappings or ())
-            )
-        ]
+        return [track for track in tracks if not snapshot.track_recent(track, window)]
 
     async def _evaluate_and(
         self,
