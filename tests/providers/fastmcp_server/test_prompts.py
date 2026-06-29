@@ -1,5 +1,4 @@
-"""
-Tests for ``provider.prompts.register_prompts``.
+"""Tests for ``provider.prompts.register_prompts``.
 
 The prompts module shipped without tests; a refactor that dropped a prompt
 or broke the ``CONF_RES_PROMPTS`` gate would land unobserved. This file

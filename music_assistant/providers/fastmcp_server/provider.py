@@ -1,5 +1,4 @@
-"""
-MCP Server provider — main PluginProvider implementation.
+"""MCP Server provider — main PluginProvider implementation.
 
 The provider is a thin lifecycle wrapper over :class:`MCPServerRuntime` from
 ``server.py``. ``handle_async_init`` constructs the runtime and starts it;
