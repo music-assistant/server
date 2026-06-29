@@ -41,6 +41,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Radio,
     SearchResults,
@@ -101,7 +102,7 @@ from music_assistant.models.plugin import PluginProvider
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.media_items import Audiobook, PodcastEpisode
+    from music_assistant_models.media_items import Audiobook
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
@@ -1369,6 +1370,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 queue_id=queue_id,
                 skip_ids=set(skip_artist_ids or ()),
             )
+        if isinstance(media_item, PodcastEpisode) and media_item.podcast:
+            await self._credit_podcast_play(
+                media_item.podcast,
+                timestamp=timestamp,
+                user_ids=user_ids,
+                queue_id=queue_id,
+            )
         await self.database.commit()
 
     async def resolve_library_artist_ids(self, artists: Iterable[Artist | ItemMapping]) -> set[str]:
@@ -2380,6 +2388,45 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
                 await self.database.execute(upsert_query, playlog_entry)
+
+    async def _credit_podcast_play(
+        self,
+        podcast: Podcast | ItemMapping,
+        *,
+        timestamp: float,
+        user_ids: list[str],
+        queue_id: str | None,
+    ) -> None:
+        """Credit the parent podcast with a play so the show surfaces in recently played."""
+        # ON CONFLICT keeps an explicit user-initiated show play sticky across the
+        # repeated side-effect credits its episodes generate.
+        upsert_query = (
+            f"INSERT INTO {DB_TABLE_PLAYLOG} "
+            "(item_id, provider, media_type, name, image, fully_played, "
+            "seconds_played, timestamp, queue_id, user_initiated, userid) "
+            "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
+            ":seconds_played, :timestamp, :queue_id, :user_initiated, :userid) "
+            "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
+            "name = excluded.name, image = excluded.image, "
+            "fully_played = excluded.fully_played, seconds_played = excluded.seconds_played, "
+            "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
+            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
+        )
+        playlog_entry: dict[str, Any] = {
+            "item_id": podcast.item_id,
+            "provider": podcast.provider,
+            "media_type": MediaType.PODCAST.value,
+            "name": podcast.name,
+            "image": serialize_to_json(podcast.image.to_dict()) if podcast.image else None,
+            "fully_played": True,
+            "seconds_played": None,
+            "timestamp": timestamp,
+            "queue_id": queue_id,
+            "user_initiated": False,
+        }
+        for user_id in user_ids:
+            playlog_entry["userid"] = user_id
+            await self.database.execute(upsert_query, playlog_entry)
 
     async def _get_item_by_name(
         self,
