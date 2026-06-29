@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -70,6 +71,16 @@ def _make_streamdetails(
     sd.provider = "test_provider"
     sd.duration = duration
     return sd
+
+
+@pytest.fixture(autouse=True)
+def _stub_ml_inference_gate() -> Generator[None]:
+    """Stub the hardware gate so these unit tests never spawn the real capability probe."""
+    with patch(
+        "music_assistant.providers.sonic_analysis.verify_system_meets_requirements",
+        new=AsyncMock(),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
