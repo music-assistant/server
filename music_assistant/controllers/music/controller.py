@@ -92,6 +92,7 @@ from music_assistant.helpers.datetime import (
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
+from music_assistant.helpers.track_filter import get_track_filter
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
@@ -845,6 +846,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             available_base_tracks,
             min(DYNAMIC_RADIO_BASE_SAMPLE_SIZE, len(available_base_tracks)),
         )
+        # a consumer (e.g. the player queue) may publish a best-effort filter to pre-skip tracks it
+        # would discard anyway; keep the original base sample if filtering would leave no seed
+        active_filter = get_track_filter()
+        if active_filter is not None:
+            base_tracks = [t for t in base_tracks if active_filter.allows(t)] or base_tracks
         dynamic_tracks: set[Track] = set()
         for allow_lookup in (False, True):
             if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
@@ -860,8 +866,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 except MediaNotFoundError:
                     continue
                 for track in similar:
-                    if track not in base_tracks and track.duration <= RADIO_TRACK_MAX_DURATION_SECS:
-                        dynamic_tracks.add(track)
+                    if track in base_tracks or track.duration > RADIO_TRACK_MAX_DURATION_SECS:
+                        continue
+                    if active_filter is not None and not active_filter.allows(track):
+                        continue
+                    dynamic_tracks.add(track)
                 if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
                     break
 
