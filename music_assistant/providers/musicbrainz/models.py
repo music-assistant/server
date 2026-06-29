@@ -45,6 +45,15 @@ class MusicBrainzAlias(DataClassDictMixin):
 
 
 @dataclass
+class MusicBrainzLifeSpan(DataClassDictMixin):
+    """Model for a LifeSpan object from MusicBrainz."""
+
+    begin: str | None = None
+    end: str | None = None
+    ended: bool = False
+
+
+@dataclass
 class MusicBrainzUrl(DataClassDictMixin):
     """Model for a Url object embedded in a MusicBrainz relation."""
 
@@ -73,6 +82,7 @@ class MusicBrainzArtist(DataClassDictMixin):
     aliases: list[MusicBrainzAlias] | None = None
     tags: list[MusicBrainzTag] | None = None
     relations: list[MusicBrainzRelation] | None = None
+    life_span: MusicBrainzLifeSpan | None = None
 
     @classmethod
     def from_raw(cls, data: Any) -> MusicBrainzArtist:
@@ -105,6 +115,7 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     secondary_type_ids: list[str] | None = None
     artist_credit: list[MusicBrainzArtistCredit] | None = None
     barcode: str | None = None
+    first_release_date: str | None = None
 
     @classmethod
     def from_raw(cls, data: Any) -> MusicBrainzReleaseGroup:

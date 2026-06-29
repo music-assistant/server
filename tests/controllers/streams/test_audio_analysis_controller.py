@@ -82,6 +82,12 @@ async def _await_tasks(mock_mass: MagicMock) -> None:
     while awaited < len(mock_mass._created_tasks):
         pending = mock_mass._created_tasks[awaited:]
         awaited = len(mock_mass._created_tasks)
+        for task in pending:
+            # The idle-model monitor is a long-lived loop, not a one-shot; cancel it rather
+            # than block here waiting for it to finish.
+            coro = task.get_coro()
+            if coro is not None and "_monitor_idle_models" in getattr(coro, "__qualname__", ""):
+                task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
 
 
@@ -364,6 +370,62 @@ async def test_realtime_session_cap_is_per_queue(
         if not task.done():
             task.cancel()
     await asyncio.gather(*mock_mass._created_tasks, return_exceptions=True)
+
+
+def _unloadable_provider() -> MagicMock:
+    prov = MagicMock(spec=AudioAnalysisProvider)
+    prov.has_unloadable_models = True
+    prov.available = True
+    prov.unload_idle_models = AsyncMock()
+    return prov
+
+
+@pytest.mark.asyncio
+async def test_idle_monitor_unloads_models_when_idle(
+    controller: AudioAnalysisController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no active sessions past the idle timeout, unloadable providers are unloaded."""
+    prov = _unloadable_provider()
+    monkeypatch.setattr(controller.__class__, "providers", property(lambda _self: [prov]))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_CHECK_INTERVAL_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_UNLOAD_SECONDS", 0.0
+    )
+
+    controller._mark_analysis_activity()  # starts the monitor
+    assert controller._idle_unload_task is not None
+    await asyncio.wait_for(controller._idle_unload_task, timeout=2.0)
+
+    prov.unload_idle_models.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_idle_monitor_keeps_models_while_sessions_active(
+    controller: AudioAnalysisController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Models are not unloaded while an analysis session is still active."""
+    prov = _unloadable_provider()
+    monkeypatch.setattr(controller.__class__, "providers", property(lambda _self: [prov]))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_CHECK_INTERVAL_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_UNLOAD_SECONDS", 0.0
+    )
+
+    controller._active_sessions["sess"] = {"prov"}
+    controller._mark_analysis_activity()
+    await asyncio.sleep(0.05)  # several monitor ticks
+
+    prov.unload_idle_models.assert_not_called()
+
+    assert controller._idle_unload_task is not None
+    controller._idle_unload_task.cancel()
+    await asyncio.gather(controller._idle_unload_task, return_exceptions=True)
 
 
 # -- Edge cases --

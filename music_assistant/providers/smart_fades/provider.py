@@ -63,6 +63,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
     """Smart fades audio analysis provider using Beat This for beat tracking."""
 
     max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
+    has_unloadable_models = True
 
     def __init__(
         self,
@@ -77,17 +78,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
         self._device = "cpu"
 
     async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
+        """Handle async initialization of the provider; idle models are reloaded on demand."""
         # Configure the inference runtime before loading any model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
-        (
-            self._beat_this_model,
-            self._beat_this_post_processor,
-            self._skey_vqt,
-            self._skey_chromanet,
-            self._skey_crop,
-            self._spectral_centroid,
-        ) = await asyncio.to_thread(self._initialize_models)
+        await self._load_models()
+        self._models_loaded = True
 
     async def process_pcm_chunk(
         self,
@@ -130,6 +125,26 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
             data.features.reset()
         await super().cancel(session_id)
+
+    async def _load_models(self) -> None:
+        """Load the Beat This and S-KEY models into memory."""
+        (
+            self._beat_this_model,
+            self._beat_this_post_processor,
+            self._skey_vqt,
+            self._skey_chromanet,
+            self._skey_crop,
+            self._spectral_centroid,
+        ) = await asyncio.to_thread(self._initialize_models)
+
+    def _free_models(self) -> None:
+        """Release the Beat This and S-KEY models."""
+        self._beat_this_model = None
+        self._beat_this_post_processor = None
+        self._skey_vqt = None
+        self._skey_chromanet = None
+        self._skey_crop = None
+        self._spectral_centroid = None
 
     def _initialize_models(self) -> tuple[Any, ...]:
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""

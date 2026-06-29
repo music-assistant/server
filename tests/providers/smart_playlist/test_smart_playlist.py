@@ -14,6 +14,7 @@ from music_assistant_models.media_items import Genre, Playlist, ProviderMapping,
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.smart_playlist import (
     CONF_AI_DESCRIPTIONS,
@@ -552,19 +553,17 @@ async def test_exclusion_filters_out_excluded_uri() -> None:
     assert all(t.uri != "library://track/2" for t in result)
 
 
-def _make_played_mapping(provider: str, item_id: str) -> MagicMock:
-    """Build a minimal mock ItemMapping as returned by recently_played."""
-    mapping = MagicMock()
-    mapping.provider = provider
-    mapping.item_id = item_id
-    return mapping
+def _recency_snapshot(*played_keys: tuple[str, str]) -> RecencySnapshot:
+    """Build a snapshot whose given (provider_instance, item_id) keys are recently played."""
+    now = 1_000_000_000
+    return RecencySnapshot(now=now, song_ts=dict.fromkeys(played_keys, now))
 
 
 @pytest.mark.asyncio
 async def test_dedup_removes_recently_played() -> None:
     """Tracks present in the playlog within dedup_hours are excluded; others are kept."""
     mass = MagicMock()
-    mass.music.recently_played = AsyncMock(return_value=[_make_played_mapping("library", "1")])
+    mass.music.recency.snapshot = AsyncMock(return_value=_recency_snapshot(("library", "1")))
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -589,9 +588,7 @@ async def test_dedup_removes_recently_played() -> None:
 async def test_dedup_removes_recently_played_streaming_track() -> None:
     """A non-library (streaming) track in the playlog is excluded via its provider mapping."""
     mass = MagicMock()
-    mass.music.recently_played = AsyncMock(
-        return_value=[_make_played_mapping("spotify--abc", "s1")]
-    )
+    mass.music.recency.snapshot = AsyncMock(return_value=_recency_snapshot(("spotify--abc", "s1")))
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -614,8 +611,8 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
     """When all tracks were recently played, dedup is ignored and the full pool is returned."""
     mass = MagicMock()
     tracks = [_make_mock_track(str(i), f"library://track/{i}") for i in range(5)]
-    mass.music.recently_played = AsyncMock(
-        return_value=[_make_played_mapping("library", str(i)) for i in range(5)]
+    mass.music.recency.snapshot = AsyncMock(
+        return_value=_recency_snapshot(*[("library", str(i)) for i in range(5)])
     )
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -635,11 +632,8 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
 async def test_dedup_partial_fill_prefers_old_library_over_streaming() -> None:
     """Partial-exhaustion fill must not rank streaming tracks (last_played=0) as oldest."""
     mass = MagicMock()
-    mass.music.recently_played = AsyncMock(
-        return_value=[
-            _make_played_mapping("library", "lo"),
-            _make_played_mapping("spotify--abc", "sn"),
-        ]
+    mass.music.recency.snapshot = AsyncMock(
+        return_value=_recency_snapshot(("library", "lo"), ("spotify--abc", "sn"))
     )
     manifest = MagicMock()
     manifest.domain = "smart_playlist"

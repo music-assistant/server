@@ -72,6 +72,7 @@ from music_assistant.constants import (
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
     ATTR_POWER_CONTROL,
+    ATTR_POWERED,
     ATTR_PREVIOUS_VOLUME,
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
@@ -1861,11 +1862,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player,
                 task_id=task_id,
             )
-        became_inactive = (
-            ATTR_AVAILABLE in changed_values and changed_values[ATTR_AVAILABLE][1] is False
-        ) or (ATTR_ENABLED in changed_values and changed_values[ATTR_ENABLED][1] is False)
-        if became_inactive and (player.state.active_group or player.state.synced_to):
-            self.mass.create_task(self._cleanup_player_memberships(player.player_id))
+        # only steer into the (relatively expensive) membership cleanup when a field
+        # that can require an unsync actually changed - this runs on every state tick
+        if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED}:
+            self._handle_membership_cleanup_on_state_change(player, changed_values)
 
         # enforce volume limits when volume changes externally
         if "volume_level" in changed_values:
@@ -2594,6 +2594,30 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         elapsed = time.time() - start_timestamp
         if elapsed < minimal_time:
             await asyncio.sleep(minimal_time - elapsed)
+
+    def _handle_membership_cleanup_on_state_change(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Detach a player from its (sync)groups when a state change requires it."""
+        # A player that became unavailable or disabled can no longer be commanded,
+        # so we drop it from its parent group/leader directly.
+        became_inactive = (
+            ATTR_AVAILABLE in changed_values and changed_values[ATTR_AVAILABLE][1] is False
+        ) or (ATTR_ENABLED in changed_values and changed_values[ATTR_ENABLED][1] is False)
+        if became_inactive and (player.state.active_group or player.state.synced_to):
+            self.mass.create_task(self._cleanup_player_memberships(player.player_id))
+
+        # A player whose power was turned off outside of an MA power command (e.g. its
+        # linked power control was switched off directly) must be unsynced too. We act
+        # only on an explicit on->off transition, leaving players without power control
+        # (powered == None) untouched. The player is still reachable here, so we route
+        # through cmd_ungroup which also transfers leadership when it is a sync leader.
+        if (
+            changed_values.get(ATTR_POWERED) == (True, False)
+            and player.state.type == PlayerType.PLAYER
+            and (player.state.synced_to or player.state.active_group or player.state.group_members)
+        ):
+            self.mass.create_task(self.cmd_ungroup(player.player_id))
 
     async def _cleanup_player_memberships(self, player_id: str) -> None:
         """Ensure a player is detached from any groups or syncgroups."""
@@ -3757,15 +3781,20 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     f"Player control {control_name} is not available"
                 )
             assert player_control.volume_set is not None
-            await player_control.volume_set(volume_level)
+            # forward the already-scaled device volume; the external control sets the
+            # raw device volume and does not apply min/max scaling of its own
+            await player_control.volume_set(device_volume)
             return
         if protocol_player := self.get_player(player.state.volume_control):
-            # redirect to protocol player volume control
+            # redirect to protocol player volume control.
+            # forward the already-scaled device volume so the min/max limits configured
+            # on this (user-facing) player are honored; the protocol player has no
+            # limits of its own, so its scaling is an identity pass-through.
             self.logger.debug(
                 "Redirecting volume command to protocol player %s",
                 protocol_player.provider.manifest.name,
             )
-            await self._handle_cmd_volume_set(protocol_player.player_id, volume_level)
+            await self._handle_cmd_volume_set(protocol_player.player_id, device_volume)
             return
 
     async def _handle_play_media(self, player_id: str, media: PlayerMedia) -> None:

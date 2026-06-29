@@ -25,5 +25,41 @@ CONF_AUTOPLAY_MODE = "autoplay_mode"
 CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
 CONF_CROSSFADE_LABEL = "crossfade_label"
 
+CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
+CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
+CONF_SMART_SHUFFLE_SONG_RECENCY = "smart_shuffle_song_recency"
+CONF_SMART_SHUFFLE_ARTIST_RECENCY = "smart_shuffle_artist_recency"
+CONF_SMART_SHUFFLE_DUPLICATE_GAP = "smart_shuffle_duplicate_gap"
+
+SMART_SHUFFLE_ENABLED_DEFAULT = False
+# window preset values are stored in seconds (0 = off)
+SMART_SHUFFLE_SONG_RECENCY_DEFAULT = 7 * 24 * 3600
+SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT = 30 * 60
+SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT = 3 * 3600
+
+# preset window values in seconds for the smart-shuffle recency selects (0 = off);
+# the per-option titles live in strings.json (config_entries.<key>.options.<seconds>)
+SMART_SHUFFLE_SONG_RECENCY_OPTIONS = (
+    0,
+    3600,
+    14400,
+    43200,
+    86400,
+    259200,
+    604800,
+    1209600,
+    2419200,
+)
+SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS = (0, 300, 900, 1800, 3600, 7200)
+SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS = (0, 3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400)
+
+# Managed-pool (radio) sizing: a radio-flagged enqueue turns the whole queue into a small
+# bounded pool of dynamic sources, topped up near the end instead of enqueuing thousands.
+MANAGED_POOL_TARGET = 25
+MANAGED_POOL_MAX = 50
+# how many similar candidates to fetch per SIMILAR source on each (re)fill
+POOL_PER_SOURCE_FETCH = 50
+
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
+CACHE_CATEGORY_PLAYER_QUEUE_POOL = 2

@@ -457,8 +457,12 @@ class AudioBuffer:
         # skip AudioSource — it's an open-ended live stream so analysis would never finalize
         # (radio still runs analysis; the analyzer caps it at 10 minutes)
         if seek_position_ms == 0 and streamdetails.media_type != MediaType.AUDIO_SOURCE:
-            # audio analysis providers (loudness, beat tracking, key detection, etc.)
-            await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+            # audio analysis providers (loudness, beat tracking, key detection, etc.).
+            # Fire-and-forget: analysis setup — including a possible model (re)load — must never
+            # delay the buffer fill. The analysis worker reads the retained chunks once ready.
+            mass.create_task(
+                mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+            )
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
