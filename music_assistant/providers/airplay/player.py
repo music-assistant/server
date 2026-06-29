@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -628,6 +629,10 @@ class AirPlayPlayer(Player):
             and (parent_player := self.mass.players.get_player(self.protocol_parent_id))
             and parent_player.state.volume_level is not None
         ):
+            if self._has_native_protocol_parent:
+                # Native parent volume is on the receiver/amplifier scale.
+                # Keep the AirPlay child volume learned from DACP feedback instead.
+                return
             if self._attr_volume_level == parent_player.state.volume_level:
                 return
             self._attr_volume_level = parent_player.state.volume_level
@@ -655,6 +660,14 @@ class AirPlayPlayer(Player):
         if self._active_pairing:
             await self._active_pairing.close()
             self._active_pairing = None
+
+    @property
+    def _has_native_protocol_parent(self) -> bool:
+        """Return True if this AirPlay protocol player is linked to a native parent."""
+        if not self.protocol_parent_id:
+            return False
+        parent_player = self.mass.players.get_player(self.protocol_parent_id)
+        return bool(parent_player and parent_player.volume_control == PLAYER_CONTROL_NATIVE)
 
     def _get_flags(self) -> int:
         # Flags are either present via "sf" or "flags". Taken from pyatv.protocols.airplay.utils.

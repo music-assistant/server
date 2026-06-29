@@ -46,7 +46,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.playlists import parse_pls
@@ -81,7 +81,7 @@ API_BASE_URL = "api.audioaddict.com/v1"
 API_TIMEOUT = 30
 CACHE_CHANNELS = 86400  # 24 hours
 CACHE_GENRES = 86400  # 24 hours
-CACHE_STREAM_URL = 3600  # 1 hour
+CACHE_STREAM_URLS = 3600  # 1 hour
 CACHE_FAVORITES = 300  # 5 minutes
 
 # Favorites playlist on listen.* (premium tier; ``public3`` is legacy and not used here).
@@ -372,8 +372,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         # Validate and parse the provider ID
         network_key, channel_key = self._validate_item_id(item_id)
 
-        # Get the stream URL
-        stream_url = await self._get_stream_url(network_key, channel_key)
+        stream_urls = await self._get_stream_urls(network_key, channel_key)
 
         return StreamDetails(
             provider=self.instance_id,
@@ -383,7 +382,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
             ),
             media_type=MediaType.RADIO,
             stream_type=StreamType.ICY,
-            path=stream_url,
+            path=[MultiPartPath(path=url) for url in stream_urls],
             allow_seek=False,
             can_seek=False,
             duration=0,  # Infinite duration for radio streams
@@ -807,10 +806,12 @@ class DigitallyIncorporatedProvider(MusicProvider):
             )
             return {}
 
-    @use_cache(CACHE_STREAM_URL)
-    async def _get_stream_url(self, network_key: str, channel_key: str) -> str:
-        """Get the streaming URL for a channel."""
-        self.logger.debug("%s: Getting stream URL for %s:%s", self.domain, network_key, channel_key)
+    @use_cache(CACHE_STREAM_URLS)
+    async def _get_stream_urls(self, network_key: str, channel_key: str) -> list[str]:
+        """Get the streaming URLs for a channel (ordered mirrors / failover)."""
+        self.logger.debug(
+            "%s: Getting stream URLs for %s:%s", self.domain, network_key, channel_key
+        )
 
         listen_key = self.config.get_value("listen_key")
         if not listen_key:
@@ -826,42 +827,40 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 listen_key=str(listen_key),
             )
 
-            # Use the first stream URL from the playlist
             if not playlist or not isinstance(playlist, list):
                 msg = f"{self.domain}: No stream URLs returned from Digitally Incorporated API"
                 raise MediaNotFoundError(msg)
 
+            stream_list: list[str] = [url for url in playlist if url and isinstance(url, str)]
             self.logger.debug(
-                "%s: Digitally Incorporated playlist returned %d URLs", self.domain, len(playlist)
+                "%s: Filtered %d valid stream URLs from playlist of %d URLs",
+                self.domain,
+                len(stream_list),
+                len(playlist),
             )
 
-            # Log all available URLs for debugging
-            for i, url in enumerate(playlist):
-                self.logger.debug("%s: Available stream URL %d: %s", self.domain, i + 1, url)
-
-            # Use the first URL - Digitally Incorporated typically returns them in priority order
-            stream_url: str = str(playlist[0])
-            self.logger.debug("%s: Selected stream URL: %s", self.domain, stream_url)
-
-            # Validate the stream URL
-            if not stream_url or not isinstance(stream_url, str):
-                msg = f"{self.domain}: Invalid stream URL received: {stream_url}"
+            if not stream_list:
+                msg = f"{self.domain}: No valid stream URLs found in the playlist"
                 raise MediaNotFoundError(msg)
 
-            return stream_url
+            # Log all available URLs
+            for i, url in enumerate(stream_list):
+                self.logger.debug("%s: Available stream URL %d: %s", self.domain, i + 1, url)
+
+            return stream_list
 
         except ProviderUnavailableError, MediaNotFoundError:
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
-        except (aiohttp.ClientError, ValueError, KeyError, IndexError) as err:
+        except (aiohttp.ClientError, ValueError) as err:
             self.logger.error(
-                "%s: Failed to get stream URL for %s:%s: %s",
+                "%s: Failed to get stream URLs for %s:%s: %s",
                 self.domain,
                 network_key,
                 channel_key,
                 err,
             )
-            raise MediaNotFoundError(f"{self.domain}: Unable to get stream URL: {err}") from err
+            raise MediaNotFoundError(f"{self.domain}: Unable to get stream URLs: {err}") from err
 
     def _channel_to_radio(self, channel_data: dict[str, Any], network_key: str) -> Radio:
         """Convert channel data to Radio object."""

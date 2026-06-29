@@ -1,5 +1,45 @@
 {
   "manifest": {
     "description": "MusicBrainz is an open music encyclopedia that collects music metadata and makes it available to the public. Music Assistant uses MusicBrainz primarily to identify (unique) media items and therefore this provider can not be disabled. However, note that lookups will only be performed if this info is absent locally."
+  },
+  "config_entries": {
+    "recommendation_days": {
+      "label": "Number of days to scan",
+      "description": "Number of days before and after today to scan for birthdays and memorials. For example, 3 means 3 days before through 3 days after today (7 days total)."
+    }
+  },
+  "media": {
+    "recommendations": {
+    "artist_birthdays_yesterday": {
+      "name": "Birthdays · Yesterday"
+    },
+    "artist_birthdays_today": {
+      "name": "Birthdays · Today"
+    },
+    "artist_birthdays_tomorrow": {
+      "name": "Birthdays · Tomorrow"
+    },
+    "artist_birthdays_n_days_ago": {
+      "name": "Birthdays · {0} days ago"
+    },
+    "artist_birthdays_in_n_days": {
+      "name": "Birthdays · In {0} days"
+    },
+    "artist_memoriam_yesterday": {
+      "name": "In Memoriam · Yesterday"
+    },
+    "artist_memoriam_today": {
+      "name": "In Memoriam · Today"
+    },
+    "artist_memoriam_tomorrow": {
+      "name": "In Memoriam · Tomorrow"
+    },
+    "artist_memoriam_n_days_ago": {
+      "name": "In Memoriam · {0} days ago"
+    },
+    "artist_memoriam_in_n_days": {
+      "name": "In Memoriam · In {0} days"
+    }
+    }
   }
 }

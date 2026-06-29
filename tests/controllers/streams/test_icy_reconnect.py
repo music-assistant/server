@@ -12,10 +12,11 @@ from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
+    ProviderPermissionDenied,
     RetriesExhausted,
 )
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 
@@ -156,4 +157,84 @@ async def test_icy_stream_invalid_metaint_is_terminal(monkeypatch: pytest.Monkey
         async for _chunk in audio.get_icy_radio_stream(
             "http://example.test/radio.mp3", _radio_streamdetails()
         ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_icy_failover_on_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mirror returning an HTTP error fails over to the next mirror URL."""
+    audio = StreamsAudio(MagicMock())
+    seen: list[str] = []
+
+    def _connect(url: str, *_a: Any, **_k: Any) -> _FakeConnCtx:
+        seen.append(url)
+        if url == "http://primary.test/stream":
+            return _FakeConnCtx([], status=403)
+        return _FakeConnCtx([b"BBBB"])
+
+    monkeypatch.setattr(audio, "_connect_radio_stream", _connect)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    mirrors = [
+        MultiPartPath(path="http://primary.test/stream"),
+        MultiPartPath(path="http://backup.test/stream"),
+    ]
+    chunks: list[bytes] = []
+    async for chunk in audio.get_reconnecting_icy_radio_stream(mirrors, _radio_streamdetails()):
+        chunks.append(chunk)
+        break
+
+    assert chunks == [b"BBBB"]
+    assert seen == ["http://primary.test/stream", "http://backup.test/stream"]
+
+
+@pytest.mark.asyncio
+async def test_icy_failover_raises_when_all_mirrors_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When every mirror is unreachable the last terminal error is raised, not spun on forever."""
+    audio = StreamsAudio(MagicMock())
+    connect_calls = 0
+
+    def _connect(_url: str, *_a: Any, **_k: Any) -> _FakeConnCtx:
+        nonlocal connect_calls
+        connect_calls += 1
+        return _FakeConnCtx([], status=403)
+
+    monkeypatch.setattr(audio, "_connect_radio_stream", _connect)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    mirrors = [
+        MultiPartPath(path="http://a.test/stream"),
+        MultiPartPath(path="http://b.test/stream"),
+    ]
+    with pytest.raises(ProviderPermissionDenied):
+        async for _chunk in audio.get_reconnecting_icy_radio_stream(
+            mirrors, _radio_streamdetails()
+        ):
+            pass
+
+    # bounded failover - does not retry indefinitely
+    assert connect_calls <= len(mirrors) * 2 + 1
+
+
+@pytest.mark.asyncio
+async def test_icy_single_mirror_propagates_terminal_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single mirror URL delegates to get_icy_radio_stream and surfaces its terminal error."""
+    audio = StreamsAudio(MagicMock())
+    monkeypatch.setattr(
+        audio, "_connect_radio_stream", lambda *_a, **_k: _FakeConnCtx([], status=404)
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        async for _chunk in audio.get_reconnecting_icy_radio_stream(
+            [MultiPartPath(path="http://only.test/stream")], _radio_streamdetails()
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_icy_failover_requires_at_least_one_url() -> None:
+    """An empty mirror list is rejected with InvalidDataError."""
+    audio = StreamsAudio(MagicMock())
+    with pytest.raises(InvalidDataError):
+        async for _chunk in audio.get_reconnecting_icy_radio_stream([], _radio_streamdetails()):
             pass

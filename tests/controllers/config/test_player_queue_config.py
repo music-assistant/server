@@ -10,13 +10,13 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.config.migrations import _migrate_player_queue_settings
 from music_assistant.controllers.player_queues.constants import CONF_AUTOPLAY_PLAYLIST
 
 
 def _migrate(data: dict[str, Any]) -> bool:
     """Run the (settings.json) queue-settings migration against a raw data dict."""
-    stub = cast("ConfigController", SimpleNamespace(_data=data))
-    return ConfigController._migrate_player_queue_settings(stub)
+    return _migrate_player_queue_settings(data)
 
 
 def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:

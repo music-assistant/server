@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.controllers.music.constants import RECOMMENDATIONS_PROVIDER_TIMEOUT
 
 from .sources.defaults import build_default_sources
 
@@ -84,9 +85,16 @@ class RecommendationsController:
     async def _provider_recommendations(
         self, provider: MusicProvider | MetadataProvider | PluginProvider
     ) -> list[RecommendationFolder]:
-        """Return a provider's recommendations, or an empty list if it raises."""
+        """Return a provider's recommendations, or an empty list if it times out or raises."""
         try:
-            return await provider.recommendations()
+            async with asyncio.timeout(RECOMMENDATIONS_PROVIDER_TIMEOUT):
+                return await provider.recommendations()
+        except TimeoutError:
+            self.logger.warning(
+                "Timeout while fetching recommendations from %s; skipping for this request",
+                provider.name,
+            )
+            return []
         except Exception as err:
             self.logger.warning(
                 "Error while fetching recommendations from %s: %s",

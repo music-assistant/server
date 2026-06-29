@@ -57,6 +57,7 @@ from music_assistant.providers.sonic_similarity.helpers import (
     _parse_similar_params,
     _parse_weights,
     apply_filters,
+    format_text_query,
 )
 from music_assistant.providers.sonic_similarity.models import SimilarParams, _SearchContext
 from music_assistant.providers.sonic_similarity.similarity import (
@@ -467,7 +468,8 @@ class SonicSimilarityPlugin(PluginProvider):
         seed_weights: list[float] | None = None,
         diversity: float = 0.0,
         preset: str = "balanced",
-        candidates: int = 50,
+        # Candidate pool size for the weighted rerank (large enough for the aggressive presets).
+        candidates: int = 200,
         filter_genres: list[str] | None = None,
         filter_providers: list[str] | None = None,
         exclude_track_ids: list[str] | None = None,
@@ -847,13 +849,49 @@ class SonicSimilarityPlugin(PluginProvider):
                     return pm.item_id, None
         return None, None
 
-    async def _embed_text_query(self, query: str) -> np.ndarray | None:
-        """Encode a free-text query through the CLAP text encoder, or None if unavailable."""
+    async def _embed_text_query(
+        self, query: str, exclude: str | None = None, exclude_weight: float = 1.0
+    ) -> np.ndarray | None:
+        """
+        Encode a free-text query as a unit vector, or None when unusable.
+
+        Returns None when the encoder is unavailable, the query is empty, or the
+        embedding is degenerate (zero norm, which the cosine index cannot rank) —
+        including when ``exclude`` cancels ``query``.
+
+        :param query: Free-text query.
+        :param exclude: Optional text to steer the query embedding away from.
+        :param exclude_weight: Strength of the exclusion.
+        """
         encoder = await self._get_text_encoder()
         if encoder is None:
             return None
-        text_emb = await asyncio.to_thread(encoder.get_text_embeddings, [query])
-        return cast("np.ndarray", text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1))
+        keep_text = format_text_query(query)
+        if not keep_text:
+            return None
+        # CLAP ignores literal negation ("not loud" ~= "loud"), so exclusion is a
+        # vector subtraction. Each side is unit-normalised first so the exclude term
+        # steers by direction, not by raw magnitude.
+        exclude_text = format_text_query(exclude) if exclude else ""
+        prompts = [keep_text, exclude_text] if exclude_text else [keep_text]
+        embeddings = await asyncio.to_thread(encoder.get_text_embeddings, prompts)
+
+        def _unit(index: int) -> np.ndarray | None:
+            vec = embeddings[index].detach().cpu().numpy().astype(np.float32).reshape(-1)
+            norm = float(np.linalg.norm(vec))
+            return cast("np.ndarray", vec / norm) if norm else None
+
+        keep = _unit(0)
+        if keep is None:
+            return None
+        if not exclude_text:
+            return keep
+        neg = _unit(1)
+        if neg is None:
+            return keep
+        result = keep - exclude_weight * neg
+        norm = float(np.linalg.norm(result))
+        return cast("np.ndarray", result / norm) if norm else None
 
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
@@ -1387,12 +1425,19 @@ class SonicSimilarityPlugin(PluginProvider):
         return CLAP(version="2023", use_cuda=False, text_enabled=True)
 
     async def _handle_text_search(
-        self, query: str, limit: int = 25, resolve: bool = False
+        self,
+        query: str,
+        exclude: str | None = None,
+        exclude_weight: float = 1.0,
+        limit: int = 25,
+        resolve: bool = False,
     ) -> dict[str, Any]:
         """
         Return tracks closest to a natural-language query in CLAP's joint space.
 
         :param query: Free-text query (e.g. "super dancy disco track").
+        :param exclude: Optional text to steer results away from (e.g. "vocals").
+        :param exclude_weight: Strength of the exclusion, clamped to [0, 2].
         :param limit: Max matches to return.
         :param resolve: When True, include track name and artist for each item.
         """
@@ -1403,7 +1448,15 @@ class SonicSimilarityPlugin(PluginProvider):
                 "query": query,
                 "items": [],
             }
-        emb_np = await self._embed_text_query(query)
+        if not format_text_query(query):
+            return {
+                "analyzed": False,
+                "reason": "empty_query",
+                "query": query,
+                "items": [],
+            }
+        exclude_weight = max(0.0, min(2.0, exclude_weight))
+        emb_np = await self._embed_text_query(query, exclude=exclude, exclude_weight=exclude_weight)
         if emb_np is None:
             return {
                 "analyzed": False,

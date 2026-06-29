@@ -19,7 +19,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, 
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
@@ -31,8 +31,8 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 # Built-in Last.fm API credentials (not available for Libre.fm)
-_DEFAULT_API_KEY: str = app_var(12)
-_DEFAULT_API_SECRET: str = app_var(13)
+_DEFAULT_API_KEY: str = app_var("lastfm_api_key")
+_DEFAULT_API_SECRET: str = app_var("lastfm_api_secret")
 
 
 # we don't have any special supported features (yet)
