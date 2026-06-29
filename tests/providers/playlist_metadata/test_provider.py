@@ -1,4 +1,4 @@
-"""Tests for the playlist_art metadata provider."""
+"""Tests for the playlist_metadata metadata provider."""
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ from music_assistant_models.media_items.metadata import MediaItemMetadata
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_LOG_LEVEL
-from music_assistant.providers.playlist_art import PlaylistArtProvider
+from music_assistant.providers.playlist_metadata import PlaylistMetadataProvider
 
 
-def _make_provider(tmp_path: Any) -> PlaylistArtProvider:
-    """Construct a PlaylistArtProvider with mocked MA infrastructure."""
+def _make_provider(tmp_path: Any) -> PlaylistMetadataProvider:
+    """Construct a PlaylistMetadataProvider with mocked MA infrastructure."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     mass.cache_path = str(tmp_path / "cache")
@@ -27,10 +27,10 @@ def _make_provider(tmp_path: Any) -> PlaylistArtProvider:
     mass.music.get_library_item_by_prov_mappings = AsyncMock()
 
     manifest = MagicMock()
-    manifest.domain = "playlist_art"
+    manifest.domain = "playlist_metadata"
 
     config = MagicMock()
-    config.instance_id = "playlist_art"
+    config.instance_id = "playlist_metadata"
     config.get_value = MagicMock(
         side_effect=lambda key: {
             CONF_LOG_LEVEL: "GLOBAL",
@@ -39,7 +39,7 @@ def _make_provider(tmp_path: Any) -> PlaylistArtProvider:
         }.get(key, "album_grid")
     )
 
-    provider = PlaylistArtProvider(mass, manifest, config, set())
+    provider = PlaylistMetadataProvider(mass, manifest, config, set())
     provider._images_dir = str(tmp_path / "playlist_images")
     os.makedirs(provider._images_dir, exist_ok=True)
 
@@ -153,11 +153,21 @@ async def test_get_playlist_metadata_returns_metadata_when_sufficient_images(
         assert result is not None
         assert isinstance(result, MediaItemMetadata)
         assert result.images is not None
-        assert len(result.images) > 0
+        assert len(result.images) == 2  # Both THUMB and FANART
+
+        # Check THUMB image
         thumb_image = next((img for img in result.images if img.type == ImageType.THUMB), None)
         assert thumb_image is not None
-        assert thumb_image.provider == "playlist_art"
+        assert thumb_image.provider == "playlist_metadata"
         assert os.path.exists(thumb_image.path)
+        assert "_thumb.jpg" in thumb_image.path
+
+        # Check FANART image
+        fanart_image = next((img for img in result.images if img.type == ImageType.FANART), None)
+        assert fanart_image is not None
+        assert fanart_image.provider == "playlist_metadata"
+        assert os.path.exists(fanart_image.path)
+        assert "_fanart.jpg" in fanart_image.path
 
 
 @pytest.mark.asyncio
@@ -283,7 +293,7 @@ async def test_is_our_image_recognizes_own_images(
     own_image = MediaItemImage(
         type=ImageType.THUMB,
         path=os.path.join(provider._images_dir, "test_thumb.jpg"),
-        provider="playlist_art",
+        provider="playlist_metadata",
         remotely_accessible=False,
     )
     assert provider._is_our_image(own_image) is True

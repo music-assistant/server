@@ -52,7 +52,7 @@ async def test_update_playlist_metadata_calls_provider(tmp_path: Any) -> None:
 
     # Mock metadata provider
     provider = MagicMock()
-    provider.name = "playlist_art"
+    provider.name = "playlist_metadata"
     provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
     provider.get_playlist_metadata = AsyncMock(
         return_value=MediaItemMetadata(
@@ -60,10 +60,16 @@ async def test_update_playlist_metadata_calls_provider(tmp_path: Any) -> None:
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path="/fake/path.jpg",
-                        provider="playlist_art",
+                        path="/fake/thumb.jpg",
+                        provider="playlist_metadata",
                         remotely_accessible=False,
-                    )
+                    ),
+                    MediaItemImage(
+                        type=ImageType.FANART,
+                        path="/fake/fanart.jpg",
+                        provider="playlist_metadata",
+                        remotely_accessible=False,
+                    ),
                 ]
             )
         )
@@ -77,7 +83,7 @@ async def test_update_playlist_metadata_calls_provider(tmp_path: Any) -> None:
     await enrichment._update_playlist_metadata(playlist, force_refresh=False)
 
     provider.get_playlist_metadata.assert_called_once_with(playlist)
-    assert any(img.provider == "playlist_art" for img in (playlist.metadata.images or []))
+    assert any(img.provider == "playlist_metadata" for img in (playlist.metadata.images or []))
 
 
 @pytest.mark.asyncio
@@ -91,7 +97,7 @@ async def test_update_playlist_metadata_handles_provider_exception(tmp_path: Any
 
     # Mock metadata provider that raises exception
     provider = MagicMock()
-    provider.name = "playlist_art"
+    provider.name = "playlist_metadata"
     provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
     provider.get_playlist_metadata = AsyncMock(side_effect=RuntimeError("Test error"))
     enrichment.providers = [provider]  # type: ignore[misc]
@@ -117,7 +123,7 @@ async def test_update_playlist_metadata_preserves_existing_thumb(tmp_path: Any) 
 
     # Mock metadata provider that returns None
     provider = MagicMock()
-    provider.name = "playlist_art"
+    provider.name = "playlist_metadata"
     provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
     provider.get_playlist_metadata = AsyncMock(return_value=None)
     enrichment.providers = [provider]  # type: ignore[misc]
@@ -157,7 +163,7 @@ async def test_update_playlist_metadata_preserves_collage_thumb_when_no_new_gene
 
     # Mock metadata provider that returns None
     provider = MagicMock()
-    provider.name = "playlist_art"
+    provider.name = "playlist_metadata"
     provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
     provider.get_playlist_metadata = AsyncMock(return_value=None)
     enrichment.providers = [provider]  # type: ignore[misc]

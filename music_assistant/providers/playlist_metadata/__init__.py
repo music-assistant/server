@@ -172,9 +172,20 @@ class PlaylistMetadataProvider(MetadataProvider):
                     for img in playlist.metadata.images:
                         if img.type == ImageType.THUMB and not self._is_our_image(img):
                             return None
-        if generated_image := await self._generate_and_write(playlist):
+
+        generated_images: list[MediaItemImage] = []
+
+        # Generate THUMB image
+        if thumb_image := await self._generate_and_write(playlist, fanart=False):
+            generated_images.append(thumb_image)
+
+        # Generate FANART image
+        if fanart_image := await self._generate_and_write(playlist, fanart=True):
+            generated_images.append(fanart_image)
+
+        if generated_images:
             metadata = MediaItemMetadata()
-            metadata.images = UniqueList([generated_image])
+            metadata.images = UniqueList(generated_images)
             return metadata
         return None
 
@@ -370,12 +381,14 @@ class PlaylistMetadataProvider(MetadataProvider):
         self,
         playlist: Playlist,
         template: str | None = None,
+        fanart: bool = False,
     ) -> MediaItemImage | None:
         """
         Render playlist artwork and write to disk.
 
         :param playlist: The playlist to generate artwork for.
         :param template: Template override (None uses configured default).
+        :param fanart: If True, generate FANART image; if False, generate THUMB image.
         """
         effective_template = template or str(self.config.get_value(CONF_TEMPLATE))
 
@@ -494,7 +507,9 @@ class PlaylistMetadataProvider(MetadataProvider):
         # Use timestamp in filename to bust browser cache when tracks change.
         # Frontend uses absolute path with provider="builtin" so builtin's resolve_image
         # is bypassed and the file is served directly via os.path.isfile().
-        filename = f"{playlist.item_id}_{int(time())}_thumb.jpg"
+        image_type = ImageType.FANART if fanart else ImageType.THUMB
+        suffix = "fanart" if fanart else "thumb"
+        filename = f"{playlist.item_id}_{int(time())}_{suffix}.jpg"
         file_path = os.path.join(self._images_dir, filename)
 
         # mkstemp prevents collisions if multiple calls regenerate the same playlist concurrently
@@ -506,7 +521,7 @@ class PlaylistMetadataProvider(MetadataProvider):
         await asyncio.to_thread(os.replace, tmp_path, file_path)
 
         return MediaItemImage(
-            type=ImageType.THUMB,
+            type=image_type,
             path=file_path,
             provider=self.instance_id,
             remotely_accessible=False,
