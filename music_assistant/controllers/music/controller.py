@@ -580,6 +580,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         fully_played_only: bool = True,
         user_initiated_only: bool = False,
         played_after_timestamp: int | None = None,
+        *,
+        always_include_media_types: list[MediaType] | None = None,
     ) -> list[ItemMapping]:
         """
         Return a list of the last played items.
@@ -592,22 +594,32 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param user_initiated_only: If True, only return items initiated by the user.
         :param played_after_timestamp: If set, only return items played at or after this
             epoch-seconds timestamp.
+        :param always_include_media_types: Media types to include regardless of
+            user_initiated_only (e.g. podcasts/audiobooks, which have no user-initiated
+            container).
         """
         if media_types is None:
             media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
         available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
+        # user_initiated_only constrains only `media_types`; always_include_media_types are
+        # included regardless (e.g. podcasts/audiobooks have no user-initiated container row).
+        media_type_clause = f"media_type in {media_types_str}"
+        if user_initiated_only:
+            media_type_clause += " AND user_initiated = 1"
+        media_type_clause = f"({media_type_clause})"
+        if always_include_media_types:
+            always_str = "(" + ",".join(f'"{x}"' for x in always_include_media_types) + ")"
+            media_type_clause = f"({media_type_clause} OR media_type in {always_str})"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type in {media_types_str} "
+            f"WHERE {media_type_clause} "
             f"AND provider in {available_providers_str} "
         )
         params: dict[str, Any] = {}
         if fully_played_only:
             query += "AND fully_played = 1 "
-        if user_initiated_only:
-            query += "AND user_initiated = 1 "
         if userid:
             query += "AND userid = :userid "
             params["userid"] = userid

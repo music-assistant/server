@@ -38,6 +38,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
                     MediaType.ARTIST,
                 ],
                 user_initiated_only=True,
+                always_include_media_types=[MediaType.PODCAST, MediaType.AUDIOBOOK],
             ),
         ),
         CallableRecommendationSource(

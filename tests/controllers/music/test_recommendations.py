@@ -139,26 +139,74 @@ async def test_recent_artists_and_tracks_rows_present(mass: MusicAssistant) -> N
     assert "track-9" not in {item.item_id for item in artists_folder.items}
 
 
-async def test_recently_played_excludes_podcasts_and_audiobooks(mass: MusicAssistant) -> None:
-    """Recently Played is music-only: podcasts and audiobooks never appear, even if user-initiated."""
+async def test_recently_played_includes_podcast_and_audiobook_containers(
+    mass: MusicAssistant,
+) -> None:
+    """Recently Played includes podcast/audiobook containers but excludes episodes and non-user-initiated tracks."""
     await _add_playlog_row(
         mass, item_id="album-x", media_type=MediaType.ALBUM, timestamp=3000, user_initiated=True
     )
     await _add_playlog_row(
-        mass, item_id="podcast-x", media_type=MediaType.PODCAST, timestamp=3001, user_initiated=True
+        mass,
+        item_id="podcast-x",
+        media_type=MediaType.PODCAST,
+        timestamp=3001,
+        user_initiated=False,
     )
     await _add_playlog_row(
         mass,
         item_id="audiobook-x",
         media_type=MediaType.AUDIOBOOK,
         timestamp=3002,
-        user_initiated=True,
+        user_initiated=False,
+    )
+    await _add_playlog_row(
+        mass,
+        item_id="episode-x",
+        media_type=MediaType.PODCAST_EPISODE,
+        timestamp=3003,
+        user_initiated=False,
+    )
+    await _add_playlog_row(
+        mass,
+        item_id="loose-track",
+        media_type=MediaType.TRACK,
+        timestamp=2999,
+        user_initiated=False,
     )
     folder = await _recommendations_folder(mass, "recently_played")
     item_ids = {item.item_id for item in folder.items}
-    assert "album-x" in item_ids
-    assert "podcast-x" not in item_ids
-    assert "audiobook-x" not in item_ids
+    assert "album-x" in item_ids, "album (user-initiated) should appear"
+    assert "podcast-x" in item_ids, "podcast show should always appear"
+    assert "audiobook-x" in item_ids, "audiobook should always appear"
+    assert "episode-x" not in item_ids, "podcast episode should not appear"
+    assert "loose-track" not in item_ids, "non-user-initiated track should be filtered out"
+
+
+async def test_recently_played_always_include_media_types_query(mass: MusicAssistant) -> None:
+    """always_include_media_types OR-s in those types regardless of user_initiated_only."""
+    await _add_playlog_row(
+        mass,
+        item_id="podcast-q",
+        media_type=MediaType.PODCAST,
+        timestamp=5000,
+        user_initiated=False,
+    )
+    await _add_playlog_row(
+        mass,
+        item_id="track-q",
+        media_type=MediaType.TRACK,
+        timestamp=4999,
+        user_initiated=False,
+    )
+    results = await mass.music.recently_played(
+        media_types=[MediaType.TRACK],
+        user_initiated_only=True,
+        always_include_media_types=[MediaType.PODCAST],
+    )
+    result_ids = {item.item_id for item in results}
+    assert "podcast-q" in result_ids, "podcast should be returned via always_include_media_types"
+    assert "track-q" not in result_ids, "non-user-initiated track should be excluded"
 
 
 async def test_register_adds_a_custom_source(mass: MusicAssistant) -> None:
