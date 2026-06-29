@@ -486,7 +486,9 @@ class SmartPlaylistProvider(PluginProvider):
             # Force metadata refresh to regenerate artwork immediately after rule changes
             self.mass.call_later(
                 5,
-                lambda: self.mass.metadata.update_metadata(library_item, force_refresh=True),
+                self.mass.metadata.update_metadata,
+                library_item,
+                force_refresh=True,
             )
         self._schedule_ai_description_refresh(prov_id)
 
