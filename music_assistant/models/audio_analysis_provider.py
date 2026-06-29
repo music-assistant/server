@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import sqlite3
 import time
 from abc import abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
+from music_assistant.models.audio_analysis import AudioAnalysisError
+
 from .provider import Provider
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime
     from typing import Any, Literal
 
     from music_assistant_models.config_entries import ProviderConfig
@@ -153,7 +157,27 @@ class AudioAnalysisProvider(Provider):
             streamdetails=streamdetails,
             audio_format=audio_format,
         )
-        if not await self._start_analysis(session_id, streamdetails, audio_format):
+        session = self._sessions[session_id]
+        try:
+            accepted = await self._start_analysis(session_id, streamdetails, audio_format)
+        except AudioAnalysisError as err:
+            await self._record_failure(session, err.reason, err.retry_at)
+            self._sessions.pop(session_id, None)
+            return False
+        except asyncio.CancelledError:
+            # Cancellation is not an analysis failure: let it propagate without recording.
+            raise
+        except Exception as err:
+            # _start_analysis is provider-implemented (ffmpeg/torch/numpy decode); its
+            # failure surface is open-ended, so the catch stays broad. Any unexpected
+            # error is logged with a traceback and recorded as a failure.
+            self.logger.error(
+                "_start_analysis raised for session %s: %s", session_id, err, exc_info=err
+            )
+            await self._record_failure(session, str(err), None)
+            self._sessions.pop(session_id, None)
+            return False
+        if not accepted:
             self._sessions.pop(session_id, None)
             return False
         return True
@@ -177,11 +201,21 @@ class AudioAnalysisProvider(Provider):
     async def finalize(self, session_id: str) -> None:
         """Finalize analysis, persist the result, fire post_analysis, then clean up."""
         analysis: AudioAnalysisData | None = None
+        session = self._sessions.get(session_id)
         try:
             analysis = await self._finalize(session_id)
+        except AudioAnalysisError as err:
+            if session is not None:
+                await self._record_failure(session, err.reason, err.retry_at)
+        except asyncio.CancelledError:
+            # Cancellation is not an analysis failure: let it propagate without recording.
+            raise
         except Exception as err:
+            # _finalize is provider-implemented (torch/ffmpeg inference); its failure
+            # surface is open-ended, so the catch stays broad — logged and recorded.
             self.logger.error("_finalize raised for session %s: %s", session_id, err, exc_info=err)
-        session = self._sessions.get(session_id)
+            if session is not None:
+                await self._record_failure(session, str(err), None)
         if analysis is not None and session is not None:
             try:
                 await self.mass.streams.audio_analysis.set_audio_analysis(
@@ -193,6 +227,8 @@ class AudioAnalysisProvider(Provider):
                     media_type=session.streamdetails.media_type,
                 )
             except Exception as err:
+                # Persisting (DB write + provider lookup) must never break session
+                # cleanup below, so the catch stays broad — logged and skipped.
                 self.logger.warning(
                     "set_audio_analysis raised for %s: %s", self.domain, err, exc_info=err
                 )
@@ -200,6 +236,8 @@ class AudioAnalysisProvider(Provider):
                 try:
                     await self.post_analysis(session.streamdetails, analysis)
                 except Exception as err:
+                    # post_analysis is a provider-implemented hook with an open-ended
+                    # failure surface; a failing side effect must not break cleanup.
                     self.logger.warning(
                         "post_analysis raised for %s: %s", self.domain, err, exc_info=err
                     )
@@ -372,8 +410,9 @@ class AudioAnalysisProvider(Provider):
                 )
             else:
                 future = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
-        except Exception:
-            # Scheduling failed (e.g. loop shutting down) — release the slot so it isn't leaked.
+        except RuntimeError:
+            # Scheduling the worker failed (e.g. the loop is shutting down) — release the
+            # permit we just took so it isn't leaked, which would shrink the cap over time.
             if solo_held and solo_lock is not None:
                 solo_lock.release()
             semaphore.release()
@@ -381,3 +420,28 @@ class AudioAnalysisProvider(Provider):
         future.add_done_callback(_release)
         # shield: a cancelled awaiter leaves the thread and its slot held until the work finishes.
         return await asyncio.shield(future)
+
+    async def _record_failure(
+        self,
+        session: AnalysisSessionData,
+        reason: str,
+        retry_at: datetime | None,
+    ) -> None:
+        """Record a failure for this session's track."""
+        # Swallow DB write errors so a failed recorder write never breaks the session
+        # lifecycle (record_analysis_failure only performs a sqlite insert).
+        try:
+            sd = session.streamdetails
+            await self.mass.streams.audio_analysis.record_analysis_failure(
+                item_id=sd.item_id,
+                provider_instance_id_or_domain=sd.provider,
+                aa_provider_domain=self.domain,
+                reason=reason,
+                retry_at=retry_at,
+                analysis_version=self.analysis_version,
+                media_type=sd.media_type,
+            )
+        except sqlite3.Error as err:
+            self.logger.warning(
+                "record_analysis_failure raised for %s: %s", self.domain, err, exc_info=err
+            )

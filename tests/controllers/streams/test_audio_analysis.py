@@ -449,6 +449,7 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     controller = _make_controller()
     p1 = _make_aa_provider("prov-1", available=True)
     p1.domain = "loudness_analysis"
+    p1.analysis_version = 1
     p1.available = True
     monkeypatch.setattr(
         controller.__class__,
@@ -1216,11 +1217,12 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     assert "aa.analysis_version IS NOT NULL" in sql
     assert "aa.analysis_version >= :current_version" in sql
     assert f"'{domain}'" in sql
-    assert params == {
-        "media_type": MediaType.TRACK.value,
-        "aa_domain": "sonic_analysis",
-        "current_version": 2,
-    }
+    assert params["media_type"] == MediaType.TRACK.value
+    assert params["aa_domain"] == "sonic_analysis"
+    assert params["current_version"] == 2
+    assert "now" in params
+    assert "aa.analysis_version IS NOT NULL" in sql
+    assert "aa.analysis_version >= :current_version" in sql
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:

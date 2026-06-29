@@ -16,7 +16,7 @@ from music_assistant.helpers.util import (
     system_meets_requirements,
     verify_system_meets_requirements,
 )
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS,
     AnalysisSessionData,
@@ -634,8 +634,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             session.pcm_buffer.clear()
 
         if not session.accumulated.rms_frames:
-            self.logger.debug("No feature blocks for session %s, skipping", session_id)
-            return None
+            raise AudioAnalysisError("no usable audio frames extracted")
 
         t0 = time.monotonic()
         analysis = await self._run_offloaded(
@@ -705,7 +704,11 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             result = await self._run_offloaded(
                 self._single_window_inference_sync, window_audio, source_sr
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
+            # CLAP inference runs torch ops off-thread; the failure surface is broad and
+            # version-dependent, so any failure just drops this window's contribution.
             self.logger.debug("CLAP single-window inference failed: %s", err)
             return
         finally:

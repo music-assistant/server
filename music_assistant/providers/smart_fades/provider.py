@@ -16,7 +16,7 @@ from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_arm
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS,
     AudioAnalysisProvider,
@@ -238,8 +238,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         # Run beat and key inference sequentially to keep peak CPU bounded.
         beats, downbeats = await self._run_offloaded(self._infer_beat_timings, feats)
         if len(beats) < 2:
-            self.logger.debug("Not enough beats detected, skipping storage")
-            return None
+            raise AudioAnalysisError("no rhythmic beat detected")
         key, mode = await self._run_offloaded(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)
