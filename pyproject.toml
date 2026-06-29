@@ -276,6 +276,11 @@ explicit = true
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 
+[tool.uv]
+# Build urllib3-future (pulled in via niquests) from source so URLLIB3_NO_OVERRIDE=1 set during
+# installs takes effect, stopping it from hijacking the stock urllib3 namespace server-wide.
+no-binary-package = ["urllib3-future"]
+
 [tool.uv.sources]
 torch = {index = "pytorch-cpu"}
 torchaudio = {index = "pytorch-cpu"}
