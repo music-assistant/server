@@ -61,11 +61,9 @@ LOGGER = logging.getLogger(__name__)
 
 SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.PLAYLIST_METADATA}
 
-# Config keys
 CONF_TEMPLATE: Final[str] = "template"
 CONF_SKIP_PROVIDER_PLAYLISTS: Final[str] = "skip_provider_playlists"
 
-# Template values
 TEMPLATE_ARTIST_MOSAIC: Final[str] = "artist_mosaic"
 TEMPLATE_ARTIST_GRID: Final[str] = "artist_grid"
 TEMPLATE_ALBUM_GRID: Final[str] = "album_grid"
@@ -137,7 +135,6 @@ class PlaylistMetadataProvider(MetadataProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider."""
-        # Cleanup is handled automatically
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve a playlist art image path to raw image bytes."""
@@ -175,11 +172,9 @@ class PlaylistMetadataProvider(MetadataProvider):
 
         generated_images: list[MediaItemImage] = []
 
-        # Generate THUMB image
         if thumb_image := await self._generate_and_write(playlist, fanart=False):
             generated_images.append(thumb_image)
 
-        # Generate FANART image
         if fanart_image := await self._generate_and_write(playlist, fanart=True):
             generated_images.append(fanart_image)
 
