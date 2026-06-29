@@ -371,8 +371,7 @@ async def test_add_to_queue_index_expands_album(
 async def test_add_to_queue_add_tracks_growing_tail_window(
     mounted_queue: FastMCP, mock_mass: MagicMock
 ) -> None:
-    """
-    option=add recomputes the tail window from the post-add total (regression: #1).
+    """option=add recomputes the tail window from the post-add total (regression: #1).
 
     For a queue longer than MAX_QUEUE_ITEMS the appended row lands beyond the
     pre-add window; the after-window offset must follow the new total or the
@@ -401,8 +400,7 @@ async def test_add_to_queue_add_tracks_growing_tail_window(
 async def test_add_to_queue_index_count_uses_queue_total_not_page(
     mounted_queue: FastMCP, mock_mass: MagicMock
 ) -> None:
-    """
-    A valid index past the 500-row page cap is accepted (regression: #2).
+    """A valid index past the 500-row page cap is accepted (regression: #2).
 
     item_count must come from the queue's own row count, not len() of a capped
     items() page, or inserts beyond index 500 are wrongly rejected.

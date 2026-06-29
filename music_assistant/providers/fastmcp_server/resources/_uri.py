@@ -22,8 +22,7 @@ class ResourceURI:
 
 
 def parse_resource_uri(uri: str) -> ResourceURI:
-    """
-    Parse and validate a resource URI.
+    """Parse and validate a resource URI.
 
     :param uri: input URI (``library://artist/123``, ``player://kitchen``).
     :raises ValueError: if scheme/type/id are missing, unknown, or contain

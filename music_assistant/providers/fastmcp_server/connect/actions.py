@@ -1,5 +1,4 @@
-"""
-ACTION-handler: mints a bootstrap token and signals the wizard URL to the frontend.
+"""ACTION-handler: mints a bootstrap token and signals the wizard URL to the frontend.
 
 Triggered by the ``open_connect`` ``ConfigEntryType.ACTION`` button defined in
 :mod:`provider.config`. Mirrors the Spotify-provider OAuth pattern (signal an
@@ -37,8 +36,7 @@ async def handle_open_connect_action(
     session_id: str | None = None,
     external_base_url: str | None = None,
 ) -> None:
-    """
-    Open the Connect Wizard in the user's browser via MA's auth-session signal.
+    """Open the Connect Wizard in the user's browser via MA's auth-session signal.
 
     :param mass: MusicAssistant instance.
     :param current_user: The authenticated MA ``User`` invoking the action, or
@@ -113,8 +111,7 @@ async def handle_open_connect_action(
 
 
 def _signal_auth_session(mass: MusicAssistant, *, session_id: str, url: str) -> None:
-    """
-    Publish the wizard URL via MA's ``EventType.AUTH_SESSION`` signal.
+    """Publish the wizard URL via MA's ``EventType.AUTH_SESSION`` signal.
 
     The MA frontend subscribes to ``AUTH_SESSION`` events and ``window.open``-s
     the carried URL — same mechanism the Spotify, Audible, QQMusic providers

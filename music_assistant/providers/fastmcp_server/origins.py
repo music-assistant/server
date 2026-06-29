@@ -1,5 +1,4 @@
-"""
-Origin allowlist helpers shared between the MCP bridge and the Connect Wizard.
+"""Origin allowlist helpers shared between the MCP bridge and the Connect Wizard.
 
 Both ``provider/http_bridge.py`` (the MCP endpoint) and
 ``provider/connect/mount.py`` (the wizard) enforce the same Origin policy on
@@ -53,8 +52,7 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def _normalize_origin(origin: str) -> str | None:
-    """
-    Return ``scheme://host[:port]`` lower-cased, default-port stripped, or None.
+    """Return ``scheme://host[:port]`` lower-cased, default-port stripped, or None.
 
     Rejects forms without scheme or netloc; preserves ``"null"`` verbatim so it
     can be matched against an explicit allowlist entry. IPv6 hosts are
@@ -91,8 +89,7 @@ def _port_from_base_url(base_url: str) -> int | None:
 
 
 def compute_origin_allowlist(mass: MusicAssistant, extra_origins_csv: str = "") -> frozenset[str]:
-    """
-    Build the set of accepted ``Origin`` values for the MCP endpoint.
+    """Build the set of accepted ``Origin`` values for the MCP endpoint.
 
     See the module docstring for the full rule. The set is computed once at
     mount time and consulted on every request — call sites should cache the
@@ -142,8 +139,7 @@ def compute_origin_allowlist(mass: MusicAssistant, extra_origins_csv: str = "") 
 
 
 def _is_origin_allowed(origin: str | None, allowlist: frozenset[str]) -> bool:
-    """
-    Return True if the request's ``Origin`` should be accepted.
+    """Return True if the request's ``Origin`` should be accepted.
 
     * Missing ``Origin`` → allowed (stdio-style or non-browser MCP clients).
       Spec MUST applies to *present* Origin values.
@@ -163,8 +159,7 @@ def is_origin_allowed_for_request(
     request: web.Request,
     allowlist: frozenset[str],
 ) -> bool:
-    """
-    Origin check with a Home-Assistant-ingress fallback.
+    """Origin check with a Home-Assistant-ingress fallback.
 
     Applies :func:`_is_origin_allowed` first. When that rejects, accept the
     request if **all** of the following hold:

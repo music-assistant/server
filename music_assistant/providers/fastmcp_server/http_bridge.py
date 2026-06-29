@@ -1,5 +1,4 @@
-"""
-ASGI ↔ aiohttp bridge for mounting FastMCP under MA's webserver.
+"""ASGI ↔ aiohttp bridge for mounting FastMCP under MA's webserver.
 
 FastMCP v3 exposes a Starlette-based ASGI app for streamable-HTTP transport.
 MA's main webserver is aiohttp. This bridge translates a single aiohttp
@@ -58,8 +57,7 @@ async def mount_into_mass(
     mount_path: str = "/mcp/v1",
     extra_origins_csv: str = "",
 ) -> Callable[[], Awaitable[None]]:
-    """
-    Register the FastMCP streamable-HTTP ASGI app under MA's webserver.
+    """Register the FastMCP streamable-HTTP ASGI app under MA's webserver.
 
     :param mass: MusicAssistant instance.
     :param mcp: FastMCP server instance whose ``http_app`` is exposed.
@@ -114,8 +112,7 @@ async def _start_asgi_lifespan(
     *,
     startup_timeout: float = 30,
 ) -> dict[str, Any]:
-    """
-    Send ASGI ``lifespan.startup`` and keep the lifespan task running.
+    """Send ASGI ``lifespan.startup`` and keep the lifespan task running.
 
     :param asgi_app: ASGI 3.0 application to drive.
     :param startup_timeout: Seconds to wait for the startup acknowledgement
@@ -188,8 +185,7 @@ def build_protected_resource_metadata(
     scopes_supported: list[str] | None = None,
     resource_name: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Construct the RFC 9728 OAuth 2.0 Protected Resource Metadata document.
+    """Construct the RFC 9728 OAuth 2.0 Protected Resource Metadata document.
 
     :param resource_uri: Canonical URI of this MCP server (matches the ``aud``
         claim in tokens issued for it).
@@ -219,8 +215,7 @@ async def mount_well_known(
     scopes_supported: list[str] | Callable[[], list[str]] | None = None,
     resource_name: str | None = None,
 ) -> Callable[[], None]:
-    """
-    Register the Protected Resource Metadata endpoint on MA's webserver.
+    """Register the Protected Resource Metadata endpoint on MA's webserver.
 
     Two paths are bound, both returning the same JSON:
 
@@ -278,8 +273,7 @@ async def mount_well_known(
 
 
 def _build_asgi_app(mcp: Any, mount_path: str = "/mcp") -> Any:
-    """
-    Return the streamable-HTTP ASGI app from FastMCP, accommodating v3 minor renames.
+    """Return the streamable-HTTP ASGI app from FastMCP, accommodating v3 minor renames.
 
     ``mount_path`` is propagated as ``http_app(path=...)`` so FastMCP's
     Starlette router exposes the streamable endpoint at the same URL the
@@ -302,8 +296,7 @@ async def _asgi_to_aiohttp(  # noqa: PLR0915 - single-purpose ASGI bridge, split
     request: web.Request,
     strip_prefix: str = "",
 ) -> web.StreamResponse:
-    """
-    Bridge a single aiohttp request through an ASGI app.
+    """Bridge a single aiohttp request through an ASGI app.
 
     The bridge supports streaming responses: ``http.response.body`` events
     with ``more_body=True`` are flushed to the client immediately, which is

@@ -88,8 +88,7 @@ async def test_no_confirmation_when_disabled(mock_mass: MagicMock) -> None:
 
 
 async def test_get_active_queue_clamps_include_items(mock_mass: MagicMock) -> None:
-    """
-    A client-supplied ``include_items`` is clamped to 500 to bound memory.
+    """A client-supplied ``include_items`` is clamped to 500 to bound memory.
 
     Without the clamp a hostile or sloppy caller could pass ``include_items=10**6``
     and force MA to materialise the entire queue per request.
@@ -140,8 +139,7 @@ async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:
 async def test_remove_from_favorites_resolves_provider_uri_to_library(
     mock_mass: MagicMock,
 ) -> None:
-    """
-    A provider URI is resolved to the matching library item before removal.
+    """A provider URI is resolved to the matching library item before removal.
 
     ``MusicController.remove_item_from_*`` expects a library item id; passing the
     provider's native item id silently targets the wrong item (or raises on a
@@ -170,8 +168,7 @@ async def test_remove_from_favorites_resolves_provider_uri_to_library(
 async def test_remove_from_library_raises_when_not_in_library(
     mock_mass: MagicMock,
 ) -> None:
-    """
-    When the URI's library counterpart cannot be resolved, the tool raises.
+    """When the URI's library counterpart cannot be resolved, the tool raises.
 
     Without this, the tool would silently call ``remove_item_from_library`` with
     a provider-native item id, which either fails on ``int()`` cast or targets
