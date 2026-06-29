@@ -11,7 +11,7 @@ from music_assistant_models.errors import (
     UnsupportedSystemError,
 )
 
-from music_assistant.controllers.config import _provider_status
+from music_assistant.controllers.config.helpers import _provider_status
 from music_assistant.mass import _provider_error_from_exc
 
 
