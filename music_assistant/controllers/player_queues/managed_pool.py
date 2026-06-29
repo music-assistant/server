@@ -1,7 +1,7 @@
 """
 Managed dynamic pool for the Player Queues controller.
 
-A queue with one or more *dynamic sources* (its ``radio_source``) is kept as a small bounded pool
+A queue with one or more *dynamic sources* (its ``sources``) is kept as a small bounded pool
 that is topped up as it plays down. Each source has a *fill mode*:
 
 - ``SIMILAR`` — base + similar/discovery tracks (radio sources);
@@ -95,7 +95,7 @@ class ManagedPoolHelper:
     def register(
         self,
         queue_id: str,
-        radio_source: list[MediaItemType],
+        source_items: list[MediaItemType],
         similar_uris: set[str],
         *,
         replace: bool,
@@ -104,27 +104,27 @@ class ManagedPoolHelper:
         Record the fill modes for a queue's dynamic sources and persist them.
 
         :param queue_id: The queue being (re)configured.
-        :param radio_source: The queue's full list of dynamic sources after this enqueue.
+        :param source_items: The queue's full list of dynamic sources after this enqueue.
         :param similar_uris: URIs of sources enqueued with the radio flag (SIMILAR fill mode).
         :param replace: True to replace the existing fill modes, False to merge (ADD/NEXT).
         """
-        valid = {uri for item in radio_source if (uri := _uri(item))}
+        valid = {uri for item in source_items if (uri := _uri(item))}
         existing = set() if replace else self._similar_sources.get(queue_id, set())
         self._similar_sources[queue_id] = (existing | similar_uris) & valid
         self._persist(queue_id)
 
-    async def restore(self, queue_id: str, radio_source: list[MediaItemType]) -> None:
+    async def restore(self, queue_id: str, source_items: list[MediaItemType]) -> None:
         """
         Restore the fill modes for a queue from cache after a restart.
 
-        When no cache entry exists (a queue persisted before this feature) every radio_source item
+        When no cache entry exists (a queue persisted before this feature) every source item
         was a similar/discovery seed, so all (non-station) sources default to SIMILAR to preserve
         that pre-feature radio behaviour after an upgrade.
 
         :param queue_id: The queue being restored.
-        :param radio_source: The queue's restored dynamic sources.
+        :param source_items: The queue's restored dynamic sources.
         """
-        valid = {uri for item in radio_source if (uri := _uri(item))}
+        valid = {uri for item in source_items if (uri := _uri(item))}
         stored = await self.mass.cache.get(
             key=queue_id,
             provider=self.queues.domain,
@@ -135,7 +135,7 @@ class ManagedPoolHelper:
         else:
             self._similar_sources[queue_id] = {
                 uri
-                for item in radio_source
+                for item in source_items
                 if not (isinstance(item, Playlist) and item.is_dynamic) and (uri := _uri(item))
             }
 
@@ -196,12 +196,12 @@ class ManagedPoolHelper:
         )
 
     async def _collect_sources(self, queue_id: str, queue: PlayerQueue) -> list[DynamicSource]:
-        """Group the queue's radio_source into dynamic sources and fetch each one's candidates."""
+        """Group the queue's source items into dynamic sources and fetch each one's candidates."""
         # multiplicity = how often a source was added; dynamic playlists/stations self-manage and
         # are handled by the dedicated dynamic-playlist refill path, so skip them here.
         counts: dict[str, int] = {}
         items: dict[str, MediaItemType] = {}
-        for item in queue.radio_source:
+        for item in self.queues._source_items.get(queue_id, []):
             if isinstance(item, Playlist) and item.is_dynamic:
                 continue
             if not (uri := _uri(item)):

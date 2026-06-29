@@ -86,12 +86,12 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     return wrapper
 
 
-def is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
-    """Return True if radio_source is a single dynamic playlist."""
+def is_radio_source_dynamic(source_items: list[MediaItemType]) -> bool:
+    """Return True if the queue's sources are a single dynamic playlist."""
     return (
-        len(radio_source) == 1
-        and isinstance(radio_source[0], Playlist)
-        and radio_source[0].is_dynamic
+        len(source_items) == 1
+        and isinstance(source_items[0], Playlist)
+        and source_items[0].is_dynamic
     )
 
 
