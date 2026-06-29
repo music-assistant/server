@@ -40,6 +40,7 @@ from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
 
 from music_assistant.helpers.datetime import from_utc_timestamp
+from music_assistant.providers.audiobookshelf.helpers import NarratorHelper
 
 if TYPE_CHECKING:
     from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
@@ -279,6 +280,7 @@ def parse_audiobook(
     domain: str,
     token: str | None,
     base_url: str,
+    audiobook_narrators: set[AbsNarrator] | set[NarratorHelper],
     media_progress: AbsMediaProgress | None = None,
 ) -> MassAudiobook:
     """Translate AbsBook to Mass Book."""
@@ -361,7 +363,13 @@ def parse_audiobook(
         ]
     )
 
-    mass_audiobook.narrators.set(abs_audiobook.media.metadata.narrators)
+    mass_audiobook.narrators.set(
+        [
+            parse_narrator(abs_narrator=narrator, instance_id=instance_id, domain=domain)
+            for narrator in audiobook_narrators
+        ]
+    )
+
     chapters = []
     for idx, chapter in enumerate(abs_audiobook.media.chapters, 1):
         chapters.append(
@@ -410,7 +418,7 @@ def parse_author(
         and abs_author.image_path is not None
         and token is not None
     ):
-        api_url = f"/api/items/{abs_author.id_}/image?token={token}"
+        api_url = f"/api/authors/{abs_author.id_}/image?token={token}"
         cover_url = f"{base_url}{api_url}"
         mass_artist.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
@@ -420,7 +428,7 @@ def parse_author(
 
 def parse_narrator(
     *,
-    abs_narrator: AbsNarrator,
+    abs_narrator: AbsNarrator | NarratorHelper,
     instance_id: str,
     domain: str,
 ) -> MassArtist:
