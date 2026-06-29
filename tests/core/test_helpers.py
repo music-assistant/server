@@ -1,8 +1,11 @@
 """Tests for utility/helper functions."""
 
+import signal
+import subprocess
+import sys
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -10,7 +13,7 @@ from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from yarl import URL
 from zeroconf import InterfaceChoice, IPVersion
 
-from music_assistant.helpers import uri, util
+from music_assistant.helpers import _ml_inference_probe, uri, util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 
 
@@ -398,43 +401,107 @@ def test_get_zeroconf_args_all_interfaces() -> None:
     assert "192.168.1.10" in result["interfaces"]
 
 
+@pytest.mark.parametrize("capability", ["DEFAULT", "NO AVX"])
+def test_ml_inference_probe_rejects_no_avx2(capability: str) -> None:
+    """A no-AVX2 CPU is rejected before any kernel runs (safe to check in-process)."""
+    with patch("torch.backends.cpu.get_cpu_capability", return_value=capability):
+        assert _ml_inference_probe.run_probe() == _ml_inference_probe.PROBE_NO_AVX2
+
+
+def test_ml_inference_probe_subprocess_runs_to_a_clean_verdict() -> None:
+    """
+    End-to-end: the probe runs out-of-process and exits with a defined verdict, never a crash.
+
+    Spawning a subprocess (rather than calling run_probe() inline) is the same isolation the
+    production check relies on, so a hypothetical native crash on a misconfigured host fails
+    this one test instead of taking down the session. On an x86 host with AVX2 this exercises
+    the kernels and returns PROBE_CAPABLE; elsewhere it returns PROBE_NO_AVX2.
+    """
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", _ml_inference_probe.__name__],
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode in (
+        _ml_inference_probe.PROBE_CAPABLE,
+        _ml_inference_probe.PROBE_NO_AVX2,
+    ), result.stderr.decode()
+
+
 @pytest.mark.parametrize(
-    ("machine", "capability", "should_raise"),
+    ("returncode", "should_raise"),
     [
-        ("x86_64", "DEFAULT", True),
-        ("AMD64", "DEFAULT", True),
-        ("x86_64", "NO AVX", True),
-        ("x86_64", "AVX2", False),
-        ("x86_64", "AVX512", False),
-        # a future torch capability string we don't know about yet must fail open
-        ("x86_64", "AVX10", False),
+        (_ml_inference_probe.PROBE_CAPABLE, False),
+        (_ml_inference_probe.PROBE_NO_AVX2, True),
+        (-signal.SIGILL, True),
+        (-signal.SIGSEGV, True),
+        (-signal.SIGABRT, True),
+        (-signal.SIGKILL, False),  # external/OOM kill is not a CPU fault -> fail open
+        (1, False),  # unexpected clean exit -> fail open
+        (None, False),  # spawn failure or timeout -> fail open
     ],
 )
-def test_verify_cpu_supports_ml_inference_x86(
-    machine: str, capability: str, should_raise: bool
+async def test_verify_cpu_supports_ml_inference_x86(
+    returncode: int | None, should_raise: bool
 ) -> None:
-    """x86 CPUs require AVX2/AVX512 for torch's FBGEMM quantized inference."""
+    """On x86 the probe verdict vetoes only on no-AVX2 or a fatal signal; anything else fails open."""
     with (
-        patch("music_assistant.helpers.util.platform.machine", return_value=machine),
-        patch("torch.backends.cpu.get_cpu_capability", return_value=capability),
-    ):
-        if should_raise:
-            with pytest.raises(SetupFailedError):
-                util.verify_cpu_supports_ml_inference()
-        else:
-            util.verify_cpu_supports_ml_inference()
-
-
-def test_verify_cpu_supports_ml_inference_arm() -> None:
-    """ARM machines pass without consulting torch (QNNPACK backend works there)."""
-    with (
-        patch("music_assistant.helpers.util.platform.machine", return_value="aarch64"),
+        patch("music_assistant.helpers.util.platform.machine", return_value="x86_64"),
         patch(
-            "torch.backends.cpu.get_cpu_capability",
-            side_effect=AssertionError("torch must not be consulted on ARM"),
+            "music_assistant.helpers.util._run_ml_inference_probe",
+            AsyncMock(return_value=returncode),
         ),
     ):
-        util.verify_cpu_supports_ml_inference()
+        if should_raise:
+            with pytest.raises(util.UnsupportedSystemError):
+                await util.verify_cpu_supports_ml_inference()
+        else:
+            await util.verify_cpu_supports_ml_inference()
+
+
+async def test_verify_cpu_supports_ml_inference_arm() -> None:
+    """ARM machines pass without spawning the probe (QNNPACK backend works there)."""
+    with (
+        patch("music_assistant.helpers.util.platform.machine", return_value="aarch64"),
+        patch("music_assistant.helpers.util._run_ml_inference_probe", AsyncMock()) as probe,
+    ):
+        await util.verify_cpu_supports_ml_inference()
+    probe.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected"),
+    [
+        (-signal.SIGILL, -signal.SIGILL),
+        (0, 0),
+    ],
+)
+async def test_run_ml_inference_probe_returncode(returncode: int, expected: int) -> None:
+    """The probe runner reports the subprocess exit code (negative when a signal killed it)."""
+    proc = AsyncMock()
+    proc.wait = AsyncMock(return_value=returncode)
+    proc.returncode = returncode
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        assert await util._run_ml_inference_probe() == expected
+
+
+async def test_run_ml_inference_probe_spawn_failure() -> None:
+    """A spawn failure is reported as None so the caller fails open."""
+    with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=OSError("boom"))):
+        assert await util._run_ml_inference_probe() is None
+
+
+async def test_run_ml_inference_probe_timeout() -> None:
+    """A probe that overruns the timeout is killed and reported as None."""
+    proc = AsyncMock()
+    proc.kill = MagicMock()
+    with (
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+        patch("asyncio.wait_for", AsyncMock(side_effect=TimeoutError)),
+    ):
+        assert await util._run_ml_inference_probe() is None
+    proc.kill.assert_called_once()
 
 
 def test_unsupported_system_error_is_setup_failed() -> None:
@@ -452,7 +519,7 @@ def test_unsupported_system_error_is_setup_failed() -> None:
         (1, 0, False),  # 0 disables the check
     ],
 )
-def test_verify_system_meets_requirements_cpu(
+async def test_verify_system_meets_requirements_cpu(
     cpu_cores: int, min_cpu_cores: int, should_raise: bool
 ) -> None:
     """The CPU-core gate raises UnsupportedSystemError below the minimum."""
@@ -462,9 +529,13 @@ def test_verify_system_meets_requirements_cpu(
     ):
         if should_raise:
             with pytest.raises(util.UnsupportedSystemError):
-                util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=min_cpu_cores)
+                await util.verify_system_meets_requirements(
+                    feature_name="X", min_cpu_cores=min_cpu_cores
+                )
         else:
-            util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=min_cpu_cores)
+            await util.verify_system_meets_requirements(
+                feature_name="X", min_cpu_cores=min_cpu_cores
+            )
 
 
 @pytest.mark.parametrize(
@@ -478,7 +549,7 @@ def test_verify_system_meets_requirements_cpu(
         (2.0, 0.0, False),  # 0 disables the check
     ],
 )
-def test_verify_system_meets_requirements_memory(
+async def test_verify_system_meets_requirements_memory(
     total_gb: float, min_memory_gb: float, should_raise: bool
 ) -> None:
     """The RAM gate raises below the minimum but fails open when memory is unknown (0.0)."""
@@ -488,25 +559,34 @@ def test_verify_system_meets_requirements_memory(
     ):
         if should_raise:
             with pytest.raises(util.UnsupportedSystemError):
-                util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
+                await util.verify_system_meets_requirements(
+                    feature_name="X", min_memory_gb=min_memory_gb
+                )
         else:
-            util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
+            await util.verify_system_meets_requirements(
+                feature_name="X", min_memory_gb=min_memory_gb
+            )
 
 
-def test_verify_system_meets_requirements_ml_inference() -> None:
-    """require_ml_inference adds the AVX2 capability check after the RAM/CPU checks."""
+async def test_verify_system_meets_requirements_ml_inference() -> None:
+    """require_ml_inference runs the capability probe after the RAM/CPU checks."""
     with (
         patch("music_assistant.helpers.util.os.process_cpu_count", return_value=16),
         patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
         patch("music_assistant.helpers.util.platform.machine", return_value="x86_64"),
-        patch("torch.backends.cpu.get_cpu_capability", return_value="DEFAULT"),
+        patch(
+            "music_assistant.helpers.util._run_ml_inference_probe",
+            AsyncMock(return_value=_ml_inference_probe.PROBE_NO_AVX2),
+        ),
     ):
-        # capable RAM/CPU but no AVX2: only raises when the ML inference check is requested
+        # capable RAM/CPU but the probe rejects: only raises when the ML check is requested
         with pytest.raises(util.UnsupportedSystemError):
-            util.verify_system_meets_requirements(
+            await util.verify_system_meets_requirements(
                 feature_name="X", min_cpu_cores=4, min_memory_gb=8.0, require_ml_inference=True
             )
-        util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=4, min_memory_gb=8.0)
+        await util.verify_system_meets_requirements(
+            feature_name="X", min_cpu_cores=4, min_memory_gb=8.0
+        )
 
 
 @pytest.mark.parametrize(
