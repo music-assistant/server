@@ -138,7 +138,7 @@ class LrclibProvider(MetadataProvider):
 
             if plain_lyrics:
                 metadata = MediaItemMetadata()
-                metadata.lrc_lyrics = plain_lyrics
+                metadata.lyrics = plain_lyrics
 
                 self.logger.debug("Found plain lyrics for %s by %s", track.name, artist_name)
                 return metadata
