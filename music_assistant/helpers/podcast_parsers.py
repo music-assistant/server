@@ -173,6 +173,13 @@ def parse_podcast_episode(
     if episode_published == 0:
         episode_published = None
 
+    # prefer the explicit itunes:episode number for ordering (parity with podcast_index);
+    # fall back to the feed enumeration order when the feed omits it
+    episode_number = episode.get("number")
+    episode_position = (
+        episode_number if isinstance(episode_number, int) and episode_number > 0 else episode_cnt
+    )
+
     try:
         stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
     except ValueError:
@@ -188,7 +195,7 @@ def parse_podcast_episode(
         provider=instance_id,
         name=episode_title,
         duration=int(episode_duration),
-        position=episode_cnt,
+        position=episode_position,
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,

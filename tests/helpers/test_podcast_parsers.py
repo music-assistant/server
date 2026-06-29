@@ -134,6 +134,23 @@ def test_podcast_reference_falls_back_to_episode_title() -> None:
     assert mass_episode.podcast.name == "Some Episode"
 
 
+# --- episode position (itunes:episode number) -----------------------------------------------
+
+
+def test_episode_position_uses_itunes_episode_number() -> None:
+    """A declared itunes:episode number drives the episode position over the feed order."""
+    mass_episode = _parse(_episode(number=5))
+    assert mass_episode is not None
+    assert mass_episode.position == 5
+
+
+def test_episode_position_falls_back_to_feed_order() -> None:
+    """Without an episode number, position falls back to the feed enumeration order (cnt=1)."""
+    mass_episode = _parse(_episode())
+    assert mass_episode is not None
+    assert mass_episode.position == 1
+
+
 # --- inline (Podlove Simple Chapters) --------------------------------------------------------
 
 
