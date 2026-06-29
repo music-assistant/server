@@ -43,6 +43,30 @@ async def test_get_entries_lists_editable(mounted_config: Any, mock_config_targe
     assert {"log_level", "http_port", "token"} <= keys
 
 
+def test_entry_dump_accepts_labelless_entry() -> None:
+    """A ConfigEntry whose ``label`` is None must dump without choking.
+
+    Upstream ``music_assistant_models`` widened ``ConfigEntry.label`` to
+    ``str | None``; ``_entry_dump`` passes the label straight through, so the
+    dump must preserve None rather than assume a string is always present.
+    Regression for the release-gate mypy failure under the newer models.
+    """
+    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.enums import ConfigEntryType
+
+    from music_assistant.providers.fastmcp_server.tools.config import _entry_dump
+
+    # Set the label out-of-band so the test type checks whether the installed
+    # models type ``label`` as ``str`` or ``str | None`` — ``object.__setattr__``
+    # also bypasses the frozen dataclass.
+    entry = ConfigEntry(key="k", type=ConfigEntryType.STRING, label="x")
+    object.__setattr__(entry, "label", None)
+    dump = _entry_dump(entry, "current")
+
+    assert dump.label is None
+    assert dump.key == "k"
+
+
 async def test_get_provider_unknown_raises(mounted_config: Any, mock_mass: Any) -> None:
     from unittest.mock import AsyncMock
 
@@ -77,8 +101,7 @@ async def test_get_entries_masks_secret_current_value(
     mounted_config: Any,
     mock_config_targets: Any,  # noqa: ARG001
 ) -> None:
-    """
-    config_get_entries must mask SECURE_STRING current_value.
+    """config_get_entries must mask SECURE_STRING current_value.
 
     Regression for PR #99 review finding B.
     """

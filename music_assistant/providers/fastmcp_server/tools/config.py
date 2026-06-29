@@ -1,5 +1,4 @@
-"""
-FastMCP sub-server for configuration view/edit tools.
+"""FastMCP sub-server for configuration view/edit tools.
 
 Spec: ``specs/inprogress/0006-config-read-write.md``.
 
@@ -41,7 +40,12 @@ from ..models import (
     SetValueResult,
 )
 from ..tags import Tag
-from ._common import TIMEOUT_FAST, TIMEOUT_INTERACTIVE, confirm_or_raise
+from ._common import (
+    TIMEOUT_FAST,
+    TIMEOUT_INTERACTIVE,
+    confirm_or_raise,
+    lean_schema_view,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -63,8 +67,7 @@ _SAVE_PAYLOAD_CAP_BYTES = 64 * 1024
 
 
 def _resolve_secret_enabled(flag: bool | Callable[[], bool]) -> bool:
-    """
-    Resolve the secret-write gate at call time.
+    """Resolve the secret-write gate at call time.
 
     The runtime passes a callable that reads the current
     ``CONF_CONFIG_WRITE_SECRET`` value so a hot-swapped permission toggle
@@ -103,7 +106,7 @@ def _values_from_raw(raw: dict[str, Any]) -> tuple[list[ConfigValueDump], bool]:
     return out, truncated
 
 
-def _entry_dump(mass: MusicAssistant, entry: ConfigEntry, current: Any) -> ConfigEntryDump:
+def _entry_dump(entry: ConfigEntry, current: Any) -> ConfigEntryDump:
     """Map a ConfigEntry + current value to ConfigEntryDump."""
     opts = [o.value for o in entry.options] if entry.options else None
     # Mask secrets: _resolve_entries reads raw ConfigEntry.value, bypassing
@@ -113,26 +116,13 @@ def _entry_dump(mass: MusicAssistant, entry: ConfigEntry, current: Any) -> Confi
         if entry.type == ConfigEntryType.SECURE_STRING and current is not None
         else current
     )
-    # label/description are no longer hardcoded on the entry; resolve them from the
-    # translations the same way __post_serialize__ does (bypassed here, see above).
-    base = entry.translation_key or f"config_entries.{entry.key}"
-    label = (
-        entry.label
-        or mass.translations.get_translation(
-            f"{base}.label", owner=entry.translation_owner, params=entry.translation_params
-        )
-        or entry.key
-    )
-    description = entry.description or mass.translations.get_translation(
-        f"{base}.description", owner=entry.translation_owner, params=entry.translation_params
-    )
     return ConfigEntryDump(
         key=entry.key,
         type=entry.type.value,
-        label=label,
+        label=entry.label,
         default_value=entry.default_value,
         required=entry.required,
-        description=description,
+        description=entry.description,
         options=opts,
         range=entry.range,
         advanced=getattr(entry, "advanced", False),
@@ -147,8 +137,7 @@ def _entry_dump(mass: MusicAssistant, entry: ConfigEntry, current: Any) -> Confi
 async def _resolve_entries(
     mass: MusicAssistant, target_type: str, target_id: str, action: str | None
 ) -> tuple[list[ConfigEntry], dict[str, Any]]:
-    """
-    Fetch ConfigEntry list + current values dict for a target.
+    """Fetch ConfigEntry list + current values dict for a target.
 
     :param mass: MusicAssistant instance.
     :param target_type: "provider" | "core" | "player".
@@ -179,8 +168,7 @@ def _audit_id() -> str:
 
 
 def _confirm_prompt(target_type: str, target_id: str, keys: list[str]) -> str:
-    """
-    Build the confirmation prompt for a write (core warns about restart).
+    """Build the confirmation prompt for a write (core warns about restart).
 
     :param target_type: "provider" | "core" | "player".
     :param target_id: The target identifier.
@@ -197,8 +185,7 @@ def _confirm_prompt(target_type: str, target_id: str, keys: list[str]) -> str:
 async def _do_save(
     mass: MusicAssistant, target_type: str, target_id: str, values: dict[str, Any]
 ) -> None:
-    """
-    Delegate to MA's atomic save_*_config (validate+encrypt+persist+reload).
+    """Delegate to MA's atomic save_*_config (validate+encrypt+persist+reload).
 
     :param mass: MusicAssistant instance.
     :param target_type: "provider" | "core" | "player".
@@ -235,8 +222,7 @@ async def _write_single(
     require_confirmation: bool,
     secret_writes_enabled: bool | Callable[[], bool],
 ) -> SetValueResult:
-    """
-    Validate → secret-gate → diff → (confirm → audit → save) for one key.
+    """Validate → secret-gate → diff → (confirm → audit → save) for one key.
 
     :param mass: MusicAssistant instance.
     :param target_type: "provider" | "core" | "player".
@@ -305,8 +291,7 @@ async def _write_bulk(
     require_confirmation: bool,
     secret_writes_enabled: bool | Callable[[], bool],
 ) -> SaveResult:
-    """
-    Validate-all → secret-gate → diff → (confirm → audit → atomic save) for a payload.
+    """Validate-all → secret-gate → diff → (confirm → audit → atomic save) for a payload.
 
     :param mass: MusicAssistant instance.
     :param target_type: "provider" | "core" | "player".
@@ -378,9 +363,9 @@ def build_config_server(
     *,
     require_confirmation: bool = True,
     secret_writes_enabled: bool | Callable[[], bool] = True,
+    lean_schema: bool = False,
 ) -> FastMCP:
-    """
-    Build the ``config`` sub-server.
+    """Build the ``config`` sub-server.
 
     :param mass: MusicAssistant instance.
     :param require_confirmation: When True (default), every write elicits
@@ -389,23 +374,26 @@ def build_config_server(
         When False (or the callable returns False), SECURE_STRING writes are
         rejected. The runtime passes a callable so a hot-swapped permission
         toggle takes effect on the next request without a rebuild.
+    :param lean_schema: When True, tools omit their ``outputSchema`` to shrink
+        the namespace's context footprint for hosts without tool-search.
     """
     sub = FastMCP(name="config")
-    _register_read_tools(sub, mass)
+    target = lean_schema_view(sub) if lean_schema else sub
+    _register_read_tools(target, mass)
     _register_provider_write_tools(
-        sub,
+        target,
         mass,
         require_confirmation=require_confirmation,
         secret_writes_enabled=secret_writes_enabled,
     )
     _register_core_write_tools(
-        sub,
+        target,
         mass,
         require_confirmation=require_confirmation,
         secret_writes_enabled=secret_writes_enabled,
     )
     _register_player_write_tools(
-        sub,
+        target,
         mass,
         require_confirmation=require_confirmation,
         secret_writes_enabled=secret_writes_enabled,
@@ -420,8 +408,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )
     async def list_targets() -> ConfigTargetList:
-        """
-        List every configurable provider, core controller, and player.
+        """List every configurable provider, core controller, and player.
 
         See also: config_get_provider / config_get_core / config_get_player
         for a single target's values, config_get_entries for the editable
@@ -465,8 +452,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )
     async def get_provider(instance_id: str) -> ProviderConfigDump:
-        """
-        Return a provider's stored config values (SECURE_STRING masked).
+        """Return a provider's stored config values (SECURE_STRING masked).
 
         See also: config_get_entries for editable schema, config_set_provider_value
         to change one value, config_save_provider for bulk.
@@ -491,8 +477,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )
     async def get_core(domain: str) -> CoreConfigDump:
-        """
-        Return a core controller's stored config values (SECURE_STRING masked).
+        """Return a core controller's stored config values (SECURE_STRING masked).
 
         See also: config_set_core_value / config_save_core to change them.
 
@@ -511,8 +496,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )
     async def get_player(player_id: str) -> PlayerConfigDump:
-        """
-        Return a player's stored config values (SECURE_STRING masked).
+        """Return a player's stored config values (SECURE_STRING masked).
 
         See also: config_set_player_value to change one, config_get_dsp for EQ/DSP.
 
@@ -538,8 +522,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
     async def get_entries(
         target_type: str, target_id: str, action: str | None = None
     ) -> ConfigEntryList:
-        """
-        Return the editable ConfigEntry schema for a target.
+        """Return the editable ConfigEntry schema for a target.
 
         See also: config_set_*_value to write a key. ``action`` activates an
         action-driven entry set (e.g. a provider's QR-login flow).
@@ -549,7 +532,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         :param action: Optional action key to activate dynamic entries.
         """
         entries, current = await _resolve_entries(mass, target_type, target_id, action)
-        dumps = [_entry_dump(mass, e, current.get(e.key)) for e in entries]
+        dumps = [_entry_dump(e, current.get(e.key)) for e in entries]
         return ConfigEntryList(
             target_type=target_type, target_id=target_id, entries=dumps, truncated=False
         )
@@ -560,8 +543,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )
     async def get_dsp(player_id: str) -> DSPConfigDump:
-        """
-        Return a player's DSP configuration (enabled, gains, filter chain).
+        """Return a player's DSP configuration (enabled, gains, filter chain).
 
         See also: config_save_dsp to change it.
 
@@ -601,8 +583,7 @@ def _register_provider_write_tools(
     async def set_provider_value(
         instance_id: str, key: str, value: Any, dry_run: bool = False, ctx: Context | None = None
     ) -> SetValueResult:
-        """
-        Set one provider config value.
+        """Set one provider config value.
 
         Validates the value, gates SECURE_STRING writes behind
         config:write:secret, then delegates to MA's atomic
@@ -643,8 +624,7 @@ def _register_provider_write_tools(
         dry_run: bool = False,
         ctx: Context | None = None,
     ) -> SaveResult:
-        """
-        Bulk-save provider config values (atomic at MA's layer).
+        """Bulk-save provider config values (atomic at MA's layer).
 
         :param instance_id: Provider instance identifier.
         :param values: key->value map to apply.
@@ -677,8 +657,7 @@ def _register_provider_write_tools(
         values: dict[str, Any] | None = None,
         ctx: Context | None = None,
     ) -> ActionResult:
-        """
-        Invoke a provider config action (e.g. QR login, clear auth).
+        """Invoke a provider config action (e.g. QR login, clear auth).
 
         Always elicits confirmation, even when require_confirmation is off.
 
@@ -706,7 +685,7 @@ def _register_provider_write_tools(
         return ActionResult(
             instance_id=instance_id,
             action_key=action_key,
-            new_entries=[_entry_dump(mass, e, getattr(e, "value", None)) for e in entries],
+            new_entries=[_entry_dump(e, getattr(e, "value", None)) for e in entries],
             extra_data={},
             audit_log_id=audit,
         )
@@ -731,8 +710,7 @@ def _register_core_write_tools(
     async def set_core_value(
         domain: str, key: str, value: Any, dry_run: bool = False, ctx: Context | None = None
     ) -> SetValueResult:
-        """
-        Set one core controller config value.
+        """Set one core controller config value.
 
         Core changes may restart subsystems and interrupt all playback.
         ``dry_run=True`` previews without writing. See also: config_get_core
@@ -768,8 +746,7 @@ def _register_core_write_tools(
     async def save_core(
         domain: str, values: dict[str, Any], dry_run: bool = False, ctx: Context | None = None
     ) -> SaveResult:
-        """
-        Bulk-save core controller config values.
+        """Bulk-save core controller config values.
 
         :param domain: Core controller domain.
         :param values: key->value map.
@@ -805,8 +782,7 @@ def _register_player_write_tools(
     async def set_player_value(
         player_id: str, key: str, value: Any, dry_run: bool = False, ctx: Context | None = None
     ) -> SetValueResult:
-        """
-        Set one player config value (volume limits, crossfade, output protocol, ...).
+        """Set one player config value (volume limits, crossfade, output protocol, ...).
 
         See also: config_get_player for current values, config_save_dsp for EQ/DSP.
 
@@ -838,8 +814,7 @@ def _register_player_write_tools(
     async def save_player(
         player_id: str, values: dict[str, Any], dry_run: bool = False, ctx: Context | None = None
     ) -> SaveResult:
-        """
-        Bulk-save player config values.
+        """Bulk-save player config values.
 
         :param player_id: The player identifier.
         :param values: key->value map.
@@ -867,8 +842,7 @@ def _register_player_write_tools(
     async def save_dsp(
         player_id: str, dsp: dict[str, Any], dry_run: bool = False, ctx: Context | None = None
     ) -> SaveResult:
-        """
-        Save a player's DSP configuration (enabled, gains, filter chain).
+        """Save a player's DSP configuration (enabled, gains, filter chain).
 
         The payload is parsed via DSPConfig.from_dict and validated (gains
         must be within -60..60 dB, filters well-formed). See also:

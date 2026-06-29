@@ -1,5 +1,4 @@
-"""
-Canned MCP prompts.
+"""Canned MCP prompts.
 
 These prompts hand the LLM a small, opinionated playbook for common tasks
 ("find a song and play it on a specific speaker", "now playing summary",
@@ -34,7 +33,9 @@ def register_prompts(mcp: Any, config: ProviderConfig) -> None:
             f"Then call playback_play_media with queue_id='{target}' and the "
             "resolved URI.\n"
             "Finally, call queue_get_active_queue to confirm the new state "
-            "and report it back."
+            "and report it back. For positional inserts via queue_add_to_queue "
+            "with index, read QueueBrief.next_insertable_index from "
+            "queue_get_active_queue — not array position alone."
         )
 
     @mcp.prompt(name="curate_party_playlist")  # type: ignore[untyped-decorator, unused-ignore]

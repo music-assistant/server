@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def _control_annotations(*, title: str, idempotent: bool = False) -> ToolAnnotations:
-    """Default annotations for transport-control tools (mutate but non-destructive)."""
+    """Build default annotations for transport-control tools (mutate but non-destructive)."""
     return ToolAnnotations(
         title=title,
         readOnlyHint=False,

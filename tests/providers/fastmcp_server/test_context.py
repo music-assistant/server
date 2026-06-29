@@ -19,8 +19,7 @@ from music_assistant.providers.fastmcp_server.tools import (
 
 @pytest.fixture
 def search_mass(mock_mass: MagicMock) -> MagicMock:
-    """
-    Configure mock_mass.music.search to return shaped results for assertions.
+    """Configure mock_mass.music.search to return shaped results for assertions.
 
     Uses ``SimpleNamespace`` rather than ``MagicMock(name=…)`` deliberately —
     ``MagicMock``'s ``name`` constructor kwarg sets the mock's *repr* name,
@@ -40,8 +39,7 @@ def search_mass(mock_mass: MagicMock) -> MagicMock:
 
 
 async def test_search_tracks_emits_info_log(search_mass: MagicMock) -> None:
-    """
-    ``search_tracks`` emits a ``ctx.info`` log notification carrying the query.
+    """``search_tracks`` emits a ``ctx.info`` log notification carrying the query.
 
     FastMCP delivers ``ctx.info`` calls to clients as ``notifications/message``
     events. The previous test installed the handler via a method that doesn't
@@ -72,8 +70,7 @@ async def test_search_tracks_emits_info_log(search_mass: MagicMock) -> None:
 
 
 async def test_search_tracks_returns_real_track_name(search_mass: MagicMock) -> None:
-    """
-    The returned ``TrackBrief`` carries the fake track's actual ``.name``.
+    """The returned ``TrackBrief`` carries the fake track's actual ``.name``.
 
     Previously the fake was built with ``MagicMock(name="Some Track")``, which
     set the mock's *repr* name rather than the ``.name`` attribute. The

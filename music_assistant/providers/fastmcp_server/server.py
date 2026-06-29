@@ -12,6 +12,7 @@ from .constants import (
     CONF_DEBUG_EVENTS,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
+    CONF_LEAN_ADMIN_SCHEMA,
     CONF_MOUNT_PATH,
     CONF_REQUIRE_AUTH,
     CONF_REQUIRE_CONFIRMATION,
@@ -30,8 +31,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class MCPServerRuntime:
-    """
-    Build and manage a FastMCP server mounted into MA's webserver.
+    """Build and manage a FastMCP server mounted into MA's webserver.
 
     The lifecycle is intentionally simple:
 
@@ -51,8 +51,7 @@ class MCPServerRuntime:
         config: ProviderConfig,
         logger: logging.Logger,
     ) -> None:
-        """
-        Hold the shared dependencies; nothing is started here.
+        """Hold the shared dependencies; nothing is started here.
 
         :param mass: MusicAssistant instance.
         :param config: Provider config.
@@ -80,8 +79,7 @@ class MCPServerRuntime:
         return f"{base}{self._mount_path}"
 
     async def start(self) -> None:
-        """
-        Build the FastMCP server and mount it into the MA webserver.
+        """Build the FastMCP server and mount it into the MA webserver.
 
         On any partial-mount failure, the in-progress state is rolled back
         via :meth:`stop` before the exception propagates — so a retry (or a
@@ -143,9 +141,16 @@ class MCPServerRuntime:
         )
 
         require_confirmation = bool(self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False)
+        lean_admin_schema = bool(self._config.get_value(CONF_LEAN_ADMIN_SCHEMA) or False)
+        from .tags import Tag  # noqa: PLC0415
+
         mcp.mount(build_library_server(self._mass), namespace="library")
         mcp.mount(
-            build_queue_server(self._mass, require_confirmation=require_confirmation),
+            build_queue_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                delete_queue_enabled=Tag.DELETE_QUEUE in enabled_tags(self._config),
+            ),
             namespace="queue",
         )
         mcp.mount(build_playback_server(self._mass), namespace="playback")
@@ -162,7 +167,6 @@ class MCPServerRuntime:
         mcp.mount(build_metadata_server(self._mass), namespace="metadata")
 
         from .debug.event_buffer import EventBuffer  # noqa: PLC0415
-        from .tags import Tag  # noqa: PLC0415
         from .tools import build_debug_server  # noqa: PLC0415
 
         if bool(self._config.get_value(CONF_DEBUG_EVENTS)):
@@ -178,6 +182,7 @@ class MCPServerRuntime:
                 event_buffer=self._event_buffer,
                 logs_enabled=Tag.DEBUG_LOGS in enabled_tags(self._config),
                 reload_lock=self._reload_lock,
+                lean_schema=lean_admin_schema,
             ),
             namespace="debug",
         )
@@ -192,6 +197,7 @@ class MCPServerRuntime:
                 secret_writes_enabled=lambda: bool(
                     self._config.get_value(CONF_CONFIG_WRITE_SECRET)
                 ),
+                lean_schema=lean_admin_schema,
             ),
             namespace="config",
         )
@@ -276,8 +282,7 @@ class MCPServerRuntime:
     async def apply_permission_change(
         self, new_config: ProviderConfig, changed_keys: set[str]
     ) -> None:
-        """
-        Hot-swap the allowed-tag set, or restart when resources are involved.
+        """Hot-swap the allowed-tag set, or restart when resources are involved.
 
         Resource toggles (``CONF_RES_*``) require a rebuild because resource
         registration is decided at :meth:`start` time; permission flags flip the
@@ -322,8 +327,7 @@ class MCPServerRuntime:
 
 
 async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:
-    """
-    Resolve component name/URI back to its tag set via FastMCP public API.
+    """Resolve component name/URI back to its tag set via FastMCP public API.
 
     Returns ``None`` if the component is unknown — middleware then blocks
     the call with NotFoundError, preventing a client that cached a name

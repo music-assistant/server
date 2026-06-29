@@ -1,5 +1,4 @@
-"""
-Bounded in-memory ring buffer of recent MA events.
+"""Bounded in-memory ring buffer of recent MA events.
 
 Activated only when ``DEBUG_EVENTS`` is enabled. Subscribes via
 ``mass.subscribe(...)`` at :meth:`start` and unsubscribes at :meth:`stop`.
@@ -18,8 +17,6 @@ from collections import Counter, deque
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.helpers.datetime import now
-
 from ..models import EventBufferStats, EventRecord
 from .inspect_serializer import dump
 
@@ -28,22 +25,20 @@ if TYPE_CHECKING:
 
 
 def _now() -> datetime:
-    """
-    Indirection for tests.
+    """Indirection for tests.
 
     The project does not ship ``freezegun`` and ``pyproject.toml`` is
     template-generated (cannot be hand-edited). Tests replace this
     module-level callable to control timestamps deterministically.
     """
-    return now()
+    return datetime.now().astimezone()
 
 
 class EventBuffer:
     """Ring deque + lifecycle around ``mass.subscribe``."""
 
     def __init__(self, mass: MusicAssistant, *, capacity: int) -> None:
-        """
-        Initialize the event buffer.
+        """Initialize the event buffer.
 
         :param mass: Music Assistant instance to subscribe to.
         :param capacity: Maximum events to retain (clamped to [50, 5000]).
