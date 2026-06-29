@@ -13,7 +13,8 @@ from music_assistant.providers.fastmcp_server.debug.inspect_serializer import _S
 
 
 def test_charge_estimates_bytes_without_json_encoding() -> None:
-    """``_State.charge`` sizes values directly, not via ``json.dumps``.
+    """
+    ``_State.charge`` sizes values directly, not via ``json.dumps``.
 
     For an unescaped string the estimate matches the JSON length (content
     bytes + 2 quotes). For a string containing a quote, the direct estimate is
@@ -136,7 +137,8 @@ def test_dump_total_payload_cap_marks_truncated() -> None:  # noqa: D103
 
 
 def test_dump_dataclass_with_raising_property_renders_placeholder() -> None:
-    """Real-world shape: MA Player is a dataclass with diagnostic @property.
+    """
+    Real-world shape: MA Player is a dataclass with diagnostic @property.
 
     The plain-class variant of this test (test_dump_property_raising_renders_placeholder)
     used a non-dataclass and silently passed even when the dataclass branch did not
@@ -157,7 +159,8 @@ def test_dump_dataclass_with_raising_property_renders_placeholder() -> None:
 
 
 def test_dump_skips_mass_back_reference_on_dataclasses() -> None:
-    """``mass`` field on Player/Queue/Provider is a back-ref to MA's runtime root.
+    """
+    ``mass`` field on Player/Queue/Provider is a back-ref to MA's runtime root.
 
     Live verification surfaced the regression: walking ``player.mass`` drags the
     entire MA graph (every other provider, queue, player, cache) into the dump

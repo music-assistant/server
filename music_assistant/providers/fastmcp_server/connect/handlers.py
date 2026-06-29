@@ -1,4 +1,5 @@
-"""HTTP handlers backing the Connect Wizard endpoints.
+"""
+HTTP handlers backing the Connect Wizard endpoints.
 
 Five endpoints are mounted under ``<mount_path>/connect``:
 
@@ -71,7 +72,8 @@ def _is_loopback_host(host: str | None) -> bool:
 
 
 def _is_request_via_ha_ingress(request: web.Request) -> bool:
-    """Return True when MA recognises the request as arriving via HA ingress.
+    """
+    Return True when MA recognises the request as arriving via HA ingress.
 
     Home Assistant terminates TLS at its own ``https://ha.example/...``
     front door and forwards the request to MA over a *local* socket, so the
@@ -85,7 +87,7 @@ def _is_request_via_ha_ingress(request: web.Request) -> bool:
         from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
             is_request_from_ingress,
         )
-    except (ImportError, ModuleNotFoundError):
+    except ImportError, ModuleNotFoundError:
         # Bare provider venv — MA helper unavailable. Fail closed without noise.
         return False
     except Exception:
@@ -99,7 +101,8 @@ def _is_request_via_ha_ingress(request: web.Request) -> bool:
 
 
 def _scheme_guard(request: web.Request) -> web.Response | None:
-    """Reject plaintext-http credential traffic from untrusted-transport hosts.
+    """
+    Reject plaintext-http credential traffic from untrusted-transport hosts.
 
     ``/connect/login`` carries the MA admin password; ``/connect/exchange``
     and ``/connect/token`` carry bootstrap / session tokens. Over plain HTTP
