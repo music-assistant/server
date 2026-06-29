@@ -84,6 +84,9 @@ async def get_spotify_token(
             # if we reached this point, the token has been successfully refreshed
             auth_info: dict[str, Any] = await response.json()
             auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
+            # Spotify only returns a refresh_token when it rotates one; when the response
+            # omits it, keep using the existing token (per Spotify's refresh-token docs).
+            auth_info.setdefault("refresh_token", refresh_token)
             return auth_info
 
     raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")
