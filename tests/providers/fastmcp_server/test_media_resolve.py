@@ -40,7 +40,8 @@ from music_assistant.providers.fastmcp_server.tools._common import (
 )
 from music_assistant.providers.fastmcp_server.tools.library import build_library_server
 from music_assistant.providers.fastmcp_server.tools.metadata import build_metadata_server
-from tests.media_fakes import fake_media_item
+
+from .media_fakes import fake_media_item
 
 
 @pytest.fixture
