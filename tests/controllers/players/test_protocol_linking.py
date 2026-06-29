@@ -15,6 +15,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
 )
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, Player
@@ -7646,8 +7647,7 @@ class TestSelfReferentialProtocolLinks:
                 }
             }
         }
-        with patch.object(config, "_async_save", AsyncMock()):
-            await config._migrate()
+        await migrate(config._data)
 
         values = config._data[CONF_PLAYERS]["esp_client"]["values"]
         assert values["protocol_parent_id"] is None
