@@ -352,7 +352,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         available=False, which the AudioAnalysisController already honors when
         scheduling work.
         """
-        verify_system_meets_requirements(
+        await verify_system_meets_requirements(
             feature_name="Sonic Analysis",
             min_memory_gb=MIN_RAM_GB,
             min_cpu_cores=MIN_CPU_CORES,
