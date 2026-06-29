@@ -29,7 +29,16 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             name="Recently played",
             translation_key="recently_played",
             icon="mdi-motion-play",
-            items_factory=lambda: mass.music.recently_played(limit=10, user_initiated_only=True),
+            items_factory=lambda: mass.music.recently_played(
+                limit=10,
+                media_types=[
+                    MediaType.ALBUM,
+                    MediaType.TRACK,
+                    MediaType.PLAYLIST,
+                    MediaType.ARTIST,
+                ],
+                user_initiated_only=True,
+            ),
         ),
         CallableRecommendationSource(
             mass,

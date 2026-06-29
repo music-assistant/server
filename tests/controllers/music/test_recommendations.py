@@ -139,6 +139,28 @@ async def test_recent_artists_and_tracks_rows_present(mass: MusicAssistant) -> N
     assert "track-9" not in {item.item_id for item in artists_folder.items}
 
 
+async def test_recently_played_excludes_podcasts_and_audiobooks(mass: MusicAssistant) -> None:
+    """Recently Played is music-only: podcasts and audiobooks never appear, even if user-initiated."""
+    await _add_playlog_row(
+        mass, item_id="album-x", media_type=MediaType.ALBUM, timestamp=3000, user_initiated=True
+    )
+    await _add_playlog_row(
+        mass, item_id="podcast-x", media_type=MediaType.PODCAST, timestamp=3001, user_initiated=True
+    )
+    await _add_playlog_row(
+        mass,
+        item_id="audiobook-x",
+        media_type=MediaType.AUDIOBOOK,
+        timestamp=3002,
+        user_initiated=True,
+    )
+    folder = await _recommendations_folder(mass, "recently_played")
+    item_ids = {item.item_id for item in folder.items}
+    assert "album-x" in item_ids
+    assert "podcast-x" not in item_ids
+    assert "audiobook-x" not in item_ids
+
+
 async def test_register_adds_a_custom_source(mass: MusicAssistant) -> None:
     """Registering a custom source adds it to the extension API."""
     before = len(mass.music.recommendations.sources)
