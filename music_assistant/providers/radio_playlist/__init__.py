@@ -76,11 +76,6 @@ def radio_playlist_uri(seed: MediaItemType) -> str:
 class RadioPlaylistProvider(PluginProvider):
     """Always-on provider that generates dynamic radio playlists from a seed media item."""
 
-    @property
-    def is_streaming_provider(self) -> bool:
-        """Return False; this provider only generates playlists from other providers' tracks."""
-        return False
-
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """
         Return the (virtual, dynamic) radio playlist for the given seed.
@@ -147,7 +142,7 @@ class RadioPlaylistProvider(PluginProvider):
         for seed in random.sample(seeds, len(seeds)):
             ctrl = self.mass.music.get_controller(seed.media_type)
             try:
-                base_tracks_for_seed = await ctrl.radio_mode_base_tracks(
+                base_tracks_for_seed = await ctrl.base_tracks(
                     seed,  # type: ignore[arg-type]
                     preferred_provider_instances,
                 )
@@ -158,7 +153,7 @@ class RadioPlaylistProvider(PluginProvider):
                     seen.add(track)
                     available_base_tracks.append(track)
         if not available_base_tracks:
-            raise UnsupportedFeaturedException("Radio mode not available for source items")
+            raise UnsupportedFeaturedException("No base tracks available for the given seeds")
 
         base_tracks = random.sample(
             available_base_tracks,

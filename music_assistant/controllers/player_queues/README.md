@@ -169,8 +169,7 @@ Two distinct refill paths share the same "running low" trigger:
   provider station) yields its own self-managing batch (`DYNAMIC`), while a finite item mixed into
   the pool rotates its own unplayed tracks (`TRACKS`). Each top-up apportions slots across the
   sources by weight, recency-gates every candidate, and prefers the least-recently-played. A "radio"
-  is just a dynamic playlist from the `radio_playlist` provider; the deprecated `radio_mode` flag is
-  translated into one.
+  is just a dynamic playlist from the `radio_playlist` provider.
 - **Autoplay** refills using the per-queue configured mode, owned by `autoplay.py`: similar tracks
   (seeded from the enqueued items), an infinite library mix (genre-biased, least-played), a chosen
   playlist, or an automatic mode that tries similar first and falls back to the library mix. The

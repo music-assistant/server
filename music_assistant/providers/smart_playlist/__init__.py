@@ -1089,9 +1089,8 @@ class SmartPlaylistProvider(PluginProvider):
             if len(pool) >= target_size * 3:
                 break
             with suppress(MusicAssistantError):
-                base_tracks = await self.mass.music.get_controller(
-                    seed.media_type
-                ).radio_mode_base_tracks(seed)  # type: ignore[arg-type]
+                controller = self.mass.music.get_controller(seed.media_type)
+                base_tracks = await controller.base_tracks(seed)  # type: ignore[arg-type]
                 for base in base_tracks:
                     if base not in seen:
                         seen.add(base)

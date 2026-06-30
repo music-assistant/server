@@ -581,7 +581,7 @@ class TracksController(MediaControllerBase[Track]):
                 await self.add_provider_mappings(db_track.item_id, match)
                 processed_domains.add(provider.domain)
 
-    async def radio_mode_base_tracks(
+    async def base_tracks(
         self,
         item: Track,
         preferred_provider_instances: list[str] | None = None,

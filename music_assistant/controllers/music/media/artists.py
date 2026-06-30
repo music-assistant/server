@@ -799,7 +799,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
 
-    async def radio_mode_base_tracks(
+    async def base_tracks(
         self,
         item: Artist,
         preferred_provider_instances: list[str] | None = None,

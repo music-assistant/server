@@ -88,7 +88,7 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return list(all_versions.values())
 
-    async def radio_mode_base_tracks(
+    async def base_tracks(
         self,
         item: Radio,
         preferred_provider_instances: list[str] | None = None,

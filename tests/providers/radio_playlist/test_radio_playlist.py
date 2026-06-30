@@ -48,7 +48,7 @@ def _make_provider(
     def get_controller(media_type: MediaType) -> MagicMock:
         if media_type not in media_controllers:
             media_ctrl = MagicMock()
-            media_ctrl.radio_mode_base_tracks = AsyncMock(
+            media_ctrl.base_tracks = AsyncMock(
                 side_effect=lambda seed, _prefs=None: base_tracks_by_seed.get(seed.item_id, [])
             )
             media_controllers[media_type] = media_ctrl

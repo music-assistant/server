@@ -153,7 +153,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             )
         return result
 
-    async def radio_mode_base_tracks(
+    async def base_tracks(
         self,
         item: Podcast,
         preferred_provider_instances: list[str] | None = None,

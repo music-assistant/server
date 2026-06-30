@@ -2100,9 +2100,9 @@ class PlayerQueuesController(CoreController):
         if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue.enqueued_media_items.clear()
 
-        # An ADD/NEXT onto an already-active dynamic queue keeps feeding its bounded pool; a REPLACE
-        # cleared the sources above, so it exits managed mode and behaves as a normal queue. (A fresh
-        # "radio" is now a dynamic playlist that self-manages, so it needs no fresh pool here.)
+        # An ADD/NEXT onto a queue that already has dynamic sources keeps feeding its bounded pool;
+        # any other enqueue is not managed here (a REPLACE clears the sources above, and a dynamic
+        # playlist self-manages its own refills).
         already_managed = bool(queue.sources) and option in (QueueOption.ADD, QueueOption.NEXT)
         managed_pool = already_managed
 

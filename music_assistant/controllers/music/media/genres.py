@@ -152,8 +152,8 @@ class GenreController(MediaControllerBase[Genre]):
             self.get_overview,
         )
         self.mass.register_api_command(
-            "music/genres/radio_mode_base_tracks",
-            self.get_radio_mode_base_tracks,
+            "music/genres/base_tracks",
+            self.get_base_tracks,
         )
         self.mass.register_api_command(
             "music/genres/scan_mappings",
@@ -318,7 +318,7 @@ class GenreController(MediaControllerBase[Genre]):
             )
         return items
 
-    async def radio_mode_base_tracks(
+    async def base_tracks(
         self,
         item: Genre,
         preferred_provider_instances: list[str] | None = None,
@@ -483,7 +483,7 @@ class GenreController(MediaControllerBase[Genre]):
         )
         return row is not None
 
-    async def get_radio_mode_base_tracks(
+    async def get_base_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str | None = None,
@@ -492,7 +492,7 @@ class GenreController(MediaControllerBase[Genre]):
         """Return base tracks for genre radio mode."""
         provider = provider_instance_id_or_domain or "library"
         item = await self.get(item_id, provider)
-        return await self.radio_mode_base_tracks(item, preferred_provider_instances)
+        return await self.base_tracks(item, preferred_provider_instances)
 
     async def get_overview(
         self,

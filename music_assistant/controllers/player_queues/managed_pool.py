@@ -169,7 +169,7 @@ class ManagedPoolHelper:
         """Fetch a TRACKS source's own (playable) tracks via its media controller."""
         controller = self.mass.music.get_controller(media_item.media_type)
         with suppress(MusicAssistantError):
-            tracks = await controller.radio_mode_base_tracks(media_item, preferred)  # type: ignore[arg-type]
+            tracks = await controller.base_tracks(media_item, preferred)  # type: ignore[arg-type]
             return [track for track in tracks if isinstance(track, Track) and track.available]
         return []
 

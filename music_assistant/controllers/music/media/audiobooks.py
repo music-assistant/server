@@ -190,7 +190,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             )
         return result
 
-    async def radio_mode_base_tracks(
+    async def base_tracks(
         self,
         item: Audiobook,
         preferred_provider_instances: list[str] | None = None,

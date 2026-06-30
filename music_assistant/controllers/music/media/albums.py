@@ -421,7 +421,7 @@ class AlbumsController(MediaControllerBase[Album]):
         album = self.album_from_item_mapping(item)
         return await self.add_item_to_library(album)
 
-    async def radio_mode_base_tracks(
+    async def base_tracks(
         self,
         item: Album,
         preferred_provider_instances: list[str] | None = None,

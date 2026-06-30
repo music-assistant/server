@@ -927,7 +927,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
 
     @abstractmethod
-    async def radio_mode_base_tracks(
+    async def base_tracks(
         self,
         item: ItemCls,
         preferred_provider_instances: list[str] | None = None,
