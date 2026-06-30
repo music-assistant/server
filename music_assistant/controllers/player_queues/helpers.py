@@ -61,27 +61,24 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
-        queue = self._queues.get(queue_id)
-        if queue is None:
+        data = self._queue_data.get(queue_id)
+        if data is None:
             return await func(self, *args, **kwargs)
+        queue = data.queue
         async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
             try:
-                self._play_action_refcount[queue_id] = (
-                    self._play_action_refcount.get(queue_id, 0) + 1
-                )
+                data.play_action_refcount += 1
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 if not prev_in_progress:
                     self.signal_update(queue_id)
                 return await func(self, *args, **kwargs)
             finally:
-                refcount = self._play_action_refcount.get(queue_id, 1) - 1
-                if refcount <= 0:
-                    self._play_action_refcount.pop(queue_id, None)
+                data.play_action_refcount -= 1
+                if data.play_action_refcount <= 0:
+                    data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
                     self.signal_update(queue_id)
-                else:
-                    self._play_action_refcount[queue_id] = refcount
 
     return wrapper
 

@@ -47,7 +47,7 @@ ARTIST_REPAIR_PASSES = 4
 ARTIST_SWAP_WINDOW = 6
 
 
-class SmartShuffleHelper:
+class SmartShuffle:
     """Produce a recency-aware, well-spaced ordering of upcoming queue items."""
 
     def __init__(self, queues: PlayerQueuesController) -> None:

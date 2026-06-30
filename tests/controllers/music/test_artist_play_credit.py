@@ -19,6 +19,8 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_ARTISTS, DB_TABLE_PLAYLOG
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.playback_tracker import PlaybackTracker
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
 
 if TYPE_CHECKING:
@@ -184,12 +186,14 @@ def test_enqueued_album_decision() -> None:
     items = [QueueItem.from_media_item("q1", track) for track in (t1, t2, t3)]
 
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
-    ctrl._queue_items = {"q1": items}
     queue = cast("PlayerQueue", Mock(queue_id="q1", enqueued_media_items=[album_x]))
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=items)}
+    tracker = PlaybackTracker.__new__(PlaybackTracker)
+    tracker.queues = ctrl
 
     # first track of the enqueued album -> credit it
-    assert ctrl._enqueued_album_for_track(queue, items[0], t1) is album_x
+    assert tracker._enqueued_album_for_track(queue, items[0], t1) is album_x
     # second track shares the previous queue item's album -> already handled
-    assert ctrl._enqueued_album_for_track(queue, items[1], t2) is None
+    assert tracker._enqueued_album_for_track(queue, items[1], t2) is None
     # a track whose album was never enqueued -> not credited
-    assert ctrl._enqueued_album_for_track(queue, items[2], t3) is None
+    assert tracker._enqueued_album_for_track(queue, items[2], t3) is None

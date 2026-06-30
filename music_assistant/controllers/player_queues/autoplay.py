@@ -48,7 +48,7 @@ class AutoplayMode(StrEnum):
 AUTOPLAY_MODE_DEFAULT_VALUE = AutoplayMode.AUTO.value
 
 
-class AutoplayHelper:
+class Autoplay:
     """Resolve the Autoplay mode and produce the next batch of tracks for a queue."""
 
     def __init__(self, queues: PlayerQueuesController) -> None:
@@ -131,7 +131,9 @@ class AutoplayHelper:
             return []
         tracks = [
             track
-            for track in await self.queues.get_playlist_tracks(playlist, start_item=None)
+            for track in await self.queues._media_resolver.get_playlist_tracks(
+                playlist, start_item=None
+            )
             if isinstance(track, Track)
         ]
         random.shuffle(tracks)
