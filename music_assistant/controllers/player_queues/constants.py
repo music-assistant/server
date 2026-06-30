@@ -57,6 +57,10 @@ SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS = (0, 3600, 7200, 10800, 14400, 21600, 28800
 # near the end instead of enqueuing thousands of tracks.
 MANAGED_POOL_TARGET = 25
 MANAGED_POOL_MAX = 50
+# A finite (TRACKS) source is materialized into its own deque and dequeued progressively. This caps
+# how many of its tracks are held in memory at once; a larger source pages the remainder in as the
+# deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
+MANAGED_POOL_SOURCE_CAP = 250
 
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1

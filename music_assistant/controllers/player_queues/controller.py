@@ -1391,6 +1391,7 @@ class PlayerQueuesController(CoreController):
         self._play_action_refcount.pop(player_id, None)
         self._last_counted_play.pop(player_id, None)
         self._source_items.pop(player_id, None)
+        self._managed_pool.forget(player_id)
 
     async def load_next_queue_item(
         self,
@@ -2918,6 +2919,10 @@ class PlayerQueuesController(CoreController):
         else:
             self._source_items.pop(queue.queue_id, None)
         queue.sources = [ItemMapping.from_item(item) for item in items]
+        # release any materialized finite-source state whose source is no longer present
+        self._managed_pool.retain(
+            queue.queue_id, {item.uri for item in items if item.uri is not None}
+        )
 
     def _restore_source_items(self, queue: PlayerQueue) -> list[MediaItemType]:
         """

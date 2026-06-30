@@ -158,12 +158,21 @@ def test_singleton_window_vs_duplicate_gap() -> None:
 
 
 def test_least_recently_played_first() -> None:
-    """Within a source, never-played sorts first, then oldest play before most recent."""
+    """A dynamic batch is ordered never-played first, then oldest play before most recent."""
     windows = RecencyWindows(song_seconds=0)  # gate off so we only test ordering
-    source = _source(["recent", "old", "never"])
+    source = _source(["recent", "old", "never"], fill_mode=DynamicFillMode.DYNAMIC)
     snapshot = _snapshot({"recent": NOW - 10, "old": NOW - 100_000})
     result = allocate_refill([source], slots=3, pool_keys=set(), snapshot=snapshot, windows=windows)
     assert _ids(result) == ["never", "old", "recent"]
+
+
+def test_tracks_mode_preserves_candidate_order() -> None:
+    """A finite (TRACKS) source keeps its materialized order instead of re-sorting by recency."""
+    windows = RecencyWindows(song_seconds=0)  # gate off so we only test ordering
+    source = _source(["recent", "old", "never"], fill_mode=DynamicFillMode.TRACKS)
+    snapshot = _snapshot({"recent": NOW - 10, "old": NOW - 100_000})
+    result = allocate_refill([source], slots=3, pool_keys=set(), snapshot=snapshot, windows=windows)
+    assert _ids(result) == ["recent", "old", "never"]
 
 
 def test_pool_keys_excluded() -> None:
