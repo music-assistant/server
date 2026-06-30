@@ -957,6 +957,7 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # under-spec host has the auto-created config removed again at load time.
     ("smart_fades", False),
     ("lastfm_recommendations", False),
+    ("playlist_metadata", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {
