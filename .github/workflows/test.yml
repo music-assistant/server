@@ -23,6 +23,10 @@ on:
 permissions:
   contents: read
 
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+env:
+  URLLIB3_NO_OVERRIDE: "1"
+
 jobs:
   changes:
     runs-on: ubuntu-latest
