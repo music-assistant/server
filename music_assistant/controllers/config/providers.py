@@ -86,18 +86,12 @@ class ProviderConfigMixin:
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
         configs: list[ProviderConfig] = []
         for prov_conf in raw_values.values():
-            # guard against malformed/partial entries (e.g. a removed provider that had an
-            # error written back to its key after removal, leaving a stub without a domain).
-            # Skip them rather than crash on a missing key. See #5728.
-            domain = prov_conf.get("domain")
-            if domain is None:
+            if provider_type is not None and prov_conf["type"] != provider_type:
                 continue
-            if provider_type is not None and prov_conf.get("type") != provider_type:
-                continue
-            if provider_domain is not None and domain != provider_domain:
+            if provider_domain is not None and prov_conf["domain"] != provider_domain:
                 continue
             # guard for deleted providers
-            if domain not in prov_entries:
+            if prov_conf["domain"] not in prov_entries:
                 continue
             if include_values:
                 # get_provider_config already stamps the derived status
@@ -115,10 +109,6 @@ class ProviderConfigMixin:
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
-            if "domain" not in raw_conf:
-                # malformed/partial entry without a domain (see #5728)
-                msg = f"No valid config found for provider id {instance_id}"
-                raise KeyError(msg)
             config_entries = await self.get_provider_config_entries(
                 raw_conf["domain"],
                 instance_id=instance_id,

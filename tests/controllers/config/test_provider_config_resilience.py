@@ -8,55 +8,57 @@ the underlying ``set`` helper auto-created the parent dict, leaving a stub entry
 with no ``domain`` key. That stub then crashed ``get_provider_configs`` (and
 therefore startup, via ``create_builtin_provider_config``) with
 ``KeyError: 'domain'``.
+
+Two complementary fixes are covered here:
+- ``update_provider_last_error`` only writes when the config still exists, so a
+  removed provider is never resurrected as a domain-less stub (root cause).
+- the ``migrate`` settings migration drops any pre-existing orphaned stubs left
+  on disk by older versions, before they can reach the read path.
 """
 
 from __future__ import annotations
 
-import pytest
+from typing import Any
+
 from music_assistant_models.config_entries import ProviderError
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.controllers.config.migrations import migrate
 from music_assistant.mass import MusicAssistant
 
 
-async def test_get_provider_configs_skips_entry_without_domain(
-    mass_minimal: MusicAssistant,
-) -> None:
-    """A stored config stub lacking a 'domain' key is skipped, not fatal."""
-    error = ProviderError(error_code=SetupFailedError.error_code, message="boom")
-    mass_minimal.config.set(
-        f"{CONF_PROVIDERS}/sonic_analysis--orphan",
-        {"last_error": error.to_dict()},
-    )
-    # Must not raise KeyError: 'domain'.
-    configs = await mass_minimal.config.get_provider_configs()
-    assert all(c.instance_id != "sonic_analysis--orphan" for c in configs)
+async def test_migrate_drops_orphaned_provider_stub() -> None:
+    """A stored provider stub lacking a 'domain' key is removed by migration."""
+    data: dict[str, Any] = {
+        CONF_PROVIDERS: {
+            "sonic_analysis--orphan": {"last_error": {"error_code": 999, "message": "x"}},
+            "filesystem_local--1": {
+                "domain": "filesystem_local",
+                "type": "music",
+                "instance_id": "filesystem_local--1",
+            },
+        }
+    }
+    assert await migrate(data) is True
+    # the domain-less stub is gone, the valid entry is untouched
+    assert "sonic_analysis--orphan" not in data[CONF_PROVIDERS]
+    assert "filesystem_local--1" in data[CONF_PROVIDERS]
 
 
-async def test_get_provider_configs_with_domain_filter_skips_stub(
-    mass_minimal: MusicAssistant,
-) -> None:
-    """The exact startup path: create_builtin_provider_config filters by domain."""
-    mass_minimal.config.set(
-        f"{CONF_PROVIDERS}/sonic_analysis--orphan",
-        {"last_error": {"error_code": 999, "message": "x"}},
-    )
-    # create_builtin_provider_config calls get_provider_configs(provider_domain=...).
-    configs = await mass_minimal.config.get_provider_configs(provider_domain="filesystem_local")
-    assert configs == []
-
-
-async def test_get_provider_config_rejects_stub_without_domain(
-    mass_minimal: MusicAssistant,
-) -> None:
-    """Fetching a single malformed entry raises a clear KeyError, not 'domain'."""
-    mass_minimal.config.set(
-        f"{CONF_PROVIDERS}/sonic_analysis--orphan",
-        {"last_error": {"error_code": 999, "message": "x"}},
-    )
-    with pytest.raises(KeyError, match="sonic_analysis--orphan"):
-        await mass_minimal.config.get_provider_config("sonic_analysis--orphan")
+async def test_migrate_leaves_valid_provider_configs_alone() -> None:
+    """Migration is a no-op for provider configs that all have a 'domain'."""
+    data: dict[str, Any] = {
+        CONF_PROVIDERS: {
+            "filesystem_local--1": {
+                "domain": "filesystem_local",
+                "type": "music",
+                "instance_id": "filesystem_local--1",
+            },
+        }
+    }
+    assert await migrate(data) is False
+    assert "filesystem_local--1" in data[CONF_PROVIDERS]
 
 
 async def test_update_provider_last_error_ignores_removed_entry(
