@@ -86,13 +86,9 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     return wrapper
 
 
-def is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
-    """Return True if radio_source is a single dynamic playlist."""
-    return (
-        len(radio_source) == 1
-        and isinstance(radio_source[0], Playlist)
-        and radio_source[0].is_dynamic
-    )
+def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
+    """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
+    return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
 
 
 def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:

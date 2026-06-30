@@ -72,7 +72,7 @@ async def test_radio_enqueue_builds_bounded_pool(e2e_mass: MusicAssistant) -> No
     assert 1 < len(items) <= MANAGED_POOL_MAX
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
-    assert queue.radio_source  # the seed is kept as a dynamic source
+    assert queue.sources  # the seed is kept as a dynamic source
 
 
 @pytest.mark.asyncio
@@ -88,8 +88,8 @@ async def test_refill_gates_recent_and_weights_by_multiplicity(e2e_mass: MusicAs
     # two albums (20 tracks each) as TRACKS sources; the second is added twice (multiplicity 2)
     album_single = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
     album_double = await test_prov.get_album("1_0")  # tracks 1_0_0 .. 1_0_19
-    queue.radio_source = cast("list[MediaItemType]", [album_single, album_double, album_double])
-    e2e_mass.player_queues._managed_pool.register(queue_id, queue.radio_source, set(), replace=True)
+    sources = cast("list[MediaItemType]", [album_single, album_double, album_double])
+    e2e_mass.player_queues._source_items[queue_id] = sources
 
     # singleton album: 5 tracks played a day ago -> within the 1-week song window -> hard-gated
     now = int(time.time())
@@ -123,8 +123,8 @@ async def test_refill_dedupes_only_active_tail_not_played_history(e2e_mass: Musi
     queue.userid = TEST_USER
 
     album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
-    queue.radio_source = cast("list[MediaItemType]", [album])
-    e2e_mass.player_queues._managed_pool.register(queue_id, queue.radio_source, set(), replace=True)
+    sources = cast("list[MediaItemType]", [album])
+    e2e_mass.player_queues._source_items[queue_id] = sources
 
     # simulate a queue with played history: 0_0_0..0_0_4 already played, 0_0_5 is the current track
     queue_items = [

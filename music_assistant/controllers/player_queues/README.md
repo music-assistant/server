@@ -75,7 +75,7 @@ and the targets for playback, and coordinates with several sibling controllers:
 | Type | Role |
 | --- | --- |
 | `PlayerQueuesController` | The controller: owns all live `PlayerQueue` objects and their items, exposes the API commands, and bridges player events to queue state. Subclass of `CoreController`. |
-| `PlayerQueue` | Per-player queue model holding the playback state and the flags that drive behaviour — playback state, shuffle/repeat, autoplay, flow mode, dynamic/radio source, the current item and index, and elapsed time. Serializable to and from the cache. |
+| `PlayerQueue` | Per-player queue model holding the playback state and the flags that drive behaviour — playback state, shuffle/repeat, autoplay, flow mode, dynamic sources, the current item and index, and elapsed time. Serializable to and from the cache. |
 | `QueueItem` | A single playable entry: the media-item reference, its resolved stream details, an ordering index, and per-item `extra_attributes` (e.g. playback speed). Serializable to and from the cache. |
 | `Player` / `PlayerMedia` | `Player` is the device whose real-time state the queue is reconciled against (state, active source, corrected elapsed time, type). `PlayerMedia` is the resolved playback payload (uri, images, ...) handed to the player for a queue item. |
 | `MediaItemType` family | The source media abstractions (track, album, artist, playlist, podcast, podcast episode, audiobook, genre, browse folder, item mapping) that the controller expands/resolves into concrete tracks and `QueueItem`s before enqueueing. |
@@ -157,22 +157,27 @@ Data flow: current index → next-item computation → stream-detail resolution 
 
 ## Radio and Dynamic Continuation
 
-When a queue is a radio source or has autoplay enabled, the controller keeps it topped
-up as it nears its end by fetching additional tracks and appending them as new `QueueItem`s.
-Dynamic playlists are detected at the queue level, and freshly added items can be shuffled to avoid
-placing identical tracks next to each other.
+When a queue has one or more dynamic sources (its `sources`) or autoplay enabled, the controller
+keeps it topped up as it nears its end by fetching additional tracks and appending them as new
+`QueueItem`s. Freshly added items can be shuffled to avoid placing identical tracks next to each
+other.
 
 Two distinct refill paths share the same "running low" trigger:
 
-- An explicit **radio source** (incl. dynamic playlists/stations) refills with similar/dynamic
-  tracks from the Music Controller, keyed off the queue's `radio_source`.
+- A queue with **dynamic sources** is kept as a small bounded **managed pool** (`managed_pool.py`).
+  Each source contributes candidates by its fill mode — a dynamic playlist (a radio playlist or a
+  provider station) yields its own self-managing batch (`DYNAMIC`), while a finite item mixed into
+  the pool rotates its own unplayed tracks (`TRACKS`). Each top-up apportions slots across the
+  sources by weight, recency-gates every candidate, and prefers the least-recently-played. A "radio"
+  is just a dynamic playlist from the `radio_playlist` provider.
 - **Autoplay** refills using the per-queue configured mode, owned by `autoplay.py`: similar tracks
   (seeded from the enqueued items), an infinite library mix (genre-biased, least-played), a chosen
   playlist, or an automatic mode that tries similar first and falls back to the library mix. The
   mode is read from the per-queue config; the playlist for playlist-mode is a per-queue config value.
 
-Data flow: radio-source / dynamic flags → Music Controller dynamic-track fetch → appended
-`QueueItem`s; autoplay flag → `AutoplayHelper` (mode-based selection) → appended `QueueItem`s.
+Data flow: dynamic `sources` → managed pool (per-source fetch + weighted, recency-gated allocation)
+→ appended `QueueItem`s; autoplay flag → `AutoplayHelper` (mode-based selection) → appended
+`QueueItem`s.
 
 ## Track Resolution
 

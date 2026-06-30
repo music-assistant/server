@@ -30,7 +30,11 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
 )
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
@@ -1155,7 +1159,7 @@ class SmartPlaylistProvider(PluginProvider):
         )
 
     async def _tracks_from_seeds(self, seed_uris: list[str], target_size: int) -> list[Track]:
-        """Resolve seed URIs to media items and feed them through the dynamic radio helper."""
+        """Build a pool of each seed's own tracks plus tracks similar to them."""
         seeds: list[MediaItemType] = []
         for uri in seed_uris:
             try:
@@ -1168,17 +1172,30 @@ class SmartPlaylistProvider(PluginProvider):
                 seeds.append(await ctrl.get(item_id, provider))
             except Exception as exc:
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
-        if not seeds:
-            return []
-        try:
-            return await self.mass.music.get_dynamic_radio_tracks(
-                seeds,
-                include_base_tracks=True,
-                target_size=target_size,
-            )
-        except Exception as exc:
-            self.logger.warning("Dynamic radio generation failed for seeds %s: %s", seed_uris, exc)
-            return []
+        # each seed contributes its own (base) tracks plus tracks similar to them; downstream
+        # post-filtering, dedup, shuffle and limit shape this pool into the final playlist
+        pool: list[Track] = []
+        seen: set[Track] = set()
+        for seed in seeds:
+            if len(pool) >= target_size * 3:
+                break
+            with suppress(MusicAssistantError):
+                for base in await self.mass.player_queues.get_tracks_for_playback(seed):
+                    if len(pool) >= target_size * 3:
+                        break
+                    if base not in seen:
+                        seen.add(base)
+                        pool.append(base)
+                    with suppress(MusicAssistantError):
+                        for track in await self.mass.music.tracks.similar_tracks(
+                            base.item_id, base.provider
+                        ):
+                            if len(pool) >= target_size * 3:
+                                break
+                            if track not in seen:
+                                seen.add(track)
+                                pool.append(track)
+        return pool
 
     async def _update_playlist_description(
         self, library_item_id: int | str, description: str

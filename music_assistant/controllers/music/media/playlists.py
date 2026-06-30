@@ -13,7 +13,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Playlist
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
 from music_assistant.controllers.tasks.context import (
@@ -251,24 +251,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             },
             priority=True,
         )
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Playlist,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Playlist to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        return [
-            x
-            async for x in self.tracks(item.item_id, item.provider)
-            # Radio mode only works with Tracks (filter out all other types)
-            if isinstance(x, Track) and x.available
-        ]
 
     async def match_providers(self, db_item: Playlist) -> None:
         """
