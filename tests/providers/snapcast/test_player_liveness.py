@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 from music_assistant.providers.snapcast.constants import SNAPCLIENT_STALE_THRESHOLD
 from music_assistant.providers.snapcast.player import SnapCastPlayer
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto
 
 
 class _Clock:
@@ -23,10 +28,13 @@ def _make_player(clock: _Clock, *, connected: bool, last_seen_sec: int) -> SnapC
     player = SnapCastPlayer.__new__(SnapCastPlayer)
     player._last_seen_raw = None
     player._last_seen_changed = 0.0
-    player.mass = SimpleNamespace(loop=clock)
-    player.snap_client = SimpleNamespace(
-        connected=connected,
-        _client={"lastSeen": {"sec": last_seen_sec, "usec": 0}},
+    player.mass = cast("MusicAssistant", SimpleNamespace(loop=clock))
+    player.snap_client = cast(
+        "SnapclientProto",
+        SimpleNamespace(
+            connected=connected,
+            _client={"lastSeen": {"sec": last_seen_sec, "usec": 0}},
+        ),
     )
     return player
 
