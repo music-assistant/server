@@ -491,6 +491,7 @@ class SmartPlaylistProvider(PluginProvider):
                     5,
                     self.mass.metadata.update_metadata,
                     library_item,
+                    task_id=f"smart_playlist_metadata_refresh_{prov_id}",
                     force_refresh=True,
                 )
         self._schedule_ai_description_refresh(prov_id)

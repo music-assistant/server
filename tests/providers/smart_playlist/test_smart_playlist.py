@@ -1887,6 +1887,7 @@ async def test_update_rules_triggers_metadata_refresh_if_changed(tmp_path: Any) 
     assert args[0][0] == 5  # delay
     assert args[0][1] == mass.metadata.update_metadata  # function
     assert args[0][2] == library_item  # library_item
+    assert args[1]["task_id"] == "smart_playlist_metadata_refresh_abc"
     assert args[1]["force_refresh"] is True
 
 
