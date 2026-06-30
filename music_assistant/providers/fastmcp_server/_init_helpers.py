@@ -1,5 +1,4 @@
-"""
-Private helpers backing :mod:`provider.__init__`'s ``open_connect`` dispatch.
+"""Private helpers backing :mod:`provider.__init__`'s ``open_connect`` dispatch.
 
 Lives in its own module so tests can import the helpers via a dotted path
 (``from provider._init_helpers import …``) — the bare
@@ -21,8 +20,7 @@ if TYPE_CHECKING:
 
 
 def _sanitize_external_base_url(value: str | None) -> str | None:
-    """
-    Return ``value`` if it is a plausible ``http(s)://`` base URL, else ``None``.
+    """Return ``value`` if it is a plausible ``http(s)://`` base URL, else ``None``.
 
     Defends against an admin pasting (or a misbehaving proxy injecting) a
     scheme-less or ``javascript:`` URL into the Connect Wizard link, which
@@ -41,8 +39,7 @@ def _sanitize_external_base_url(value: str | None) -> str | None:
 
 
 def _detect_external_base_url(mass: MusicAssistant, current_user: Any) -> str | None:
-    """
-    Return the external base URL for the current user's active WS client.
+    """Return the external base URL for the current user's active WS client.
 
     MA's :class:`WebsocketClientHandler` stores a per-connection ``base_url``
     derived from ``X-Forwarded-Host`` + ``X-Ingress-Path`` — exactly the
@@ -85,8 +82,7 @@ async def _dispatch_open_connect(
     mass: MusicAssistant,
     values: dict[str, ConfigValueType],
 ) -> None:
-    """
-    Mint a wizard bootstrap and signal the wizard URL to the frontend.
+    """Mint a wizard bootstrap and signal the wizard URL to the frontend.
 
     The MA frontend's ``EditProvider`` view subscribes to ``AUTH_SESSION``
     events and ignores anything whose ``object_id`` does not match the

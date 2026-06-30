@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.providers.fastmcp_server import config as _config
 from music_assistant.providers.fastmcp_server.config import build_config_entries
 
 if TYPE_CHECKING:
@@ -15,7 +16,9 @@ if TYPE_CHECKING:
 # need no entry in this provider's ``config_categories``.
 COMMON_CATEGORIES = {"server", "debug", "generic", "advanced"}
 
-STRINGS_PATH = Path(__file__).parent.parent / "provider" / "strings.json"
+# Locate strings.json next to the config module so the path holds both here and
+# when the provider is inlined upstream (``provider`` -> the inlined package).
+STRINGS_PATH = Path(_config.__file__).resolve().parent / "strings.json"
 
 
 def _load_strings() -> dict[str, Any]:

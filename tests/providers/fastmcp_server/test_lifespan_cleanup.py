@@ -1,5 +1,4 @@
-"""
-Regression tests for ASGI lifespan task cleanup.
+"""Regression tests for ASGI lifespan task cleanup.
 
 Two failure shapes are pinned here:
 
@@ -86,8 +85,7 @@ async def _well_behaved_asgi(scope: dict[str, Any], receive: Any, send: Any) -> 
 
 
 async def test_unmount_drains_lifespan_before_returning() -> None:
-    """
-    ``unmount()`` must await shutdown — not schedule it fire-and-forget.
+    """``unmount()`` must await shutdown — not schedule it fire-and-forget.
 
     Previously, ``mount_into_mass`` returned a sync closure that wrapped
     ``_stop_asgi_lifespan`` in ``asyncio.create_task`` and returned
