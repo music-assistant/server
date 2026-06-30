@@ -168,7 +168,9 @@ class RadioPlaylistProvider(PluginProvider):
                         allow_lookup=allow_lookup,
                         preferred_provider_instances=preferred_provider_instances,
                     )
-                except MediaNotFoundError:
+                except MusicAssistantError:
+                    # best-effort: a base track without a similar-tracks-capable provider
+                    # shouldn't abort generation (base tracks can still carry the playlist)
                     continue
                 for track in similar:
                     if track in base_tracks or track.duration > RADIO_TRACK_MAX_DURATION_SECS:

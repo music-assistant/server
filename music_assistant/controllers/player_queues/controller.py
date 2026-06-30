@@ -2113,7 +2113,11 @@ class PlayerQueuesController(CoreController):
                 "radio_mode is deprecated; enqueue a radio_playlist:// dynamic playlist instead"
             )
             media_list = [
-                f"radio_playlist://playlist/{item if isinstance(item, str) else item.uri}"
+                seed_uri
+                if (seed_uri := item if isinstance(item, str) else item.uri).startswith(
+                    "radio_playlist://"
+                )
+                else f"radio_playlist://playlist/{seed_uri}"
                 for item in media_list
             ]
             radio_mode = False

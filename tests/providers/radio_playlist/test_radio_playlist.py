@@ -123,3 +123,15 @@ async def test_multiple_seeds_dedup_base_tracks() -> None:
     # with only 2 similar mocks per call we never hit the dynamic-target threshold, so both
     # passes run -> 3 * 2 = 6 calls. Without dedup it would be 4 * 2 = 8.
     assert cast("Any", prov.mass.music.tracks.similar_tracks).call_count <= 6
+
+
+@pytest.mark.asyncio
+async def test_similar_lookup_failure_keeps_base_tracks() -> None:
+    """When no provider supports similar tracks, base tracks still carry the playlist."""
+    seed = _seed(MediaType.TRACK, "s1")
+    prov = _make_provider({"s1": [_track("s1")]}, [])
+    cast("Any", prov.mass.music.tracks.similar_tracks).side_effect = UnsupportedFeaturedException(
+        "no similar provider"
+    )
+    result = await prov.get_dynamic_tracks([seed], include_base_tracks=True, target_size=5)
+    assert any(t.item_id == "s1" for t in result)

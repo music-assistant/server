@@ -1090,10 +1090,12 @@ class SmartPlaylistProvider(PluginProvider):
                 break
             with suppress(MusicAssistantError):
                 for base in await self.mass.player_queues.get_tracks_for_playback(seed):
+                    if len(pool) >= target_size * 3:
+                        break
                     if base not in seen:
                         seen.add(base)
                         pool.append(base)
-                    with suppress(MediaNotFoundError):
+                    with suppress(MusicAssistantError):
                         for track in await self.mass.music.tracks.similar_tracks(
                             base.item_id, base.provider
                         ):
