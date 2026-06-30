@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,13 +22,6 @@ _PLAYER_CMDS = (
 )
 
 
-def _consume_coro(coro: Any = None, *args: Any, **kwargs: Any) -> MagicMock:  # noqa: ARG001
-    """Stand-in for mass.create_task: close any coroutine arg to avoid warnings."""
-    if asyncio.iscoroutine(coro):
-        coro.close()
-    return MagicMock()
-
-
 @pytest.fixture
 def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance for the AirPlay provider."""
@@ -44,7 +35,6 @@ def mock_mass() -> MagicMock:
     mass.players.all_players = MagicMock(return_value=[])
     mass.player_queues = MagicMock()
     mass.player_queues.set_shuffle = AsyncMock()
-    mass.create_task = _consume_coro
     mass.call_later = MagicMock()
     mass.cancel_timer = MagicMock()
     mass.config.get_raw_player_config_value = MagicMock(return_value=False)
