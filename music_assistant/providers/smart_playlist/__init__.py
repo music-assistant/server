@@ -30,7 +30,11 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
 )
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
@@ -48,9 +52,9 @@ from music_assistant.constants import (
     DYNAMIC_PLAYLIST_SAMPLE_SIZE,
 )
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
+from music_assistant.helpers.track_filter import filter_tracks
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.smart_playlist.helpers import (
@@ -271,7 +275,10 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter = (
             tuple(sorted(user.provider_filter)) if user and user.provider_filter else ()
         )
-        return await self._cached_dynamic_sample(resolved_id, user_provider_filter)
+        # Filter the cached sample at the boundary (not inside the cached evaluation) so a
+        # recency-filtered batch from a queue refill never gets cached and served to browse.
+        sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
+        return filter_tracks(sample)
 
     @use_cache(
         expiration=DYNAMIC_SAMPLE_CACHE_EXPIRATION,
@@ -657,7 +664,8 @@ class SmartPlaylistProvider(PluginProvider):
             if rules.excluded_genre_ids:
                 await self._enrich_tracks_with_db_genres(tracks)
 
-        # Apply exclusions and dedup regardless of source mode
+        # Apply exclusions regardless of source mode. Recency (don't repeat recently-played) is
+        # no longer handled here: the player queue owns it globally for dynamic playlists.
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
             self._resolve_excluded_genre_names(rules),
             self._get_album_ids_for_types(rules.excluded_album_types)
@@ -668,29 +676,6 @@ class SmartPlaylistProvider(PluginProvider):
             tracks, rules, excluded_genre_names, excl_album_type_ids or None
         )
         tracks = self._deduplicate_tracks(tracks)
-        if rules.dedup_hours is not None:
-            deduped = await self._apply_dedup(tracks, rules.dedup_hours)
-            if len(deduped) >= rules.limit:
-                tracks = deduped
-            elif deduped:
-                # Pool partially exhausted: fill remainder with least-recently-played tracks
-                # so playback never stops when the dedup window covers most of the library.
-                deduped_uris = {t.uri for t in deduped}
-                played_remainder = sorted(
-                    (t for t in tracks if t.uri not in deduped_uris),
-                    # last_played is 0 for non-library (streaming) tracks; treat 0 as
-                    # "most recent" so just-played streaming tracks aren't filled first.
-                    key=lambda t: t.last_played or float("inf"),
-                )
-                tracks = deduped + played_remainder[: rules.limit - len(deduped)]
-            else:
-                # All matching tracks were played recently — ignore dedup entirely so
-                # the playlist never goes empty.
-                self.logger.debug(
-                    "dedup_hours=%d exhausted the full track pool; ignoring dedup",
-                    rules.dedup_hours,
-                )
-
         random.shuffle(tracks)
         return tracks[: rules.limit]
 
@@ -867,6 +852,64 @@ class SmartPlaylistProvider(PluginProvider):
                     genre_id_to_name[genre_id] = genre.name
         return {v.lower() for v in genre_id_to_name.values() if v}
 
+    async def _build_track_id_map(
+        self,
+        tracks: list[Track],
+        skip_tracks_with_genres: bool = False,
+    ) -> dict[int, list[Track]]:
+        """
+        Build mapping of library track ID to track objects, resolving provider tracks to library.
+
+        :param tracks: Tracks to process
+        :param skip_tracks_with_genres: Skip tracks that already have genre metadata
+        :return: Mapping of library track ID to list of track objects
+        """
+        track_id_to_tracks: dict[int, list[Track]] = {}
+        provider_track_tasks: list[tuple[Track, str, str]] = []
+
+        for track in tracks:
+            if skip_tracks_with_genres and track.metadata and track.metadata.genres:
+                continue
+
+            if track.provider == "library" and str(track.item_id).isdigit():
+                track_id = int(track.item_id)
+                if track_id not in track_id_to_tracks:
+                    track_id_to_tracks[track_id] = []
+                track_id_to_tracks[track_id].append(track)
+            elif track.provider_mappings:
+                for mapping in track.provider_mappings:
+                    provider_track_tasks.append(
+                        (
+                            track,
+                            mapping.item_id,
+                            mapping.provider_instance or mapping.provider_domain,
+                        )
+                    )
+                    break
+
+        # Resolve all provider tracks to library tracks in parallel
+        if provider_track_tasks:
+            library_tracks = await asyncio.gather(
+                *(
+                    self.mass.music.tracks.get_library_item_by_prov_id(
+                        item_id=item_id,
+                        provider_instance_id_or_domain=provider_instance_or_domain,
+                    )
+                    for _, item_id, provider_instance_or_domain in provider_track_tasks
+                )
+            )
+
+            for (track, _, _), library_track in zip(
+                provider_track_tasks, library_tracks, strict=True
+            ):
+                if library_track:
+                    track_id = int(library_track.item_id)
+                    if track_id not in track_id_to_tracks:
+                        track_id_to_tracks[track_id] = []
+                    track_id_to_tracks[track_id].append(track)
+
+        return track_id_to_tracks
+
     async def _enrich_tracks_with_db_genres(self, tracks: list[Track]) -> None:
         """
         Enrich library tracks with genre data from the database.
@@ -877,19 +920,7 @@ class SmartPlaylistProvider(PluginProvider):
         if not tracks:
             return
 
-        # Build map of library_track_id -> list of track objects in single pass
-        # Check provider_mappings for library presence (tracks from Spotify/etc may also be in library)
-        track_id_to_tracks: dict[int, list[Track]] = {}
-        for t in tracks:
-            if t.metadata and t.metadata.genres:
-                continue
-            for mapping in t.provider_mappings or ():
-                if mapping.provider_domain == "library" and str(mapping.item_id).isdigit():
-                    track_id = int(mapping.item_id)
-                    if track_id not in track_id_to_tracks:
-                        track_id_to_tracks[track_id] = []
-                    track_id_to_tracks[track_id].append(t)
-                    break
+        track_id_to_tracks = await self._build_track_id_map(tracks, skip_tracks_with_genres=True)
         if not track_id_to_tracks:
             return
 
@@ -915,20 +946,46 @@ class SmartPlaylistProvider(PluginProvider):
                 for genre in genres:
                     track.metadata.genres.add(genre.name)
 
-    async def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
-        """
-        Filter out tracks fully played within dedup_hours (scoped to the current user).
+    async def _filter_tracks_with_all_genres(
+        self, tracks: list[Track], required_genre_ids: list[int]
+    ) -> list[Track]:
+        """Filter tracks to only those that have ALL required genre IDs in the database."""
+        if not tracks or not required_genre_ids:
+            return tracks
 
-        Uses the shared recency engine, whose membership test resolves a track across its
-        provider mappings and its own (provider, item_id) so both library and streaming plays
-        are matched. The engine resolves the current user (the queue owner's context is
-        restored during refills), keeping the dedup window per user.
-        """
-        window = dedup_hours * 3600
-        snapshot = await self.mass.music.recency.snapshot(RecencyWindows(song_seconds=window))
-        if not snapshot.song_ts:
-            return list(tracks)
-        return [track for track in tracks if not snapshot.track_recent(track, window)]
+        required_ids = set(required_genre_ids)
+
+        track_id_to_tracks = await self._build_track_id_map(tracks)
+        if not track_id_to_tracks:
+            return []
+
+        # Fetch genres for all track IDs in parallel
+        # With typical limits (20-50 tracks), this results in 100-250 parallel DB calls
+        # which is acceptable. Only at very high limits would we approach the 2000 max.
+        track_ids = list(track_id_to_tracks.keys())
+        genre_results = await asyncio.gather(
+            *(
+                self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
+                for track_id in track_ids
+            )
+        )
+
+        # Build set of track IDs that have all required genres
+        matching_track_ids: set[int] = set()
+        for track_id, genres in zip(track_ids, genre_results, strict=True):
+            track_genre_ids = {
+                int(g.item_id) for g in genres if g.item_id and str(g.item_id).isdigit()
+            }
+            if required_ids.issubset(track_genre_ids):
+                matching_track_ids.add(track_id)
+
+        # Return tracks that match, preserving original order
+        result: list[Track] = []
+        for track_id in track_ids:
+            if track_id in matching_track_ids:
+                result.extend(track_id_to_tracks[track_id])
+
+        return result
 
     async def _evaluate_and(
         self,
@@ -958,6 +1015,10 @@ class SmartPlaylistProvider(PluginProvider):
             limit=min(rules.limit * 5, 2000),
             user_provider_filter=user_provider_filter,
         )
+
+        # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
+        if has_genre and len(rules.genre_ids) > 1:
+            base_tracks = await self._filter_tracks_with_all_genres(base_tracks, rules.genre_ids)
 
         if not has_artist and not has_album:
             return base_tracks
@@ -1064,7 +1125,7 @@ class SmartPlaylistProvider(PluginProvider):
         )
 
     async def _tracks_from_seeds(self, seed_uris: list[str], target_size: int) -> list[Track]:
-        """Resolve seed URIs to media items and feed them through the dynamic radio helper."""
+        """Build a pool of each seed's own tracks plus tracks similar to them."""
         seeds: list[MediaItemType] = []
         for uri in seed_uris:
             try:
@@ -1077,17 +1138,30 @@ class SmartPlaylistProvider(PluginProvider):
                 seeds.append(await ctrl.get(item_id, provider))
             except Exception as exc:
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
-        if not seeds:
-            return []
-        try:
-            return await self.mass.music.get_dynamic_radio_tracks(
-                seeds,
-                include_base_tracks=True,
-                target_size=target_size,
-            )
-        except Exception as exc:
-            self.logger.warning("Dynamic radio generation failed for seeds %s: %s", seed_uris, exc)
-            return []
+        # each seed contributes its own (base) tracks plus tracks similar to them; downstream
+        # post-filtering, dedup, shuffle and limit shape this pool into the final playlist
+        pool: list[Track] = []
+        seen: set[Track] = set()
+        for seed in seeds:
+            if len(pool) >= target_size * 3:
+                break
+            with suppress(MusicAssistantError):
+                for base in await self.mass.player_queues.get_tracks_for_playback(seed):
+                    if len(pool) >= target_size * 3:
+                        break
+                    if base not in seen:
+                        seen.add(base)
+                        pool.append(base)
+                    with suppress(MusicAssistantError):
+                        for track in await self.mass.music.tracks.similar_tracks(
+                            base.item_id, base.provider
+                        ):
+                            if len(pool) >= target_size * 3:
+                                break
+                            if track not in seen:
+                                seen.add(track)
+                                pool.append(track)
+        return pool
 
     async def _update_playlist_description(
         self, library_item_id: int | str, description: str

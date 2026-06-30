@@ -15,7 +15,7 @@ from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
-    is_radio_source_dynamic,
+    has_dynamic_source,
 )
 
 if TYPE_CHECKING:
@@ -63,32 +63,37 @@ def _queue() -> PlayerQueue:
     return PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
 
 
-class TestIsRadioSourceDynamic:
-    """Tests for is_radio_source_dynamic."""
+class TestHasDynamicSource:
+    """Tests for has_dynamic_source."""
 
     def test_single_dynamic_playlist(self) -> None:
-        """A single dynamic playlist is a dynamic radio source."""
-        assert is_radio_source_dynamic([_playlist(is_dynamic=True)]) is True
+        """A single dynamic playlist puts the queue in dynamic mode."""
+        assert has_dynamic_source([_playlist(is_dynamic=True)]) is True
 
     def test_single_non_dynamic_playlist(self) -> None:
-        """A single non-dynamic playlist is not a dynamic radio source."""
-        assert is_radio_source_dynamic([_playlist(is_dynamic=False)]) is False
+        """A single non-dynamic playlist is not a dynamic source."""
+        assert has_dynamic_source([_playlist(is_dynamic=False)]) is False
 
     def test_empty_source(self) -> None:
-        """An empty radio source is not dynamic."""
-        assert is_radio_source_dynamic([]) is False
+        """An empty source list is not dynamic."""
+        assert has_dynamic_source([]) is False
 
     def test_multiple_dynamic_playlists(self) -> None:
-        """More than one item is never treated as a dynamic radio source."""
+        """Any dynamic playlist among the sources puts the queue in dynamic mode."""
         source: list[MediaItemType] = [
             _playlist(is_dynamic=True, name="A"),
             _playlist(is_dynamic=True, name="B"),
         ]
-        assert is_radio_source_dynamic(source) is False
+        assert has_dynamic_source(source) is True
+
+    def test_dynamic_playlist_mixed_with_finite_source(self) -> None:
+        """A dynamic playlist mixed with a finite source still counts as dynamic."""
+        source: list[MediaItemType] = [_track("Song"), _playlist(is_dynamic=True)]
+        assert has_dynamic_source(source) is True
 
     def test_non_playlist_item(self) -> None:
-        """A non-playlist media item is not a dynamic radio source."""
-        assert is_radio_source_dynamic([_track("Song")]) is False
+        """A non-playlist media item is not a dynamic source."""
+        assert has_dynamic_source([_track("Song")]) is False
 
 
 class TestGetCurrentPlaybackSpeed:

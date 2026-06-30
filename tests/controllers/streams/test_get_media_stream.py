@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -99,6 +101,65 @@ def _make_streamdetails(
 async def _drain(gen: AsyncGenerator[bytes]) -> None:
     async for _ in gen:
         pass
+
+
+class _StallingFFMpeg(_FakeFFMpeg):
+    """FFMpeg double whose read never produces a chunk (frozen source)."""
+
+    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
+        await asyncio.Event().wait()  # blocks until the watchdog cancels the read
+        yield b""  # unreachable
+
+
+class _SlowConsumerFFMpeg(_FakeFFMpeg):
+    """FFMpeg double that hands over chunks instantly when asked."""
+
+    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
+        for _ in range(3):
+            yield b"\x00\x01" * 256
+
+
+def _flac_streamdetails() -> StreamDetails:
+    return _make_streamdetails(
+        audio_format=AudioFormat(
+            content_type=ContentType.FLAC,
+            codec_type=ContentType.FLAC,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_raises_when_source_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source that stops producing audio is surfaced as an AudioError."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _StallingFFMpeg)
+    monkeypatch.setattr(audio_mod, "STREAM_START_TIMEOUT", 0.1)
+    monkeypatch.setattr(audio_mod, "STREAM_STALL_TIMEOUT", 0.1)
+
+    audio = _make_audio_controller()
+    with pytest.raises(AudioError):
+        await _drain(audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()))
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_does_not_stall_on_slow_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A consumer slower than the stall timeout must not trip the watchdog."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _SlowConsumerFFMpeg)
+    monkeypatch.setattr(audio_mod, "STREAM_START_TIMEOUT", 0.1)
+    monkeypatch.setattr(audio_mod, "STREAM_STALL_TIMEOUT", 0.1)
+
+    audio = _make_audio_controller()
+    chunks = 0
+    async for _ in audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()):
+        chunks += 1
+        await asyncio.sleep(0.3)  # downstream waits far longer than the stall timeout
+    assert chunks == 3
 
 
 @pytest.mark.asyncio

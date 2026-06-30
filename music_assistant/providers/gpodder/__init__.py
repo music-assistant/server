@@ -603,7 +603,7 @@ class GPodder(MusicProvider):
             if guid_or_stream_url in (guid, stream_url):
                 await enrich_episode_chapters(
                     session=self.mass.http_session,
-                    episode=episode,
+                    chapters_json_url=episode.get("chapters_json_url"),
                     mass_episode=mass_episode,
                 )
                 return

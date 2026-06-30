@@ -29,6 +29,8 @@ uv pip install -e "."
 uv pip install -e ".[test]"
 # --index-strategy: allow PyPI packages when also using the PyTorch extra index
 # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+export URLLIB3_NO_OVERRIDE=1
 [[ -f requirements_all.txt ]] && uv pip install --index-strategy unsafe-best-match -r requirements_all.txt
 
 

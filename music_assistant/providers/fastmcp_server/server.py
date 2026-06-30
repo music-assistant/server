@@ -15,6 +15,7 @@ from .constants import (
     CONF_MOUNT_PATH,
     CONF_REQUIRE_AUTH,
     CONF_REQUIRE_CONFIRMATION,
+    CONF_TRUST_FORWARDED_PROTO,
     DEFAULT_MOUNT_PATH,
 )
 from .tags import enabled_tags
@@ -235,6 +236,7 @@ class MCPServerRuntime:
                 self._mount_path,
                 enabled_tags_provider=lambda: [str(t) for t in enabled_tags(self._config)],
                 extra_origins_csv=extra_origins,
+                trust_forwarded_proto=bool(self._config.get_value(CONF_TRUST_FORWARDED_PROTO)),
             )
         except Exception:
             self._logger.warning("Connect Wizard: mount failed", exc_info=True)
