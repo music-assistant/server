@@ -19,7 +19,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace as dc_replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -55,7 +55,6 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
-from music_assistant.helpers.seed_tracks import seed_tracks
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.smart_playlist.helpers import (
@@ -1090,7 +1089,7 @@ class SmartPlaylistProvider(PluginProvider):
             if len(pool) >= target_size * 3:
                 break
             with suppress(MusicAssistantError):
-                for base in await seed_tracks(self.mass, seed):
+                for base in await self._seed_tracks(seed):
                     if base not in seen:
                         seen.add(base)
                         pool.append(base)
@@ -1102,6 +1101,27 @@ class SmartPlaylistProvider(PluginProvider):
                                 seen.add(track)
                                 pool.append(track)
         return pool
+
+    async def _seed_tracks(self, item: MediaItemType) -> list[Track]:
+        """Return a seed item's own representative tracks to derive similar tracks from."""
+        music = self.mass.music
+        if item.media_type == MediaType.TRACK:
+            return [cast("Track", item)]
+        if item.media_type == MediaType.ALBUM:
+            return await music.albums.tracks(item.item_id, item.provider, in_library_only=False)
+        if item.media_type == MediaType.ARTIST:
+            return await music.artists.top_tracks(
+                item.item_id, item.provider
+            ) or await music.artists.tracks(item.item_id, item.provider)
+        if item.media_type == MediaType.PLAYLIST:
+            return [
+                track
+                async for track in music.playlists.tracks(item.item_id, item.provider)
+                if isinstance(track, Track) and track.available
+            ]
+        if item.media_type == MediaType.GENRE:
+            return await music.genres.tracks(item.item_id, limit=50, order_by="random")
+        return []
 
     async def _update_playlist_description(
         self, library_item_id: int | str, description: str
