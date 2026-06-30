@@ -48,6 +48,7 @@ from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.seed_tracks import seed_tracks
 
 from .base import MediaControllerBase
 
@@ -318,32 +319,6 @@ class GenreController(MediaControllerBase[Genre]):
             )
         return items
 
-    async def base_tracks(
-        self,
-        item: Genre,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks for a genre.
-
-        :param item: The Genre to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        db_id = int(item.item_id)
-        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-        query = (
-            f"EXISTS(SELECT 1 FROM {gm} gm "
-            "WHERE gm.media_id = tracks.item_id "
-            "AND gm.media_type = 'track' "
-            "AND gm.genre_id = :genre_id)"
-        )
-        return await self.mass.music.tracks.get_library_items_by_query(
-            extra_query_parts=[query],
-            extra_query_params={"genre_id": db_id},
-            limit=50,
-            order_by="random",
-        )
-
     async def mapped_media(
         self,
         item: Genre,
@@ -487,12 +462,11 @@ class GenreController(MediaControllerBase[Genre]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str | None = None,
-        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Return base tracks for genre radio mode."""
+        """Return the seed tracks for a genre."""
         provider = provider_instance_id_or_domain or "library"
         item = await self.get(item_id, provider)
-        return await self.base_tracks(item, preferred_provider_instances)
+        return await seed_tracks(self.mass, item)
 
     async def get_overview(
         self,

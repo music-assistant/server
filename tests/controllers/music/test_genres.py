@@ -43,6 +43,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.seed_tracks import seed_tracks
 from music_assistant.mass import MusicAssistant
 
 # ---------------------------------------------------------------------------
@@ -1278,7 +1279,7 @@ class TestQueryMethods:
     async def test_radio_mode_empty(self, genre_ctrl: GenreController) -> None:
         """No mapped tracks returns empty list."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("EmptyRadio"))
-        tracks = await genre_ctrl.base_tracks(genre)
+        tracks = await seed_tracks(genre_ctrl.mass, genre)
         assert tracks == []
 
     async def test_radio_mode_returns_tracks(
@@ -1290,14 +1291,14 @@ class TestQueryMethods:
         await genre_ctrl.add_media_mapping(
             genre.item_id, MediaType.TRACK, track.item_id, "RadioGenre"
         )
-        tracks = await genre_ctrl.base_tracks(genre)
+        tracks = await seed_tracks(genre_ctrl.mass, genre)
         assert len(tracks) >= 1
         assert any(t.name == "Radio Track" for t in tracks)
 
     async def test_radio_mode_limit_50(self, genre_ctrl: GenreController) -> None:
-        """At most 50 tracks returned (hardcoded limit in base_tracks)."""
+        """At most 50 tracks returned (hardcoded limit in the genre seed query)."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("RadioLimit"))
-        tracks = await genre_ctrl.base_tracks(genre)
+        tracks = await seed_tracks(genre_ctrl.mass, genre)
         assert len(tracks) <= 50
 
     async def test_mapped_media_returns_all_types(

@@ -23,6 +23,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.controllers.player_queues.constants import MANAGED_POOL_TARGET
+from music_assistant.helpers.seed_tracks import seed_tracks
 from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
@@ -93,7 +94,7 @@ class ManagedPoolHelper:
         with track_filter(lambda track: not snapshot.track_recent(track, windows.song_seconds)):
             # the initial fill skips dynamic playlists (each seeds its own first batch directly); a
             # top-up folds them in so all sources are mixed, weighted and recency-gated together
-            sources = await self._collect_sources(queue_id, queue, include_dynamic=not is_initial)
+            sources = await self._collect_sources(queue_id, include_dynamic=not is_initial)
         if not sources:
             return []
         # dedupe only against the active (current + unplayed) tail; played history is left out so
@@ -113,13 +114,12 @@ class ManagedPoolHelper:
         )
 
     async def _collect_sources(
-        self, queue_id: str, queue: PlayerQueue, *, include_dynamic: bool
+        self, queue_id: str, *, include_dynamic: bool
     ) -> list[DynamicSource]:
         """
         Group the queue's source items into dynamic sources and fetch each one's candidates.
 
         :param queue_id: The queue being filled.
-        :param queue: The queue being filled.
         :param include_dynamic: Whether to include dynamic-playlist sources; skipped on the initial
             fill, where each dynamic playlist seeds its own first batch directly.
         """
@@ -135,7 +135,6 @@ class ManagedPoolHelper:
             items.setdefault(uri, item)
         if not items:
             return []
-        preferred = await self._preferred_providers(queue)
         sources: list[DynamicSource] = []
         for uri, media_item in items.items():
             if isinstance(media_item, Playlist) and media_item.is_dynamic:
@@ -143,7 +142,7 @@ class ManagedPoolHelper:
                 candidates = await self._fetch_dynamic(media_item)
             else:
                 fill_mode = DynamicFillMode.TRACKS
-                candidates = await self._fetch_tracks(media_item, preferred=preferred)
+                candidates = await self._fetch_tracks(media_item)
             sources.append(
                 DynamicSource(
                     media_item=media_item,
@@ -163,25 +162,12 @@ class ManagedPoolHelper:
             return [track for track in tracks if isinstance(track, Track) and track.available]
         return []
 
-    async def _fetch_tracks(
-        self, media_item: MediaItemType, *, preferred: list[str] | None
-    ) -> list[Track]:
-        """Fetch a TRACKS source's own (playable) tracks via its media controller."""
-        controller = self.mass.music.get_controller(media_item.media_type)
+    async def _fetch_tracks(self, media_item: MediaItemType) -> list[Track]:
+        """Fetch a TRACKS source's own (playable) seed tracks."""
         with suppress(MusicAssistantError):
-            tracks = await controller.base_tracks(media_item, preferred)  # type: ignore[arg-type]
+            tracks = await seed_tracks(self.mass, media_item)
             return [track for track in tracks if isinstance(track, Track) and track.available]
         return []
-
-    async def _preferred_providers(self, queue: PlayerQueue) -> list[str] | None:
-        """Return the queue owner's preferred provider instances, if any."""
-        if (
-            queue.userid
-            and (user := await self.mass.webserver.auth.get_user(queue.userid))
-            and user.provider_filter
-        ):
-            return user.provider_filter
-        return None
 
     def _unplayed(self, queue: PlayerQueue) -> int:
         """Return how many not-yet-played items remain in the queue."""

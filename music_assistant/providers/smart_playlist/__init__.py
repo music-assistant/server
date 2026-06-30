@@ -55,6 +55,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
+from music_assistant.helpers.seed_tracks import seed_tracks
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.smart_playlist.helpers import (
@@ -1089,9 +1090,7 @@ class SmartPlaylistProvider(PluginProvider):
             if len(pool) >= target_size * 3:
                 break
             with suppress(MusicAssistantError):
-                controller = self.mass.music.get_controller(seed.media_type)
-                base_tracks = await controller.base_tracks(seed)  # type: ignore[arg-type]
-                for base in base_tracks:
+                for base in await seed_tracks(self.mass, seed):
                     if base not in seen:
                         seen.add(base)
                         pool.append(base)

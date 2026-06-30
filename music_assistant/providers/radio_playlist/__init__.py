@@ -35,6 +35,7 @@ from music_assistant.controllers.music.constants import (
     DYNAMIC_RADIO_DYNAMIC_TARGET,
     RADIO_TRACK_MAX_DURATION_SECS,
 )
+from music_assistant.helpers.seed_tracks import seed_tracks
 from music_assistant.helpers.track_filter import get_track_filter
 from music_assistant.models.plugin import PluginProvider
 
@@ -140,15 +141,7 @@ class RadioPlaylistProvider(PluginProvider):
         seen: set[Track] = set()
         available_base_tracks: list[Track] = []
         for seed in random.sample(seeds, len(seeds)):
-            ctrl = self.mass.music.get_controller(seed.media_type)
-            try:
-                base_tracks_for_seed = await ctrl.base_tracks(
-                    seed,  # type: ignore[arg-type]
-                    preferred_provider_instances,
-                )
-            except UnsupportedFeaturedException:
-                continue
-            for track in base_tracks_for_seed:
+            for track in await seed_tracks(self.mass, seed):
                 if track not in seen:
                     seen.add(track)
                     available_base_tracks.append(track)

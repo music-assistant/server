@@ -514,7 +514,7 @@ async def test_seed_mode_uses_tracks_from_seeds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tracks_from_seeds_pools_base_and_similar() -> None:
+async def test_tracks_from_seeds_pools_base_and_similar(monkeypatch: pytest.MonkeyPatch) -> None:
     """_tracks_from_seeds gathers each seed's base tracks plus similar tracks, deduped."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -530,8 +530,11 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
 
     ctrl = MagicMock()
     ctrl.get = AsyncMock(return_value=seed)
-    ctrl.base_tracks = AsyncMock(return_value=[base])
     mass.music.get_controller = MagicMock(return_value=ctrl)
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.seed_tracks",
+        AsyncMock(return_value=[base]),
+    )
     # similar repeats the base track, which must be deduped out of the pool
     mass.music.tracks.similar_tracks = AsyncMock(return_value=[sim1, sim2, base])
 

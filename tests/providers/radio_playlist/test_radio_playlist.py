@@ -36,54 +36,48 @@ def _seed(media_type: MediaType, item_id: str) -> MagicMock:
 
 
 def _make_provider(
-    base_tracks_by_seed: dict[str, list[MagicMock]], similar: list[MagicMock]
+    monkeypatch: pytest.MonkeyPatch,
+    base_tracks_by_seed: dict[str, list[MagicMock]],
+    similar: list[MagicMock],
 ) -> RadioPlaylistProvider:
-    """Build a RadioPlaylistProvider with the music-controller bits it needs stubbed out."""
+    """Build a RadioPlaylistProvider with seed-track derivation and similar lookups stubbed out."""
     prov = RadioPlaylistProvider.__new__(RadioPlaylistProvider)
     mass = MagicMock()
     mass.music.tracks.similar_tracks = AsyncMock(return_value=similar)
-
-    media_controllers: dict[MediaType, MagicMock] = {}
-
-    def get_controller(media_type: MediaType) -> MagicMock:
-        if media_type not in media_controllers:
-            media_ctrl = MagicMock()
-            media_ctrl.base_tracks = AsyncMock(
-                side_effect=lambda seed, _prefs=None: base_tracks_by_seed.get(seed.item_id, [])
-            )
-            media_controllers[media_type] = media_ctrl
-        return media_controllers[media_type]
-
-    mass.music.get_controller = get_controller
     prov.mass = cast("MusicAssistant", mass)
+
+    async def fake_seed_tracks(_mass: Any, seed: MagicMock) -> list[MagicMock]:
+        return base_tracks_by_seed.get(seed.item_id, [])
+
+    monkeypatch.setattr("music_assistant.providers.radio_playlist.seed_tracks", fake_seed_tracks)
     return prov
 
 
 @pytest.mark.asyncio
-async def test_no_seeds_raises() -> None:
+async def test_no_seeds_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty seed list raises UnsupportedFeaturedException."""
-    prov = _make_provider({}, [])
+    prov = _make_provider(monkeypatch, {}, [])
     with pytest.raises(UnsupportedFeaturedException):
         await prov.get_dynamic_tracks([])
 
 
 @pytest.mark.asyncio
-async def test_seed_with_no_base_tracks_raises() -> None:
+async def test_seed_with_no_base_tracks_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """When all seeds yield zero base tracks, raises UnsupportedFeaturedException."""
     seed = _seed(MediaType.ALBUM, "1")
-    prov = _make_provider({"1": []}, [])
+    prov = _make_provider(monkeypatch, {"1": []}, [])
     with pytest.raises(UnsupportedFeaturedException):
         await prov.get_dynamic_tracks([seed])
 
 
 @pytest.mark.asyncio
-async def test_long_tracks_are_filtered() -> None:
+async def test_long_tracks_are_filtered(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tracks longer than the max-duration threshold are dropped from candidates."""
     seed = _seed(MediaType.TRACK, "s1")
     base = _track("s1")
     short = _track("short", duration=100)
     long_track = _track("long", duration=RADIO_TRACK_MAX_DURATION_SECS + 1)
-    prov = _make_provider({"s1": [base]}, [short, long_track])
+    prov = _make_provider(monkeypatch, {"s1": [base]}, [short, long_track])
 
     result = await prov.get_dynamic_tracks([seed], target_size=10)
     ids = {t.item_id for t in result}
@@ -92,24 +86,24 @@ async def test_long_tracks_are_filtered() -> None:
 
 
 @pytest.mark.asyncio
-async def test_include_base_tracks_emits_seed_track() -> None:
+async def test_include_base_tracks_emits_seed_track(monkeypatch: pytest.MonkeyPatch) -> None:
     """include_base_tracks=True ensures at least one base track is in the output."""
     seed = _seed(MediaType.TRACK, "s1")
     base = _track("s1")
     similar = [_track(f"sim{i}") for i in range(5)]
-    prov = _make_provider({"s1": [base]}, similar)
+    prov = _make_provider(monkeypatch, {"s1": [base]}, similar)
 
     result = await prov.get_dynamic_tracks([seed], include_base_tracks=True, target_size=5)
     assert any(t.item_id == "s1" for t in result)
 
 
 @pytest.mark.asyncio
-async def test_exclude_base_tracks_omits_seed_track() -> None:
+async def test_exclude_base_tracks_omits_seed_track(monkeypatch: pytest.MonkeyPatch) -> None:
     """include_base_tracks=False keeps only similar tracks in the output."""
     seed = _seed(MediaType.TRACK, "s1")
     base = _track("s1")
     similar = [_track(f"sim{i}") for i in range(5)]
-    prov = _make_provider({"s1": [base]}, similar)
+    prov = _make_provider(monkeypatch, {"s1": [base]}, similar)
 
     result = await prov.get_dynamic_tracks([seed], include_base_tracks=False, target_size=5)
     assert all(t.item_id != "s1" for t in result)
@@ -117,12 +111,13 @@ async def test_exclude_base_tracks_omits_seed_track() -> None:
 
 
 @pytest.mark.asyncio
-async def test_multiple_seeds_dedup_base_tracks() -> None:
+async def test_multiple_seeds_dedup_base_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Duplicate base tracks across seeds are deduplicated before sampling."""
     seed_a = _seed(MediaType.ALBUM, "a")
     seed_b = _seed(MediaType.ALBUM, "b")
     shared = _track("shared")
     prov = _make_provider(
+        monkeypatch,
         {"a": [shared, _track("a-only")], "b": [shared, _track("b-only")]},
         [_track("sim1"), _track("sim2")],
     )
