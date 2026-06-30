@@ -1841,6 +1841,56 @@ async def test_update_rules_drops_stale_and_schedules_regeneration(tmp_path: Any
 
 
 @pytest.mark.asyncio
+async def test_update_rules_skips_metadata_refresh_if_unchanged(tmp_path: Any) -> None:
+    """Updating rules with identical values does not trigger metadata refresh."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    initial_rules = SmartPlaylistRules(favorites_only=True, genre_ids=[1])
+    plugin._rules_store["abc"] = initial_rules
+    plugin._names_store["abc"] = "Name"
+    mass = cast("Any", plugin.mass)
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=_make_library_item(plugin, "abc")
+    )
+    cast("Any", plugin)._update_playlist_description = AsyncMock()
+    mass.create_task = MagicMock()
+    mass.call_later = MagicMock()
+
+    # Update with identical rules
+    await plugin.update_smart_playlist_rules("abc", {"favorites_only": True, "genre_ids": [1]})
+
+    # Should not trigger metadata refresh since rules didn't change
+    mass.call_later.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_rules_triggers_metadata_refresh_if_changed(tmp_path: Any) -> None:
+    """Updating rules with different values triggers metadata refresh."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    initial_rules = SmartPlaylistRules(favorites_only=True)
+    plugin._rules_store["abc"] = initial_rules
+    plugin._names_store["abc"] = "Name"
+    mass = cast("Any", plugin.mass)
+    library_item = _make_library_item(plugin, "abc")
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=library_item)
+    cast("Any", plugin)._update_playlist_description = AsyncMock()
+    mass.create_task = MagicMock()
+    mass.call_later = MagicMock()
+
+    # Update with different rules
+    await plugin.update_smart_playlist_rules("abc", {"genre_ids": [1]})
+
+    # Should trigger metadata refresh since rules changed
+    mass.call_later.assert_called_once()
+    args = mass.call_later.call_args
+    assert args[0][0] == 5  # delay
+    assert args[0][1] == mass.metadata.update_metadata  # function
+    assert args[0][2] == library_item  # library_item
+    assert args[1]["force_refresh"] is True
+
+
+@pytest.mark.asyncio
 async def test_refresh_ai_description_stores_and_updates(tmp_path: Any) -> None:
     """The background refresh stores the AI text and pushes it to the library item."""
     plugin = _make_ai_plugin(tmp_path, ai_provider=_make_ai_provider("Fresh AI summary."))

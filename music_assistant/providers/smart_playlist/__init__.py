@@ -471,6 +471,9 @@ class SmartPlaylistProvider(PluginProvider):
         if existing is not None:
             parsed_rules.is_dynamic = existing.is_dynamic
         self._validate_rules(parsed_rules)
+
+        rules_changed = existing is None or existing.to_dict() != parsed_rules.to_dict()
+
         # Drop the stale AI description before saving so it is invalidated on disk in the
         # same flush as the rule change, not left behind until the background refresh runs.
         self._descriptions_store.pop(prov_id, None)
@@ -483,13 +486,13 @@ class SmartPlaylistProvider(PluginProvider):
             await self._update_playlist_description(
                 library_item.item_id, self._description_for(prov_id, parsed_rules)
             )
-            # Force metadata refresh to regenerate artwork immediately after rule changes
-            self.mass.call_later(
-                5,
-                self.mass.metadata.update_metadata,
-                library_item,
-                force_refresh=True,
-            )
+            if rules_changed:
+                self.mass.call_later(
+                    5,
+                    self.mass.metadata.update_metadata,
+                    library_item,
+                    force_refresh=True,
+                )
         self._schedule_ai_description_refresh(prov_id)
 
     async def list_smart_playlists(self) -> list[dict[str, Any]]:
