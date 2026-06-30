@@ -54,6 +54,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         **kwargs: Any,
     ) -> list[Podcast]:
         """
@@ -75,6 +76,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
+            played_only=played_only,
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
