@@ -299,7 +299,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
-        :param played_only: Only include items that have been played (last_played IS NOT NULL).
+        :param played_only: Only include items that have been played (last_played > 0).
         """
         items = await self.get_library_items_by_query(
             favorite=favorite,
@@ -1162,7 +1162,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params["favorite"] = favorite
         # handle played_only filter
         if played_only:
-            query_parts.append(f"{self.db_table}.last_played IS NOT NULL")
+            query_parts.append(f"{self.db_table}.last_played > 0")
         # handle genre filter
         if genre_ids:
             query_params["genre_ids"] = genre_ids

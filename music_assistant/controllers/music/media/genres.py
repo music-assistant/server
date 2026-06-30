@@ -318,6 +318,7 @@ class GenreController(MediaControllerBase[Genre]):
                 offset=offset,
                 favorite=favorite,
                 order_by=order_by,
+                played_only=played_only,
                 hide_empty=hide_empty,
                 media_type=media_type,
                 content_type=content_type,
