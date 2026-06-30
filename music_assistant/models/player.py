@@ -72,6 +72,11 @@ if TYPE_CHECKING:
     from .player_provider import PlayerProvider
 
 
+def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
+    """Return elapsed_time clamped to a non-negative value."""
+    return max(0.0, elapsed_time) if elapsed_time is not None else None
+
+
 class Player(ABC):
     """
     Base representation of a Player within the Music Assistant Server.
@@ -196,7 +201,7 @@ class Player(ABC):
     @property
     def elapsed_time(self) -> float | None:
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
-        return self._attr_elapsed_time
+        return _clamp_elapsed_time(self._attr_elapsed_time)
 
     @property
     def elapsed_time_last_updated(self) -> float | None:
@@ -873,8 +878,10 @@ class Player(ABC):
         if self.elapsed_time is None or self.elapsed_time_last_updated is None:
             return None
         if self.playback_state == PlaybackState.PLAYING:
-            return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
-        return self.elapsed_time
+            return _clamp_elapsed_time(
+                self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
+            )
+        return _clamp_elapsed_time(self.elapsed_time)
 
     @cached_property
     @final
