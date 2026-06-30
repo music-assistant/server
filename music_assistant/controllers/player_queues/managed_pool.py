@@ -17,9 +17,8 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
@@ -163,31 +162,9 @@ class ManagedPoolHelper:
         return []
 
     async def _fetch_tracks(self, media_item: MediaItemType) -> list[Track]:
-        """Fetch a TRACKS source's own (playable) tracks."""
-        music = self.mass.music
+        """Fetch a TRACKS source's own (playable) tracks, honoring the user's selection prefs."""
         with suppress(MusicAssistantError):
-            if media_item.media_type == MediaType.TRACK:
-                tracks: list[Track] = [cast("Track", media_item)]
-            elif media_item.media_type == MediaType.ALBUM:
-                tracks = await music.albums.tracks(
-                    media_item.item_id, media_item.provider, in_library_only=False
-                )
-            elif media_item.media_type == MediaType.ARTIST:
-                tracks = await music.artists.top_tracks(
-                    media_item.item_id, media_item.provider
-                ) or await music.artists.tracks(media_item.item_id, media_item.provider)
-            elif media_item.media_type == MediaType.PLAYLIST:
-                tracks = [
-                    track
-                    async for track in music.playlists.tracks(
-                        media_item.item_id, media_item.provider
-                    )
-                    if isinstance(track, Track) and track.available
-                ]
-            elif media_item.media_type == MediaType.GENRE:
-                tracks = await music.genres.tracks(media_item.item_id, limit=50, order_by="random")
-            else:
-                tracks = []
+            tracks = await self.queues.get_tracks_for_playback(media_item)
             return [track for track in tracks if isinstance(track, Track) and track.available]
         return []
 

@@ -1705,6 +1705,31 @@ class PlayerQueuesController(CoreController):
                 )
         return media
 
+    async def get_tracks_for_playback(self, media_item: MediaItemType) -> list[Track]:
+        """
+        Return the playable tracks for a media item, honoring the user's selection preferences.
+
+        Resolves an umbrella media item (artist, album, genre, playlist) to the tracks that
+        playing it would enqueue; a track resolves to itself, other types to an empty list.
+
+        :param media_item: The media item to resolve to playable tracks.
+        """
+        if media_item.media_type == MediaType.TRACK:
+            return [cast("Track", media_item)]
+        if media_item.media_type == MediaType.ALBUM:
+            return await self.get_album_tracks(cast("Album", media_item), None)
+        if media_item.media_type == MediaType.ARTIST:
+            return await self.get_artist_tracks(cast("Artist", media_item))
+        if media_item.media_type == MediaType.GENRE:
+            return await self.get_genre_tracks(cast("Genre", media_item), None)
+        if media_item.media_type == MediaType.PLAYLIST:
+            return [
+                track
+                for track in await self.get_playlist_tracks(cast("Playlist", media_item), None)
+                if isinstance(track, Track)
+            ]
+        return []
+
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:
         """Return the tracks to play for the given artist, based on user preference."""
         artist_items_conf = self.mass.config.get_raw_core_config_value(

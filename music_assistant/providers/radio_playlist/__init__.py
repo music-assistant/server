@@ -12,10 +12,9 @@ seed.
 from __future__ import annotations
 
 import random
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
-from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -141,7 +140,7 @@ class RadioPlaylistProvider(PluginProvider):
         seen: set[Track] = set()
         available_base_tracks: list[Track] = []
         for seed in random.sample(seeds, len(seeds)):
-            for track in await self._seed_tracks(seed):
+            for track in await self.mass.player_queues.get_tracks_for_playback(seed):
                 if track not in seen:
                     seen.add(track)
                     available_base_tracks.append(track)
@@ -206,24 +205,3 @@ class RadioPlaylistProvider(PluginProvider):
         if isinstance(seed, BrowseFolder):
             raise MediaNotFoundError(f"Radio playlist seed is not a media item: {seed_uri}")
         return seed
-
-    async def _seed_tracks(self, item: MediaItemType) -> list[Track]:
-        """Return a seed item's own representative tracks to build the radio playlist from."""
-        music = self.mass.music
-        if item.media_type == MediaType.TRACK:
-            return [cast("Track", item)]
-        if item.media_type == MediaType.ALBUM:
-            return await music.albums.tracks(item.item_id, item.provider, in_library_only=False)
-        if item.media_type == MediaType.ARTIST:
-            return await music.artists.top_tracks(
-                item.item_id, item.provider
-            ) or await music.artists.tracks(item.item_id, item.provider)
-        if item.media_type == MediaType.PLAYLIST:
-            return [
-                track
-                async for track in music.playlists.tracks(item.item_id, item.provider)
-                if isinstance(track, Track) and track.available
-            ]
-        if item.media_type == MediaType.GENRE:
-            return await music.genres.tracks(item.item_id, limit=50, order_by="random")
-        return []

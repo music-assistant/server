@@ -531,7 +531,7 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
     ctrl = MagicMock()
     ctrl.get = AsyncMock(return_value=seed)
     mass.music.get_controller = MagicMock(return_value=ctrl)
-    cast("Any", plugin)._seed_tracks = AsyncMock(return_value=[base])
+    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=[base])
     # similar repeats the base track, which must be deduped out of the pool
     mass.music.tracks.similar_tracks = AsyncMock(return_value=[sim1, sim2, base])
 
