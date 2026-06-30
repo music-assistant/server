@@ -1,4 +1,5 @@
-"""Trimmed response dataclasses used in tool replies.
+"""
+Trimmed response dataclasses used in tool replies.
 
 Tools that need to return a Music Assistant entity use these light-weight shapes
 to keep payloads small for LLM context windows. Resources, by contrast, return
@@ -112,7 +113,8 @@ class QueueItemBrief:
 
 @dataclass
 class QueueBrief:
-    """A queue summary for tool responses.
+    """
+    A queue summary for tool responses.
 
     ``item_count`` is ``None`` when the upstream queue object exposes neither
     a canonical total nor an items-count field — better to say "unknown"

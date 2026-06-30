@@ -1,4 +1,5 @@
-"""End-to-end smoke test: build the runtime in-memory and exercise it via FastMCP Client.
+"""
+End-to-end smoke test: build the runtime in-memory and exercise it via FastMCP Client.
 
 This test is the only one that depends on the ``fastmcp`` package being
 installed and on Music Assistant model imports working — the rest of the

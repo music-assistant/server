@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastmcp import Client
 
-# Use the ``from music_assistant.providers.fastmcp_server.debug import …`` form (not ``import provider.debug.… as``):
+# Use the ``from music_assistant.providers.fastmcp_server.debug import …`` form (not ``import music_assistant.providers.fastmcp_server.debug.… as``):
 # the upstream import-path rewrite only translates ``from music_assistant.providers.fastmcp_server.`` imports, so
 # the aliased ``import`` form survives un-rewritten and breaks the bundled tests.
 from music_assistant.providers.fastmcp_server.debug import event_buffer as ev_buf
@@ -74,7 +74,8 @@ def test_snapshot_filters_event_types_and_id(mock_mass: Any, fake_event_emitter:
 def test_snapshot_since_seconds_filters_old_events(
     mock_mass: Any, fake_event_emitter: Any, monkeypatch: Any
 ) -> None:
-    """Patch the buffer's _now indirection to a controllable clock.
+    """
+    Patch the buffer's _now indirection to a controllable clock.
 
     Project does not ship freezegun and pyproject.toml is templated
     (cannot be hand-edited per CLAUDE.md). The buffer module exposes
