@@ -90,7 +90,6 @@ async def test_refill_gates_recent_and_weights_by_multiplicity(e2e_mass: MusicAs
     album_double = await test_prov.get_album("1_0")  # tracks 1_0_0 .. 1_0_19
     sources = cast("list[MediaItemType]", [album_single, album_double, album_double])
     e2e_mass.player_queues._source_items[queue_id] = sources
-    e2e_mass.player_queues._managed_pool.register(queue_id, sources, set(), replace=True)
 
     # singleton album: 5 tracks played a day ago -> within the 1-week song window -> hard-gated
     now = int(time.time())
@@ -126,7 +125,6 @@ async def test_refill_dedupes_only_active_tail_not_played_history(e2e_mass: Musi
     album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
     sources = cast("list[MediaItemType]", [album])
     e2e_mass.player_queues._source_items[queue_id] = sources
-    e2e_mass.player_queues._managed_pool.register(queue_id, sources, set(), replace=True)
 
     # simulate a queue with played history: 0_0_0..0_0_4 already played, 0_0_5 is the current track
     queue_items = [

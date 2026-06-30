@@ -5,7 +5,6 @@ A queue with one or more *dynamic sources* (its ``sources``) is kept as a small 
 that is topped up as it plays down. Each source has a *fill mode*:
 
 - ``DYNAMIC`` — a dynamic playlist's own self-managing batch (a radio playlist, a station);
-- ``SIMILAR`` — base + similar/discovery tracks (radio sources);
 - ``TRACKS`` — the source's own unplayed tracks (a playlist/album/artist mixed into the pool).
 
 Each top-up apportions slots across the sources by weight (per-base quota by default, so adding a
@@ -23,11 +22,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.controllers.player_queues.constants import (
-    CACHE_CATEGORY_PLAYER_QUEUE_POOL,
-    MANAGED_POOL_TARGET,
-    POOL_PER_SOURCE_FETCH,
-)
+from music_assistant.controllers.player_queues.constants import MANAGED_POOL_TARGET
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
@@ -51,7 +46,7 @@ class DynamicFillMode(StrEnum):
 
     # a dynamic playlist (radio playlist, station): its own self-managing batch of tracks
     DYNAMIC = "dynamic"
-    SIMILAR = "similar"
+    # a finite source (playlist/album/artist): its own unplayed tracks mixed into the pool
     TRACKS = "tracks"
 
 
@@ -81,93 +76,6 @@ class ManagedPoolHelper:
         self.queues = queues
         self.mass = queues.mass
         self.logger = queues.logger.getChild("managed_pool")
-        # queue_id -> set of source URIs whose fill mode is SIMILAR (default, absent = TRACKS)
-        self._similar_sources: dict[str, set[str]] = {}
-
-    def fill_mode(self, queue_id: str, uri: str | None) -> DynamicFillMode:
-        """
-        Return the fill mode for a source URI in the given queue.
-
-        :param queue_id: The queue the source belongs to.
-        :param uri: The source's URI.
-        """
-        if uri and uri in self._similar_sources.get(queue_id, ()):
-            return DynamicFillMode.SIMILAR
-        return DynamicFillMode.TRACKS
-
-    def register(
-        self,
-        queue_id: str,
-        source_items: list[MediaItemType],
-        similar_uris: set[str],
-        *,
-        replace: bool,
-    ) -> None:
-        """
-        Record the fill modes for a queue's dynamic sources and persist them.
-
-        :param queue_id: The queue being (re)configured.
-        :param source_items: The queue's full list of dynamic sources after this enqueue.
-        :param similar_uris: URIs of sources enqueued with the radio flag (SIMILAR fill mode).
-        :param replace: True to replace the existing fill modes, False to merge (ADD/NEXT).
-        """
-        valid = {uri for item in source_items if (uri := _uri(item))}
-        existing = set() if replace else self._similar_sources.get(queue_id, set())
-        self._similar_sources[queue_id] = (existing | similar_uris) & valid
-        self._persist(queue_id)
-
-    async def restore(self, queue_id: str, source_items: list[MediaItemType]) -> None:
-        """
-        Restore the fill modes for a queue from cache after a restart.
-
-        When no cache entry exists (a queue persisted before this feature) every source item
-        was a similar/discovery seed, so all (non-station) sources default to SIMILAR to preserve
-        that pre-feature radio behaviour after an upgrade.
-
-        :param queue_id: The queue being restored.
-        :param source_items: The queue's restored dynamic sources.
-        """
-        valid = {uri for item in source_items if (uri := _uri(item))}
-        stored = await self.mass.cache.get(
-            key=queue_id,
-            provider=self.queues.domain,
-            category=CACHE_CATEGORY_PLAYER_QUEUE_POOL,
-        )
-        if stored is not None:
-            self._similar_sources[queue_id] = {uri for uri in stored if uri in valid}
-        else:
-            self._similar_sources[queue_id] = {
-                uri
-                for item in source_items
-                if not (isinstance(item, Playlist) and item.is_dynamic) and (uri := _uri(item))
-            }
-
-    def forget(self, queue_id: str, *, drop_cache: bool) -> None:
-        """
-        Drop the in-memory fill modes for a queue (and optionally its cache entry).
-
-        :param queue_id: The queue to forget.
-        :param drop_cache: True to also delete the persisted entry (queue cleared/removed).
-        """
-        self._similar_sources.pop(queue_id, None)
-        if drop_cache:
-            self.mass.create_task(
-                self.mass.cache.delete(
-                    key=queue_id,
-                    provider=self.queues.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_POOL,
-                )
-            )
-
-    def transfer(self, source_queue_id: str, target_queue_id: str) -> None:
-        """
-        Copy a queue's fill modes onto another queue (used when a queue is transferred).
-
-        :param source_queue_id: The queue currently holding the dynamic sources.
-        :param target_queue_id: The queue receiving them.
-        """
-        self._similar_sources[target_queue_id] = set(self._similar_sources.get(source_queue_id, ()))
-        self._persist(target_queue_id)
 
     async def fill(self, queue_id: str, *, is_initial: bool) -> list[Track]:
         """
@@ -229,9 +137,8 @@ class ManagedPoolHelper:
             if isinstance(media_item, Playlist) and media_item.is_dynamic:
                 fill_mode = DynamicFillMode.DYNAMIC
                 candidates = await self._fetch_dynamic(media_item)
-            elif (fill_mode := self.fill_mode(queue_id, uri)) == DynamicFillMode.SIMILAR:
-                candidates = await self._fetch_similar(media_item, preferred=preferred)
             else:
+                fill_mode = DynamicFillMode.TRACKS
                 candidates = await self._fetch_tracks(media_item, preferred=preferred)
             sources.append(
                 DynamicSource(
@@ -250,26 +157,6 @@ class ManagedPoolHelper:
         with suppress(MusicAssistantError):
             tracks = await self.queues.get_playlist_tracks(media_item, start_item=None)
             return [track for track in tracks if isinstance(track, Track) and track.available]
-        return []
-
-    async def _fetch_similar(
-        self, media_item: MediaItemType, *, preferred: list[str] | None
-    ) -> list[Track]:
-        """
-        Return base + similar tracks for a SIMILAR source.
-
-        :param media_item: The dynamic source to fetch tracks for.
-        :param preferred: Preferred provider instance ids for the similar lookup.
-        """
-        with suppress(MusicAssistantError):
-            # always include the base tracks so the pool keeps a steady original+similar mix; the
-            # recency gate and in-pool dedup drop them once stale or already queued
-            return await self.mass.music.get_dynamic_radio_tracks(
-                [media_item],
-                include_base_tracks=True,
-                target_size=POOL_PER_SOURCE_FETCH,
-                preferred_provider_instances=preferred,
-            )
         return []
 
     async def _fetch_tracks(
@@ -298,17 +185,6 @@ class ManagedPoolHelper:
         if queue.current_index is None:
             return len(items)
         return max(len(items) - (queue.current_index + 1), 0)
-
-    def _persist(self, queue_id: str) -> None:
-        """Persist the queue's SIMILAR-source URIs so fill modes survive a restart."""
-        self.mass.create_task(
-            self.mass.cache.set(
-                key=queue_id,
-                data=sorted(self._similar_sources.get(queue_id, ())),
-                provider=self.queues.domain,
-                category=CACHE_CATEGORY_PLAYER_QUEUE_POOL,
-            )
-        )
 
 
 def allocate_refill(

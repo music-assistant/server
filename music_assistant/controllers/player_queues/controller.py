@@ -741,7 +741,6 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         self._store_sources(queue, [])
         queue.is_dynamic = False
-        self._managed_pool.forget(queue_id, drop_cache=True)
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
@@ -1222,7 +1221,6 @@ class PlayerQueuesController(CoreController):
         self._source_items[target_queue_id] = list(self._source_items.get(source_queue_id, []))
         target_queue.sources = list(source_queue.sources)
         target_queue.is_dynamic = source_queue.is_dynamic
-        self._managed_pool.transfer(source_queue_id, target_queue_id)
         target_queue.smart_shuffle_active = self.is_smart_shuffle_active(target_queue)
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
         target_queue.resume_pos = source_resume_pos
@@ -1263,8 +1261,6 @@ class PlayerQueuesController(CoreController):
                 # rebuild the full source items behind `sources` and recompute is_dynamic
                 self._source_items[queue_id] = self._restore_source_items(queue)
                 queue.is_dynamic = has_dynamic_source(self._source_items[queue_id])
-                # restore the per-source fill modes (SIMILAR vs rotate-own-tracks)
-                await self._managed_pool.restore(queue_id, self._source_items[queue_id])
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1392,7 +1388,7 @@ class PlayerQueuesController(CoreController):
         self._transitioning_players.discard(player_id)
         self._play_action_refcount.pop(player_id, None)
         self._last_counted_play.pop(player_id, None)
-        self._managed_pool.forget(player_id, drop_cache=permanent)
+        self._source_items.pop(player_id, None)
 
     async def load_next_queue_item(
         self,
@@ -2110,8 +2106,6 @@ class PlayerQueuesController(CoreController):
 
         media_items: list[MediaItemType] = []
         source_items: list[MediaItemType] = []
-        # URIs of sources enqueued with the radio flag (SIMILAR fill mode); the rest rotate tracks
-        similar_uris: set[str] = set()
         # resolve all media items
         for item in media_list:
             try:
@@ -2190,13 +2184,10 @@ class PlayerQueuesController(CoreController):
                     initial_tracks = await self.get_playlist_tracks(media_item, start_item=None)
                     media_items += initial_tracks
                 elif managed_pool:
-                    # Managed-pool mode: keep the item as a dynamic source (the bounded pool is
-                    # built from these sources below). The radio flag marks it SIMILAR (base +
-                    # similar); otherwise it rotates its own tracks.
+                    # Managed-pool mode: keep the item as a dynamic source; the bounded pool is
+                    # built from these sources below (a finite source rotates its own tracks).
                     if not isinstance(media_item, (ItemMapping, BrowseFolder)):
                         source_items.append(media_item)
-                        if radio_mode and media_item.uri:
-                            similar_uris.add(media_item.uri)
                 else:
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
@@ -2224,12 +2215,6 @@ class PlayerQueuesController(CoreController):
             self._store_sources(queue, self._source_items.get(queue_id, []) + source_items)
         source_items = self._source_items.get(queue_id, [])
         queue.is_dynamic = has_dynamic_source(source_items)
-        # only track fill modes when the queue actually has dynamic sources; a plain enqueue leaves
-        # the sources empty and shouldn't write a cache entry (a REPLACE already cleared any prior)
-        if source_items:
-            self._managed_pool.register(
-                queue_id, source_items, similar_uris, replace=replace_sources
-            )
 
         if already_managed and not media_items:
             # new sources were added to an already-active pool: leave the playing pool intact and
