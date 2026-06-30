@@ -15,7 +15,7 @@ from time import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
 
@@ -381,7 +381,7 @@ class MetadataEnrichmentMixin:
                         provider.name,
                         playlist.name,
                     )
-            except Exception as err:
+            except MusicAssistantError as err:
                 self.logger.warning(
                     "Error retrieving playlist metadata from provider %s for %s: %s",
                     provider.name,

@@ -53,13 +53,14 @@ SMART_SHUFFLE_SONG_RECENCY_OPTIONS = (
 SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS = (0, 300, 900, 1800, 3600, 7200)
 SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS = (0, 3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400)
 
-# Managed-pool (radio) sizing: a radio-flagged enqueue turns the whole queue into a small
-# bounded pool of dynamic sources, topped up near the end instead of enqueuing thousands.
+# Managed-pool sizing: a queue with dynamic sources is kept as a small bounded pool, topped up
+# near the end instead of enqueuing thousands of tracks.
 MANAGED_POOL_TARGET = 25
 MANAGED_POOL_MAX = 50
-# how many similar candidates to fetch per SIMILAR source on each (re)fill
-POOL_PER_SOURCE_FETCH = 50
+# A finite (TRACKS) source is materialized into its own deque and dequeued progressively. This caps
+# how many of its tracks are held in memory at once; a larger source pages the remainder in as the
+# deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
+MANAGED_POOL_SOURCE_CAP = 250
 
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
-CACHE_CATEGORY_PLAYER_QUEUE_POOL = 2

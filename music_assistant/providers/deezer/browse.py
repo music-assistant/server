@@ -28,6 +28,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.track_filter import filter_tracks
 
 from .constants import (
     BROWSE_ALL_FLOWS,
@@ -938,7 +939,7 @@ class DeezerBrowseManager:
                 if ft.track is not None and ft.track.id not in seen:
                     seen.add(ft.track.id)
                     tracks.append(parse_track(self.provider, ft.track))
-        return tracks
+        return filter_tracks(tracks)
 
     @use_cache(3600)
     async def _get_recommended_tracks(self) -> list[Track]:
@@ -985,7 +986,7 @@ class DeezerBrowseManager:
                 if ft.track is not None and ft.track.id not in seen:
                     seen.add(ft.track.id)
                     tracks.append(parse_track(self.provider, ft.track))
-        return tracks
+        return filter_tracks(tracks)
 
     @use_cache(3600)
     async def _get_smart_tracklist_tracks(self, tracklist_id: str) -> list[Track]:
@@ -1033,9 +1034,9 @@ class DeezerBrowseManager:
         tracklist = group.suggested_tracklist.tracklist
         if tracklist is None:
             return []
-        return [
-            parse_track(self.provider, edge.node) for edge in tracklist.tracks.edges if edge.node
-        ]
+        return filter_tracks(
+            [parse_track(self.provider, edge.node) for edge in tracklist.tracks.edges if edge.node]
+        )
 
     async def _get_shaker_curated_tracks(self, group_id: str) -> list[Track]:
         """

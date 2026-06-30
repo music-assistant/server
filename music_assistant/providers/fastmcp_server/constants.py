@@ -9,6 +9,7 @@ CONF_EXTRA_ALLOWED_ORIGINS = "extra_allowed_origins"
 CONF_ENFORCE_AUDIENCE = "enforce_audience"
 CONF_REQUIRE_CONFIRMATION = "require_confirmation"
 CONF_CONNECT_EXTERNAL_URL = "connect_external_url"
+CONF_TRUST_FORWARDED_PROTO = "trust_forwarded_proto"
 
 DEFAULT_MOUNT_PATH = "/mcp/v1"
 

@@ -581,19 +581,6 @@ class TracksController(MediaControllerBase[Track]):
                 await self.add_provider_mappings(db_track.item_id, match)
                 processed_domains.add(provider.domain)
 
-    async def radio_mode_base_tracks(
-        self,
-        item: Track,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Track to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        return [item]
-
     async def _add_library_item(self, item: Track, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""
         if not isinstance(item, Track):  # TODO: Remove this once the codebase is fully typed

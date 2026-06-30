@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import ProviderMapping, Radio, Track
+from music_assistant_models.media_items import ProviderMapping, Radio
 
 from music_assistant.constants import DB_TABLE_RADIOS
 from music_assistant.helpers.compare import (
@@ -87,20 +87,6 @@ class RadioController(MediaControllerBase[Radio]):
 
         # return the aggregated result
         return list(all_versions.values())
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Radio,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Radio to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        msg = "Dynamic tracks not supported for Radio MediaItem"
-        raise NotImplementedError(msg)
 
     async def match_provider(
         self, db_radio: Radio, provider: MusicProvider, strict: bool = True

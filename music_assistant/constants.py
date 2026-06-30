@@ -866,6 +866,11 @@ INTERNAL_PCM_FORMAT = AudioFormat(
     channels=2,  # static for flow stream, dynamic for anything else
 )
 
+# Seconds without a new chunk before the source is treated as stalled (above ffmpeg's ~15s reconnect window).
+STREAM_STALL_TIMEOUT: Final[int] = 20
+# Longer budget for the first chunk to allow for connect + probe.
+STREAM_START_TIMEOUT: Final[int] = 30
+
 # extra data / extra attributes keys
 ATTR_FAKE_POWER: Final[str] = "fake_power"
 ATTR_FAKE_VOLUME: Final[str] = "fake_volume_level"
@@ -957,6 +962,7 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # under-spec host has the auto-created config removed again at load time.
     ("smart_fades", False),
     ("lastfm_recommendations", False),
+    ("playlist_metadata", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

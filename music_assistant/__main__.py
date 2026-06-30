@@ -135,6 +135,8 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
     logging.getLogger("numba").setLevel(logging.WARNING)
     logging.getLogger("torio._extension.utils").setLevel(logging.WARNING)
+    logging.getLogger("quic").setLevel(logging.WARNING)
+    logging.getLogger("http3").setLevel(logging.WARNING)
 
     # Add a filter to suppress slow callback warnings from buffered audio streaming
     # These warnings are expected when audio buffers fill up and producers wait for consumers

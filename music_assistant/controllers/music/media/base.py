@@ -29,7 +29,6 @@ from music_assistant_models.media_items import (
     MediaItemMetadata,
     MediaItemType,
     ProviderMapping,
-    Track,
     UniqueList,
 )
 
@@ -924,20 +923,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Try to find match on all (streaming) providers for the provided (database) item.
 
         This is used to link objects of different providers/qualities together.
-        """
-
-    @abstractmethod
-    async def radio_mode_base_tracks(
-        self,
-        item: ItemCls,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The MediaItem to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-            When provided, these providers will be tried first before falling back to others.
         """
 
     @final
