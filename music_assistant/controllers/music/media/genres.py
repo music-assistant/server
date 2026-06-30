@@ -325,7 +325,7 @@ class GenreController(MediaControllerBase[Genre]):
     async def tracks(
         self,
         item_id: str | int,
-        limit: int = 0,
+        limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
     ) -> list[Track]:
@@ -354,7 +354,7 @@ class GenreController(MediaControllerBase[Genre]):
     async def albums(
         self,
         item_id: str | int,
-        limit: int = 0,
+        limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
     ) -> list[Album]:
