@@ -52,7 +52,6 @@ from music_assistant.constants import (
     DYNAMIC_PLAYLIST_SAMPLE_SIZE,
 )
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.track_filter import filter_tracks
@@ -665,7 +664,8 @@ class SmartPlaylistProvider(PluginProvider):
             if rules.excluded_genre_ids:
                 await self._enrich_tracks_with_db_genres(tracks)
 
-        # Apply exclusions and dedup regardless of source mode
+        # Apply exclusions regardless of source mode. Recency (don't repeat recently-played) is
+        # no longer handled here: the player queue owns it globally for dynamic playlists.
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
             self._resolve_excluded_genre_names(rules),
             self._get_album_ids_for_types(rules.excluded_album_types)
@@ -676,29 +676,6 @@ class SmartPlaylistProvider(PluginProvider):
             tracks, rules, excluded_genre_names, excl_album_type_ids or None
         )
         tracks = self._deduplicate_tracks(tracks)
-        if rules.dedup_hours is not None:
-            deduped = await self._apply_dedup(tracks, rules.dedup_hours)
-            if len(deduped) >= rules.limit:
-                tracks = deduped
-            elif deduped:
-                # Pool partially exhausted: fill remainder with least-recently-played tracks
-                # so playback never stops when the dedup window covers most of the library.
-                deduped_uris = {t.uri for t in deduped}
-                played_remainder = sorted(
-                    (t for t in tracks if t.uri not in deduped_uris),
-                    # last_played is 0 for non-library (streaming) tracks; treat 0 as
-                    # "most recent" so just-played streaming tracks aren't filled first.
-                    key=lambda t: t.last_played or float("inf"),
-                )
-                tracks = deduped + played_remainder[: rules.limit - len(deduped)]
-            else:
-                # All matching tracks were played recently — ignore dedup entirely so
-                # the playlist never goes empty.
-                self.logger.debug(
-                    "dedup_hours=%d exhausted the full track pool; ignoring dedup",
-                    rules.dedup_hours,
-                )
-
         random.shuffle(tracks)
         return tracks[: rules.limit]
 
@@ -1009,21 +986,6 @@ class SmartPlaylistProvider(PluginProvider):
                 result.extend(track_id_to_tracks[track_id])
 
         return result
-
-    async def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
-        """
-        Filter out tracks fully played within dedup_hours (scoped to the current user).
-
-        Uses the shared recency engine, whose membership test resolves a track across its
-        provider mappings and its own (provider, item_id) so both library and streaming plays
-        are matched. The engine resolves the current user (the queue owner's context is
-        restored during refills), keeping the dedup window per user.
-        """
-        window = dedup_hours * 3600
-        snapshot = await self.mass.music.recency.snapshot(RecencyWindows(song_seconds=window))
-        if not snapshot.song_ts:
-            return list(tracks)
-        return [track for track in tracks if not snapshot.track_recent(track, window)]
 
     async def _evaluate_and(
         self,
