@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import BrowseFolder
 
 from music_assistant.providers.fastmcp_server.tools import build_playback_server
@@ -91,5 +92,19 @@ async def test_play_media_radio_rejects_browse_folder(
             await client.call_tool(
                 "playback_play_media",
                 {"queue_id": "player1", "uri": "library://browse/x", "radio": True},
+            )
+    mock_mass.player_queues.play_media.assert_not_awaited()
+
+
+async def test_play_media_radio_resolution_failure_raises_tool_error(
+    mock_mass: Any, mounted_playback: FastMCP
+) -> None:
+    """A failed seed lookup surfaces as a clean ToolError, not a raw MA error."""
+    mock_mass.music.get_item_by_uri.side_effect = MediaNotFoundError("nope")
+    async with Client(mounted_playback) as client:
+        with pytest.raises(ToolError, match="Could not resolve URI for radio"):
+            await client.call_tool(
+                "playback_play_media",
+                {"queue_id": "player1", "uri": "spotify://track/missing", "radio": True},
             )
     mock_mass.player_queues.play_media.assert_not_awaited()

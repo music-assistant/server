@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import BrowseFolder
 
 from ...radio_playlist import radio_playlist_uri
@@ -204,7 +205,11 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
             similar tracks.
         """
         if radio:
-            seed = await mass.music.get_item_by_uri(uri)
+            try:
+                seed = await mass.music.get_item_by_uri(uri)
+            except MusicAssistantError as err:
+                msg = f"Could not resolve URI for radio: {uri!r} ({err})"
+                raise ToolError(msg) from err
             if isinstance(seed, BrowseFolder):
                 msg = f"Cannot start a radio from a browse folder: {uri!r}"
                 raise ToolError(msg)
