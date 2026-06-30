@@ -1099,6 +1099,8 @@ class SmartPlaylistProvider(PluginProvider):
                         for track in await self.mass.music.tracks.similar_tracks(
                             base.item_id, base.provider
                         ):
+                            if len(pool) >= target_size * 3:
+                                break
                             if track not in seen:
                                 seen.add(track)
                                 pool.append(track)
