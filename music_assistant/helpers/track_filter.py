@@ -50,6 +50,24 @@ def get_track_filter() -> TrackFilter | None:
     return _CURRENT_TRACK_FILTER.get()
 
 
+def filter_tracks(tracks: list[Track]) -> list[Track]:
+    """
+    Drop tracks the active best-effort filter would reject, keeping all if that empties the list.
+
+    A dynamic-playlist generator calls this on its assembled candidate tracks so the consumer's
+    recency/queue filter can pre-skip tracks it would discard anyway. It is a no-op when no filter
+    is published and never turns a non-empty list into an empty one, so the consumer stays
+    authoritative. Generators should over-generate where they can so filtering still leaves enough.
+
+    :param tracks: The candidate tracks to filter.
+    """
+    active_filter = get_track_filter()
+    if active_filter is None:
+        return tracks
+    kept = [track for track in tracks if active_filter.allows(track)]
+    return kept or tracks
+
+
 @contextmanager
 def track_filter(include: Callable[[Track], bool]) -> Iterator[TrackFilter]:
     """
