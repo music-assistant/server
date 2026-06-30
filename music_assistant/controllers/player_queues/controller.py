@@ -120,7 +120,7 @@ from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     get_current_playback_speed,
     handle_play_action,
-    is_radio_source_dynamic,
+    has_dynamic_source,
     sort_tracks,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPoolHelper, gate_tracks
@@ -1262,7 +1262,7 @@ class PlayerQueuesController(CoreController):
                 queue.from_cache(prev_state)
                 # rebuild the full source items behind `sources` and recompute is_dynamic
                 self._source_items[queue_id] = self._restore_source_items(queue)
-                queue.is_dynamic = is_radio_source_dynamic(self._source_items[queue_id])
+                queue.is_dynamic = has_dynamic_source(self._source_items[queue_id])
                 # restore the per-source fill modes (SIMILAR vs rotate-own-tracks)
                 await self._managed_pool.restore(queue_id, self._source_items[queue_id])
                 prev_items = await self.mass.cache.get(
@@ -2082,6 +2082,19 @@ class PlayerQueuesController(CoreController):
         # a single item or list of items may be provided
         media_list = media if isinstance(media, list) else [media]
 
+        if radio_mode:
+            # radio_mode is deprecated: a "radio" is now a dynamic radio playlist. Translate each
+            # seed into the radio_playlist provider's URI and enqueue those (resolved to dynamic
+            # playlists that self-manage their refills).
+            self.logger.warning(
+                "radio_mode is deprecated; enqueue a radio_playlist:// dynamic playlist instead"
+            )
+            media_list = [
+                f"radio_playlist://playlist/{item if isinstance(item, str) else item.uri}"
+                for item in media_list
+            ]
+            radio_mode = False
+
         # clear queue if needed
         if option == QueueOption.REPLACE:
             self.clear(queue_id, skip_stop=True)
@@ -2210,7 +2223,7 @@ class PlayerQueuesController(CoreController):
         else:
             self._store_sources(queue, self._source_items.get(queue_id, []) + source_items)
         source_items = self._source_items.get(queue_id, [])
-        queue.is_dynamic = is_radio_source_dynamic(source_items)
+        queue.is_dynamic = has_dynamic_source(source_items)
         # only track fill modes when the queue actually has dynamic sources; a plain enqueue leaves
         # the sources empty and shouldn't write a cache entry (a REPLACE already cleared any prior)
         if source_items:
