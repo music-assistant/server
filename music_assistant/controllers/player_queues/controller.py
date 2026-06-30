@@ -2114,7 +2114,7 @@ class PlayerQueuesController(CoreController):
             )
             media_list = [
                 seed_uri
-                if (seed_uri := item if isinstance(item, str) else item.uri).startswith(
+                if (seed_uri := item if isinstance(item, str) else str(item.uri)).startswith(
                     "radio_playlist://"
                 )
                 else f"radio_playlist://playlist/{seed_uri}"
