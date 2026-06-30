@@ -80,7 +80,11 @@ async def get_spotify_token(
                 # enforces a 6-month lifetime); retrying won't recover it, so fail now and
                 # let the caller clear the stored token and prompt re-authentication.
                 if "invalid_grant" in err or "revoked" in err:
-                    raise LoginFailed(f"Refresh token no longer valid for {session_name}: {err}")
+                    raise LoginFailed(
+                        f"Refresh token no longer valid for {session_name}: {err}",
+                        translation_key="refresh_token_invalid",
+                        translation_owner="provider.spotify",
+                    )
                 # the token failed to refresh, we allow one retry
                 await asyncio.sleep(2)
                 continue
