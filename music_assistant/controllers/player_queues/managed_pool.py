@@ -4,6 +4,7 @@ Managed dynamic pool for the Player Queues controller.
 A queue with one or more *dynamic sources* (its ``sources``) is kept as a small bounded pool
 that is topped up as it plays down. Each source has a *fill mode*:
 
+- ``DYNAMIC`` — a dynamic playlist's own self-managing batch (a radio playlist, a station);
 - ``SIMILAR`` — base + similar/discovery tracks (radio sources);
 - ``TRACKS`` — the source's own unplayed tracks (a playlist/album/artist mixed into the pool).
 
@@ -48,6 +49,8 @@ class PoolWeightModel(StrEnum):
 class DynamicFillMode(StrEnum):
     """How a dynamic source contributes tracks to the managed pool."""
 
+    # a dynamic playlist (radio playlist, station): its own self-managing batch of tracks
+    DYNAMIC = "dynamic"
     SIMILAR = "similar"
     TRACKS = "tracks"
 
@@ -174,7 +177,9 @@ class ManagedPoolHelper:
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
         queue = self.queues._queues[queue_id]
-        sources = await self._collect_sources(queue_id, queue)
+        # the initial fill skips dynamic playlists (each seeds its own first batch directly); a
+        # top-up folds them back in so all sources are mixed, weighted and recency-gated together
+        sources = await self._collect_sources(queue_id, queue, include_dynamic=not is_initial)
         if not sources:
             return []
         windows = self.queues._smart_shuffle._windows(queue_id)
@@ -195,14 +200,22 @@ class ManagedPoolHelper:
             sources, slots=slots, pool_keys=pool_keys, snapshot=snapshot, windows=windows
         )
 
-    async def _collect_sources(self, queue_id: str, queue: PlayerQueue) -> list[DynamicSource]:
-        """Group the queue's source items into dynamic sources and fetch each one's candidates."""
-        # multiplicity = how often a source was added; dynamic playlists/stations self-manage and
-        # are handled by the dedicated dynamic-playlist refill path, so skip them here.
+    async def _collect_sources(
+        self, queue_id: str, queue: PlayerQueue, *, include_dynamic: bool
+    ) -> list[DynamicSource]:
+        """
+        Group the queue's source items into dynamic sources and fetch each one's candidates.
+
+        :param queue_id: The queue being filled.
+        :param queue: The queue being filled.
+        :param include_dynamic: Whether to include dynamic-playlist sources; skipped on the initial
+            fill, where each dynamic playlist seeds its own first batch directly.
+        """
+        # multiplicity = how often a source was added (adding a source more than once weights it up)
         counts: dict[str, int] = {}
         items: dict[str, MediaItemType] = {}
         for item in self.queues._source_items.get(queue_id, []):
-            if isinstance(item, Playlist) and item.is_dynamic:
+            if isinstance(item, Playlist) and item.is_dynamic and not include_dynamic:
                 continue
             if not (uri := _uri(item)):
                 continue
@@ -213,8 +226,10 @@ class ManagedPoolHelper:
         preferred = await self._preferred_providers(queue)
         sources: list[DynamicSource] = []
         for uri, media_item in items.items():
-            fill_mode = self.fill_mode(queue_id, uri)
-            if fill_mode == DynamicFillMode.SIMILAR:
+            if isinstance(media_item, Playlist) and media_item.is_dynamic:
+                fill_mode = DynamicFillMode.DYNAMIC
+                candidates = await self._fetch_dynamic(media_item)
+            elif (fill_mode := self.fill_mode(queue_id, uri)) == DynamicFillMode.SIMILAR:
                 candidates = await self._fetch_similar(media_item, preferred=preferred)
             else:
                 candidates = await self._fetch_tracks(media_item, preferred=preferred)
@@ -227,6 +242,15 @@ class ManagedPoolHelper:
                 )
             )
         return sources
+
+    async def _fetch_dynamic(self, media_item: MediaItemType) -> list[Track]:
+        """Fetch the next self-managed batch from a dynamic playlist (radio playlist, station)."""
+        if not isinstance(media_item, Playlist):
+            return []
+        with suppress(MusicAssistantError):
+            tracks = await self.queues.get_playlist_tracks(media_item, start_item=None)
+            return [track for track in tracks if isinstance(track, Track) and track.available]
+        return []
 
     async def _fetch_similar(
         self, media_item: MediaItemType, *, preferred: list[str] | None

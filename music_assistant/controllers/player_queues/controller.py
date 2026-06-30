@@ -2542,65 +2542,22 @@ class PlayerQueuesController(CoreController):
         return cur_index + 1
 
     async def _fill_radio_tracks(self, queue_id: str) -> None:
-        """Fill a Queue with (additional) Radio tracks."""
+        """Fill a Queue with (additional) tracks from its dynamic sources."""
         self.logger.debug(
             "Filling radio tracks for queue %s",
             queue_id,
         )
         queue = self._queues[queue_id]
-        dynamic_playlist = next(
-            (
-                item
-                for item in reversed(self._source_items.get(queue_id, []))
-                if isinstance(item, Playlist) and item.is_dynamic
-            ),
-            None,
+        # restore the queue owner's user context so provider filters are respected during this
+        # background refill (dynamic-playlist generation honours the current user)
+        playback_user = (
+            await self.mass.webserver.auth.get_user(queue.userid) if queue.userid else None
         )
-        if dynamic_playlist is not None:
-            # Dynamic playlist (e.g. a station): fetch next batch of tracks from the provider.
-            # Do NOT fall back to generic radio - stations manage their own track supply.
-            # Restore the queue owner's user context so that provider filters are respected.
-            playback_user = (
-                await self.mass.webserver.auth.get_user(queue.userid) if queue.userid else None
-            )
-            set_current_user(playback_user)
-            try:
-                dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
-                # route the station batch through the recency engine (ungated fallback keeps the
-                # station playing if everything was recently heard)
-                windows = self._smart_shuffle._windows(queue_id)
-                snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
-                gated = gate_tracks(
-                    [track for track in dynamic_tracks if isinstance(track, Track)],
-                    snapshot,
-                    windows,
-                )
-                queue_items = [QueueItem.from_media_item(queue_id, x) for x in gated if x.available]
-                if not queue_items:
-                    self.logger.warning(
-                        "Dynamic playlist %s returned no playable tracks for queue %s",
-                        dynamic_playlist.name,
-                        queue.display_name,
-                    )
-                    return
-                await self.load(
-                    queue_id,
-                    queue_items,
-                    insert_at_index=len(self._queue_items[queue_id]),
-                    keep_remaining=True,
-                    keep_played=True,
-                )
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Failed to refill dynamic playlist %s for queue %s: %s",
-                    dynamic_playlist.name,
-                    queue.display_name,
-                    err,
-                )
-            return
-        # Managed pool: top up from the queue's dynamic sources, weighted per source and
-        # recency-gated. fill() already sizes the batch to the pool target; the tail cap below is a
-        # defensive ceiling so the unplayed tail never grows past MANAGED_POOL_MAX.
+        set_current_user(playback_user)
+        # Top up from the queue's dynamic sources (dynamic playlists and any mixed-in finite items),
+        # weighted per source and recency-gated. fill() already sizes the batch to the pool target;
+        # the tail cap below is a defensive ceiling so the unplayed tail never grows past
+        # MANAGED_POOL_MAX.
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
         # keep the unplayed tail within the bounded pool size (no current_index => nothing played yet)
         played = 0 if queue.current_index is None else queue.current_index + 1
