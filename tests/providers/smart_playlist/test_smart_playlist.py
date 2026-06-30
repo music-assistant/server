@@ -15,6 +15,7 @@ from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.music.recency import RecencySnapshot
+from music_assistant.helpers.track_filter import track_filter
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.smart_playlist import (
     CONF_AI_DESCRIPTIONS,
@@ -2078,3 +2079,50 @@ async def test_filter_tracks_with_all_genres_handles_non_numeric_genre_ids() -> 
 
     assert len(result) == 1
     assert result[0].uri == "library://track/101"
+
+
+# ---------------------------------------------------------------------------
+# get_playlist_tracks — recency track filter (dynamic playlists only)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dynamic_playlist_applies_recency_filter() -> None:
+    """A dynamic smart playlist drops filter-rejected tracks at the boundary."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    rules = SmartPlaylistRules(is_dynamic=True)
+    cast("Any", plugin)._resolve_rules_for_playlist_id = AsyncMock(return_value=("42", rules))
+    sample = [_make_mock_track("keep"), _make_mock_track("drop")]
+    cast("Any", plugin)._cached_dynamic_sample = AsyncMock(return_value=sample)
+
+    with track_filter(lambda track: track.item_id != "drop"):
+        result = await plugin.get_playlist_tracks("42")
+
+    assert [track.item_id for track in result] == ["keep"]
+
+
+@pytest.mark.asyncio
+async def test_static_playlist_ignores_recency_filter() -> None:
+    """A non-dynamic smart playlist is evaluated as-is and never recency-filtered."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    rules = SmartPlaylistRules(is_dynamic=False)
+    cast("Any", plugin)._resolve_rules_for_playlist_id = AsyncMock(return_value=("42", rules))
+    evaluated = [_make_mock_track("keep"), _make_mock_track("drop")]
+    cast("Any", plugin)._evaluate_rules = AsyncMock(return_value=evaluated)
+
+    with track_filter(lambda track: track.item_id != "drop"):
+        result = await plugin.get_playlist_tracks("42")
+
+    assert [track.item_id for track in result] == ["keep", "drop"]

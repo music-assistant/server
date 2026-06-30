@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from music_assistant_models.media_items import ProviderMapping, Track
 
-from music_assistant.helpers.track_filter import get_track_filter, track_filter
+from music_assistant.helpers.track_filter import filter_tracks, get_track_filter, track_filter
 
 
 def _track(item_id: str) -> Track:
@@ -46,3 +46,29 @@ def test_nested_filters_restore_outer() -> None:
         with track_filter(lambda _track: False) as inner:
             assert get_track_filter() is inner
         assert get_track_filter() is outer
+
+
+def test_filter_tracks_without_filter_returns_input_unchanged() -> None:
+    """With no filter published, filter_tracks is a no-op and returns the same list object."""
+    tracks = [_track("a"), _track("b")]
+    assert filter_tracks(tracks) is tracks
+
+
+def test_filter_tracks_drops_rejected_and_preserves_order() -> None:
+    """filter_tracks drops tracks the active filter rejects, keeping the rest in order."""
+    a, b, c = _track("a"), _track("b"), _track("c")
+    with track_filter(lambda track: track.item_id != "b"):
+        assert filter_tracks([a, b, c]) == [a, c]
+
+
+def test_filter_tracks_never_empties_a_nonempty_list() -> None:
+    """When the filter would reject every track, the original list is kept (best-effort)."""
+    a, b = _track("a"), _track("b")
+    with track_filter(lambda _track: False):
+        assert filter_tracks([a, b]) == [a, b]
+
+
+def test_filter_tracks_empty_input_stays_empty() -> None:
+    """An empty candidate list stays empty regardless of the filter."""
+    with track_filter(lambda _track: False):
+        assert filter_tracks([]) == []

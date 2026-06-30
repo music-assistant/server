@@ -55,6 +55,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
+from music_assistant.helpers.track_filter import filter_tracks
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.smart_playlist.helpers import (
@@ -275,7 +276,10 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter = (
             tuple(sorted(user.provider_filter)) if user and user.provider_filter else ()
         )
-        return await self._cached_dynamic_sample(resolved_id, user_provider_filter)
+        # Filter the cached sample at the boundary (not inside the cached evaluation) so a
+        # recency-filtered batch from a queue refill never gets cached and served to browse.
+        sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
+        return filter_tracks(sample)
 
     @use_cache(
         expiration=DYNAMIC_SAMPLE_CACHE_EXPIRATION,
