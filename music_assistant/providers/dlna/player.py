@@ -447,7 +447,7 @@ class DLNAPlayer(Player):
         prev_state = self._attr_playback_state
         self.set_current_media(uri=url, clear_all=True)
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_elapsed_time = -1
+        self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         try:
             await self.device.async_set_transport_uri(url, title, didl_metadata)
