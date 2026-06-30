@@ -19,7 +19,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace as dc_replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -71,6 +71,7 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+    from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 FETCH_LIMIT = 2000
 CACHE_CATEGORY_DYNAMIC_SAMPLE = 0
@@ -1079,8 +1080,11 @@ class SmartPlaylistProvider(PluginProvider):
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
         if not seeds:
             return []
+        radio_prov = self.mass.get_provider("radio_playlist")
+        if radio_prov is None:
+            return []
         try:
-            return await self.mass.music.get_dynamic_radio_tracks(
+            return await cast("RadioPlaylistProvider", radio_prov).get_dynamic_tracks(
                 seeds,
                 include_base_tracks=True,
                 target_size=target_size,

@@ -11,10 +11,15 @@ seed.
 
 from __future__ import annotations
 
+import random
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     MediaItemMetadata,
@@ -25,6 +30,12 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.controllers.music.constants import (
+    DYNAMIC_RADIO_BASE_SAMPLE_SIZE,
+    DYNAMIC_RADIO_DYNAMIC_TARGET,
+    RADIO_TRACK_MAX_DURATION_SECS,
+)
+from music_assistant.helpers.track_filter import get_track_filter
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -106,11 +117,96 @@ class RadioPlaylistProvider(PluginProvider):
             return []
         seed = await self._resolve_seed(prov_playlist_id)
         try:
-            return await self.mass.music.get_dynamic_radio_tracks(
+            return await self.get_dynamic_tracks(
                 [seed], include_base_tracks=True, target_size=DYNAMIC_PLAYLIST_SAMPLE_SIZE
             )
         except MusicAssistantError:
             return []
+
+    async def get_dynamic_tracks(
+        self,
+        seeds: list[MediaItemType],
+        *,
+        include_base_tracks: bool = False,
+        target_size: int = 25,
+        preferred_provider_instances: list[str] | None = None,
+    ) -> list[Track]:
+        """
+        Generate a dynamic radio track pool from one or more seed media items.
+
+        :param seeds: Seed media items (Track, Artist, Album, Playlist, ...) used as sources.
+        :param include_base_tracks: When True, interleave the sampled base tracks into the result
+            using the BDDBDD pattern. When False, only similar tracks are returned.
+        :param target_size: Maximum number of dynamic (similar) tracks to sample into the result.
+            When ``include_base_tracks`` is True, base tracks are added on top of this cap.
+        :param preferred_provider_instances: Provider instance IDs preferred for similar lookups.
+        :raises UnsupportedFeaturedException: When no base tracks could be derived from any seed.
+        """
+        seen: set[Track] = set()
+        available_base_tracks: list[Track] = []
+        for seed in random.sample(seeds, len(seeds)):
+            ctrl = self.mass.music.get_controller(seed.media_type)
+            try:
+                base_tracks_for_seed = await ctrl.radio_mode_base_tracks(
+                    seed,  # type: ignore[arg-type]
+                    preferred_provider_instances,
+                )
+            except UnsupportedFeaturedException:
+                continue
+            for track in base_tracks_for_seed:
+                if track not in seen:
+                    seen.add(track)
+                    available_base_tracks.append(track)
+        if not available_base_tracks:
+            raise UnsupportedFeaturedException("Radio mode not available for source items")
+
+        base_tracks = random.sample(
+            available_base_tracks,
+            min(DYNAMIC_RADIO_BASE_SAMPLE_SIZE, len(available_base_tracks)),
+        )
+        # a consumer (e.g. the player queue) may publish a best-effort filter to pre-skip tracks it
+        # would discard anyway; keep the original base sample if filtering would leave no seed
+        active_filter = get_track_filter()
+        if active_filter is not None:
+            base_tracks = [t for t in base_tracks if active_filter.allows(t)] or base_tracks
+        dynamic_tracks: set[Track] = set()
+        for allow_lookup in (False, True):
+            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
+                break
+            for base_track in base_tracks:
+                try:
+                    similar = await self.mass.music.tracks.similar_tracks(
+                        base_track.item_id,
+                        base_track.provider,
+                        allow_lookup=allow_lookup,
+                        preferred_provider_instances=preferred_provider_instances,
+                    )
+                except MediaNotFoundError:
+                    continue
+                for track in similar:
+                    if track in base_tracks or track.duration > RADIO_TRACK_MAX_DURATION_SECS:
+                        continue
+                    if active_filter is not None and not active_filter.allows(track):
+                        continue
+                    dynamic_tracks.add(track)
+                if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
+                    break
+
+        result: list[Track] = []
+        dynamic_tracks_list = list(dynamic_tracks)
+        if include_base_tracks:
+            result.append(base_tracks[0])
+            if len(base_tracks) > 1:
+                for base_track in base_tracks[1:]:
+                    result.append(base_track)
+                    if len(dynamic_tracks_list) > 2:
+                        result += random.sample(dynamic_tracks_list, 2)
+                    else:
+                        result += dynamic_tracks_list
+        remaining_dynamic = [t for t in dynamic_tracks_list if t not in result]
+        if remaining_dynamic:
+            result += random.sample(remaining_dynamic, min(len(remaining_dynamic), target_size))
+        return result
 
     async def _resolve_seed(self, prov_playlist_id: str) -> MediaItemType:
         """Resolve a radio-playlist item id (the seed's URI, raw or url-encoded) to the seed item."""

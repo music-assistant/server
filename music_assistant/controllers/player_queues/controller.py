@@ -165,6 +165,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.player import Player
+    from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 
 class PlayerQueuesController(CoreController):
@@ -2965,7 +2966,10 @@ class PlayerQueuesController(CoreController):
         else:
             seeds = list(source_items)
 
-        radio_tracks = await self.mass.music.get_dynamic_radio_tracks(
+        radio_prov = self.mass.get_provider("radio_playlist")
+        if radio_prov is None:
+            return []
+        radio_tracks = await cast("RadioPlaylistProvider", radio_prov).get_dynamic_tracks(
             seeds,
             include_base_tracks=is_initial_radio_mode,
             target_size=25,
