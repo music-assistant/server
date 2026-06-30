@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ImageType, ProviderFeature
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import MediaItemImage, Playlist, ProviderMapping, Track
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 from music_assistant_models.unique_list import UniqueList
@@ -88,18 +89,20 @@ async def test_update_playlist_metadata_calls_provider(tmp_path: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_update_playlist_metadata_handles_provider_exception(tmp_path: Any) -> None:
-    """_update_playlist_metadata should handle exceptions from providers gracefully."""
+    """_update_playlist_metadata should handle MusicAssistantError exceptions from providers gracefully."""
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
     enrichment._collage_images_dir = str(tmp_path / "collage")
     enrichment.create_collage_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
-    # Mock metadata provider that raises exception
+    # Mock metadata provider that raises MusicAssistantError
     provider = MagicMock()
     provider.name = "playlist_metadata"
     provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
-    provider.get_playlist_metadata = AsyncMock(side_effect=RuntimeError("Test error"))
+    provider.get_playlist_metadata = AsyncMock(
+        side_effect=ProviderUnavailableError("Test provider unavailable")
+    )
     enrichment.providers = [provider]  # type: ignore[misc]
 
     playlist = _make_playlist()
