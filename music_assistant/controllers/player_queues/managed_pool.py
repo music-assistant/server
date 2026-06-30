@@ -23,6 +23,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.controllers.player_queues.constants import MANAGED_POOL_TARGET
+from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
@@ -85,13 +86,16 @@ class ManagedPoolHelper:
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
         queue = self.queues._queues[queue_id]
-        # the initial fill skips dynamic playlists (each seeds its own first batch directly); a
-        # top-up folds them back in so all sources are mixed, weighted and recency-gated together
-        sources = await self._collect_sources(queue_id, queue, include_dynamic=not is_initial)
-        if not sources:
-            return []
         windows = self.queues._smart_shuffle._windows(queue_id)
         snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+        # publish a best-effort recency filter so dynamic-playlist generation can pre-skip recently
+        # played tracks while over-generating; allocate_refill still applies the authoritative gate
+        with track_filter(lambda track: not snapshot.track_recent(track, windows.song_seconds)):
+            # the initial fill skips dynamic playlists (each seeds its own first batch directly); a
+            # top-up folds them in so all sources are mixed, weighted and recency-gated together
+            sources = await self._collect_sources(queue_id, queue, include_dynamic=not is_initial)
+        if not sources:
+            return []
         # dedupe only against the active (current + unplayed) tail; played history is left out so
         # recency, not permanent exclusion, decides when a track may return
         items = self.queues._queue_items[queue_id]
