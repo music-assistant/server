@@ -486,7 +486,7 @@ class TestNewValidation:
 
 
 @pytest.mark.asyncio
-async def test_seed_mode_delegates_to_dynamic_radio_helper() -> None:
+async def test_seed_mode_uses_tracks_from_seeds() -> None:
     """When any seed URI is set, evaluator collects tracks via _tracks_from_seeds."""
     mass = MagicMock()
     manifest = MagicMock()
@@ -511,6 +511,36 @@ async def test_seed_mode_delegates_to_dynamic_radio_helper() -> None:
     assert awaited_args.args[0] == ["library://artist/5", "library://album/9"]
     cast("Any", plugin)._get_library_tracks.assert_not_awaited()
     assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_tracks_from_seeds_pools_base_and_similar() -> None:
+    """_tracks_from_seeds gathers each seed's base tracks plus similar tracks, deduped."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    seed = _make_mock_track("seed", "library://track/seed")
+    base = _make_mock_track("base", "library://track/base")
+    sim1 = _make_mock_track("sim1", "library://track/sim1")
+    sim2 = _make_mock_track("sim2", "library://track/sim2")
+
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(return_value=seed)
+    ctrl.radio_mode_base_tracks = AsyncMock(return_value=[base])
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+    # similar repeats the base track, which must be deduped out of the pool
+    mass.music.tracks.similar_tracks = AsyncMock(return_value=[sim1, sim2, base])
+
+    result = await plugin._tracks_from_seeds(["library://track/10"], target_size=10)
+
+    ids = [track.item_id for track in result]
+    assert "base" in ids
+    assert {"sim1", "sim2"} <= set(ids)
+    assert ids.count("base") == 1
 
 
 @pytest.mark.asyncio

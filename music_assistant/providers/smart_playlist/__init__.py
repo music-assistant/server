@@ -19,7 +19,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace as dc_replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -30,7 +30,11 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
 )
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
@@ -71,7 +75,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-    from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 FETCH_LIMIT = 2000
 CACHE_CATEGORY_DYNAMIC_SAMPLE = 0
@@ -1065,7 +1068,7 @@ class SmartPlaylistProvider(PluginProvider):
         )
 
     async def _tracks_from_seeds(self, seed_uris: list[str], target_size: int) -> list[Track]:
-        """Resolve seed URIs to media items and feed them through the dynamic radio helper."""
+        """Build a pool of each seed's own tracks plus tracks similar to them."""
         seeds: list[MediaItemType] = []
         for uri in seed_uris:
             try:
@@ -1078,20 +1081,29 @@ class SmartPlaylistProvider(PluginProvider):
                 seeds.append(await ctrl.get(item_id, provider))
             except Exception as exc:
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
-        if not seeds:
-            return []
-        radio_prov = self.mass.get_provider("radio_playlist")
-        if radio_prov is None:
-            return []
-        try:
-            return await cast("RadioPlaylistProvider", radio_prov).get_dynamic_tracks(
-                seeds,
-                include_base_tracks=True,
-                target_size=target_size,
-            )
-        except Exception as exc:
-            self.logger.warning("Dynamic radio generation failed for seeds %s: %s", seed_uris, exc)
-            return []
+        # each seed contributes its own (base) tracks plus tracks similar to them; downstream
+        # post-filtering, dedup, shuffle and limit shape this pool into the final playlist
+        pool: list[Track] = []
+        seen: set[Track] = set()
+        for seed in seeds:
+            if len(pool) >= target_size * 3:
+                break
+            with suppress(MusicAssistantError):
+                base_tracks = await self.mass.music.get_controller(
+                    seed.media_type
+                ).radio_mode_base_tracks(seed)  # type: ignore[arg-type]
+                for base in base_tracks:
+                    if base not in seen:
+                        seen.add(base)
+                        pool.append(base)
+                    with suppress(MediaNotFoundError):
+                        for track in await self.mass.music.tracks.similar_tracks(
+                            base.item_id, base.provider
+                        ):
+                            if track not in seen:
+                                seen.add(track)
+                                pool.append(track)
+        return pool
 
     async def _update_playlist_description(
         self, library_item_id: int | str, description: str
