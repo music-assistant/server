@@ -314,9 +314,10 @@ class PlayerQueuesController(CoreController):
         :param playlist_options: Library playlists to offer for the 'playlist' autoplay mode.
             Only populated when serving the entries to the UI; the parse path can omit it.
         """
-        similar_tracks_available = any(
-            ProviderFeature.SIMILAR_TRACKS in provider.supported_features
-            for provider in self.mass.music.providers
+        # Match the runtime fetch path: similar tracks can also come from metadata/plugin
+        # providers (e.g. sonic_similarity), so gate on all types, not music providers alone.
+        similar_tracks_available = bool(
+            self.mass.get_providers_supporting_feature(ProviderFeature.SIMILAR_TRACKS)
         )
         autoplay_entries = [
             ConfigEntry(

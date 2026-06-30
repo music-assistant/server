@@ -189,7 +189,7 @@ async def test_get_playlist_tracks_without_config_returns_empty() -> None:
 def test_get_queue_config_entries_categories_and_dependencies() -> None:
     """Autoplay and crossfade entries land in their own categories with the playlist depends_on."""
     fake = MagicMock()
-    fake.mass.music.providers = []
+    fake.mass.get_providers_supporting_feature.return_value = []
     fake.mass.streams.smart_fades_available = False
 
     entries = PlayerQueuesController.get_queue_config_entries(cast("PlayerQueuesController", fake))
@@ -214,3 +214,19 @@ def test_get_queue_config_entries_categories_and_dependencies() -> None:
         opt for opt in by_key["autoplay_mode"].options if opt.value == AutoplayMode.SIMILAR.value
     )
     assert similar_option.disabled is True
+
+
+def test_get_queue_config_entries_similar_enabled_by_plugin_provider() -> None:
+    """The 'similar' option is enabled when any provider (incl. a plugin) supplies similar tracks."""
+    fake = MagicMock()
+    # mirror a sonic_similarity-style plugin: only surfaces via get_providers_supporting_feature
+    fake.mass.get_providers_supporting_feature.return_value = [MagicMock()]
+    fake.mass.streams.smart_fades_available = False
+
+    entries = PlayerQueuesController.get_queue_config_entries(cast("PlayerQueuesController", fake))
+    by_key = {entry.key: entry for entry in entries}
+
+    similar_option = next(
+        opt for opt in by_key["autoplay_mode"].options if opt.value == AutoplayMode.SIMILAR.value
+    )
+    assert similar_option.disabled is False
