@@ -116,8 +116,8 @@ class ManagedPool:
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
-        queue = self.queues._queue_data[queue_id].queue
-        windows = self.queues._smart_shuffle._windows(queue_id)
+        queue = self.queues.queue_data(queue_id).queue
+        windows = self.queues.recency_windows(queue_id)
         snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
         # publish a best-effort recency filter so dynamic-playlist generation can pre-skip recently
         # played tracks while over-generating; allocate_refill still applies the authoritative gate
@@ -129,7 +129,7 @@ class ManagedPool:
             return []
         # dedupe only against the active (current + unplayed) tail; played history is left out so
         # recency, not permanent exclusion, decides when a track may return
-        items = self.queues._queue_data[queue_id].items
+        items = self.queues.queue_data(queue_id).items
         start = queue.current_index if queue.current_index is not None else 0
         pool_keys = {
             item.media_item for item in items[start:] if isinstance(item.media_item, Track)
@@ -181,7 +181,7 @@ class ManagedPool:
         # multiplicity = how often a source was added (adding a source more than once weights it up)
         counts: dict[str, int] = {}
         items: dict[str, MediaItemType] = {}
-        for item in self.queues._queue_data[queue_id].source_items:
+        for item in self.queues.queue_data(queue_id).source_items:
             if isinstance(item, Playlist) and item.is_dynamic and not include_dynamic:
                 continue
             if not (uri := _uri(item)):
@@ -222,16 +222,14 @@ class ManagedPool:
         if not isinstance(media_item, Playlist):
             return []
         with suppress(MusicAssistantError):
-            tracks = await self.queues._media_resolver.get_playlist_tracks(
-                media_item, start_item=None
-            )
+            tracks = await self.queues.get_playlist_tracks(media_item, start_item=None)
             return [track for track in tracks if isinstance(track, Track) and track.available]
         return []
 
     async def _fetch_tracks(self, media_item: MediaItemType) -> list[Track]:
         """Fetch a TRACKS source's own (playable) tracks, honoring the user's selection prefs."""
         with suppress(MusicAssistantError):
-            tracks = await self.queues._media_resolver.get_tracks_for_playback(media_item)
+            tracks = await self.queues.get_tracks_for_playback(media_item)
             return [track for track in tracks if isinstance(track, Track) and track.available]
         return []
 
@@ -314,10 +312,10 @@ class ManagedPool:
         retire = set(uris)
         remaining = [
             item
-            for item in self.queues._queue_data[queue_id].source_items
+            for item in self.queues.queue_data(queue_id).source_items
             if _uri(item) not in retire
         ]
-        self.queues._store_sources(queue, remaining)
+        self.queues.store_sources(queue, remaining)
         self.logger.debug(
             "Finite source(s) exhausted on queue %s; %d source(s) remain", queue_id, len(remaining)
         )
@@ -325,7 +323,7 @@ class ManagedPool:
 
     def _unplayed(self, queue: PlayerQueue) -> int:
         """Return how many not-yet-played items remain in the queue."""
-        items = data.items if (data := self.queues._queue_data.get(queue.queue_id)) else []
+        items = data.items if (data := self.queues.queue_data_or_none(queue.queue_id)) else []
         if queue.current_index is None:
             return len(items)
         return max(len(items) - (queue.current_index + 1), 0)

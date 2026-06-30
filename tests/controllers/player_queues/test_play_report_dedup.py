@@ -6,23 +6,20 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.player_queues.playback_tracker import PlaybackTracker
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
 
-def _tracker() -> PlaybackTracker:
-    """Build a PlaybackTracker over a bare controller with the two reported queues registered."""
+def _tracker() -> PlayerQueuesController:
+    """Build a bare controller with the two reported queues registered."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl._queue_data = {
         queue_id: PlayerQueueData(queue=cast("PlayerQueue", Mock(queue_id=queue_id)))
         for queue_id in ("q1", "q2")
     }
-    tracker = PlaybackTracker.__new__(PlaybackTracker)
-    tracker.queues = ctrl
-    return tracker
+    return ctrl
 
 
 def test_completed_play_counts_once() -> None:

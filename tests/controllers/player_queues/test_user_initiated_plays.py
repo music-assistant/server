@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, Mock
 from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.media_items import Album, Artist, Track
 
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
-from music_assistant.controllers.player_queues.playback_tracker import PlaybackTracker
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -38,7 +38,7 @@ def test_directly_enqueued_track_is_user_initiated() -> None:
     # the user explicitly played a single track and (separately) an album
     queue = cast("PlayerQueue", Mock(enqueued_media_items=[explicit_track, album]))
 
-    tracker = PlaybackTracker.__new__(PlaybackTracker)
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     # the directly-enqueued track was explicitly chosen
     assert tracker._is_user_initiated_play(queue, explicit_track) is True
     # a track that only played as part of the enqueued album was not
@@ -47,7 +47,7 @@ def test_directly_enqueued_track_is_user_initiated() -> None:
 
 async def test_mark_album_played_is_user_initiated() -> None:
     """Crediting an enqueued album records it as a user-initiated play."""
-    tracker = PlaybackTracker.__new__(PlaybackTracker)
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     tracker.logger = Mock()
     mark = AsyncMock()
     tracker.mass = Mock()

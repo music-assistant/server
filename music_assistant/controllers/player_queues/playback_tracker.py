@@ -38,6 +38,7 @@ from music_assistant.constants import (
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     get_current_playback_speed,
@@ -51,22 +52,9 @@ from music_assistant.models.player import Player
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
-    from music_assistant.controllers.player_queues.controller import PlayerQueuesController
-    from music_assistant.models.player import Player
 
-
-class PlaybackTracker:
+class PlaybackTrackerMixin(_PlayerQueuesBase):
     """Reconcile a queue's state against its player and drive playback-progress reporting."""
-
-    def __init__(self, queues: PlayerQueuesController) -> None:
-        """
-        Initialize the playbacktracker.
-
-        :param queues: The owning player queues controller.
-        """
-        self.queues = queues
-        self.mass = queues.mass
-        self.logger = queues.logger
 
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
         """
@@ -89,7 +77,7 @@ class PlaybackTracker:
             elif item_id := self._parse_player_current_item_id(queue_id, player):
                 # normal mode, the player itself will report the current item
                 elapsed_time = player.state.corrected_elapsed_time or 0
-                current_index = self.queues.index_by_id(queue_id, item_id)
+                current_index = self.index_by_id(queue_id, item_id)
             else:
                 # this may happen if the player is still transitioning between tracks
                 # we ignore this for now and keep the current index as is
@@ -97,9 +85,9 @@ class PlaybackTracker:
 
             # get current/next item based on current index
             queue.current_index = current_index
-            queue.current_item = current_item = self.queues.get_item(queue_id, current_index)
+            queue.current_item = current_item = self.get_item(queue_id, current_index)
             queue.next_item = (
-                self.queues.get_next_item(queue_id, current_index)
+                self.get_next_item(queue_id, current_index)
                 if current_item and current_index is not None
                 else None
             )
@@ -121,9 +109,9 @@ class PlaybackTracker:
 
         elif not queue.current_item and queue.current_index is not None:
             current_index = queue.current_index
-            queue.current_item = current_item = self.queues.get_item(queue_id, current_index)
+            queue.current_item = current_item = self.get_item(queue_id, current_index)
             queue.next_item = (
-                self.queues.get_next_item(queue_id, current_index)
+                self.get_next_item(queue_id, current_index)
                 if current_item and current_index is not None
                 else None
             )
@@ -135,14 +123,14 @@ class PlaybackTracker:
     ) -> None:
         """Update the Queue when the player state changed."""
         queue_id = player.player_id
-        queue = self.queues._queue_data[queue_id].queue
+        queue = self._queue_data[queue_id].queue
 
         # basic properties
         queue.display_name = player.state.name
         queue.available = player.state.available
         queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
-        queue.smart_shuffle_active = self.queues.is_smart_shuffle_active(queue)
-        queue.items = len(self.queues._queue_data[queue_id].items)
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+        queue.items = len(self._queue_data[queue_id].items)
 
         queue.state = (
             player.state.playback_state or PlaybackState.IDLE
@@ -167,7 +155,7 @@ class PlaybackTracker:
                 output_formats.append("unknown")
 
         # basic throttle: do not send state changed events if queue did not actually change
-        prev_state: CompareState = self.queues._queue_data[queue_id].prev_state or CompareState(
+        prev_state: CompareState = self._queue_data[queue_id].prev_state or CompareState(
             queue_id=queue_id,
             state=PlaybackState.IDLE,
             current_item_id=None,
@@ -223,9 +211,9 @@ class PlaybackTracker:
 
         # store the new state
         if queue.active:
-            self.queues._queue_data[queue_id].prev_state = new_state
+            self._queue_data[queue_id].prev_state = new_state
         else:
-            self.queues._queue_data[queue_id].prev_state = None
+            self._queue_data[queue_id].prev_state = None
 
         # return early if nothing changed
         if len(changed_keys) == 0:
@@ -249,7 +237,7 @@ class PlaybackTracker:
                 self.mass.players.trigger_player_update(queue_id)
 
         if send_update:
-            self.queues.signal_update(queue_id)
+            self.signal_update(queue_id)
 
         if "output_formats" in changed_keys:
             # refresh DSP details since they may have changed
@@ -299,15 +287,11 @@ class PlaybackTracker:
             if queue.sources and running_low:
                 # an active dynamic source (incl. dynamic playlists/stations) keeps itself going
                 task_id = f"fill_dynamic_tracks_{queue_id}"
-                self.mass.call_later(
-                    5, self.queues._queue_loader._fill_dynamic_tracks, queue_id, task_id=task_id
-                )
+                self.mass.call_later(5, self._fill_dynamic_tracks, queue_id, task_id=task_id)
             elif queue.autoplay_enabled and queue.enqueued_media_items and running_low:
                 # autoplay refills using the per-queue configured Autoplay mode
                 task_id = f"fill_autoplay_tracks_{queue_id}"
-                self.mass.call_later(
-                    5, self.queues._queue_loader._fill_autoplay_tracks, queue_id, task_id=task_id
-                )
+                self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
@@ -348,8 +332,8 @@ class PlaybackTracker:
             else:
                 # no more seconds left to divide, this is our track
                 # account for any seeking by adding the skipped/seeked seconds
-                queue_index = self.queues.index_by_id(queue.queue_id, play_log_entry.queue_item_id)
-                queue_item = self.queues.get_item(queue.queue_id, queue_index)
+                queue_index = self.index_by_id(queue.queue_id, play_log_entry.queue_item_id)
+                queue_item = self.get_item(queue.queue_id, queue_index)
                 if queue_item and queue_item.streamdetails:
                     track_sec_skipped = queue_item.streamdetails.seek_position
                 else:
@@ -392,7 +376,7 @@ class PlaybackTracker:
             if protocol_player.current_media.queue_item_id:
                 return protocol_player.current_media.queue_item_id
             current_item_id = protocol_player.current_media.uri.split(":")[-1]
-            if self.queues.get_item(queue_id, current_item_id):
+            if self.get_item(queue_id, current_item_id):
                 return current_item_id
             return None
         # try to extract the item id from a mass stream url
@@ -407,7 +391,7 @@ class PlaybackTracker:
             # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
             if len(path_parts) >= 5:
                 current_item_id = path_parts[3]
-                if self.queues.get_item(queue_id, current_item_id):
+                if self.get_item(queue_id, current_item_id):
                     return current_item_id
 
         return None
@@ -452,18 +436,18 @@ class PlaybackTracker:
                 # check the actual queue items list for newly added items
                 # queue.next_item may be stale as it's only updated during PLAYING/PAUSED
                 if queue.current_index is not None and (
-                    next_item := self.queues.get_next_item(queue.queue_id, queue.current_index)
+                    next_item := self.get_next_item(queue.queue_id, queue.current_index)
                 ):
-                    next_index = self.queues.index_by_id(queue.queue_id, next_item.queue_item_id)
+                    next_index = self.index_by_id(queue.queue_id, next_item.queue_item_id)
                     if next_index is not None:
                         self.logger.info(
                             "Items added to queue while idle, resuming playback for %s",
                             queue.display_name,
                         )
-                        await self.queues.play_index(queue.queue_id, next_index)
+                        await self.play_index(queue.queue_id, next_index)
                     return
             # If the queue was started from a dynamic playlist, fetch fresh tracks and continue.
-            qdata = self.queues._queue_data.get(queue.queue_id)
+            qdata = self._queue_data.get(queue.queue_id)
             source_items = qdata.source_items if qdata else []
             dynamic_playlist = next(
                 (
@@ -493,7 +477,7 @@ class PlaybackTracker:
                         else None
                     )
                     set_current_user(playback_user)
-                    dynamic_tracks = await self.queues._media_resolver.get_playlist_tracks(
+                    dynamic_tracks = await self._media_resolver.get_playlist_tracks(
                         dynamic_playlist, start_item=None
                     )
                     if dynamic_tracks:
@@ -504,7 +488,7 @@ class PlaybackTracker:
                         ]
                         if queue_items:
                             cur_index = queue.current_index or 0
-                            await self.queues.load(
+                            await self.load(
                                 queue.queue_id,
                                 queue_items,
                                 insert_at_index=cur_index + 1,
@@ -513,15 +497,13 @@ class PlaybackTracker:
                                 shuffle=False,
                             )
                             if queue.current_index is not None and (
-                                next_item := self.queues.get_next_item(
-                                    queue.queue_id, queue.current_index
-                                )
+                                next_item := self.get_next_item(queue.queue_id, queue.current_index)
                             ):
-                                next_index = self.queues.index_by_id(
+                                next_index = self.index_by_id(
                                     queue.queue_id, next_item.queue_item_id
                                 )
                                 if next_index is not None:
-                                    await self.queues.play_index(queue.queue_id, next_index)
+                                    await self.play_index(queue.queue_id, next_index)
                                     return
                 except MusicAssistantError as err:
                     self.logger.warning(
@@ -531,7 +513,7 @@ class PlaybackTracker:
                         err,
                     )
             self.logger.info("End of queue reached, clearing items")
-            self.queues.clear(queue.queue_id)
+            self.clear(queue.queue_id)
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
         # now determine if the item was fully played before clearing/resuming
@@ -546,7 +528,7 @@ class PlaybackTracker:
                 # (_resume_on_idle) is responsible for starting it. Creating
                 # _clear_or_resume_delayed here would race with that restart and could
                 # incorrectly clear the queue or trigger a double play_index call.
-                if queue.current_index is not None and self.queues.get_next_item(
+                if queue.current_index is not None and self.get_next_item(
                     queue.queue_id, queue.current_index
                 ):
                     return
@@ -589,9 +571,7 @@ class PlaybackTracker:
         else:
             # report on current item
             is_current_item = True
-            item_to_report = (
-                self.queues.get_item(queue.queue_id, cur_item_id) or new_state["current_item"]
-            )
+            item_to_report = self.get_item(queue.queue_id, cur_item_id) or new_state["current_item"]
             seconds_played = int(new_state["elapsed_time"])
 
         if not item_to_report:
@@ -750,9 +730,9 @@ class PlaybackTracker:
         )
         if enqueued is None:
             return None
-        index = self.queues.index_by_id(queue.queue_id, item_to_report.queue_item_id)
+        index = self.index_by_id(queue.queue_id, item_to_report.queue_item_id)
         if index:
-            prev_item = self.queues.get_item(queue.queue_id, index - 1)
+            prev_item = self.get_item(queue.queue_id, index - 1)
             prev_album = (
                 getattr(prev_item.media_item, "album", None)
                 if prev_item and prev_item.media_item
@@ -793,7 +773,7 @@ class PlaybackTracker:
         :param fully_played: Whether the item was played to completion.
         :param is_playing: Whether the item is still playing.
         """
-        data = self.queues._queue_data[queue_id]
+        data = self._queue_data[queue_id]
         if fully_played and not is_playing:
             # the final queue track is reported twice at end-of-queue; skip the duplicate
             # so a completed play is only counted once

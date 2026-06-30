@@ -168,9 +168,7 @@ async def test_get_playlist_tracks_returns_filtered_batch() -> None:
     )
     queues.mass.music.get_item_by_uri = AsyncMock(return_value=_playlist())
     excluded = _track("t2")
-    queues._media_resolver.get_playlist_tracks = AsyncMock(
-        return_value=[_track("t1"), excluded, _track("t3")]
-    )
+    queues.get_playlist_tracks = AsyncMock(return_value=[_track("t1"), excluded, _track("t3")])
 
     result = await helper.get_playlist_tracks(_queue(), exclude={excluded})
 

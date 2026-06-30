@@ -131,9 +131,7 @@ class Autoplay:
             return []
         tracks = [
             track
-            for track in await self.queues._media_resolver.get_playlist_tracks(
-                playlist, start_item=None
-            )
+            for track in await self.queues.get_playlist_tracks(playlist, start_item=None)
             if isinstance(track, Track)
         ]
         random.shuffle(tracks)

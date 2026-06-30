@@ -16,19 +16,14 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
 import shortuuid
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
-    CrossfadeMode,
     EventType,
     MediaType,
     PlaybackState,
     PlayerType,
-    ProviderFeature,
     QueueOption,
     RepeatMode,
 )
@@ -38,107 +33,79 @@ from music_assistant_models.errors import (
     InvalidCommand,
     InvalidDataError,
     MediaNotFoundError,
-    MusicAssistantError,
     PlayerUnavailableError,
     QueueEmpty,
 )
 from music_assistant_models.media_items import (
     Audiobook,
-    BrowseFolder,
     ItemMapping,
     MediaItemType,
     PlayableMediaItemType,
     Playlist,
     PodcastEpisode,
     Track,
-    media_from_dict,
 )
 from music_assistant_models.player_queue import PlayerQueue
-from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
     ATTR_ACTIVE_PLAYLIST,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CONF_CROSSFADE_MODE,
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_VOLUME_NORMALIZATION,
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
 )
 from music_assistant.controllers.player_queues.autoplay import (
-    AUTOPLAY_MODE_DEFAULT_VALUE,
     Autoplay,
-    AutoplayMode,
+)
+from music_assistant.controllers.player_queues.config import (
+    core_config_entries,
+    queue_config_entries,
 )
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-    CONF_AUTOPLAY_LABEL,
-    CONF_AUTOPLAY_MODE,
-    CONF_AUTOPLAY_PLAYLIST,
-    CONF_CROSSFADE_LABEL,
-    CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
-    CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
-    CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK,
-    CONF_DEFAULT_ENQUEUE_OPTION_FOLDER,
-    CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
-    CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
-    CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
-    CONF_DEFAULT_ENQUEUE_OPTION_PODCAST,
-    CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE,
-    CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
-    CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
-    CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
-    CONF_SMART_SHUFFLE_ARTIST_RECENCY,
-    CONF_SMART_SHUFFLE_DUPLICATE_GAP,
-    CONF_SMART_SHUFFLE_ENABLED,
-    CONF_SMART_SHUFFLE_LABEL,
-    CONF_SMART_SHUFFLE_SONG_RECENCY,
-    ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
-    ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
-    SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT,
-    SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS,
-    SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT,
-    SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS,
-    SMART_SHUFFLE_ENABLED_DEFAULT,
-    SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
-    SMART_SHUFFLE_SONG_RECENCY_OPTIONS,
 )
 from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
-    has_dynamic_source,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
-from music_assistant.controllers.player_queues.playback_tracker import PlaybackTracker
-from music_assistant.controllers.player_queues.queue_loader import QueueLoader
+from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
+from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
 from music_assistant.controllers.player_queues.state import PlayerQueueData
-from music_assistant.controllers.player_queues.stream_feeder import StreamFeeder
+from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
     get_current_user,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
-from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models import BackgroundTask
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueOption,
+        ConfigValueType,
+    )
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant import MusicAssistant
+    from music_assistant.constants import PlaylistPlayableItem
+    from music_assistant.controllers.music.recency import RecencyWindows
     from music_assistant.models.player import Player
-    from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 
-class PlayerQueuesController(CoreController):
-    """Controller holding all logic to enqueue music for players."""
+class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
+    """
+    Controller holding all logic to enqueue music for players.
 
-    domain: str = "player_queues"
+    The loading, playback-tracking and stream-feeding logic lives in mixins (over the shared base);
+    this class owns the public API surface, the per-queue records and the stateful helper services.
+    """
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
@@ -146,13 +113,11 @@ class PlayerQueuesController(CoreController):
         # server-side per-queue records, keyed by queue_id; each bundles the wire PlayerQueue with
         # its items, dynamic-source items and runtime-only state (see PlayerQueueData)
         self._queue_data: dict[str, PlayerQueueData] = {}
+        # stateful helper services (own per-queue state + lifecycle), constructed with self
         self._autoplay = Autoplay(self)
         self._smart_shuffle = SmartShuffle(self)
         self._managed_pool = ManagedPool(self)
         self._media_resolver = MediaResolver(self)
-        self._playback_tracker = PlaybackTracker(self)
-        self._stream_feeder = StreamFeeder(self)
-        self._queue_loader = QueueLoader(self)
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -172,96 +137,7 @@ class PlayerQueuesController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        enqueue_options = [
-            ConfigValueOption(QueueOption.PLAY.value),
-            ConfigValueOption(QueueOption.REPLACE.value),
-        ]
-        return (
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
-                type=ConfigEntryType.STRING,
-                default_value=ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
-                options=[
-                    ConfigValueOption("top_tracks"),
-                    ConfigValueOption("library_tracks"),
-                    ConfigValueOption("prefer_library"),
-                    ConfigValueOption("all_tracks"),
-                ],
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
-                type=ConfigEntryType.STRING,
-                default_value=ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
-                options=[
-                    ConfigValueOption("library_tracks"),
-                    ConfigValueOption("all_tracks"),
-                ],
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.PLAY.value,
-                options=enqueue_options,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_PODCAST,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_FOLDER,
-                type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE.value,
-                options=enqueue_options,
-                hidden=True,
-            ),
-        )
+        return core_config_entries()
 
     def get_queue_config_entries(
         self, playlist_options: list[ConfigValueOption] | None = None
@@ -277,124 +153,7 @@ class PlayerQueuesController(CoreController):
         :param playlist_options: Library playlists to offer for the 'playlist' autoplay mode.
             Only populated when serving the entries to the UI; the parse path can omit it.
         """
-        similar_tracks_available = any(
-            ProviderFeature.SIMILAR_TRACKS in provider.supported_features
-            for provider in self.mass.music.providers
-        )
-        autoplay_entries = [
-            ConfigEntry(
-                key=CONF_AUTOPLAY_LABEL,
-                type=ConfigEntryType.LABEL,
-                category="autoplay",
-            ),
-            ConfigEntry(
-                key=CONF_AUTOPLAY_MODE,
-                type=ConfigEntryType.STRING,
-                options=[
-                    ConfigValueOption(AutoplayMode.AUTO.value),
-                    ConfigValueOption(
-                        AutoplayMode.SIMILAR.value, disabled=not similar_tracks_available
-                    ),
-                    ConfigValueOption(AutoplayMode.LIBRARY.value),
-                    ConfigValueOption(AutoplayMode.PLAYLIST.value),
-                ],
-                default_value=AUTOPLAY_MODE_DEFAULT_VALUE,
-                category="autoplay",
-            ),
-            ConfigEntry(
-                key=CONF_AUTOPLAY_PLAYLIST,
-                type=ConfigEntryType.STRING,
-                options=playlist_options or [],
-                default_value=None,
-                required=False,
-                depends_on=CONF_AUTOPLAY_MODE,
-                depends_on_value=AutoplayMode.PLAYLIST.value,
-                category="autoplay",
-            ),
-        ]
-        smart_fades_available = self.mass.streams.smart_fades_available
-        crossfade_mode_entry = ConfigEntry(
-            key=CONF_CROSSFADE_MODE,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
-                ConfigValueOption(
-                    CrossfadeMode.SMART_CROSSFADE.value, disabled=not smart_fades_available
-                ),
-            ],
-            default_value=(
-                CrossfadeMode.SMART_CROSSFADE.value
-                if smart_fades_available
-                else CrossfadeMode.STANDARD_CROSSFADE.value
-            ),
-            category="crossfade",
-            requires_reload=True,
-        )
-        crossfade_entries = [
-            ConfigEntry(
-                key=CONF_CROSSFADE_LABEL,
-                type=ConfigEntryType.LABEL,
-                category="crossfade",
-            ),
-            crossfade_mode_entry,
-            CONF_ENTRY_CROSSFADE_DURATION,
-        ]
-        smart_shuffle_entries = [
-            ConfigEntry(
-                key=CONF_SMART_SHUFFLE_LABEL,
-                type=ConfigEntryType.LABEL,
-                category="smart_shuffle",
-            ),
-            ConfigEntry(
-                key=CONF_SMART_SHUFFLE_ENABLED,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=SMART_SHUFFLE_ENABLED_DEFAULT,
-                category="smart_shuffle",
-            ),
-            ConfigEntry(
-                key=CONF_SMART_SHUFFLE_SONG_RECENCY,
-                type=ConfigEntryType.STRING,
-                options=[
-                    ConfigValueOption(str(seconds))
-                    for seconds in SMART_SHUFFLE_SONG_RECENCY_OPTIONS
-                ],
-                default_value=str(SMART_SHUFFLE_SONG_RECENCY_DEFAULT),
-                category="smart_shuffle",
-                depends_on=CONF_SMART_SHUFFLE_ENABLED,
-                depends_on_value=True,
-            ),
-            ConfigEntry(
-                key=CONF_SMART_SHUFFLE_ARTIST_RECENCY,
-                type=ConfigEntryType.STRING,
-                options=[
-                    ConfigValueOption(str(seconds))
-                    for seconds in SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS
-                ],
-                default_value=str(SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT),
-                category="smart_shuffle",
-                depends_on=CONF_SMART_SHUFFLE_ENABLED,
-                depends_on_value=True,
-            ),
-            ConfigEntry(
-                key=CONF_SMART_SHUFFLE_DUPLICATE_GAP,
-                type=ConfigEntryType.STRING,
-                options=[
-                    ConfigValueOption(str(seconds))
-                    for seconds in SMART_SHUFFLE_DUPLICATE_GAP_OPTIONS
-                ],
-                default_value=str(SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT),
-                category="smart_shuffle",
-                depends_on=CONF_SMART_SHUFFLE_ENABLED,
-                depends_on_value=True,
-                advanced=True,
-            ),
-        ]
-        return [
-            *smart_shuffle_entries,
-            *autoplay_entries,
-            *crossfade_entries,
-            CONF_ENTRY_VOLUME_NORMALIZATION,
-        ]
+        return queue_config_entries(self.mass, playlist_options)
 
     def __iter__(self) -> Iterator[PlayerQueue]:
         """Iterate over (available) players."""
@@ -410,6 +169,19 @@ class PlayerQueuesController(CoreController):
         """Return PlayerQueue by queue_id or None if not found."""
         data = self._queue_data.get(queue_id)
         return data.queue if data else None
+
+    def queue_data(self, queue_id: str) -> PlayerQueueData:
+        """
+        Return the server-side record for a queue (raises if the queue is unknown).
+
+        Internal accessor for the stateful helper services so they reach per-queue state through
+        the controller rather than its private store.
+        """
+        return self._queue_data[queue_id]
+
+    def queue_data_or_none(self, queue_id: str) -> PlayerQueueData | None:
+        """Return the server-side record for a queue, or None if it is not registered."""
+        return self._queue_data.get(queue_id)
 
     @api_command("player_queues/items")
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
@@ -484,9 +256,7 @@ class PlayerQueuesController(CoreController):
             and (queue.items - queue.current_index) < 5
         ):
             task_id = f"fill_autoplay_tracks_{queue_id}"
-            self.mass.call_later(
-                5, self._queue_loader._fill_autoplay_tracks, queue_id, task_id=task_id
-            )
+            self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
         self.signal_update(queue_id=queue_id)
 
     @api_command("player_queues/dont_stop_the_music", alias=True)
@@ -512,7 +282,7 @@ class PlayerQueuesController(CoreController):
             # note that we only do this if the player has loaded the current track
             # if not, we wait until it has loaded to prevent conflicts
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._stream_feeder._enqueue_next_item(queue_id, next_item)
+                self._enqueue_next_item(queue_id, next_item)
 
     @api_command("player_queues/crossfade")
     def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
@@ -532,7 +302,7 @@ class PlayerQueuesController(CoreController):
             # re-enqueue the next track so the new crossfade behaviour applies to the
             # upcoming transition (only when the player has already loaded the current track)
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._stream_feeder._enqueue_next_item(queue_id, next_item)
+                self._enqueue_next_item(queue_id, next_item)
 
     # Two timebases are used in this controller when variable playback speed is in
     # effect (atempo applied server-side):
@@ -706,7 +476,7 @@ class PlayerQueuesController(CoreController):
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue."""
         queue = self._queue_data[queue_id].queue
-        self._store_sources(queue, [])
+        self.store_sources(queue, [])
         queue.is_dynamic = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
@@ -715,7 +485,7 @@ class PlayerQueuesController(CoreController):
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
-        self.mass.create_task(self._stream_feeder._cleanup_queue_audio_data(queue_id))
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist")
@@ -767,7 +537,7 @@ class PlayerQueuesController(CoreController):
         # public cmd_stop redirects to queue.stop when a queue is active,
         # which would loop back here indefinitely.
         await self.mass.players._handle_cmd_stop(queue_id)
-        self.mass.create_task(self._stream_feeder._cleanup_queue_audio_data(queue_id))
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -855,7 +625,7 @@ class PlayerQueuesController(CoreController):
             self.logger.warning("Queue %s has no current index", queue.display_name)
             self._set_transitioning(queue_id, False)
             return
-        next_index = self._queue_loader._get_next_index(queue_id, idx, True)
+        next_index = self._get_next_index(queue_id, idx, True)
         if next_index is None:
             self._set_transitioning(queue_id, False)
             return
@@ -1000,14 +770,14 @@ class PlayerQueuesController(CoreController):
             )
         else:
             # Queue is empty, try to resume from playlog
-            if await self._queue_loader._try_resume_from_playlog(queue):
+            if await self._try_resume_from_playlog(queue):
                 return
             msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 
     @api_command("player_queues/play_index")
     @handle_play_action
-    async def play_index(
+    async def play_index(  # noqa: PLR0915
         self,
         queue_id: str,
         index: int | str,
@@ -1067,9 +837,9 @@ class PlayerQueuesController(CoreController):
                     queue_item = self.get_item(queue_id, index)
                     if not queue_item:
                         continue  # guard
-                    await self._queue_loader._load_item(
+                    await self._load_item(
                         queue_item,
-                        self._queue_loader._get_next_index(queue_id, index),
+                        self._get_next_index(queue_id, index),
                         is_start=True,
                         seek_position=seek_position if attempt == 0 else 0,
                         fade_in=fade_in if attempt == 0 else False,
@@ -1085,9 +855,7 @@ class PlayerQueuesController(CoreController):
                     # the same actionable error.
                     if queue_item and isinstance(err, MediaNotFoundError):
                         queue_item.available = False
-                    next_index = self._queue_loader._get_next_index(
-                        queue_id, index, allow_repeat=False
-                    )
+                    next_index = self._get_next_index(queue_id, index, allow_repeat=False)
                     if next_index is None:
                         # Surface an AudioError's own (actionable) message;
                         # MediaNotFoundError gets the generic wording.
@@ -1284,7 +1052,7 @@ class PlayerQueuesController(CoreController):
             # ignore updates from the player during this time
             return
         # queue is active and preflight checks passed, update the queue details
-        self._playback_tracker._update_queue_from_player(player)
+        self._update_queue_from_player(player)
 
     def on_player_elapsed_time_corrected(self, player: Player) -> None:
         """Correct the queue's timing base if the player's real elapsed_time diverged."""
@@ -1306,7 +1074,7 @@ class PlayerQueuesController(CoreController):
         if queue.flow_mode:
             # _get_flow_queue_stream_index returns media-time in the current item
             # using each playlog entry's recorded speed.
-            _, elapsed_time = self._playback_tracker._get_flow_queue_stream_index(queue, player)
+            _, elapsed_time = self._get_flow_queue_stream_index(queue, player)
         else:
             elapsed_time = player_elapsed * speed
             if queue.current_item and queue.current_item.streamdetails:
@@ -1366,7 +1134,7 @@ class PlayerQueuesController(CoreController):
         next_item: QueueItem | None = None
         idx = 0
         while True:
-            next_index = self._queue_loader._get_next_index(queue_id, cur_index + idx)
+            next_index = self._get_next_index(queue_id, cur_index + idx)
             if next_index is None:
                 raise QueueEmpty("No more tracks left in the queue.")
             queue_item = self.get_item(queue_id, next_index)
@@ -1376,7 +1144,7 @@ class PlayerQueuesController(CoreController):
                 # we only allow 10 retries to prevent infinite loops
                 raise QueueEmpty("No more (playable) tracks left in the queue.")
             try:
-                await self._queue_loader._load_item(queue_item, next_index)
+                await self._load_item(queue_item, next_index)
                 # we're all set, this is our next item
                 next_item = queue_item
                 break
@@ -1419,12 +1187,10 @@ class PlayerQueuesController(CoreController):
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
         # preload next streamdetails
-        self._stream_feeder._preload_next_item(queue_id, item_id)
+        self._preload_next_item(queue_id, item_id)
         # clean up stale audio buffers for old queue items to prevent memory leaks
         if current_index is not None:
-            self.mass.create_task(
-                self._stream_feeder._cleanup_stale_queue_buffers(queue_id, current_index)
-            )
+            self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
     def queue_buffer_completed(self, queue_id: str) -> None:
         """
@@ -1553,7 +1319,7 @@ class PlayerQueuesController(CoreController):
             # note that we only do this if the player has loaded the current track
             # if not, we wait until it has loaded to prevent conflicts
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._stream_feeder._enqueue_next_item(queue_id, next_item)
+                self._enqueue_next_item(queue_id, next_item)
 
     # Helper methods
 
@@ -1622,6 +1388,22 @@ class PlayerQueuesController(CoreController):
         """
         return await self._media_resolver.get_tracks_for_playback(media_item)
 
+    async def get_playlist_tracks(
+        self, playlist: Playlist, start_item: str | None = None, sort_by: str | None = None
+    ) -> list[PlaylistPlayableItem]:
+        """
+        Return the playable tracks for a playlist, honoring the user's selection prefs.
+
+        :param playlist: The playlist to resolve.
+        :param start_item: Optional item URI to start the playlist from.
+        :param sort_by: Optional sort key for the returned tracks.
+        """
+        return await self._media_resolver.get_playlist_tracks(playlist, start_item, sort_by)
+
+    def recency_windows(self, queue_id: str) -> RecencyWindows:
+        """Return the configured recency windows for a queue (used for recency-aware gating)."""
+        return self._smart_shuffle.windows(queue_id)
+
     async def player_media_from_queue_item(self, queue_item: QueueItem) -> PlayerMedia:
         """
         Parse PlayerMedia from QueueItem.
@@ -1679,7 +1461,7 @@ class PlayerQueuesController(CoreController):
             index = cur_index
         # At this point index is guaranteed to be int
         for skip in range(5):
-            if (next_index := self._queue_loader._get_next_index(queue_id, index + skip)) is None:
+            if (next_index := self._get_next_index(queue_id, index + skip)) is None:
                 break
             next_item = self.get_item(queue_id, next_index)
             if next_item is None:
@@ -1689,6 +1471,20 @@ class PlayerQueuesController(CoreController):
                 continue
             return next_item
         return None
+
+    def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
+        """
+        Hold the queue's full dynamic-source items server-side and project them onto `sources`.
+
+        :param queue: The queue whose sources are being set.
+        :param items: The full source media items; an empty list clears the queue's sources.
+        """
+        self._queue_data[queue.queue_id].source_items = items
+        queue.sources = [ItemMapping.from_item(item) for item in items]
+        # release any materialized finite-source state whose source is no longer present
+        self._managed_pool.retain(
+            queue.queue_id, {item.uri for item in items if item.uri is not None}
+        )
 
     def _check_player_permission(self, queue_id: str) -> None:
         """
@@ -1707,213 +1503,6 @@ class PlayerQueuesController(CoreController):
             raise InsufficientPermissions(msg)
 
     @handle_play_action
-    async def _handle_play_media(
-        self,
-        queue_id: str,
-        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
-        option: QueueOption | None = None,
-        radio_mode: bool = False,
-        start_item: PlayableMediaItemType | str | None = None,
-        sort_by: str | None = None,
-    ) -> None:
-        """Handle play media without acquiring the queue lock."""
-        # cancel any pending play_index calls for this queue to prevent conflicts
-        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
-        self._set_transitioning(queue_id, False)
-        # ruff: noqa: PLR0915
-        # we use a contextvar to bypass the throttler for this asyncio task/context
-        # this makes sure that playback has priority over other requests that may be
-        # happening in the background
-        BYPASS_THROTTLER.set(True)
-        if not (queue := self.get(queue_id)):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        # always fetch the underlying player so we can raise early if its not available
-        queue_player = self.mass.players.get_player(queue_id, True)
-        assert queue_player is not None  # for type checking
-        if queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
-
-        # save the user requesting the playback (clear it for anonymous playback)
-        playback_user = get_current_user()
-        queue.userid = playback_user.user_id if playback_user else None
-        if playback_user:
-            self.logger.debug(
-                "User %s requested playback.", playback_user.display_name or playback_user.username
-            )
-
-        # a single item or list of items may be provided
-        media_list = media if isinstance(media, list) else [media]
-
-        if radio_mode:
-            # radio_mode is deprecated: a "radio" is now a dynamic radio playlist. Translate each
-            # seed into the radio_playlist provider's URI and enqueue those (resolved to dynamic
-            # playlists that self-manage their refills).
-            self.logger.warning(
-                "radio_mode is deprecated; enqueue a radio_playlist:// dynamic playlist instead"
-            )
-            media_list = [
-                seed_uri
-                if (seed_uri := item if isinstance(item, str) else str(item.uri)).startswith(
-                    "radio_playlist://"
-                )
-                else f"radio_playlist://playlist/{seed_uri}"
-                for item in media_list
-            ]
-            radio_mode = False
-
-        # clear queue if needed
-        if option == QueueOption.REPLACE:
-            self.clear(queue_id, skip_stop=True)
-        # Clear the 'enqueued media item' list when a new queue is requested
-        if option not in (QueueOption.ADD, QueueOption.NEXT):
-            queue.enqueued_media_items.clear()
-
-        # An ADD/NEXT onto a queue that already has dynamic sources keeps feeding its bounded pool;
-        # any other enqueue is not managed here (a REPLACE clears the sources above, and a dynamic
-        # playlist self-manages its own refills).
-        already_managed = bool(queue.sources) and option in (QueueOption.ADD, QueueOption.NEXT)
-        managed_pool = already_managed
-
-        media_items: list[MediaItemType] = []
-        source_items: list[MediaItemType] = []
-        # resolve all media items
-        for item in media_list:
-            try:
-                # parse provided uri into a MA MediaItem or Basic QueueItem from URL
-                media_item: MediaItemType | ItemMapping | BrowseFolder
-                if isinstance(item, str):
-                    media_item = await self.mass.music.get_item_by_uri(item)
-                elif isinstance(item, dict):  # type: ignore[unreachable]
-                    # TODO: Investigate why the API parser sometimes passes raw dicts instead of
-                    # converting them to MediaItem objects. The parse_value function in api.py
-                    # should handle dict-to-object conversion, but dicts are slipping through
-                    # in some cases. This is defensive handling for that parser bug.
-                    media_item = media_from_dict(item)  # type: ignore[unreachable]
-                    self.logger.debug("Converted to: %s", type(media_item))
-                else:
-                    # item is MediaItemType | ItemMapping at this point
-                    media_item = item
-
-                if (
-                    isinstance(media_item, ItemMapping)
-                    and media_item.media_type == MediaType.PLAYLIST
-                ):
-                    # Resolve ItemMapping for a playlist so the full Playlist object
-                    # so we have access to details such as 'is_dynamic'
-                    with suppress(MusicAssistantError):
-                        media_item = await self.mass.music.playlists.get(
-                            media_item.item_id,
-                            media_item.provider,
-                        )
-
-                # Save requested media item to play on the queue so we can use it as a source
-                # for Autoplay. Use FIFO list to keep track of the last 10 played items
-                # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
-                if not isinstance(
-                    media_item, (ItemMapping, BrowseFolder)
-                ) and media_item.media_type in (
-                    MediaType.TRACK,
-                    MediaType.ALBUM,
-                    MediaType.PLAYLIST,
-                    MediaType.ARTIST,
-                ):
-                    queue.enqueued_media_items.append(media_item)
-                    if len(queue.enqueued_media_items) > 10:
-                        queue.enqueued_media_items.pop(0)
-                    if isinstance(media_item, Playlist) and media_item.is_dynamic:
-                        # a dynamic playlist/station is always a self-managing dynamic source
-                        source_items.append(media_item)
-
-                # handle default enqueue option if needed
-                if option is None:
-                    # Radio + AudioSource share a single "live_sources" enqueue default —
-                    # both are live infinite streams where REPLACE is almost always the
-                    # right semantic. Other media types use their per-type config key.
-                    if media_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
-                        config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
-                    else:
-                        config_key = f"default_enqueue_option_{media_item.media_type.value}"
-                    config_value = await self.mass.config.get_core_config_value(
-                        self.domain,
-                        config_key,
-                        return_type=str,
-                    )
-                    option = QueueOption(config_value)
-                    if option == QueueOption.REPLACE:
-                        self.clear(queue_id, skip_stop=True)
-
-                # collect media_items to play
-                if isinstance(media_item, Playlist) and media_item.is_dynamic:
-                    # Dynamic playlists/stations supply their own tracks on demand and keep their
-                    # self-managing refill path even inside a managed pool; fetch first batch now.
-                    self.mass.create_task(
-                        self.mass.music.mark_item_played(
-                            media_item, userid=queue.userid, queue_id=queue_id, user_initiated=True
-                        )
-                    )
-                    initial_tracks = await self._media_resolver.get_playlist_tracks(
-                        media_item, start_item=None
-                    )
-                    media_items += initial_tracks
-                elif managed_pool:
-                    # Managed-pool mode: keep the item as a dynamic source; the bounded pool is
-                    # built from these sources below (a finite source rotates its own tracks).
-                    if not isinstance(media_item, (ItemMapping, BrowseFolder)):
-                        source_items.append(media_item)
-                else:
-                    # Convert start_item to string URI if needed
-                    start_item_uri: str | None = None
-                    if isinstance(start_item, str):
-                        start_item_uri = start_item
-                    elif start_item is not None:
-                        start_item_uri = start_item.uri
-                    media_items += await self._media_resolver._resolve_media_items(
-                        media_item,
-                        start_item_uri,
-                        userid=queue.userid,
-                        queue_id=queue_id,
-                        sort_by=sort_by,
-                    )
-
-            except MusicAssistantError as err:
-                # invalid MA uri or item not found error
-                self.logger.warning("Skipping %s: %s", item, str(err))
-
-        # overwrite or append the queue's source items
-        replace_sources = option not in (QueueOption.ADD, QueueOption.NEXT)
-        if replace_sources:
-            self._store_sources(queue, source_items)
-        else:
-            self._store_sources(queue, self._queue_data[queue_id].source_items + source_items)
-        source_items = self._queue_data[queue_id].source_items
-        queue.is_dynamic = has_dynamic_source(source_items)
-
-        if already_managed and not media_items:
-            # new sources were added to an already-active pool: leave the playing pool intact and
-            # let the next top-up incorporate them
-            self.signal_update(queue_id)
-            if queue.current_index is not None and (queue.items - queue.current_index) < 5:
-                task_id = f"fill_dynamic_tracks_{queue_id}"
-                self.mass.call_later(
-                    5, self._queue_loader._fill_dynamic_tracks, queue_id, task_id=task_id
-                )
-            return
-
-        # only add valid/available items
-        queue_items: list[QueueItem] = [
-            QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
-            for x in media_items
-            if x and x.available
-        ]
-
-        if not queue_items:
-            raise MediaNotFoundError("No playable items found")
-
-        # load the items into the queue (managed-pool tracks are already ordered, so don't reshuffle)
-        await self._queue_loader._enqueue_with_option(queue_id, queue_items, option, managed_pool)
-
-    @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:
         """Handle play without acquiring the queue lock."""
         queue_player = self.mass.players.get_player(queue_id, True)
@@ -1930,88 +1519,3 @@ class PlayerQueuesController(CoreController):
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
         if (data := self._queue_data.get(queue_id)) is not None:
             data.transitioning = value
-
-    def _store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
-        """
-        Hold the queue's full dynamic-source items server-side and project them onto `sources`.
-
-        :param queue: The queue whose sources are being set.
-        :param items: The full source media items; an empty list clears the queue's sources.
-        """
-        self._queue_data[queue.queue_id].source_items = items
-        queue.sources = [ItemMapping.from_item(item) for item in items]
-        # release any materialized finite-source state whose source is no longer present
-        self._managed_pool.retain(
-            queue.queue_id, {item.uri for item in items if item.uri is not None}
-        )
-
-    async def _get_similar_tracks(
-        self,
-        queue_id: str,
-        is_initial: bool = False,
-        seed_items: list[MediaItemType] | None = None,
-    ) -> list[Track]:
-        """
-        Fetch tracks similar to the given seeds (autoplay's similar/continuation mode).
-
-        :param queue_id: The queue to fetch tracks for.
-        :param is_initial: True to interleave the base/seed tracks into the result, False to
-            return only similar tracks.
-        :param seed_items: Explicit seed items to base the tracks on. Defaults to the queue's
-            sources; autoplay passes the enqueued media items instead.
-        """
-        queue = self._queue_data[queue_id].queue
-        queue_track_items: list[Track] = [
-            q.media_item
-            for q in self._queue_data[queue_id].items
-            if q.media_item and isinstance(q.media_item, Track)
-        ]
-        source_items = (
-            seed_items if seed_items is not None else self._queue_data[queue_id].source_items
-        )
-        if not source_items:
-            # this may happen during race conditions as this method is called delayed
-            return []
-        self.logger.info(
-            "Fetching similar tracks for queue %s based on: %s",
-            queue.display_name,
-            ", ".join([x.name for x in source_items]),
-        )
-
-        # Get user's preferred provider instances for steering provider selection
-        preferred_provider_instances: list[str] | None = None
-        if (
-            queue.userid
-            and (playback_user := await self.mass.webserver.auth.get_user(queue.userid))
-            and playback_user.provider_filter
-        ):
-            preferred_provider_instances = playback_user.provider_filter
-
-        # Some providers have very deterministic similar-track algorithms for a single track
-        # seed. When continuing from a single track on a refill, seed from the play history
-        # instead so the result keeps varying.
-        if (
-            len(source_items) == 1
-            and source_items[0].media_type == MediaType.TRACK
-            and not is_initial
-            and queue_track_items
-        ):
-            # Helper samples 5 internally; bound the input.
-            seeds: list[MediaItemType] = random.sample(
-                queue_track_items, min(len(queue_track_items), 10)
-            )
-        else:
-            seeds = list(source_items)
-
-        radio_prov = self.mass.get_provider("radio_playlist")
-        if radio_prov is None:
-            return []
-        dynamic_tracks = await cast("RadioPlaylistProvider", radio_prov).get_dynamic_tracks(
-            seeds,
-            include_base_tracks=is_initial,
-            target_size=25,
-            preferred_provider_instances=preferred_provider_instances,
-        )
-        # Drop anything already queued/played
-        queued_set = set(queue_track_items)
-        return [track for track in dynamic_tracks if track not in queued_set]
