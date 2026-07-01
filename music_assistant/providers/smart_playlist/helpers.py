@@ -130,7 +130,8 @@ class SmartPlaylistRules:
     explicit: bool | None = None
     min_duration: int | None = None
     max_duration: int | None = None
-    last_played_before_days: int | None = None
+    last_played_before_value: int | None = None
+    last_played_before_unit: str | None = None  # "hours", "days", "weeks", "months"
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -180,7 +181,8 @@ class SmartPlaylistRules:
             "explicit": self.explicit,
             "min_duration": self.min_duration,
             "max_duration": self.max_duration,
-            "last_played_before_days": self.last_played_before_days,
+            "last_played_before_value": self.last_played_before_value,
+            "last_played_before_unit": self.last_played_before_unit,
         }
 
     @classmethod
@@ -235,9 +237,10 @@ class SmartPlaylistRules:
             explicit=_coerce_optional_bool(data.get("explicit"), "explicit"),
             min_duration=_coerce_optional_int(data.get("min_duration"), "min_duration"),
             max_duration=_coerce_optional_int(data.get("max_duration"), "max_duration"),
-            last_played_before_days=_coerce_optional_int(
-                data.get("last_played_before_days"), "last_played_before_days"
+            last_played_before_value=_coerce_optional_int(
+                data.get("last_played_before_value"), "last_played_before_value"
             ),
+            last_played_before_unit=data.get("last_played_before_unit"),
         )
 
     def human_readable(self) -> str:
@@ -289,8 +292,8 @@ class SmartPlaylistRules:
             parts.append(year_range)
         if duration_range := self._format_duration_range():
             parts.append(duration_range)
-        if self.last_played_before_days is not None:
-            parts.append(f"Not played in {self.last_played_before_days} days")
+        if last_played_str := self._format_last_played():
+            parts.append(last_played_str)
         if not parts:
             return "No rules (all library tracks)"
         connector = f" {self.logic} "
@@ -315,6 +318,13 @@ class SmartPlaylistRules:
         if self.max_duration is not None:
             return f"Duration: ≤{self.max_duration}s"
         return None
+
+    def _format_last_played(self) -> str | None:
+        """Format last played filter as human-readable string."""
+        if self.last_played_before_value is None or self.last_played_before_unit is None:
+            return None
+        unit_display = self.last_played_before_unit  # hours, days, weeks, months
+        return f"Not played in {self.last_played_before_value} {unit_display}"
 
 
 def validate_rules(rules: SmartPlaylistRules) -> None:
@@ -364,8 +374,23 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
     ):
         msg = f"min_duration must be <= max_duration, got {rules.min_duration}>{rules.max_duration}"
         raise InvalidDataError(msg)
-    if rules.last_played_before_days is not None and rules.last_played_before_days < 1:
-        msg = f"last_played_before_days must be >= 1, got {rules.last_played_before_days}"
+
+    # Validate last_played fields
+    if (rules.last_played_before_value is None) != (rules.last_played_before_unit is None):
+        msg = (
+            "last_played_before_value and last_played_before_unit must both be set or both be None"
+        )
+        raise InvalidDataError(msg)
+    if rules.last_played_before_value is not None and rules.last_played_before_value < 1:
+        msg = f"last_played_before_value must be >= 1, got {rules.last_played_before_value}"
+        raise InvalidDataError(msg)
+    if rules.last_played_before_unit is not None and rules.last_played_before_unit not in (
+        "hours",
+        "days",
+        "weeks",
+        "months",
+    ):
+        msg = f"last_played_before_unit must be hours/days/weeks/months, got {rules.last_played_before_unit}"
         raise InvalidDataError(msg)
 
 

@@ -176,19 +176,26 @@ class TestSmartPlaylistRules:
         assert recovered.max_duration == 600
 
     def test_last_played_field_round_trip(self) -> None:
-        """last_played_before_days survives serialization."""
-        original = SmartPlaylistRules(last_played_before_days=30)
+        """last_played_before_value and last_played_before_unit survive serialization."""
+        original = SmartPlaylistRules(last_played_before_value=30, last_played_before_unit="days")
         recovered = SmartPlaylistRules.from_dict(original.to_dict())
-        assert recovered.last_played_before_days == 30
+        assert recovered.last_played_before_value == 30
+        assert recovered.last_played_before_unit == "days"
 
     def test_from_dict_null_duration_fields_treated_as_none(self) -> None:
-        """from_dict treats null for duration fields as None."""
+        """from_dict treats null for duration and last_played fields as None."""
         rules = SmartPlaylistRules.from_dict(
-            {"min_duration": None, "max_duration": None, "last_played_before_days": None}
+            {
+                "min_duration": None,
+                "max_duration": None,
+                "last_played_before_value": None,
+                "last_played_before_unit": None,
+            }
         )
         assert rules.min_duration is None
         assert rules.max_duration is None
-        assert rules.last_played_before_days is None
+        assert rules.last_played_before_value is None
+        assert rules.last_played_before_unit is None
 
 
 # ---------------------------------------------------------------------------
@@ -270,18 +277,44 @@ class TestRuleValidation:
         with pytest.raises(InvalidDataError, match=r"min_duration.*max_duration"):
             plugin._validate_rules(rules)
 
-    def test_last_played_before_days_zero_raises(self) -> None:
-        """last_played_before_days < 1 raises InvalidDataError."""
+    def test_last_played_before_value_zero_raises(self) -> None:
+        """last_played_before_value < 1 raises InvalidDataError."""
         plugin = self._make_plugin()
-        rules = SmartPlaylistRules(last_played_before_days=0)
-        with pytest.raises(InvalidDataError, match="last_played_before_days"):
+        rules = SmartPlaylistRules(last_played_before_value=0, last_played_before_unit="days")
+        with pytest.raises(InvalidDataError, match="last_played_before_value"):
             plugin._validate_rules(rules)
 
     def test_valid_duration_and_last_played_pass(self) -> None:
         """Valid duration and last_played values do not raise."""
         plugin = self._make_plugin()
-        rules = SmartPlaylistRules(min_duration=180, max_duration=600, last_played_before_days=30)
+        rules = SmartPlaylistRules(
+            min_duration=180,
+            max_duration=600,
+            last_played_before_value=30,
+            last_played_before_unit="days",
+        )
         plugin._validate_rules(rules)  # should not raise
+
+    def test_last_played_invalid_unit_raises(self) -> None:
+        """Invalid last_played_before_unit raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(last_played_before_value=10, last_played_before_unit="years")
+        with pytest.raises(InvalidDataError, match="last_played_before_unit"):
+            plugin._validate_rules(rules)
+
+    def test_last_played_only_value_set_raises(self) -> None:
+        """Only last_played_before_value set (no unit) raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(last_played_before_value=10, last_played_before_unit=None)
+        with pytest.raises(InvalidDataError, match="last_played"):
+            plugin._validate_rules(rules)
+
+    def test_last_played_only_unit_set_raises(self) -> None:
+        """Only last_played_before_unit set (no value) raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(last_played_before_value=None, last_played_before_unit="days")
+        with pytest.raises(InvalidDataError, match="last_played"):
+            plugin._validate_rules(rules)
 
 
 # ---------------------------------------------------------------------------
@@ -617,9 +650,30 @@ async def test_last_played_filter() -> None:
         return_value=[never_played, played_recently, played_long_ago]
     )
 
+    # Test with days unit
     rules = SmartPlaylistRules(
-        last_played_before_days=30, logic=LOGIC_AND, limit=10
+        last_played_before_value=30, last_played_before_unit="days", logic=LOGIC_AND, limit=10
     )  # Not played in last 30 days
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris  # never played = included
+    assert "library://track/2" not in uris  # played 1 day ago = excluded
+    assert "library://track/3" in uris  # played 60 days ago = included
+
+    # Test with hours unit
+    rules = SmartPlaylistRules(
+        last_played_before_value=12, last_played_before_unit="hours", logic=LOGIC_AND, limit=10
+    )  # Not played in last 12 hours
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris  # never played = included
+    assert "library://track/2" in uris  # played 1 day ago = included
+    assert "library://track/3" in uris  # played 60 days ago = included
+
+    # Test with weeks unit
+    rules = SmartPlaylistRules(
+        last_played_before_value=2, last_played_before_unit="weeks", logic=LOGIC_AND, limit=10
+    )  # Not played in last 2 weeks
     result = await plugin._evaluate_rules(rules)
     uris = [t.uri for t in result]
     assert "library://track/1" in uris  # never played = included

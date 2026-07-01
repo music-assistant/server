@@ -129,6 +129,44 @@ def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list
     return tracks
 
 
+def _filter_by_duration(
+    tracks: list[Track], min_duration: int | None, max_duration: int | None
+) -> list[Track]:
+    """
+    Filter tracks based on duration bounds.
+
+    :param tracks: List of tracks to filter.
+    :param min_duration: Minimum duration in seconds (None = no minimum).
+    :param max_duration: Maximum duration in seconds (None = no maximum).
+    :return: Filtered list of tracks.
+    """
+    if min_duration is not None:
+        tracks = [t for t in tracks if t.duration and t.duration >= min_duration]
+    if max_duration is not None:
+        tracks = [t for t in tracks if t.duration and t.duration <= max_duration]
+    return tracks
+
+
+def _filter_by_last_played(tracks: list[Track], value: int | None, unit: str | None) -> list[Track]:
+    """
+    Filter tracks not played within a specified time period.
+
+    :param tracks: List of tracks to filter.
+    :param value: Time value (None = no filter).
+    :param unit: Time unit: "hours", "days", "weeks", "months" (None = no filter).
+    :return: Filtered list of tracks not played in the specified period (includes never-played).
+    """
+    if value is None or unit is None:
+        return tracks
+
+    # Convert to seconds based on unit
+    seconds_per_unit = {"hours": 3600, "days": 86400, "weeks": 604800, "months": 2592000}
+    seconds = value * seconds_per_unit.get(unit, 86400)  # Default to days if unknown
+
+    threshold_timestamp = int(time.time()) - seconds
+    return [t for t in tracks if not t.last_played or t.last_played < threshold_timestamp]
+
+
 class SmartPlaylistProvider(PluginProvider):
     """Smart Playlist plugin provider for Music Assistant."""
 
@@ -672,18 +710,11 @@ class SmartPlaylistProvider(PluginProvider):
                 allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
                 tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
 
-            # Apply duration filters
-            if rules.min_duration is not None:
-                tracks = [t for t in tracks if t.duration and t.duration >= rules.min_duration]
-            if rules.max_duration is not None:
-                tracks = [t for t in tracks if t.duration and t.duration <= rules.max_duration]
-
-            # Apply last_played filter (tracks not played in X days)
-            if rules.last_played_before_days is not None:
-                threshold_timestamp = int(time.time()) - (rules.last_played_before_days * 86400)
-                tracks = [
-                    t for t in tracks if t.last_played == 0 or t.last_played < threshold_timestamp
-                ]
+            # Apply duration and last_played filters
+            tracks = _filter_by_duration(tracks, rules.min_duration, rules.max_duration)
+            tracks = _filter_by_last_played(
+                tracks, rules.last_played_before_value, rules.last_played_before_unit
+            )
 
             # In non-seed mode, _evaluate_and/_evaluate_or already query by genre_ids.
             # Only enrich if excluded_genre_ids is set (needs track.metadata.genres).
@@ -765,20 +796,11 @@ class SmartPlaylistProvider(PluginProvider):
             allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
             tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
 
-        # Apply duration filters in seed mode
-        if rules.min_duration is not None:
-            tracks = [t for t in tracks if t.duration and t.duration >= rules.min_duration]
-        if rules.max_duration is not None:
-            tracks = [t for t in tracks if t.duration and t.duration <= rules.max_duration]
-
-        # Apply last_played filter in seed mode
-        if rules.last_played_before_days is not None:
-            threshold_timestamp = int(time.time()) - (rules.last_played_before_days * 86400)
-            tracks = [
-                t for t in tracks if t.last_played == 0 or t.last_played < threshold_timestamp
-            ]
-
-        return tracks
+        # Apply duration and last_played filters in seed mode
+        tracks = _filter_by_duration(tracks, rules.min_duration, rules.max_duration)
+        return _filter_by_last_played(
+            tracks, rules.last_played_before_value, rules.last_played_before_unit
+        )
 
     def _apply_exclusions(
         self,
