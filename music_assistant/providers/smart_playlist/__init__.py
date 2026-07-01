@@ -816,6 +816,105 @@ class SmartPlaylistProvider(PluginProvider):
                     genre_id_to_name[genre_id] = genre.name
         return {v.lower() for v in genre_id_to_name.values() if v}
 
+    async def _build_track_id_map(
+        self,
+        tracks: list[Track],
+        skip_tracks_with_genres: bool = False,
+    ) -> dict[int, list[Track]]:
+        """
+        Build mapping of library track ID to track objects, resolving provider tracks to library.
+
+        :param tracks: Tracks to process
+        :param skip_tracks_with_genres: Skip tracks that already have genre metadata
+        :return: Mapping of library track ID to list of track objects
+        """
+        track_id_to_tracks: dict[int, list[Track]] = {}
+        provider_track_tasks: list[tuple[Track, str, str]] = []
+
+        for track in tracks:
+            if skip_tracks_with_genres and track.metadata and track.metadata.genres:
+                continue
+
+            if track.provider == "library" and str(track.item_id).isdigit():
+                track_id = int(track.item_id)
+                if track_id not in track_id_to_tracks:
+                    track_id_to_tracks[track_id] = []
+                track_id_to_tracks[track_id].append(track)
+            elif track.provider_mappings:
+                for mapping in track.provider_mappings:
+                    provider_track_tasks.append(
+                        (
+                            track,
+                            mapping.item_id,
+                            mapping.provider_instance or mapping.provider_domain,
+                        )
+                    )
+                    break
+
+        # Resolve all provider tracks to library tracks in parallel
+        if provider_track_tasks:
+            library_tracks = await asyncio.gather(
+                *(
+                    self.mass.music.tracks.get_library_item_by_prov_id(
+                        item_id=item_id,
+                        provider_instance_id_or_domain=provider_instance_or_domain,
+                    )
+                    for _, item_id, provider_instance_or_domain in provider_track_tasks
+                )
+            )
+
+            for (track, _, _), library_track in zip(
+                provider_track_tasks, library_tracks, strict=True
+            ):
+                if library_track:
+                    track_id = int(library_track.item_id)
+                    if track_id not in track_id_to_tracks:
+                        track_id_to_tracks[track_id] = []
+                    track_id_to_tracks[track_id].append(track)
+
+        return track_id_to_tracks
+
+    async def _filter_tracks_with_all_genres(
+        self, tracks: list[Track], required_genre_ids: list[int]
+    ) -> list[Track]:
+        """Filter tracks to only those that have ALL required genre IDs in the database."""
+        if not tracks or not required_genre_ids:
+            return tracks
+
+        required_ids = set(required_genre_ids)
+
+        track_id_to_tracks = await self._build_track_id_map(tracks)
+        if not track_id_to_tracks:
+            return []
+
+        # Fetch genres for all track IDs in parallel
+        # With typical limits (20-50 tracks), this results in 100-250 parallel DB calls
+        # which is acceptable. Only at very high limits would we approach the 2000 max.
+        track_ids = list(track_id_to_tracks.keys())
+        genre_results = await asyncio.gather(
+            *(
+                self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
+                for track_id in track_ids
+            )
+        )
+
+        # Build set of track IDs that have all required genres
+        matching_track_ids: set[int] = set()
+        for track_id, genres in zip(track_ids, genre_results, strict=True):
+            track_genre_ids = {
+                int(g.item_id) for g in genres if g.item_id and str(g.item_id).isdigit()
+            }
+            if required_ids.issubset(track_genre_ids):
+                matching_track_ids.add(track_id)
+
+        # Return tracks that match, preserving original order
+        result: list[Track] = []
+        for track_id in track_ids:
+            if track_id in matching_track_ids:
+                result.extend(track_id_to_tracks[track_id])
+
+        return result
+
     async def _recently_played_keys(self, dedup_hours: int) -> set[tuple[str, str]]:
         """
         Return ``(provider, item_id)`` keys of tracks fully played within dedup_hours.
@@ -875,6 +974,10 @@ class SmartPlaylistProvider(PluginProvider):
             limit=min(rules.limit * 5, 2000),
             user_provider_filter=user_provider_filter,
         )
+
+        # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
+        if has_genre and len(rules.genre_ids) > 1:
+            base_tracks = await self._filter_tracks_with_all_genres(base_tracks, rules.genre_ids)
 
         if not has_artist and not has_album:
             return base_tracks
