@@ -95,7 +95,12 @@ async def _add_to_queue_at_index(
     except MusicAssistantError as err:
         raise ToolError(str(err)) from err
     try:
-        resolved = await mass.player_queues._resolve_media_items(media_item, queue_id=queue_id)
+        # `_resolve_media_items` is a private MA controller method with no public
+        # equivalent; its host object varies across MA versions (moved onto an
+        # internal MediaResolver upstream), so the inlined type check can't see it.
+        resolved = await mass.player_queues._resolve_media_items(  # type: ignore[attr-defined, unused-ignore]
+            media_item, queue_id=queue_id
+        )
     except InvalidDataError as err:
         raise ToolError(str(err)) from err
     queue_items = [
