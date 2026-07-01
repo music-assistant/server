@@ -5,7 +5,7 @@
   },
   "config_entries": {
     "autoplay_label": {
-      "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen."
+      "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist, regardless of this setting."
     },
     "autoplay_mode": {
       "label": "Autoplay source",

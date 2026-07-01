@@ -562,7 +562,7 @@
   "core.music.config_entries.reset_db_result.label": "The database has been reset.",
   "core.music.manifest.description": "Configuration of the core music (library) management module",
   "core.music.manifest.name": "Music",
-  "core.player_queues.config_entries.autoplay_label.label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen.",
+  "core.player_queues.config_entries.autoplay_label.label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist, regardless of this setting.",
   "core.player_queues.config_entries.autoplay_mode.description": "How Autoplay picks new tracks once your queue runs out.",
   "core.player_queues.config_entries.autoplay_mode.disabled_reasons.similar": "No music or metadata provider that can supply similar tracks is currently available.",
   "core.player_queues.config_entries.autoplay_mode.label": "Autoplay source",
