@@ -465,6 +465,7 @@ for more details.
                 library_ids_audiobook.add(library.id_)
         for book_lib_id in library_ids_audiobook:
             for abs_author in await self._client.get_library_authors(library_id=book_lib_id):
+                self.libraries.authors[book_lib_id].add(abs_author.id_)
                 yield parse_author(
                     abs_author=abs_author,
                     instance_id=self.instance_id,
@@ -514,6 +515,26 @@ for more details.
                 )
             )
         return []
+
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        """Get an author or narrator."""
+        for library_id, narrator_ids in self.libraries.narrators.items():
+            if prov_artist_id in narrator_ids:
+                for abs_narrator in await self._client.get_library_narrators(library_id=library_id):
+                    if abs_narrator.id_ == prov_artist_id:
+                        return parse_narrator(
+                            abs_narrator=abs_narrator,
+                            instance_id=self.instance_id,
+                            domain=self.domain,
+                        )
+
+        return parse_author(
+            abs_author=await self._client.get_author(author_id=prov_artist_id),
+            instance_id=self.instance_id,
+            domain=self.domain,
+            token=self._client.token,
+            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+        )
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from abs."""
