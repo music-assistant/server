@@ -1592,7 +1592,7 @@
   "provider.smart_playlist.config_entries.ai_descriptions.description": "When a provider with AI support is available, use it to write a natural-language description for each smart playlist. Falls back to a plain rules summary when no AI provider is available.",
   "provider.smart_playlist.config_entries.ai_descriptions.label": "Generate descriptions with AI",
   "provider.smart_playlist.errors.invalid_name": "{0} is not a valid playlist name.",
-  "provider.smart_playlist.manifest.description": "Create dynamic or fixed playlists based on rules like genres, artists, albums, favorites and similar tracks.",
+  "provider.smart_playlist.manifest.description": "Create dynamic or fixed playlists based on rules: genres, artists, albums, favorites, similar tracks, release year, album type, explicit content, track duration, and rediscover forgotten tracks by filtering out recently played music.",
   "provider.smart_playlist.media.recommendations.smart_playlists.name": "Smart Playlists",
   "provider.snapcast.config_entries.snapcast_server_built_in_buffer_size.label": "Snapserver buffer size",
   "provider.snapcast.config_entries.snapcast_server_built_in_chunk_ms.label": "Snapserver chunk size",
