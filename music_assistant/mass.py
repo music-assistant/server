@@ -751,7 +751,7 @@ class MusicAssistant:
                 self.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
                 return
             prov_conf.last_error = str(exc)
-            self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
+            self.config.update_provider_last_error(instance_id, str(exc))
             LOGGER.warning(
                 "Provider(instance) %s can not run on this system: %s",
                 prov_conf.name or prov_conf.instance_id,
@@ -762,7 +762,7 @@ class MusicAssistant:
             # if loading failed, we store the error in the config object
             # so we can show something useful to the user
             prov_conf.last_error = str(exc)
-            self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
+            self.config.update_provider_last_error(instance_id, str(exc))
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
@@ -824,7 +824,7 @@ class MusicAssistant:
 
     async def unload_provider_with_error(self, instance_id: str, error: str) -> None:
         """Unload a provider when it got into trouble which needs user interaction."""
-        self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", error)
+        self.config.update_provider_last_error(instance_id, error)
         await self.unload_provider(instance_id)
 
     async def run_provider_discovery(self, instance_id: str) -> None:
