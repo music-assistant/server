@@ -284,8 +284,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             running_low = (
                 queue.current_index is not None and (queue.items - queue.current_index) < 5
             )
-            if queue.sources and running_low:
-                # an active dynamic source (incl. dynamic playlists/stations) keeps itself going
+            if queue.is_dynamic and running_low:
+                # a dynamic queue tops up its bounded managed pool from its (dynamic + finite) sources
                 task_id = f"fill_dynamic_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_dynamic_tracks, queue_id, task_id=task_id)
             elif queue.autoplay_enabled and queue.enqueued_media_items and running_low:
