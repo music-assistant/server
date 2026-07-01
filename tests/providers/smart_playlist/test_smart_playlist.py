@@ -8,10 +8,17 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import AlbumType, ProviderFeature
+from music_assistant_models.enums import AlbumType, ImageType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Genre, Playlist, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Genre,
+    MediaItemImage,
+    Playlist,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.media_items.metadata import MediaItemMetadata
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.helpers.track_filter import track_filter
@@ -782,10 +789,51 @@ async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) 
     mapping.item_id = "abc"
     library_item = MagicMock()
     library_item.provider_mappings = [mapping]
+    # Mock get_library_item for resolving "123" -> "abc"
     mass.music.playlists.get_library_item = AsyncMock(return_value=library_item)
+    # Mock get_library_item_by_prov_id to return None (no artwork)
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
 
     playlist = await plugin.get_playlist("123")
     assert playlist.item_id == "abc"
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_copies_library_artwork(
+    tmp_path: Any,
+) -> None:
+    """get_playlist copies artwork from library item when available."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=10, is_dynamic=False)
+
+    # Create library item with artwork
+    library_artwork = MediaItemImage(
+        type=ImageType.THUMB,
+        path="generated_artwork.jpg",
+        provider="playlist_art",
+        remotely_accessible=False,
+    )
+    library_item_with_artwork = MagicMock()
+    library_item_with_artwork.metadata.images = UniqueList([library_artwork])
+
+    # Mock get_library_item_by_prov_id to return library item with artwork
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=library_item_with_artwork
+    )
+
+    playlist = await plugin.get_playlist("abc")
+    assert playlist.metadata.images is not None
+    assert len(playlist.metadata.images) == 1
+    assert playlist.metadata.images[0].path == "generated_artwork.jpg"
+    assert playlist.metadata.images[0].provider == "playlist_art"
 
 
 @pytest.mark.asyncio
@@ -810,7 +858,10 @@ async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(
     mapping.item_id = "abc"
     library_item = MagicMock()
     library_item.provider_mappings = [mapping]
+    # Mock get_library_item for resolving "123" -> "abc"
     mass.music.playlists.get_library_item = AsyncMock(return_value=library_item)
+    # Mock get_library_item_by_prov_id to return None (no artwork)
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
 
     expected = [_make_mock_track("1", "library://track/1")]
     cached_dynamic_sample_mock = AsyncMock(return_value=expected)
@@ -1694,6 +1745,57 @@ async def test_update_rules_drops_stale_and_schedules_regeneration(tmp_path: Any
         "task_id": "smart_playlist_ai_desc_abc",
         "abort_existing": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_update_rules_skips_metadata_refresh_if_unchanged(tmp_path: Any) -> None:
+    """Updating rules with identical values does not trigger metadata refresh."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    initial_rules = SmartPlaylistRules(favorites_only=True, genre_ids=[1])
+    plugin._rules_store["abc"] = initial_rules
+    plugin._names_store["abc"] = "Name"
+    mass = cast("Any", plugin.mass)
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=_make_library_item(plugin, "abc")
+    )
+    cast("Any", plugin)._update_playlist_description = AsyncMock()
+    mass.create_task = MagicMock()
+    mass.call_later = MagicMock()
+
+    # Update with identical rules
+    await plugin.update_smart_playlist_rules("abc", {"favorites_only": True, "genre_ids": [1]})
+
+    # Should not trigger metadata refresh since rules didn't change
+    mass.call_later.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_rules_triggers_metadata_refresh_if_changed(tmp_path: Any) -> None:
+    """Updating rules with different values triggers metadata refresh."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    initial_rules = SmartPlaylistRules(favorites_only=True)
+    plugin._rules_store["abc"] = initial_rules
+    plugin._names_store["abc"] = "Name"
+    mass = cast("Any", plugin.mass)
+    library_item = _make_library_item(plugin, "abc")
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=library_item)
+    cast("Any", plugin)._update_playlist_description = AsyncMock()
+    mass.create_task = MagicMock()
+    mass.call_later = MagicMock()
+
+    # Update with different rules
+    await plugin.update_smart_playlist_rules("abc", {"genre_ids": [1]})
+
+    # Should trigger metadata refresh since rules changed
+    mass.call_later.assert_called_once()
+    args = mass.call_later.call_args
+    assert args[0][0] == 5  # delay
+    assert args[0][1] == mass.metadata.update_metadata  # function
+    assert args[0][2] == library_item  # library_item
+    assert args[1]["task_id"] == "smart_playlist_metadata_refresh_abc"
+    assert args[1]["force_refresh"] is True
 
 
 @pytest.mark.asyncio
