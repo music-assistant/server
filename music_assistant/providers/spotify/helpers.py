@@ -76,14 +76,24 @@ async def get_spotify_token(
         ) as response:
             if response.status != 200:
                 err = await response.text()
-                if "revoked" in err:
-                    raise LoginFailed(f"Token revoked for {session_name}: {err}")
+                # invalid_grant means the refresh token is revoked or expired (Spotify
+                # enforces a 6-month lifetime); retrying won't recover it, so fail now and
+                # let the caller clear the stored token and prompt re-authentication.
+                if "invalid_grant" in err or "revoked" in err:
+                    raise LoginFailed(
+                        f"Refresh token no longer valid for {session_name}: {err}",
+                        translation_key="refresh_token_invalid",
+                        translation_owner="provider.spotify",
+                    )
                 # the token failed to refresh, we allow one retry
                 await asyncio.sleep(2)
                 continue
             # if we reached this point, the token has been successfully refreshed
             auth_info: dict[str, Any] = await response.json()
             auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
+            # Spotify only returns a refresh_token when it rotates one; when the response
+            # omits it, keep using the existing token (per Spotify's refresh-token docs).
+            auth_info.setdefault("refresh_token", refresh_token)
             return auth_info
 
     raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")

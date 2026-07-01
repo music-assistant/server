@@ -1689,6 +1689,7 @@
   "provider.spotify.config_entries.sync_audiobook_progress.label": "Sync Audiobook Progress from Spotify",
   "provider.spotify.config_entries.sync_podcast_progress.description": "Automatically sync episode played status from Spotify to Music Assistant. Episodes marked as played in Spotify will be marked as played in MA. Only enable this if you use both the Spotify app and Music Assistant for podcast playback.",
   "provider.spotify.config_entries.sync_podcast_progress.label": "Sync Podcast Progress from Spotify",
+  "provider.spotify.errors.refresh_token_invalid": "Your Spotify session has expired or been revoked. Please re-authenticate to continue using Spotify.",
   "provider.spotify.manifest.description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem.",
   "provider.spotify.media.folder.genres_and_moods.name": "Genres & Moods",
   "provider.spotify.media.folder.new_releases.name": "New Releases",

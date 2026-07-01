@@ -54,6 +54,9 @@
   "config_categories": {
     "developer_token": "Developer Token"
   },
+  "errors": {
+    "refresh_token_invalid": "Your Spotify session has expired or been revoked. Please re-authenticate to continue using Spotify."
+  },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."
   }

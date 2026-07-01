@@ -834,8 +834,8 @@ class SpotifyProvider(MusicProvider):
             )
             self.logger.debug("Successfully refreshed global access token")
         except LoginFailed as err:
-            if "revoked" in str(err):
-                # clear refresh token if it's invalid
+            if "revoked" in str(err) or "invalid_grant" in str(err):
+                # clear refresh token if it's revoked or expired
                 self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
                 if self.available:
                     self.unload_with_error(str(err))
@@ -895,8 +895,8 @@ class SpotifyProvider(MusicProvider):
             )
             self.logger.debug("Successfully refreshed developer access token")
         except LoginFailed as err:
-            if "revoked" in str(err):
-                # clear refresh token if it's invalid
+            if "revoked" in str(err) or "invalid_grant" in str(err):
+                # clear refresh token if it's revoked or expired
                 self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
                 self._update_config_value(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
