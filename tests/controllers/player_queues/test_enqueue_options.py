@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
 
-from music_assistant_models.enums import PlaybackState, QueueOption
+from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
+from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -31,6 +33,22 @@ def _items(queue_id: str, names: list[str]) -> list[QueueItem]:
     return [
         QueueItem(queue_id=queue_id, queue_item_id=name, name=name, duration=60) for name in names
     ]
+
+
+def _track(item_id: str) -> Track:
+    """Build a playable Track on the 'test' provider (mirrors the managed-pool test helper)."""
+    return Track(
+        item_id=item_id,
+        provider="test",
+        name=f"Track {item_id}",
+        duration=60,
+        artists=UniqueList(
+            [ItemMapping(item_id="a", provider="test", name="A", media_type=MediaType.ARTIST)]
+        ),
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
 
 
 async def test_play_on_idle_queue_starts_at_first_item() -> None:
@@ -194,3 +212,79 @@ async def test_next_on_idle_queue_with_content_keeps_current_index() -> None:
     assert queue.current_index == 1
     assert [item.queue_item_id for item in items] == ["e0", "e1", "n0", "e2"]
     ctrl.play_index.assert_not_awaited()
+
+
+def _dynamic_controller() -> PlayerQueuesController:
+    """Build a bare controller wired to drive ``_enter_dynamic_mode`` with a stubbed managed pool."""
+    ctrl = _controller()
+    ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
+    ctrl.is_smart_shuffle_active = Mock(return_value=True)  # type: ignore[method-assign]
+    ctrl._managed_pool = Mock()
+    ctrl._managed_pool.fill = AsyncMock(return_value=[_track("p0"), _track("p1")])
+    return ctrl
+
+
+async def test_enter_dynamic_mode_add_on_idle_does_not_start_playback() -> None:
+    """ADD of a dynamic source onto an idle/empty queue stages the pool but does not start playing."""
+    ctrl = _dynamic_controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.ADD)
+
+    # the pool is loaded and the current item is set, but playback is not started
+    items = ctrl._queue_data["q1"].items
+    assert {item.media_item.item_id for item in items if item.media_item is not None} == {
+        "p0",
+        "p1",
+    }
+    assert queue.current_index == 0
+    assert queue.current_item is not None
+    play_index.assert_not_awaited()
+
+
+async def test_enter_dynamic_mode_play_on_idle_starts_playback() -> None:
+    """PLAY of a dynamic source onto an idle/empty queue starts playback on the rebuilt pool."""
+    ctrl = _dynamic_controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.PLAY)
+
+    assert len(ctrl._queue_data["q1"].items) == 2
+    play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_enter_dynamic_mode_add_on_active_keeps_current_and_rebuilds_tail() -> None:
+    """ADD of a dynamic source onto a playing queue rebuilds the tail without interrupting it."""
+    ctrl = _dynamic_controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    existing = _items("q1", ["e0", "e1", "e2"])
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(existing),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        index_in_buffer=1,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.ADD)
+
+    items = ctrl._queue_data["q1"].items
+    # the current track and history are kept; the finite tail behind it is replaced by the pool
+    assert [item.queue_item_id for item in items[:2]] == ["e0", "e1"]
+    assert {item.media_item.item_id for item in items[2:] if item.media_item is not None} == {
+        "p0",
+        "p1",
+    }
+    assert queue.current_index == 1
+    play_index.assert_not_awaited()

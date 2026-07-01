@@ -716,25 +716,19 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         enabled implicitly: a dynamic queue is always a smart mix.
 
         :param queue_id: The queue entering dynamic mode.
-        :param option: The enqueue option that triggered the transition. PLAY/REPLACE (or an empty
-            queue) start playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT keep the current track
-            playing and only rebuild the tail behind it.
+        :param option: The enqueue option that triggered the transition. PLAY/REPLACE start playback
+            on the rebuilt pool; ADD/NEXT/REPLACE_NEXT stage it without starting playback (behind the
+            current track, or from the front of an idle/empty queue).
         """
         data = self._queue_data[queue_id]
         queue = data.queue
         # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
         queue.shuffle_enabled = True
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
-        if queue.current_index is None:
-            # nothing is playing yet (REPLACE cleared the queue, or it was empty): the pool becomes
-            # the whole queue and playback starts on it
-            insert_at = 0
-            start_playing = True
-        else:
-            insert_at = queue.current_index + 1
-            # PLAY/REPLACE restart playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT keep the
-            # current track playing and only rebuild the tail behind it
-            start_playing = option in (QueueOption.PLAY, QueueOption.REPLACE)
+        insert_at = 0 if queue.current_index is None else queue.current_index + 1
+        # PLAY/REPLACE start playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT only stage it and
+        # never start playback (an idle/empty queue stays idle on an add, just like the linear path)
+        start_playing = option in (QueueOption.PLAY, QueueOption.REPLACE)
         # drop the finite upcoming tail up front so the pool is sized and deduped against the kept
         # head only (the tail we are discarding must not exclude its own tracks from the new pool)
         data.items = data.items[:insert_at]
@@ -749,6 +743,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         await self.load(queue_id, queue_items, insert_at_index=insert_at, keep_remaining=False)
         if start_playing:
             await self.play_index(queue_id, insert_at)
+        else:
+            # give an idle/empty queue a current item without starting playback
+            self._ensure_current_index(queue_id)
 
     async def _get_similar_tracks(
         self,
