@@ -211,10 +211,14 @@ resume-position lookups → seek/resume.
 ```
 player_queues/
 ├── __init__.py     # package entry point; documents purpose + loose coupling; re-exports PlayerQueuesController
-├── controller.py   # PlayerQueuesController(CoreController): the public face — in-memory state,
-│                   #   config entries, the API commands and inter-controller event hooks, the core
-│                   #   load/items/signal-update/persistence primitives and transport commands; it
-│                   #   dispatches the heavy concern logic to the subcontrollers below
+├── controller.py   # PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
+│                   #   the public face — in-memory state, config entries, the API commands and inter-
+│                   #   controller event hooks, the core load/items/signal-update/persistence primitives
+│                   #   and transport commands; the mixins below carry the loading/tracking/feeding
+│                   #   logic, the stateful helper services the rest
+├── base.py         # _PlayerQueuesBase(CoreController): the shared base the three logic mixins extend;
+│                   #   declares the per-queue state, the helper services and the core-op signatures
+│                   #   so each mixin type-checks on its own
 ├── constants.py    # config keys + default values for enqueue options and artist/album selection
 │                   #   modes, the autoplay/crossfade config keys, plus the two cache category
 │                   #   identifiers (queue state, queue items)
@@ -225,28 +229,30 @@ player_queues/
 │                   #   finite sources materialized to play through once
 ├── media_resolver.py # MediaResolver: resolves source media items (artist/album/genre/playlist/
 │                   #   audiobook/podcast/browse folder) into the concrete tracks to enqueue
-├── queue_loader.py # QueueLoader: applies the enqueue option, loads single items, resume-from-playlog,
-│                   #   next-index, and the dynamic/autoplay queue refills
-├── playback_tracker.py # PlaybackTracker: reconciles queue state from player updates, end-of-queue,
-│                   #   playback-progress reporting + user-initiated/album-credit play-counting
-├── stream_feeder.py # StreamFeeder: enqueues the next item on the player, preloads/prepares its audio
-│                   #   buffer, and cleans up stale buffers
+├── queue_loader.py # QueueLoaderMixin: applies the enqueue option, loads single items, resume-from-
+│                   #   playlog, next-index, and the dynamic/autoplay queue refills
+├── playback_tracker.py # PlaybackTrackerMixin: reconciles queue state from player updates, end-of-
+│                   #   queue, playback-progress reporting + user-initiated/album-credit play-counting
+├── stream_feeder.py # StreamFeederMixin: enqueues the next item on the player, preloads/prepares its
+│                   #   audio buffer, and cleans up stale buffers
 ├── state.py        # PlayerQueueData: the server-side per-queue record (its PlayerQueue, ordered
 │                   #   QueueItem list, dynamic-source items, runtime-only fields) + cache (de)serialization
 ├── helpers.py      # stateless utility layer: the previous-state snapshot type, the playback-lock /
-│                   #   in-progress-flag decorator, and pure helpers (shuffle, sort, dynamic-source
-│                   #   detection, current playback speed). Imports controller.py only under
-│                   #   TYPE_CHECKING to avoid a cycle
+│                   #   in-progress-flag decorator, and pure helpers (sort, dynamic-source detection,
+│                   #   current playback speed). Never imports the controller; the play-action
+│                   #   decorator types it via a local Protocol (_PlayActionHost) to avoid a cycle
 ├── strings.json    # localization manifest: translatable name + description of the core module
 └── README.md       # this document
 ```
 
 The package shape follows from `controller.py`'s size: the supporting constants and the stateless
-helper layer are split into their own modules, and `helpers.py` imports `controller.py` only under
-`TYPE_CHECKING` to break what would otherwise be a controller↔helpers import cycle. Like the other
-package-style core controllers (cache, players, streams, discovery, webserver), it co-locates a
-`strings.json` manifest carrying the module's translatable display name and description, whereas
-single-module core controllers (config, metadata, music) ship without one.
+helper layer are split into their own modules. The stateful helper services import `controller.py`
+only under `TYPE_CHECKING` (for annotations), while `helpers.py` avoids importing it at all — its
+play-action decorator types the controller through a local `_PlayActionHost` Protocol — so there is no
+controller↔helper import cycle. Like the other package-style core controllers (cache, players,
+streams, discovery, webserver), it co-locates a `strings.json` manifest carrying the module's
+translatable display name and description, whereas single-module core controllers (config, metadata,
+music) ship without one.
 
 ## Configuration
 
@@ -277,12 +283,14 @@ its server-side companion (analogous to how the Player Controller pairs runtime 
 `Player` model).
 
 `controller.py` is now the public face: it keeps the API commands, the inter-controller event hooks,
-and the core state/load/signal-update/persistence primitives, and delegates the heavy concern logic to
-its subcontrollers — `MediaResolver` (media→tracks), `QueueLoader` (enqueue/fill), `PlaybackTracker`
-(player→queue reconciliation + play-counting) and `StreamFeeder` (next-item/buffer feed), alongside the
-`Autoplay`/`SmartShuffle`/`ManagedPool` services. A subcontroller is a plain object constructed with the
-controller and reaches back through it (`self.queues.…`); the controller owns no logic a subcontroller
-could.
+and the core state/load/signal-update/persistence primitives. The heavy concern logic is split two
+ways. The stateless loading, playback-tracking and stream-feeding logic lives on mixins —
+`QueueLoaderMixin` (enqueue/fill), `PlaybackTrackerMixin` (player→queue reconciliation + play-counting)
+and `StreamFeederMixin` (next-item/buffer feed) — over a shared `_PlayerQueuesBase`, so it operates on
+the controller's own per-queue state directly. The stateful helpers — `MediaResolver` (media→tracks),
+`Autoplay`, `SmartShuffle` and `ManagedPool` — stay composition objects, each constructed with the
+controller and reaching back through it (`self.queues.…`). The controller owns no heavy concern logic
+of its own.
 
 Further out, the loose-coupling story could be tightened by folding more of `PlayerQueueData` directly
 into the `PlayerQueue` model so the wire object and its server-side companion converge.
