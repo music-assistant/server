@@ -167,6 +167,28 @@ class TestSmartPlaylistRules:
         assert rules.excluded_artist_names == {}
         assert rules.excluded_album_names == {}
 
+    def test_duration_fields_round_trip(self) -> None:
+        """min_duration and max_duration survive serialization."""
+        original = SmartPlaylistRules(min_duration=180, max_duration=600)
+        recovered = SmartPlaylistRules.from_dict(original.to_dict())
+        assert recovered.min_duration == 180
+        assert recovered.max_duration == 600
+
+    def test_last_played_field_round_trip(self) -> None:
+        """last_played_before_days survives serialization."""
+        original = SmartPlaylistRules(last_played_before_days=30)
+        recovered = SmartPlaylistRules.from_dict(original.to_dict())
+        assert recovered.last_played_before_days == 30
+
+    def test_from_dict_null_duration_fields_treated_as_none(self) -> None:
+        """from_dict treats null for duration fields as None."""
+        rules = SmartPlaylistRules.from_dict(
+            {"min_duration": None, "max_duration": None, "last_played_before_days": None}
+        )
+        assert rules.min_duration is None
+        assert rules.max_duration is None
+        assert rules.last_played_before_days is None
+
 
 # ---------------------------------------------------------------------------
 # Plugin validation tests
@@ -226,6 +248,42 @@ class TestRuleValidation:
         with pytest.raises(InvalidDataError, match="Too many seeds"):
             plugin._validate_rules(rules)
 
+    def test_negative_min_duration_raises(self) -> None:
+        """Negative min_duration raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(min_duration=-10)
+        with pytest.raises(InvalidDataError, match="min_duration"):
+            plugin._validate_rules(rules)
+
+    def test_negative_max_duration_raises(self) -> None:
+        """Negative max_duration raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(max_duration=-5)
+        with pytest.raises(InvalidDataError, match="max_duration"):
+            plugin._validate_rules(rules)
+
+    def test_min_duration_greater_than_max_raises(self) -> None:
+        """min_duration > max_duration raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(min_duration=600, max_duration=300)
+        with pytest.raises(InvalidDataError, match="min_duration.*max_duration"):
+            plugin._validate_rules(rules)
+
+    def test_last_played_before_days_zero_raises(self) -> None:
+        """last_played_before_days < 1 raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(last_played_before_days=0)
+        with pytest.raises(InvalidDataError, match="last_played_before_days"):
+            plugin._validate_rules(rules)
+
+    def test_valid_duration_and_last_played_pass(self) -> None:
+        """Valid duration and last_played values do not raise."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(
+            min_duration=180, max_duration=600, last_played_before_days=30
+        )
+        plugin._validate_rules(rules)  # should not raise
+
 
 # ---------------------------------------------------------------------------
 # Persistence tests  (using tmp_path, no real MA instance needed)
@@ -278,6 +336,8 @@ def _make_mock_track(
     favorite: bool = False,
     popularity: int | None = None,
     provider_instance: str = "library",
+    duration: int | None = None,
+    last_played: int = 0,
 ) -> MagicMock:
     """Build a minimal mock Track object."""
     track = MagicMock()
@@ -285,6 +345,8 @@ def _make_mock_track(
     track.uri = uri
     track.name = f"Track {item_id}"
     track.favorite = favorite
+    track.duration = duration
+    track.last_played = last_played
 
     mapping = MagicMock()
     mapping.provider_instance = provider_instance
@@ -442,6 +504,130 @@ async def test_limit_is_respected() -> None:
     rules = SmartPlaylistRules(limit=5)
     result = await plugin._evaluate_rules(rules)
     assert len(result) <= 5
+
+
+@pytest.mark.asyncio
+async def test_duration_filter_min_only() -> None:
+    """Tracks shorter than min_duration are filtered out."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    short_track = _make_mock_track("1", uri="library://track/1", duration=120)  # 2 minutes
+    long_track = _make_mock_track("2", uri="library://track/2", duration=300)  # 5 minutes
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[short_track, long_track])
+
+    rules = SmartPlaylistRules(min_duration=180, logic=LOGIC_AND, limit=10)  # 3 minutes min
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" not in uris  # too short
+    assert "library://track/2" in uris
+
+
+@pytest.mark.asyncio
+async def test_duration_filter_max_only() -> None:
+    """Tracks longer than max_duration are filtered out."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    short_track = _make_mock_track("1", uri="library://track/1", duration=120)  # 2 minutes
+    long_track = _make_mock_track("2", uri="library://track/2", duration=600)  # 10 minutes
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[short_track, long_track])
+
+    rules = SmartPlaylistRules(max_duration=300, logic=LOGIC_AND, limit=10)  # 5 minutes max
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris
+    assert "library://track/2" not in uris  # too long
+
+
+@pytest.mark.asyncio
+async def test_duration_filter_between() -> None:
+    """Only tracks within min_duration and max_duration pass."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    too_short = _make_mock_track("1", uri="library://track/1", duration=120)  # 2 min
+    just_right = _make_mock_track("2", uri="library://track/2", duration=240)  # 4 min
+    too_long = _make_mock_track("3", uri="library://track/3", duration=600)  # 10 min
+    cast("Any", plugin)._get_library_tracks = AsyncMock(
+        return_value=[too_short, just_right, too_long]
+    )
+
+    rules = SmartPlaylistRules(
+        min_duration=180, max_duration=300, logic=LOGIC_AND, limit=10
+    )  # 3-5 minutes
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" not in uris  # too short
+    assert "library://track/2" in uris  # perfect
+    assert "library://track/3" not in uris  # too long
+
+
+@pytest.mark.asyncio
+async def test_duration_filter_skips_tracks_without_duration() -> None:
+    """Tracks with duration=None are excluded when duration filter is active."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    no_duration = _make_mock_track("1", uri="library://track/1", duration=None)
+    has_duration = _make_mock_track("2", uri="library://track/2", duration=240)
+    cast("Any", plugin)._get_library_tracks = AsyncMock(
+        return_value=[no_duration, has_duration]
+    )
+
+    rules = SmartPlaylistRules(min_duration=180, logic=LOGIC_AND, limit=10)
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" not in uris  # no duration
+    assert "library://track/2" in uris
+
+
+@pytest.mark.asyncio
+async def test_last_played_filter() -> None:
+    """Tracks played recently are filtered out."""
+    import time
+
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    now = int(time.time())
+    never_played = _make_mock_track("1", uri="library://track/1", last_played=0)
+    played_recently = _make_mock_track("2", uri="library://track/2", last_played=now - 86400)  # 1 day ago
+    played_long_ago = _make_mock_track(
+        "3", uri="library://track/3", last_played=now - (60 * 86400)
+    )  # 60 days ago
+    cast("Any", plugin)._get_library_tracks = AsyncMock(
+        return_value=[never_played, played_recently, played_long_ago]
+    )
+
+    rules = SmartPlaylistRules(
+        last_played_before_days=30, logic=LOGIC_AND, limit=10
+    )  # Not played in last 30 days
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris  # never played = included
+    assert "library://track/2" not in uris  # played 1 day ago = excluded
+    assert "library://track/3" in uris  # played 60 days ago = included
 
 
 # ---------------------------------------------------------------------------
