@@ -351,3 +351,20 @@ async def test_enter_dynamic_mode_rebuilds_from_buffer_index() -> None:
         "p1",
     }
     play_index.assert_not_awaited()
+
+
+def test_store_sources_dedupes_wire_sources_keeps_internal_multiplicity() -> None:
+    """The wire `sources` list is deduped per source; the server keeps every occurrence."""
+    ctrl = _controller()
+    ctrl._managed_pool = Mock()
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    a, b = _track("a"), _track("b")
+
+    # "a" added twice (multiplicity 2), "b" once
+    ctrl.store_sources(queue, [a, b, a])
+
+    # server-side list keeps every occurrence (drives the managed-pool weighting)
+    assert ctrl._queue_data["q1"].source_items == [a, b, a]
+    # wire list clients see is deduped to the distinct sources, order preserved
+    assert [mapping.uri for mapping in queue.sources] == [a.uri, b.uri]
