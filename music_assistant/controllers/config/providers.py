@@ -11,6 +11,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
     ProviderConfig,
+    ProviderError,
 )
 from music_assistant_models.enums import (
     EventType,
@@ -303,6 +304,19 @@ class ProviderConfigMixin:
         """Set (or update) the default name for a provider."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}/default_name"
         self.set(conf_key, default_name)
+
+    def update_provider_last_error(self, instance_id: str, error: ProviderError | None) -> None:
+        """
+        Persist (or clear) a provider's last_error.
+
+        Only writes if the provider config still exists; this avoids re-creating a
+        config entry that was removed while a load was still in flight, which would
+        leave a stub entry without a domain. See #5728.
+        """
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        if not self.get(conf_key):
+            return
+        self.set(f"{conf_key}/last_error", error.to_dict() if error else None)
 
     async def create_builtin_provider_config(self, provider_domain: str) -> None:
         """
