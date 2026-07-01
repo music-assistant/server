@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import time
 import uuid as _uuid
 from collections.abc import Callable
 from contextlib import suppress
@@ -671,6 +672,19 @@ class SmartPlaylistProvider(PluginProvider):
                 allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
                 tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
 
+            # Apply duration filters
+            if rules.min_duration is not None:
+                tracks = [t for t in tracks if t.duration and t.duration >= rules.min_duration]
+            if rules.max_duration is not None:
+                tracks = [t for t in tracks if t.duration and t.duration <= rules.max_duration]
+
+            # Apply last_played filter (tracks not played in X days)
+            if rules.last_played_before_days is not None:
+                threshold_timestamp = int(time.time()) - (rules.last_played_before_days * 86400)
+                tracks = [
+                    t for t in tracks if t.last_played == 0 or t.last_played < threshold_timestamp
+                ]
+
             # In non-seed mode, _evaluate_and/_evaluate_or already query by genre_ids.
             # Only enrich if excluded_genre_ids is set (needs track.metadata.genres).
             if rules.excluded_genre_ids:
@@ -750,6 +764,20 @@ class SmartPlaylistProvider(PluginProvider):
         if rules.album_types:
             allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
             tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
+
+        # Apply duration filters in seed mode
+        if rules.min_duration is not None:
+            tracks = [t for t in tracks if t.duration and t.duration >= rules.min_duration]
+        if rules.max_duration is not None:
+            tracks = [t for t in tracks if t.duration and t.duration <= rules.max_duration]
+
+        # Apply last_played filter in seed mode
+        if rules.last_played_before_days is not None:
+            threshold_timestamp = int(time.time()) - (rules.last_played_before_days * 86400)
+            tracks = [
+                t for t in tracks if t.last_played == 0 or t.last_played < threshold_timestamp
+            ]
+
         return tracks
 
     def _apply_exclusions(
