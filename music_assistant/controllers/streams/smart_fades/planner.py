@@ -74,6 +74,13 @@ class SmartCrossFadePlanner(TransitionPlanner):
     # Only apply time stretching if BPM difference is < this %
     time_stretch_bpm_percentage_threshold: float = 5.0
 
+    # Working state for one plan() run, (re)set by _prepare_decks
+    outgoing: Deck
+    incoming: Deck
+    effective_end: float
+    fadeout_trim: FadeOutTrim | None
+    extrapolated_downbeats: npt.NDArray[np.float32]
+
     def plan(
         self,
         fade_out_analysis: AudioAnalysisData,
@@ -194,8 +201,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
 
         :param buffer_duration: Length in seconds of the fade-out holdback buffer.
         """
-        self.fadeout_trim: FadeOutTrim | None = None
-        self.effective_end: float = detect_effective_audio_end(
+        self.fadeout_trim = None
+        self.effective_end = detect_effective_audio_end(
             self.outgoing.analysis.rms_energy,
             self.outgoing.analysis.duration,
             buffer_duration,

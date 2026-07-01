@@ -116,11 +116,9 @@ class SmartFadesMixer:
         smart_fade = StandardCrossFade(
             logger=self.logger,
             crossfade_duration=standard_crossfade_duration,
+            trailing_silence_bytes=trailing_silence_bytes,
         )
-        smart_fade.trailing_silence_bytes = trailing_silence_bytes
-        smart_fade._build(
-            len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format
-        )
+        smart_fade.build(len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format)
         return smart_fade
 
     async def _build_smart_crossfade(
@@ -142,7 +140,7 @@ class SmartFadesMixer:
                 fade_out_analysis=fade_out_analysis,
                 fade_in_analysis=fade_in_analysis,
             )
-            smart_fade._build(fade_out_bytes_len, fade_in_bytes_len, pcm_format)
+            smart_fade.build(fade_out_bytes_len, fade_in_bytes_len, pcm_format)
         except SmartFadeNotApplicable as e:
             self.logger.debug("Smart crossfade not applicable: %s - using standard crossfade", e)
             return None

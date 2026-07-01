@@ -9,7 +9,7 @@ Covers the ``CrossfadeTimingInfo`` contract that drives lyrics-sync correctness:
                                                           streamdetails.seek_position)
 
 Pure math tests use a fake ``SmartFade`` subclass that just assigns the test-provided
-timing in its ``_build``. Smart/standard end-to-end behavior is exercised through
+timing in its ``build``. Smart/standard end-to-end behavior is exercised through
 ``SmartFadesMixer.build``.
 """
 
@@ -95,7 +95,7 @@ def _analysis(
     duration: float | None = None,
     rms_energy: np.ndarray | None = None,
 ) -> AudioAnalysisData:
-    """Synthetic analysis data with enough beats for SmartCrossFade._build() to succeed."""
+    """Synthetic analysis data with enough beats for SmartCrossFade.build() to succeed."""
     interval = 60.0 / bpm  # seconds per beat
     # When an explicit duration is given, generate beats spanning the full track so the
     # buffer-local shift (duration - 45s) leaves real beats inside the 45s window.
@@ -116,13 +116,13 @@ def _analysis(
 
 
 class _FixedTimingFade(SmartFade):
-    """Test-only SmartFade whose _build just assigns a caller-provided timing."""
+    """Test-only SmartFade whose build just assigns a caller-provided timing."""
 
     def __init__(self, timing: CrossfadeTimingInfo) -> None:
         super().__init__(logging.getLogger("test_fixed_timing_fade"))
         self._fixed_timing = timing
 
-    def _build(
+    def build(
         self,
         fade_out_bytes_len: int,
         fade_in_bytes_len: int,
@@ -155,7 +155,7 @@ class TestCrossfadeTimingInfo:
         assert timing.post_crossfade_duration == 4.0
 
     def test_default_values(self) -> None:
-        """All fields default to 0.0 so _build can populate them incrementally."""
+        """All fields default to 0.0 so build can populate them incrementally."""
         timing = CrossfadeTimingInfo()
         assert timing.pre_crossfade_duration == 0.0
         assert timing.crossfade_duration == 0.0
@@ -164,12 +164,12 @@ class TestCrossfadeTimingInfo:
 
 
 # ---------------------------------------------------------------------------
-# StandardCrossFade._build — timing math via the real subclass
+# StandardCrossFade.build — timing math via the real subclass
 # ---------------------------------------------------------------------------
 
 
 class TestStandardCrossFadeBuild:
-    """StandardCrossFade._build must produce the expected timing for given inputs."""
+    """StandardCrossFade.build must produce the expected timing for given inputs."""
 
     def _build(
         self,
@@ -178,7 +178,7 @@ class TestStandardCrossFadeBuild:
         fade_in_seconds: float,
     ) -> CrossfadeTimingInfo:
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=crossfade_duration)
-        fade._build(_seconds(fade_out_seconds), _seconds(fade_in_seconds), PCM)
+        fade.build(_seconds(fade_out_seconds), _seconds(fade_in_seconds), PCM)
         return fade.timing_info
 
     def test_symmetric_buffers(self) -> None:
@@ -216,7 +216,7 @@ class TestStandardCrossFadeBuild:
         """The acrossfade filter must use the clamped duration, not the configured one."""
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
         # only 6s of (stripped) fade-out audio available
-        fade._build(_seconds(6), _seconds(45), PCM)
+        fade.build(_seconds(6), _seconds(45), PCM)
         assert fade.timing_info.crossfade_duration == pytest.approx(6.0)
         crossfade_filter = fade.filters[0]
         assert isinstance(crossfade_filter, CrossfadeFilter)
@@ -250,7 +250,7 @@ class TestStandardCrossFadeApplySlicing:
 
         monkeypatch.setattr(SmartFade, "apply", fake_base_apply)
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
-        fade._build(_seconds(6), _seconds(45), PCM)
+        fade.build(_seconds(6), _seconds(45), PCM)
         chunks = [
             chunk async for chunk in fade.apply(b"\x00" * _seconds(6), b"\x00" * _seconds(45), PCM)
         ]
@@ -276,7 +276,7 @@ class TestStandardCrossFadeApplySlicing:
 
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
         # fade_out_bytes_len=0 → effective_cf = min(10, 0, 45) = 0 → crossfade_duration == 0
-        fade._build(0, _seconds(45), PCM)
+        fade.build(0, _seconds(45), PCM)
         assert fade.timing_info.crossfade_duration == 0.0
 
         fade_out_data = b"\x00" * _seconds(5)
@@ -347,7 +347,7 @@ class TestLyricsSyncInvariants:
             post_crossfade_duration=4.0,
         )
         fade = _FixedTimingFade(original)
-        fade._build(0, 0, PCM)
+        fade.build(0, 0, PCM)
         assert fade.timing_info == original
 
 
@@ -705,7 +705,7 @@ class TestSilenceAwareAnchoring:
             ),
             fade_in_analysis=_analysis(bpm=120.0, duration=duration),
         )
-        fade._build(_seconds(45), _seconds(45), PCM)
+        fade.build(_seconds(45), _seconds(45), PCM)
         return fade
 
     def test_silent_tail_moves_the_anchor(self) -> None:
@@ -755,7 +755,7 @@ class TestSilenceAwareAnchoring:
         partial_bytes = int(PCM.pcm_sample_size * 44.3)
         frame_size = (PCM.bit_depth // 8) * PCM.channels
         partial_bytes = (partial_bytes // frame_size) * frame_size
-        fade._build(partial_bytes, _seconds(45), PCM)
+        fade.build(partial_bytes, _seconds(45), PCM)
         buffer_duration = partial_bytes / PCM.pcm_sample_size
         # beats are on a strict 0.5s grid from t=0 in the analysis fixture;
         # in real buffer coordinates each beat must satisfy
@@ -794,7 +794,7 @@ class TestSilenceAwareAnchoring:
             # 115 vs 120 BPM is within the stretch threshold, so the tempo ramp is active
             fade_in_analysis=_analysis(bpm=115.0, duration=duration),
         )
-        fade._build(_seconds(45), _seconds(45), PCM)
+        fade.build(_seconds(45), _seconds(45), PCM)
         assert fade.timing_info.crossfade_duration <= fade.effective_end + 1e-6
         # the capped crossfade consumes the whole audible tail, so the stretch is skipped
         assert not any(isinstance(f, GradualTimeStretchFilter) for f in fade.filters)
@@ -816,7 +816,7 @@ class TestStretchSavings:
             fade_out_analysis=_analysis(bpm=120.0, duration=duration),
             fade_in_analysis=_analysis(bpm=124.8, duration=duration),
         )
-        fade._build(_seconds(45), _seconds(45), PCM)
+        fade.build(_seconds(45), _seconds(45), PCM)
         return fade
 
     def _fadeout_sweep(self, fade: SmartCrossFade) -> FrequencySweepFilter:
@@ -886,7 +886,7 @@ class TestStretchSavings:
             fade_out_analysis=_analysis(bpm=120.0, duration=duration),
             fade_in_analysis=_analysis(bpm=115.4, duration=duration),
         )
-        fade._build(_seconds(45), _seconds(45), PCM)
+        fade.build(_seconds(45), _seconds(45), PCM)
         assert fade.tempo_steps, "test requires the stretch to be active"
         total_savings = fade._stretch_savings_until(fade.effective_end)
         assert total_savings < 0.0
@@ -913,7 +913,7 @@ class TestStretchSavings:
             fade_out_analysis=_analysis(bpm=230.0, duration=240.0),
             fade_in_analysis=_analysis(bpm=239.2, beats_start=38.0, duration=240.0),
         )
-        fade._build(_seconds(45), _seconds(45), PCM)
+        fade.build(_seconds(45), _seconds(45), PCM)
         assert fade.tempo_steps, "test requires the stretch to be active"
         sweep = self._fadeout_sweep(fade)
         timing = fade.timing_info
@@ -937,7 +937,7 @@ class TestStretchSavings:
             ),
             fade_in_analysis=_analysis(bpm=124.8, duration=duration),
         )
-        fade._build(_seconds(45), _seconds(45), PCM)
+        fade.build(_seconds(45), _seconds(45), PCM)
         # tail trim must come first so every later schedule sees the trimmed stream
         assert isinstance(fade.filters[0], FadeOutTrimFilter)
         assert fade.tempo_steps, "test requires the stretch to be active"
@@ -956,7 +956,7 @@ class TestStretchSavings:
             fade_out_analysis=_analysis(bpm=120.0, duration=240.0),
             fade_in_analysis=_analysis(bpm=120.0, duration=240.0),
         )
-        fade._build(_seconds(45), _seconds(45), PCM)
+        fade.build(_seconds(45), _seconds(45), PCM)
         assert fade.tempo_steps == []
         assert fade._stretch_savings_until(fade.effective_end) == 0.0
         timing = fade.timing_info

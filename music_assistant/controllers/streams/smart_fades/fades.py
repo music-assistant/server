@@ -19,6 +19,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
     SmartFadeNotApplicable,
     TempoPlan,
+    TransitionPlan,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.renderer import TransitionRenderer
@@ -52,32 +53,22 @@ class SmartFade(ABC):
         self.logger = logger
 
     @abstractmethod
-    def _build(
+    def build(
         self,
         fade_out_bytes_len: int,
         fade_in_bytes_len: int,
         pcm_format: AudioFormat,
     ) -> None:
-        """Build the filter chain and assign ``self.timing_info``."""
-        ...
+        """
+        Build the filter chain and assign ``self.timing_info``.
 
-    def _get_ffmpeg_filters(
-        self,
-        input_fadein_label: str = "[1]",
-        input_fadeout_label: str = "[0]",
-    ) -> list[str]:
-        """Get FFmpeg filters for smart fades."""
-        if not self.filters:
-            raise RuntimeError("SmartFade not built — call Mixer.build() first")
-        filters = []
-        _cur_fadein_label = input_fadein_label
-        _cur_fadeout_label = input_fadeout_label
-        for audio_filter in self.filters:
-            filter_strings = audio_filter.apply(_cur_fadein_label, _cur_fadeout_label)
-            filters.extend(filter_strings)
-            _cur_fadein_label = f"[{audio_filter.output_fadein_label}]"
-            _cur_fadeout_label = f"[{audio_filter.output_fadeout_label}]"
-        return filters
+        Must be called once before ``apply()``.
+
+        :param fade_out_bytes_len: Length in bytes of the outgoing track's tail buffer.
+        :param fade_in_bytes_len: Length in bytes of the incoming track's head buffer.
+        :param pcm_format: Audio format of both input buffers.
+        """
+        ...
 
     async def apply(
         self,
@@ -207,6 +198,24 @@ class SmartFade(ABC):
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
 
+    def _get_ffmpeg_filters(
+        self,
+        input_fadein_label: str = "[1]",
+        input_fadeout_label: str = "[0]",
+    ) -> list[str]:
+        """Get FFmpeg filters for smart fades."""
+        if not self.filters:
+            raise RuntimeError("SmartFade not built — call Mixer.build() first")
+        filters = []
+        _cur_fadein_label = input_fadein_label
+        _cur_fadeout_label = input_fadeout_label
+        for audio_filter in self.filters:
+            filter_strings = audio_filter.apply(_cur_fadein_label, _cur_fadeout_label)
+            filters.extend(filter_strings)
+            _cur_fadein_label = f"[{audio_filter.output_fadein_label}]"
+            _cur_fadeout_label = f"[{audio_filter.output_fadeout_label}]"
+        return filters
+
     def __repr__(self) -> str:
         """Return string representation of SmartFade showing the filter chain."""
         if not self.filters:
@@ -241,11 +250,12 @@ class SmartCrossFade(SmartFade):
         self.fade_in_analysis = fade_in_analysis
         self.planner = SmartCrossFadePlanner(logger)
         self.renderer = TransitionRenderer(logger)
-        # Inspection surface, populated by _build (read by timing/lyrics-sync tests).
+        self.plan: TransitionPlan | None = None
+        # Inspection surface, populated by build() (read by timing/lyrics-sync tests).
         self.effective_end: float = float(SMART_CROSSFADE_DURATION)
         self.tempo_steps: list[tuple[float, float]] = []
 
-    def _build(
+    def build(
         self,
         fade_out_bytes_len: int,
         fade_in_bytes_len: int,
@@ -256,11 +266,15 @@ class SmartCrossFade(SmartFade):
             float(SMART_CROSSFADE_DURATION),
             fade_out_bytes_len / pcm_format.pcm_sample_size,
         )
-        plan = self.planner.plan(self.fade_out_analysis, self.fade_in_analysis, buffer_duration)
-        self.filters, self.timing_info = self.renderer.render(plan, pcm_format, fade_in_bytes_len)
-        # Expose plan-derived values the timing/lyrics-sync tests inspect.
-        self.effective_end = plan.fade_out_window
-        self.tempo_steps = plan.tempo_plan.steps
+        self.plan = self.planner.plan(
+            self.fade_out_analysis, self.fade_in_analysis, buffer_duration
+        )
+        self.filters, self.timing_info = self.renderer.render(
+            self.plan, pcm_format, fade_in_bytes_len
+        )
+        # Convenience copies of plan values the timing/lyrics-sync tests inspect.
+        self.effective_end = self.plan.fade_out_window
+        self.tempo_steps = self.plan.tempo_plan.steps
         self.fade_out_beats = self.planner.outgoing.beats
 
     def _stretch_savings_until(self, t: float) -> float:
@@ -277,13 +291,25 @@ class SmartCrossFade(SmartFade):
 class StandardCrossFade(SmartFade):
     """Standard crossfade class that implements a standard crossfade mode."""
 
-    def __init__(self, logger: logging.Logger, crossfade_duration: float = 10.0) -> None:
-        """Initialize StandardCrossFade with crossfade duration."""
+    def __init__(
+        self,
+        logger: logging.Logger,
+        crossfade_duration: float = 10.0,
+        trailing_silence_bytes: int = 0,
+    ) -> None:
+        """
+        Initialize StandardCrossFade.
+
+        :param logger: Logger for debug output.
+        :param crossfade_duration: Length of the crossfade overlap in seconds.
+        :param trailing_silence_bytes: Trailing silence in the outgoing tail that
+            ``apply()`` slices off before crossfading.
+        """
         super().__init__(logger)
         self.crossfade_duration = crossfade_duration
-        self.trailing_silence_bytes: int = 0
+        self.trailing_silence_bytes = trailing_silence_bytes
 
-    def _build(
+    def build(
         self,
         fade_out_bytes_len: int,
         fade_in_bytes_len: int,
