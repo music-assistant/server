@@ -41,6 +41,7 @@ from music_assistant.providers.snapcast.constants import (
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
     SHIPPED_SNAPSERVER_CONFIG_FILE,
+    SNAPCLIENT_LIVENESS_POLL_INTERVAL,
     SNAPWEB_DIR,
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
@@ -79,6 +80,7 @@ class SnapCastProvider(PlayerProvider):
     _controlscript_available: bool
     _snapcast_ma_streams: dict[str, SnapcastMAStream]
     _snapcast_ma_streams_lock: asyncio.Lock
+    _last_status_refresh: float
 
     @property
     def queue_control_available(self) -> bool:
@@ -129,6 +131,7 @@ class SnapCastProvider(PlayerProvider):
             )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         self._ids_map = bidict({})
+        self._last_status_refresh = 0.0
 
         self._snapcast_ma_streams = {}
         self._snapcast_ma_streams_lock = asyncio.Lock()
@@ -180,6 +183,25 @@ class SnapCastProvider(PlayerProvider):
 
         self._snapserver.stop()
         await self._stop_builtin_server()
+
+    async def refresh_server_status(self) -> None:
+        """
+        Refresh the full snapserver state, throttled to once per poll cycle.
+
+        Snapcast players all poll within the same controller pass; this collapses
+        that burst into a single Server.GetStatus so each client's lastSeen is
+        refreshed once per interval. Transient errors are ignored and retried.
+        """
+        now = self.mass.loop.time()
+        if now - self._last_status_refresh < SNAPCLIENT_LIVENESS_POLL_INTERVAL / 2:
+            return
+        self._last_status_refresh = now
+        try:
+            status, _ = await self._snapserver.status()
+            if isinstance(status, dict) and "server" in status:
+                self._snapserver.synchronize(status)
+        except Exception:
+            self.logger.debug("Snapserver status refresh failed", exc_info=True)
 
     async def _start_builtin_server(self) -> None:
         """Start the built-in Snapserver."""
