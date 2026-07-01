@@ -1,7 +1,10 @@
 """Smart Fades - Transition planners.
 
-A planner turns the two tracks' stored ``AudioAnalysisData`` into a
-``TransitionPlan`` — a pure decision with no audio bytes and no FFmpeg filters.
+A planner is the DJ brain of smart fades: it turns the two tracks' stored
+``AudioAnalysisData`` into a ``TransitionPlan`` — a pure decision with no audio
+bytes and no FFmpeg filters.  Like a real DJ it prepares the decks, chooses the
+overlap, chooses a tempo ramp, locks the timing to downbeats and chooses the EQ
+handover; the renderer then picks the matching tools from the filter toolset.
 Alternative transition strategies slot in as sibling subclasses of
 ``TransitionPlanner``.
 """
@@ -25,6 +28,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     generate_synthetic_timestamps,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
+    Deck,
     EqPlan,
     FadeOutTrim,
     SmartFadeNotApplicable,
@@ -83,71 +87,19 @@ class SmartCrossFadePlanner(TransitionPlanner):
         :param fade_in_analysis: Analysis data for the incoming track.
         :param buffer_duration: Length in seconds of the available fade-out holdback.
         """
-        self._init_grids(fade_out_analysis, fade_in_analysis)
+        self._prepare_decks(fade_out_analysis, fade_in_analysis, buffer_duration)
 
-        self._setup_fadeout_window(buffer_duration)
-
-        bpm_ratio = self.fade_in_bpm / self.fade_out_bpm
-        bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
-
-        self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
-            self.fade_out_downbeats,
-            buffer_size=self.effective_end,
-            bpm=self.fade_out_bpm,
-        )
-
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "SmartCrossFade plan: fade_out: %s, fade_in: %s",
-            self.fade_out_analysis,
-            self.fade_in_analysis,
-        )
-
-        crossfade_bars = self._calculate_optimal_crossfade_bars()
-        fadein_start_pos = self._calculate_optimal_fade_timing(crossfade_bars)
+        crossfade_bars = self._choose_crossfade_bars()
+        fadein_start_pos = self._choose_fadein_entry(crossfade_bars)
         crossfade_duration = self._calculate_crossfade_duration(crossfade_bars=crossfade_bars)
 
-        tempo_steps: list[tuple[float, float]] = []
-        stretch_eligible = (
-            0.1 < bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold
-            and crossfade_bars > 4
-        )
-        if stretch_eligible:
-            tempo_steps = self._compute_tempo_steps(bpm_ratio, bpm_diff_percent, crossfade_duration)
-        tempo_plan = TempoPlan(steps=tempo_steps)
+        tempo_plan = self._choose_tempo_ramp(crossfade_bars, crossfade_duration)
 
-        fadein_trim_start: float | None = None
-        if (
-            fadein_start_pos is not None
-            and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION
-        ):
-            fadein_trim_start = fadein_start_pos
-        else:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Skipping beat alignment: not enough audio after trim (%s + %.1fs > %.1fs)",
-                fadein_start_pos,
-                crossfade_duration,
-                SMART_CROSSFADE_DURATION,
-            )
-
-        # Adjust crossfade duration to align with outgoing track's downbeats.
-        # When stretching, only consider downbeats after the stretch window
-        # to ensure the outgoing track has reached the target tempo.
-        crossfade_start = self.effective_end - crossfade_duration
-        crossfade_duration = self._adjust_crossfade_to_downbeats(
-            crossfade_duration=crossfade_duration,
-            fadein_start_pos=fadein_start_pos,
-            min_downbeat_pos=crossfade_start if tempo_steps else 0.0,
+        crossfade_duration, fadein_trim_start = self._lock_in_timing(
+            crossfade_duration, fadein_start_pos, tempo_plan
         )
 
-        # Compensate crossfade duration for time-stretch compression.
-        # Gate on tempo_steps (not stretch_eligible) so a guard-skipped stretch
-        # doesn't apply a compensation for a stretch that never ran.
-        if tempo_steps:
-            crossfade_duration = crossfade_duration / bpm_ratio
-
-        eq_plan = self._build_eq_plan(bpm_ratio, crossfade_bars, crossfade_duration, tempo_plan)
+        eq_plan = self._choose_eq(crossfade_bars, crossfade_duration, tempo_plan)
 
         return TransitionPlan(
             fade_out_window=self.effective_end,
@@ -158,12 +110,33 @@ class SmartCrossFadePlanner(TransitionPlanner):
             fadein_trim_start=fadein_trim_start,
         )
 
-    def _init_grids(
+    @property
+    def _bpm_ratio(self) -> float:
+        """Tempo ratio between the incoming and outgoing track."""
+        return self.incoming.bpm / self.outgoing.bpm
+
+    @property
+    def _bpm_diff_percent(self) -> float:
+        """Tempo difference between the two decks as a percentage."""
+        return abs(1.0 - self._bpm_ratio) * 100
+
+    def _prepare_decks(
         self,
         fade_out_analysis: AudioAnalysisData,
         fade_in_analysis: AudioAnalysisData,
+        buffer_duration: float,
     ) -> None:
-        """Validate and derive the working beat/downbeat grids for this plan."""
+        """
+        Load both tracks onto the decks and cue the outgoing tail.
+
+        Validates the analysis, derives the usable beat grids and locates the
+        audible end of the outgoing tail.  Raises ``SmartFadeNotApplicable``
+        when the tail is too short to be useful.
+
+        :param fade_out_analysis: Analysis data for the outgoing track.
+        :param fade_in_analysis: Analysis data for the incoming track.
+        :param buffer_duration: Length in seconds of the fade-out holdback buffer.
+        """
         if (
             fade_out_analysis.bpm is None
             or fade_in_analysis.bpm is None
@@ -171,47 +144,60 @@ class SmartCrossFadePlanner(TransitionPlanner):
             or fade_in_analysis.beats is None
         ):
             raise ValueError("AudioAnalysisData must have bpm and beats set for smart crossfade")
-        self.fade_out_analysis = fade_out_analysis
-        self.fade_in_analysis = fade_in_analysis
-        self.fade_out_bpm: float = fade_out_analysis.bpm
-        self.fade_in_bpm: float = fade_in_analysis.bpm
-        self.fade_in_beats: npt.NDArray[np.float32] = fade_in_analysis.beats
-        self.fade_in_downbeats: npt.NDArray[np.float32] = (
+        incoming_downbeats = (
             fade_in_analysis.downbeats
             if fade_in_analysis.downbeats is not None
             else fade_in_analysis.beats
         )
-        # Store raw full-track beat grids; the shift to buffer-local coordinates
-        # happens in _setup_fadeout_window where the actual buffer length is known
-        self.fade_out_beats: npt.NDArray[np.float32] = fade_out_analysis.beats
-        self.fade_out_downbeats: npt.NDArray[np.float32] = (
-            fade_out_analysis.downbeats
-            if fade_out_analysis.downbeats is not None
-            else np.array([], dtype=np.float32)
+        self.incoming = Deck(
+            analysis=fade_in_analysis,
+            bpm=fade_in_analysis.bpm,
+            # Only beats within the buffered head are usable for alignment decisions
+            beats=fade_in_analysis.beats[fade_in_analysis.beats <= SMART_CROSSFADE_DURATION],
+            downbeats=incoming_downbeats[incoming_downbeats <= SMART_CROSSFADE_DURATION],
         )
-        # Only beats within the buffered head are usable for alignment decisions
-        self.fade_in_beats = self.fade_in_beats[self.fade_in_beats <= SMART_CROSSFADE_DURATION]
-        self.fade_in_downbeats = self.fade_in_downbeats[
-            self.fade_in_downbeats <= SMART_CROSSFADE_DURATION
-        ]
-        self.effective_end: float = SMART_CROSSFADE_DURATION
-        self.fadeout_trim: FadeOutTrim | None = None
+        self.outgoing = Deck(
+            analysis=fade_out_analysis,
+            bpm=fade_out_analysis.bpm,
+            # Raw full-track grids; the shift to buffer-local coordinates happens
+            # in _cue_outgoing_tail where the actual buffer length is known
+            beats=fade_out_analysis.beats,
+            downbeats=(
+                fade_out_analysis.downbeats
+                if fade_out_analysis.downbeats is not None
+                else np.array([], dtype=np.float32)
+            ),
+        )
+        self._cue_outgoing_tail(buffer_duration)
+        self.extrapolated_downbeats = extrapolate_downbeats(
+            self.outgoing.downbeats,
+            buffer_size=self.effective_end,
+            bpm=self.outgoing.bpm,
+        )
+        # Additional verbose logging to debug rare failures
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "SmartCrossFade plan: fade_out: %s, fade_in: %s",
+            fade_out_analysis,
+            fade_in_analysis,
+        )
 
-    def _setup_fadeout_window(self, buffer_duration: float) -> None:
+    def _cue_outgoing_tail(self, buffer_duration: float) -> None:
         """
-        Compute the effective audio end of the fade-out tail.
+        Locate the audible end of the outgoing tail and align its grids to it.
 
         Sets ``self.effective_end``, ``self.fadeout_trim`` (when trailing silence
-        is worth dropping), converts ``self.fade_out_beats`` /
-        ``self.fade_out_downbeats`` from full-track to buffer-local coordinates
-        using the actual buffer length, and masks them to the audible window.
-        Raises ``SmartFadeNotApplicable`` when the tail is too short to be useful.
+        is worth dropping), converts the outgoing deck's grids from full-track to
+        buffer-local coordinates using the actual buffer length, and masks them
+        to the audible window.  Raises ``SmartFadeNotApplicable`` when the tail
+        is too short to be useful.
 
         :param buffer_duration: Length in seconds of the fade-out holdback buffer.
         """
-        self.effective_end = detect_effective_audio_end(
-            self.fade_out_analysis.rms_energy,
-            self.fade_out_analysis.duration,
+        self.fadeout_trim: FadeOutTrim | None = None
+        self.effective_end: float = detect_effective_audio_end(
+            self.outgoing.analysis.rms_energy,
+            self.outgoing.analysis.duration,
             buffer_duration,
         )
         if self.effective_end < MIN_EFFECTIVE_FADE_BUFFER:
@@ -234,23 +220,119 @@ class SmartCrossFadePlanner(TransitionPlanner):
         # ACTUAL buffer length: the holdback yield loop leaves up to ~1s less than the
         # constant 45s depending on chunk boundaries, and effective_end above is in real
         # buffer coordinates — a constant-45 shift would misalign every beat by the difference
-        buffer_offset = max(0.0, (self.fade_out_analysis.duration or 0.0) - buffer_duration)
-        self.fade_out_beats = self.fade_out_beats - buffer_offset
-        self.fade_out_downbeats = self.fade_out_downbeats - buffer_offset
+        buffer_offset = max(0.0, (self.outgoing.analysis.duration or 0.0) - buffer_duration)
+        beats = self.outgoing.beats - buffer_offset
+        downbeats = self.outgoing.downbeats - buffer_offset
 
         # Mask fade-out beats to the audible buffer window; negative timestamps are
         # beats before the buffer, beats past effective_end sit in the silent tail
-        beat_mask = (self.fade_out_beats >= 0.0) & (self.fade_out_beats <= self.effective_end)
-        self.fade_out_beats = self.fade_out_beats[beat_mask]
-        db_mask = (self.fade_out_downbeats >= 0.0) & (self.fade_out_downbeats <= self.effective_end)
-        self.fade_out_downbeats = self.fade_out_downbeats[db_mask]
+        self.outgoing.beats = beats[(beats >= 0.0) & (beats <= self.effective_end)]
+        self.outgoing.downbeats = downbeats[(downbeats >= 0.0) & (downbeats <= self.effective_end)]
 
-    def _compute_tempo_steps(
-        self,
-        bpm_ratio: float,
-        bpm_diff_percent: float,
-        crossfade_duration: float,
-    ) -> list[tuple[float, float]]:
+    def _choose_crossfade_bars(self) -> int:
+        """Choose the overlap length in bars that fits in the available buffer."""
+        # Calculate ideal bars based on BPM compatibility
+        ideal_bars = (
+            10 if self._bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold else 6
+        )
+
+        # Reduce bars until it fits in the fadein buffer
+        for bars in [ideal_bars, 8, 6, 4, 2, 1]:
+            if bars > ideal_bars:
+                continue
+
+            fadein_start_pos = self._choose_fadein_entry(bars)
+            if fadein_start_pos is None:
+                continue
+
+            # Calculate what the duration would be
+            test_duration = self._calculate_crossfade_duration(crossfade_bars=bars)
+
+            # Check if it fits in fadein buffer
+            fadein_buffer = SMART_CROSSFADE_DURATION - fadein_start_pos
+            if test_duration <= fadein_buffer:
+                if bars < ideal_bars:
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Reduced crossfade from %d to %d bars (fadein buffer=%.1fs, needed=%.1fs)",
+                        ideal_bars,
+                        bars,
+                        fadein_buffer,
+                        test_duration,
+                    )
+                return bars
+
+        # Fall back to 1 bar if nothing else fits
+        return 1
+
+    def _choose_fadein_entry(self, crossfade_bars: int) -> float | None:
+        """Choose where the incoming track enters, aligned to its beat grid."""
+        beats_per_bar = 4
+
+        def calculate_beat_positions(
+            fade_out_beats: npt.NDArray[np.float32],
+            fade_in_beats: npt.NDArray[np.float32],
+            num_beats: int,
+        ) -> float | None:
+            """Calculate start positions from beat arrays."""
+            if len(fade_out_beats) < num_beats or len(fade_in_beats) < num_beats:
+                return None
+
+            fade_in_slice = fade_in_beats[:num_beats]
+            return float(fade_in_slice[0])
+
+        # Try downbeats first for most musical timing
+        downbeat_positions = calculate_beat_positions(
+            self.extrapolated_downbeats, self.incoming.downbeats, crossfade_bars
+        )
+        if downbeat_positions is not None:
+            return downbeat_positions
+
+        # Try regular beats if downbeats insufficient
+        required_beats = crossfade_bars * beats_per_bar
+        beat_positions = calculate_beat_positions(
+            self.outgoing.beats, self.incoming.beats, required_beats
+        )
+        if beat_positions is not None:
+            return beat_positions
+
+        # Fallback: No beat alignment possible
+        self.logger.log(VERBOSE_LOG_LEVEL, "No beat alignment possible (insufficient beats)")
+        return None
+
+    def _calculate_crossfade_duration(self, crossfade_bars: int) -> float:
+        """Calculate the crossfade duration for a bar count, capped to the audible tail."""
+        # Calculate crossfade duration based on incoming track's BPM
+        beats_per_bar = 4
+        seconds_per_beat = 60.0 / self.incoming.bpm
+        musical_duration = crossfade_bars * beats_per_bar * seconds_per_beat
+
+        # Cap at the audible fade-out room so crossfade_start never goes negative
+        # downstream (effective_end <= SMART_CROSSFADE_DURATION always)
+        actual_duration = min(musical_duration, self.effective_end)
+
+        # Log if we had to constrain the duration
+        if musical_duration > actual_duration:
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Constraining crossfade duration from %.1fs to %.1fs (audible tail limit)",
+                musical_duration,
+                actual_duration,
+            )
+
+        return actual_duration
+
+    def _choose_tempo_ramp(self, crossfade_bars: int, crossfade_duration: float) -> TempoPlan:
+        """Choose the gradual tempo ramp that beatmatches the outgoing track, if any."""
+        stretch_eligible = (
+            0.1 < self._bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold
+            and crossfade_bars > 4
+        )
+        if not stretch_eligible:
+            return TempoPlan()
+        return TempoPlan(steps=self._compute_tempo_steps(crossfade_duration))
+
+    def _compute_tempo_steps(self, crossfade_duration: float) -> list[tuple[float, float]]:
         """Compute the gradual tempo ramp in the 10s window before the crossfade."""
         stretch_duration = 10.0
         crossfade_start = self.effective_end - crossfade_duration
@@ -262,16 +344,17 @@ class SmartCrossFadePlanner(TransitionPlanner):
         stretch_end = crossfade_start
 
         # Collect timing points within the stretch window
-        beat_mask = (self.fade_out_beats >= stretch_start) & (self.fade_out_beats <= stretch_end)
-        db_mask = (self.extrapolated_fadeout_downbeats >= stretch_start) & (
-            self.extrapolated_fadeout_downbeats <= stretch_end
+        beats = self.outgoing.beats
+        beat_mask = (beats >= stretch_start) & (beats <= stretch_end)
+        db_mask = (self.extrapolated_downbeats >= stretch_start) & (
+            self.extrapolated_downbeats <= stretch_end
         )
-        window_beats = self.fade_out_beats[beat_mask] - stretch_start
-        window_downbeats = self.extrapolated_fadeout_downbeats[db_mask] - stretch_start
+        window_beats = beats[beat_mask] - stretch_start
+        window_downbeats = self.extrapolated_downbeats[db_mask] - stretch_start
 
         # >3% BPM diff: beat-level stepping (more steps = smoother)
         # <=3%: downbeat-level stepping, fall back to beats if too few
-        if bpm_diff_percent > 3.0:
+        if self._bpm_diff_percent > 3.0:
             stretch_timestamps = window_beats
         elif len(window_downbeats) >= 2:
             stretch_timestamps = window_downbeats
@@ -281,34 +364,159 @@ class SmartCrossFadePlanner(TransitionPlanner):
         # Fall back to synthetic timestamps when < 2 real timestamps
         if len(stretch_timestamps) < 2:
             stretch_timestamps = generate_synthetic_timestamps(
-                stretch_end - stretch_start, self.fade_out_bpm
+                stretch_end - stretch_start, self.outgoing.bpm
             )
 
         tempo_steps = compute_gradual_tempo_steps(
             start_ratio=1.0,
-            end_ratio=bpm_ratio,
+            end_ratio=self._bpm_ratio,
             downbeats=stretch_timestamps,
         )
         if not tempo_steps:
-            tempo_steps = [(0.0, bpm_ratio)]
+            tempo_steps = [(0.0, self._bpm_ratio)]
 
         # Shift timestamps back to buffer-relative coordinates for FFmpeg
         return [(ts + stretch_start, ratio) for ts, ratio in tempo_steps]
 
-    def _build_eq_plan(
+    def _lock_in_timing(
         self,
-        bpm_ratio: float,
+        crossfade_duration: float,
+        fadein_start_pos: float | None,
+        tempo_plan: TempoPlan,
+    ) -> tuple[float, float | None]:
+        """
+        Lock the overlap timing: confirm the fade-in entry and snap to downbeats.
+
+        Returns the final crossfade duration (downbeat-snapped and compensated
+        for time-stretch compression) and the fade-in trim position, or ``None``
+        when beat alignment is skipped.
+
+        :param crossfade_duration: Draft crossfade duration in seconds.
+        :param fadein_start_pos: Chosen entry point in the incoming track, if any.
+        :param tempo_plan: The tempo ramp chosen for this transition.
+        """
+        fadein_trim_start: float | None = None
+        if (
+            fadein_start_pos is not None
+            and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION
+        ):
+            fadein_trim_start = fadein_start_pos
+        else:
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Skipping beat alignment: not enough audio after trim (%s + %.1fs > %.1fs)",
+                fadein_start_pos,
+                crossfade_duration,
+                SMART_CROSSFADE_DURATION,
+            )
+
+        # Adjust crossfade duration to align with outgoing track's downbeats.
+        # When stretching, only consider downbeats after the stretch window
+        # to ensure the outgoing track has reached the target tempo.
+        crossfade_start = self.effective_end - crossfade_duration
+        crossfade_duration = self._adjust_crossfade_to_downbeats(
+            crossfade_duration=crossfade_duration,
+            fadein_start_pos=fadein_start_pos,
+            min_downbeat_pos=crossfade_start if tempo_plan else 0.0,
+        )
+
+        # Compensate crossfade duration for time-stretch compression.
+        # Gate on the tempo plan (not stretch eligibility) so a guard-skipped
+        # stretch doesn't apply a compensation for a stretch that never ran.
+        if tempo_plan:
+            crossfade_duration = crossfade_duration / self._bpm_ratio
+
+        return crossfade_duration, fadein_trim_start
+
+    def _adjust_crossfade_to_downbeats(
+        self,
+        crossfade_duration: float,
+        fadein_start_pos: float | None,
+        min_downbeat_pos: float = 0.0,
+    ) -> float:
+        """Adjust crossfade duration to align with outgoing track's downbeats."""
+        # If we don't have downbeats or beat alignment is disabled, return original duration
+        if len(self.extrapolated_downbeats) == 0 or fadein_start_pos is None:
+            return crossfade_duration
+
+        # Calculate where the crossfade would start in the buffer
+        ideal_start_pos = self.effective_end - crossfade_duration
+
+        # Debug logging
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Downbeat adjustment - ideal_start=%.2fs (effective_end=%.1fs - crossfade=%.2fs), "
+            "fadein_start=%.2fs",
+            ideal_start_pos,
+            self.effective_end,
+            crossfade_duration,
+            fadein_start_pos,
+        )
+
+        # Find the closest downbeats (earlier and later)
+        earlier_downbeat = None
+        later_downbeat = None
+
+        for downbeat in self.extrapolated_downbeats:
+            if downbeat < min_downbeat_pos:
+                continue
+            if downbeat <= ideal_start_pos:
+                earlier_downbeat = downbeat
+            elif downbeat > ideal_start_pos and later_downbeat is None:
+                later_downbeat = downbeat
+                break
+
+        # Try earlier downbeat first (longer crossfade)
+        if earlier_downbeat is not None:
+            adjusted_duration = float(self.effective_end - earlier_downbeat)
+            if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
+                if abs(adjusted_duration - crossfade_duration) > 0.1:
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
+                        "downbeat at %.2fs (earlier)",
+                        crossfade_duration,
+                        adjusted_duration,
+                        earlier_downbeat,
+                    )
+                return adjusted_duration
+
+        # Try later downbeat (shorter crossfade)
+        if later_downbeat is not None:
+            adjusted_duration = float(self.effective_end - later_downbeat)
+            if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
+                if abs(adjusted_duration - crossfade_duration) > 0.1:
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
+                        "downbeat at %.2fs (later)",
+                        crossfade_duration,
+                        adjusted_duration,
+                        later_downbeat,
+                    )
+                return adjusted_duration
+
+        # If no suitable downbeat found, return original duration
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Could not adjust crossfade duration to downbeats, using original %.2fs",
+            crossfade_duration,
+        )
+        return crossfade_duration
+
+    def _choose_eq(
+        self,
         crossfade_bars: int,
         crossfade_duration: float,
         tempo_plan: TempoPlan,
     ) -> EqPlan:
-        """Compute the crossover frequency, curves, and both frequency sweeps."""
+        """Choose the crossover frequency, curves, and both frequency sweeps."""
         # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
-        avg_bpm = (self.fade_out_bpm + self.fade_in_bpm) / 2
+        avg_bpm = (self.outgoing.bpm + self.incoming.bpm) / 2
         crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 2500))
 
         # Adjust for BPM mismatch
-        if abs(bpm_ratio - 1.0) > 0.3:
+        if abs(self._bpm_ratio - 1.0) > 0.3:
             crossover_freq = int(crossover_freq * 0.85)
 
         # For shorter fades, use exp/exp curves to avoid abruptness
@@ -359,174 +567,3 @@ class SmartCrossFadePlanner(TransitionPlanner):
             stream_type="fadein",
         )
         return EqPlan(crossover_freq=crossover_freq, fadeout=fadeout, fadein=fadein)
-
-    def _calculate_crossfade_duration(self, crossfade_bars: int) -> float:
-        """Calculate final crossfade duration based on musical bars and BPM."""
-        # Calculate crossfade duration based on incoming track's BPM
-        beats_per_bar = 4
-        seconds_per_beat = 60.0 / self.fade_in_bpm
-        musical_duration = crossfade_bars * beats_per_bar * seconds_per_beat
-
-        # Cap at the audible fade-out room so crossfade_start never goes negative
-        # downstream (effective_end <= SMART_CROSSFADE_DURATION always)
-        actual_duration = min(musical_duration, self.effective_end)
-
-        # Log if we had to constrain the duration
-        if musical_duration > actual_duration:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Constraining crossfade duration from %.1fs to %.1fs (audible tail limit)",
-                musical_duration,
-                actual_duration,
-            )
-
-        return actual_duration
-
-    def _calculate_optimal_crossfade_bars(self) -> int:
-        """Calculate optimal crossfade bars that fit in available buffer."""
-        bpm_in = self.fade_in_bpm
-        bpm_out = self.fade_out_bpm
-        bpm_diff_percent = abs(1.0 - bpm_in / bpm_out) * 100
-
-        # Calculate ideal bars based on BPM compatibility
-        ideal_bars = 10 if bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold else 6
-
-        # Reduce bars until it fits in the fadein buffer
-        for bars in [ideal_bars, 8, 6, 4, 2, 1]:
-            if bars > ideal_bars:
-                continue
-
-            fadein_start_pos = self._calculate_optimal_fade_timing(bars)
-            if fadein_start_pos is None:
-                continue
-
-            # Calculate what the duration would be
-            test_duration = self._calculate_crossfade_duration(crossfade_bars=bars)
-
-            # Check if it fits in fadein buffer
-            fadein_buffer = SMART_CROSSFADE_DURATION - fadein_start_pos
-            if test_duration <= fadein_buffer:
-                if bars < ideal_bars:
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL,
-                        "Reduced crossfade from %d to %d bars (fadein buffer=%.1fs, needed=%.1fs)",
-                        ideal_bars,
-                        bars,
-                        fadein_buffer,
-                        test_duration,
-                    )
-                return bars
-
-        # Fall back to 1 bar if nothing else fits
-        return 1
-
-    def _calculate_optimal_fade_timing(self, crossfade_bars: int) -> float | None:
-        """Calculate beat positions for alignment."""
-        beats_per_bar = 4
-
-        def calculate_beat_positions(
-            fade_out_beats: npt.NDArray[np.float32],
-            fade_in_beats: npt.NDArray[np.float32],
-            num_beats: int,
-        ) -> float | None:
-            """Calculate start positions from beat arrays."""
-            if len(fade_out_beats) < num_beats or len(fade_in_beats) < num_beats:
-                return None
-
-            fade_in_slice = fade_in_beats[:num_beats]
-            return float(fade_in_slice[0])
-
-        # Try downbeats first for most musical timing
-        downbeat_positions = calculate_beat_positions(
-            self.extrapolated_fadeout_downbeats, self.fade_in_downbeats, crossfade_bars
-        )
-        if downbeat_positions is not None:
-            return downbeat_positions
-
-        # Try regular beats if downbeats insufficient
-        required_beats = crossfade_bars * beats_per_bar
-        beat_positions = calculate_beat_positions(
-            self.fade_out_beats, self.fade_in_beats, required_beats
-        )
-        if beat_positions is not None:
-            return beat_positions
-
-        # Fallback: No beat alignment possible
-        self.logger.log(VERBOSE_LOG_LEVEL, "No beat alignment possible (insufficient beats)")
-        return None
-
-    def _adjust_crossfade_to_downbeats(
-        self,
-        crossfade_duration: float,
-        fadein_start_pos: float | None,
-        min_downbeat_pos: float = 0.0,
-    ) -> float:
-        """Adjust crossfade duration to align with outgoing track's downbeats."""
-        # If we don't have downbeats or beat alignment is disabled, return original duration
-        if len(self.extrapolated_fadeout_downbeats) == 0 or fadein_start_pos is None:
-            return crossfade_duration
-
-        # Calculate where the crossfade would start in the buffer
-        ideal_start_pos = self.effective_end - crossfade_duration
-
-        # Debug logging
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "Downbeat adjustment - ideal_start=%.2fs (effective_end=%.1fs - crossfade=%.2fs), "
-            "fadein_start=%.2fs",
-            ideal_start_pos,
-            self.effective_end,
-            crossfade_duration,
-            fadein_start_pos,
-        )
-
-        # Find the closest downbeats (earlier and later)
-        earlier_downbeat = None
-        later_downbeat = None
-
-        for downbeat in self.extrapolated_fadeout_downbeats:
-            if downbeat < min_downbeat_pos:
-                continue
-            if downbeat <= ideal_start_pos:
-                earlier_downbeat = downbeat
-            elif downbeat > ideal_start_pos and later_downbeat is None:
-                later_downbeat = downbeat
-                break
-
-        # Try earlier downbeat first (longer crossfade)
-        if earlier_downbeat is not None:
-            adjusted_duration = float(self.effective_end - earlier_downbeat)
-            if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
-                if abs(adjusted_duration - crossfade_duration) > 0.1:
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL,
-                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
-                        "downbeat at %.2fs (earlier)",
-                        crossfade_duration,
-                        adjusted_duration,
-                        earlier_downbeat,
-                    )
-                return adjusted_duration
-
-        # Try later downbeat (shorter crossfade)
-        if later_downbeat is not None:
-            adjusted_duration = float(self.effective_end - later_downbeat)
-            if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
-                if abs(adjusted_duration - crossfade_duration) > 0.1:
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL,
-                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
-                        "downbeat at %.2fs (later)",
-                        crossfade_duration,
-                        adjusted_duration,
-                        later_downbeat,
-                    )
-                return adjusted_duration
-
-        # If no suitable downbeat found, return original duration
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "Could not adjust crossfade duration to downbeats, using original %.2fs",
-            crossfade_duration,
-        )
-        return crossfade_duration

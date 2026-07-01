@@ -261,7 +261,7 @@ class SmartCrossFade(SmartFade):
         # Expose plan-derived values the timing/lyrics-sync tests inspect.
         self.effective_end = plan.fade_out_window
         self.tempo_steps = plan.tempo_plan.steps
-        self.fade_out_beats = self.planner.fade_out_beats
+        self.fade_out_beats = self.planner.outgoing.beats
 
     def _stretch_savings_until(self, t: float) -> float:
         """

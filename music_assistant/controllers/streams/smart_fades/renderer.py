@@ -1,7 +1,8 @@
 """Smart Fades - Transition renderer.
 
-Turns a renderer-agnostic ``TransitionPlan`` into the concrete ``Filter`` chain
-plus the ``CrossfadeTimingInfo`` breakdown.  This is the only place where bytes
+The renderer is the DJ's hands: it picks the tools from the filter toolset
+(``filters.py``) that realize a ``TransitionPlan``, and produces the
+``CrossfadeTimingInfo`` breakdown.  This is the only place where bytes
 re-enter: the plan is sized in seconds, the renderer reconciles it with the
 actual buffer lengths for the timing bookkeeping.
 """

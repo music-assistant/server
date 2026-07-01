@@ -1,4 +1,8 @@
-"""Smart Fades - Audio filter implementations."""
+"""Smart Fades - the FFmpeg filter toolset.
+
+Each ``Filter`` is one tool a transition can apply to the fade-out/fade-in
+stream pair; the renderer picks and orders them to realize a ``TransitionPlan``.
+"""
 
 import logging
 from abc import ABC, abstractmethod

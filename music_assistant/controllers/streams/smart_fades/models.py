@@ -12,10 +12,32 @@ is buffered.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
+
+    from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
 class SmartFadeNotApplicable(Exception):
     """Raised when the tracks cannot yield a smart crossfade and the caller should fall back."""
+
+
+@dataclass(slots=True)
+class Deck:
+    """
+    One track on the planner's (virtual) DJ deck.
+
+    Holds the track's stored analysis plus the beat grids that are usable for
+    this transition (masked/shifted to the relevant buffer window by the planner).
+    """
+
+    analysis: AudioAnalysisData
+    bpm: float
+    beats: npt.NDArray[np.float32]
+    downbeats: npt.NDArray[np.float32]
 
 
 @dataclass(slots=True)
