@@ -530,7 +530,13 @@ def strip_multi_space(line: str) -> str:
 
 def html_to_markdown(line: str) -> str:
     """Convert the safe subset of HTML in a string to markdown, stripping other tags."""
-    return markdownify(line, convert=MARKDOWN_SAFE_TAGS).strip()
+    return markdownify(
+        line,
+        convert=MARKDOWN_SAFE_TAGS,
+        escape_asterisks=False,
+        escape_underscores=False,
+        escape_misc=False,
+    ).strip()
 
 
 def multi_strip(line: str) -> str:
