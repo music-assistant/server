@@ -37,6 +37,7 @@ dependencies = [
   "python-slugify==8.0.4",
   "unidecode==1.4.0",
   "xmltodict==1.0.4",
+  "markdownify==1.2.3",
   "shortuuid==1.0.13",
   "zeroconf==0.149.16",
   "uv>=0.8.0",
