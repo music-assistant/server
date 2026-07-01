@@ -1,5 +1,4 @@
-"""
-Stateless tail reader for ``mass.storage_path / musicassistant.log``.
+"""Stateless tail reader for ``mass.storage_path / musicassistant.log``.
 
 The reader is constrained by three load-bearing invariants:
 
@@ -71,8 +70,7 @@ class SafeLogTail:
     ALLOWED = frozenset(["musicassistant.log"] + [f"musicassistant.log.{i}" for i in range(1, 6)])
 
     def __init__(self, mass: MusicAssistant | None = None) -> None:
-        """
-        Build a tail reader optionally bound to a live MA instance.
+        """Build a tail reader optionally bound to a live MA instance.
 
         :param mass: When provided, the log root is taken from
             ``mass.storage_path`` — honouring custom ``--data-dir`` deployments
@@ -98,8 +96,7 @@ class SafeLogTail:
         since_seconds: int | None = None,
         name: str = "musicassistant.log",
     ) -> LogTailResult:
-        """
-        Return the last ``lines`` parsed entries from the named log file.
+        """Return the last ``lines`` parsed entries from the named log file.
 
         :param lines: Maximum number of lines to return (clamped to 2000).
         :param level: Filter by log level (e.g., "ERROR", "INFO").
@@ -145,8 +142,7 @@ class SafeLogTail:
         )
 
     def count_errors_last_5min(self, *, name: str = "musicassistant.log") -> int:
-        """
-        Count ERROR-level entries in the last 5 minutes (used by health_summary).
+        """Count ERROR-level entries in the last 5 minutes (used by health_summary).
 
         :param name: Log file name (must be in ALLOWED set).
         """
@@ -156,8 +152,7 @@ class SafeLogTail:
     # --- internal helpers ---
 
     def _safe_path(self, name: str) -> Path:
-        """
-        Validate and resolve a log file path.
+        """Validate and resolve a log file path.
 
         :param name: The requested log file name.
         :raises ToolError: If name contains traversal characters, is not in ALLOWED, or symlink escapes.
@@ -177,8 +172,7 @@ class SafeLogTail:
         return resolved
 
     def _read_last_lines(self, path: Path, lines: int) -> tuple[list[str], int, bool]:
-        """
-        Read up to ``lines`` final lines or 10 MB, whichever is smaller.
+        """Read up to ``lines`` final lines or 10 MB, whichever is smaller.
 
         :param path: Resolved path to log file.
         :param lines: Maximum lines to read.
@@ -212,8 +206,7 @@ class SafeLogTail:
         return all_lines[-lines:], bytes_scanned, truncated
 
     def _parse(self, raw: str) -> LogLine:
-        """
-        Parse a log line into timestamp, level, component, message.
+        """Parse a log line into timestamp, level, component, message.
 
         :param raw: Raw log line text.
         :return: LogLine with parsed fields or message-only if unparsable.
@@ -237,8 +230,7 @@ class SafeLogTail:
 
     @staticmethod
     def _redact(text: str) -> str:
-        """
-        Redact common secret patterns (bearer tokens, credentials, passwords).
+        """Redact common secret patterns (bearer tokens, credentials, passwords).
 
         :param text: The input string.
         :return: The text with secrets replaced by <redacted>.

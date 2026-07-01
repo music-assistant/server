@@ -1,5 +1,4 @@
-"""
-Regression tests for the ``playlists/*`` sub-server.
+"""Regression tests for the ``playlists/*`` sub-server.
 
 Pin three contracts that were broken before:
 

@@ -1,5 +1,4 @@
-"""
-Canned MCP prompts.
+"""Canned MCP prompts.
 
 These prompts hand the LLM a small, opinionated playbook for common tasks
 ("find a song and play it on a specific speaker", "now playing summary",

@@ -236,7 +236,9 @@ def _setup_index_add_mocks(
     # Index path fetches the lookahead window before and after the load.
     mock_mass.player_queues.items = MagicMock(side_effect=[before, after])
     mock_mass.music.get_item_by_uri = AsyncMock(return_value=_mock_track(uri=uri))
-    mock_mass.player_queues._resolve_media_items = AsyncMock(return_value=[_mock_track(uri=uri)])
+    mock_mass.player_queues._media_resolver._resolve_media_items = AsyncMock(
+        return_value=[_mock_track(uri=uri)]
+    )
     mock_mass.player_queues.load = AsyncMock()
 
 
@@ -261,6 +263,31 @@ async def test_add_to_queue_index_calls_load(mounted_queue: FastMCP, mock_mass: 
     assert kwargs["shuffle"] is False
     assert result.data.index == 3
     assert result.data.item_id == "new-row"
+
+
+async def test_add_to_queue_index_resolves_via_media_resolver(
+    mounted_queue: FastMCP, mock_mass: MagicMock
+) -> None:
+    """Index path resolves media through the controller's MediaResolver.
+
+    Regression (issue #159): the private ``_resolve_media_items`` moved from
+    ``PlayerQueuesController`` onto an internal ``_media_resolver`` upstream, so
+    calling it on the controller directly raises ``AttributeError`` at runtime.
+    """
+    uri = "spotify://track/new"
+    before = [_queue_item(item_id=f"i{i}", uri=f"u{i}", name=f"n{i}") for i in range(5)]
+    after = [*before[:3], _queue_item(item_id="new-row", uri=uri, name="Track One"), *before[3:]]
+    mock_mass.player_queues.get.return_value = _mock_queue(current_index=1, items=len(before))
+    mock_mass.player_queues.items = MagicMock(side_effect=[before, after])
+    mock_mass.music.get_item_by_uri = AsyncMock(return_value=_mock_track(uri=uri))
+    # The resolver lives on the controller's MediaResolver, not the controller.
+    mock_mass.player_queues._media_resolver._resolve_media_items = AsyncMock(
+        return_value=[_mock_track(uri=uri)]
+    )
+    mock_mass.player_queues.load = AsyncMock()
+    async with Client(mounted_queue) as client:
+        await client.call_tool("queue_add_to_queue", {"queue_id": "q1", "uri": uri, "index": 3})
+    mock_mass.player_queues._media_resolver._resolve_media_items.assert_awaited_once()
 
 
 async def test_add_to_queue_index_rejects_past_current(
@@ -355,7 +382,9 @@ async def test_add_to_queue_index_expands_album(
     mock_mass.music.get_item_by_uri = AsyncMock(
         return_value=_mock_track(uri=album_uri, name="Stunt")
     )
-    mock_mass.player_queues._resolve_media_items = AsyncMock(return_value=[track_a, track_b])
+    mock_mass.player_queues._media_resolver._resolve_media_items = AsyncMock(
+        return_value=[track_a, track_b]
+    )
     mock_mass.player_queues.load = AsyncMock()
     async with Client(mounted_queue) as client:
         result = await client.call_tool(
@@ -371,8 +400,7 @@ async def test_add_to_queue_index_expands_album(
 async def test_add_to_queue_add_tracks_growing_tail_window(
     mounted_queue: FastMCP, mock_mass: MagicMock
 ) -> None:
-    """
-    option=add recomputes the tail window from the post-add total (regression: #1).
+    """option=add recomputes the tail window from the post-add total (regression: #1).
 
     For a queue longer than MAX_QUEUE_ITEMS the appended row lands beyond the
     pre-add window; the after-window offset must follow the new total or the
@@ -401,8 +429,7 @@ async def test_add_to_queue_add_tracks_growing_tail_window(
 async def test_add_to_queue_index_count_uses_queue_total_not_page(
     mounted_queue: FastMCP, mock_mass: MagicMock
 ) -> None:
-    """
-    A valid index past the 500-row page cap is accepted (regression: #2).
+    """A valid index past the 500-row page cap is accepted (regression: #2).
 
     item_count must come from the queue's own row count, not len() of a capped
     items() page, or inserts beyond index 500 are wrongly rejected.

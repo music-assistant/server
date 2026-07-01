@@ -74,8 +74,7 @@ def test_snapshot_filters_event_types_and_id(mock_mass: Any, fake_event_emitter:
 def test_snapshot_since_seconds_filters_old_events(
     mock_mass: Any, fake_event_emitter: Any, monkeypatch: Any
 ) -> None:
-    """
-    Patch the buffer's _now indirection to a controllable clock.
+    """Patch the buffer's _now indirection to a controllable clock.
 
     Project does not ship freezegun and pyproject.toml is templated
     (cannot be hand-edited per CLAUDE.md). The buffer module exposes

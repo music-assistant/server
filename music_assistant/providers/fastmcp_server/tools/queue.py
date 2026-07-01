@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
@@ -95,12 +95,11 @@ async def _add_to_queue_at_index(
     except MusicAssistantError as err:
         raise ToolError(str(err)) from err
     try:
-        # `_resolve_media_items` is a private MA controller method with no public
-        # equivalent; its host object varies across MA versions (moved onto an
-        # internal MediaResolver upstream), so the inlined type check can't see it.
-        resolved = await mass.player_queues._resolve_media_items(  # type: ignore[attr-defined, unused-ignore]
-            media_item, queue_id=queue_id
-        )
+        # `_resolve_media_items` is a private MA method with no public equivalent.
+        # It moved from PlayerQueuesController onto an internal MediaResolver
+        # upstream, so resolve the host object across both MA layouts.
+        resolver: Any = getattr(mass.player_queues, "_media_resolver", mass.player_queues)
+        resolved = await resolver._resolve_media_items(media_item, queue_id=queue_id)
     except InvalidDataError as err:
         raise ToolError(str(err)) from err
     queue_items = [
