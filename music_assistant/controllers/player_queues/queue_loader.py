@@ -103,12 +103,30 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         if option == QueueOption.NEXT:
-            await self.load(
-                queue_id,
-                queue_items=queue_items,
-                insert_at_index=insert_at_index,
-                shuffle=shuffle,
-            )
+            if shuffle:
+                # honour "play next" under shuffle: the first new item goes right after the
+                # buffered index so it plays next, the rest of the batch is shuffled into the tail
+                # behind it. insert_at_index is the first un-buffered slot, so the track the player
+                # already prepared for crossfade is left untouched.
+                await self.load(
+                    queue_id,
+                    queue_items=queue_items[:1],
+                    insert_at_index=insert_at_index,
+                )
+                await self.load(
+                    queue_id,
+                    queue_items=queue_items[1:],
+                    insert_at_index=insert_at_index + 1,
+                    shuffle=True,
+                )
+            else:
+                await self.load(
+                    queue_id,
+                    queue_items=queue_items,
+                    insert_at_index=insert_at_index,
+                    shuffle=shuffle,
+                )
+            self._ensure_current_index(queue_id)
             return
         if option == QueueOption.REPLACE_NEXT:
             await self.load(
@@ -118,6 +136,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_remaining=False,
                 shuffle=shuffle,
             )
+            self._ensure_current_index(queue_id)
             return
         # handle play: replace current loaded/playing index with new item(s)
         if option == QueueOption.PLAY:
@@ -152,13 +171,24 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # managed-pool tracks are already ordered in a pattern we want to keep
                 shuffle=queue.shuffle_enabled and not managed_pool,
             )
-            # handle edgecase, queue is empty and items are only added (not played)
-            # mark first item as new index
-            if queue.current_index is None:
-                queue.current_index = 0
-                queue.current_item = self.get_item(queue_id, 0)
-                queue.items = len(queue_items)
-                self.signal_update(queue_id)
+            self._ensure_current_index(queue_id)
+
+    def _ensure_current_index(self, queue_id: str) -> None:
+        """
+        Point the current index at the first item when the queue does not have one yet.
+
+        NEXT/ADD/REPLACE_NEXT stage items without starting playback; on an empty queue there is no
+        current index, so set it to the first item to give the queue a current item. A queue that
+        already has content keeps its current index untouched (its items are inserted after it).
+
+        :param queue_id: The queue to update.
+        """
+        queue = self._queue_data[queue_id].queue
+        if queue.current_index is not None:
+            return
+        queue.current_index = 0
+        queue.current_item = self.get_item(queue_id, 0)
+        self.signal_update(queue_id)
 
     async def _load_item(
         self,
