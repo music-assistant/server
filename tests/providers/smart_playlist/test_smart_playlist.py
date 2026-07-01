@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -266,7 +267,7 @@ class TestRuleValidation:
         """min_duration > max_duration raises InvalidDataError."""
         plugin = self._make_plugin()
         rules = SmartPlaylistRules(min_duration=600, max_duration=300)
-        with pytest.raises(InvalidDataError, match="min_duration.*max_duration"):
+        with pytest.raises(InvalidDataError, match=r"min_duration.*max_duration"):
             plugin._validate_rules(rules)
 
     def test_last_played_before_days_zero_raises(self) -> None:
@@ -279,9 +280,7 @@ class TestRuleValidation:
     def test_valid_duration_and_last_played_pass(self) -> None:
         """Valid duration and last_played values do not raise."""
         plugin = self._make_plugin()
-        rules = SmartPlaylistRules(
-            min_duration=180, max_duration=600, last_played_before_days=30
-        )
+        rules = SmartPlaylistRules(min_duration=180, max_duration=600, last_played_before_days=30)
         plugin._validate_rules(rules)  # should not raise
 
 
@@ -587,9 +586,7 @@ async def test_duration_filter_skips_tracks_without_duration() -> None:
 
     no_duration = _make_mock_track("1", uri="library://track/1", duration=None)
     has_duration = _make_mock_track("2", uri="library://track/2", duration=240)
-    cast("Any", plugin)._get_library_tracks = AsyncMock(
-        return_value=[no_duration, has_duration]
-    )
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[no_duration, has_duration])
 
     rules = SmartPlaylistRules(min_duration=180, logic=LOGIC_AND, limit=10)
     result = await plugin._evaluate_rules(rules)
@@ -601,8 +598,6 @@ async def test_duration_filter_skips_tracks_without_duration() -> None:
 @pytest.mark.asyncio
 async def test_last_played_filter() -> None:
     """Tracks played recently are filtered out."""
-    import time
-
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -612,7 +607,9 @@ async def test_last_played_filter() -> None:
 
     now = int(time.time())
     never_played = _make_mock_track("1", uri="library://track/1", last_played=0)
-    played_recently = _make_mock_track("2", uri="library://track/2", last_played=now - 86400)  # 1 day ago
+    played_recently = _make_mock_track(
+        "2", uri="library://track/2", last_played=now - 86400
+    )  # 1 day ago
     played_long_ago = _make_mock_track(
         "3", uri="library://track/3", last_played=now - (60 * 86400)
     )  # 60 days ago
