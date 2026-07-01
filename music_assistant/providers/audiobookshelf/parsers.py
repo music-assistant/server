@@ -127,7 +127,6 @@ def parse_podcast(
         },
     )
     if abs_podcast.media.metadata.description:
-        # ABS uses a rich-text editor, so descriptions may contain HTML markup
         mass_podcast.metadata.description = html_to_markdown(abs_podcast.media.metadata.description)
     if token is not None and abs_podcast.media.cover_path is not None:
         image_url = _build_cover_url(
@@ -287,7 +286,6 @@ def parse_audiobook(
         publisher=abs_audiobook.media.metadata.publisher,
     )
     if abs_audiobook.media.metadata.description:
-        # ABS uses a rich-text editor, so descriptions may contain HTML markup
         mass_audiobook.metadata.description = html_to_markdown(
             abs_audiobook.media.metadata.description
         )
