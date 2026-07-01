@@ -203,6 +203,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the the queue."""
         queue = self._queue_data[queue_id].queue
+        if queue.is_dynamic:
+            # a dynamic queue is an always-on, recency-orchestrated smart mix; manual shuffle
+            # (and plain linear order) have no meaning here so the toggle is locked
+            raise InvalidCommand("Cannot change shuffle while the queue is in dynamic mode")
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
         queue.shuffle_enabled = shuffle_enabled
@@ -232,12 +236,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Return whether smart shuffle is currently in effect for the queue.
 
-        Radio mode implies smart selection, so it always counts as active; otherwise smart shuffle
-        is active when shuffle is on and the per-queue smart-shuffle setting is enabled.
+        A dynamic queue is always an orchestrated smart mix (the managed pool), so it always counts
+        as active; otherwise smart shuffle is active when shuffle is on and the per-queue
+        smart-shuffle setting is enabled.
 
         :param queue: The queue to evaluate.
         """
-        if queue.sources:
+        if queue.is_dynamic:
             return True
         return queue.shuffle_enabled and self._smart_shuffle.is_enabled(queue.queue_id)
 
@@ -251,7 +256,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (
             queue.autoplay_enabled
             and queue.enqueued_media_items
-            and not queue.sources
+            and not queue.is_dynamic
             and queue.current_index is not None
             and (queue.items - queue.current_index) < 5
         ):
@@ -268,6 +273,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
         queue = self._queue_data[queue_id].queue
+        if queue.is_dynamic:
+            # a dynamic queue is an always-on flowing mix of its sources; repeat has no meaning here
+            raise InvalidCommand("Cannot change repeat while the queue is in dynamic mode")
         if queue.repeat_mode == repeat_mode:
             return  # no change
         queue.repeat_mode = repeat_mode
