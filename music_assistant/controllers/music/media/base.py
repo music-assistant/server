@@ -286,6 +286,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         **kwargs: Any,
     ) -> list[ItemCls]:
         """
@@ -298,6 +299,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param played_only: Only include items that have been played (last_played > 0).
         """
         items = await self.get_library_items_by_query(
             favorite=favorite,
@@ -307,6 +309,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
             genre_ids=genre,
+            played_only=played_only,
             in_library_only=True,
         )
         if (
@@ -938,6 +941,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         extra_query_params: dict[str, Any] | None = None,
         extra_join_parts: list[str] | None = None,
         genre_ids: int | list[int] | None = None,
+        played_only: bool = False,
         in_library_only: bool = False,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
@@ -956,6 +960,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 search=search,
                 genre_ids=genre_ids,
                 provider_filter=provider_filter,
+                played_only=played_only,
                 limit=limit,
                 in_library_only=in_library_only,
             )
@@ -969,6 +974,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 search=search,
                 genre_ids=genre_ids,
                 provider_filter=provider_filter,
+                played_only=played_only,
                 in_library_only=in_library_only,
             )
         # build and execute final query
@@ -1095,7 +1101,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None,
         genre_ids: list[int] | None,
         provider_filter: list[str] | None,
-        limit: int,
+        played_only: bool = False,
+        limit: int = 500,
         in_library_only: bool = False,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
@@ -1111,6 +1118,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search=search,
             genre_ids=genre_ids,
             provider_filter=provider_filter,
+            played_only=played_only,
             in_library_only=in_library_only,
         )
 
@@ -1141,6 +1149,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None,
         genre_ids: list[int] | None,
         provider_filter: list[str] | None,
+        played_only: bool = False,
         in_library_only: bool = False,
     ) -> None:
         """Apply search, favorite, and provider filters."""
@@ -1151,6 +1160,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
+        # handle played_only filter
+        if played_only:
+            query_parts.append(f"{self.db_table}.last_played > 0")
         # handle genre filter
         if genre_ids:
             query_params["genre_ids"] = genre_ids

@@ -234,7 +234,7 @@ class GenreController(MediaControllerBase[Genre]):
         FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
         return query, {}
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -243,6 +243,7 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         hide_empty: bool | None = None,
         media_type: MediaType | None = None,
         content_type: str | None = None,
@@ -306,6 +307,7 @@ class GenreController(MediaControllerBase[Genre]):
             order_by=order_by,
             extra_query_params=extra_params,
             extra_query_parts=extra_parts,
+            played_only=played_only,
         )
         if kwargs.get("_localized_fallback", True) and search and not items:
             # retry with the canonical name behind a localized query, so genres are findable
@@ -316,6 +318,7 @@ class GenreController(MediaControllerBase[Genre]):
                 offset=offset,
                 favorite=favorite,
                 order_by=order_by,
+                played_only=played_only,
                 hide_empty=hide_empty,
                 media_type=media_type,
                 content_type=content_type,
