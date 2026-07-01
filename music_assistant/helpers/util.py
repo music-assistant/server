@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import html
 import importlib
 import logging
 import os
@@ -795,8 +796,9 @@ def strip_multi_space(line: str) -> str:
 
 def html_to_markdown(line: str) -> str:
     """Convert the safe subset of HTML in a string to markdown, stripping other tags."""
+    # unescape first so entity-encoded markup (e.g. "&lt;p&gt;") is handled too
     return markdownify(
-        line,
+        html.unescape(line),
         convert=MARKDOWN_SAFE_TAGS,
         escape_asterisks=False,
         escape_underscores=False,

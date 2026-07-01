@@ -16,6 +16,10 @@ def test_html_to_markdown() -> None:
     # html entities are unescaped
     assert html_to_markdown("Cause &amp; Effect") == "Cause & Effect"
 
+    # entity-escaped markup (e.g. from podcast RSS feeds) is decoded first, then converted
+    assert html_to_markdown("&lt;p&gt;In 1940.&lt;/p&gt;") == "In 1940."
+    assert html_to_markdown("A &lt;b&gt;bold&lt;/b&gt; tale") == "A **bold** tale"
+
     # multiple paragraphs become separate markdown paragraphs
     assert html_to_markdown("<p>First.</p><p>Second.</p>") == "First.\n\nSecond."
 
