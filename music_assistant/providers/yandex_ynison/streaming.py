@@ -1,4 +1,5 @@
-"""PCM normalization helpers for Yandex Music audio streams.
+"""
+PCM normalization helpers for Yandex Music audio streams.
 
 Contains format profiles, the AudioFormat factory, and pacing-args builder.
 """

@@ -1,11 +1,11 @@
 {
   "config_entries": {
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "Your username for this Open Subsonic server"
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "The password associated with the username"
     },
     "baseURL": {
@@ -27,10 +27,6 @@
     "enable_legacy_auth": {
       "label": "Enable Legacy Auth",
       "description": "Enable OpenSubsonic \"legacy\" auth support"
-    },
-    "override_transcode_offest": {
-      "label": "Force Player Provider Seek",
-      "description": "Some Subsonic implementations advertise that they support seeking when they do not always. If seeking does not work for you, enable this."
     },
     "recommend_favorites": {
       "label": "Recommend Favorites",
@@ -57,10 +53,18 @@
       "description": "When enumerating items from the server, how many should be in each request. Smaller will require more requests but is better for low bandwidth connections. The Open Subsonic spec says the max value for this is 500 items."
     }
   },
-  "starred_items": {
-    "name": "Starred Items"
+  "media": {
+    "recommendations": {
+      "starred_items": {
+        "name": "Starred Items"
+      }
+    }
   },
   "manifest": {
     "description": "Stream music from your OpenSubsonic compatible server — your own cloud jukebox."
+  },
+  "errors": {
+    "connect_failed": "Failed to connect to {0}, check your settings.",
+    "create_playlist_failed": "Failed to create playlist with name '{0}'."
   }
 }

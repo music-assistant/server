@@ -1,4 +1,5 @@
-"""Shared fixtures for sonic_similarity plugin-instance unit tests.
+"""
+Shared fixtures for sonic_similarity plugin-instance unit tests.
 
 The existing pure-function tests in this directory don't need scaffolding;
 the tests that exercise SonicSimilarityPlugin behaviour do. This module
@@ -44,7 +45,8 @@ def logger() -> logging.Logger:
 
 @pytest.fixture
 def mock_mass(tmp_path: Path) -> MagicMock:
-    """Mock MusicAssistant exposing the surfaces sonic_similarity touches.
+    """
+    Mock MusicAssistant exposing the surfaces sonic_similarity touches.
 
     :param tmp_path: pytest-provided temp dir, used as storage_path.
     """
@@ -100,7 +102,8 @@ def mock_mass(tmp_path: Path) -> MagicMock:
 def make_plugin(
     mock_mass: MagicMock, logger: logging.Logger
 ) -> Callable[..., SonicSimilarityPlugin]:
-    """Return a factory that builds a SonicSimilarityPlugin with a primed corpus.
+    """
+    Return a factory that builds a SonicSimilarityPlugin with a primed corpus.
 
     Bypasses loaded_in_mass — the corpus is populated directly on the
     instance so dispatcher-hook tests don't need to mock out rebuild
@@ -190,7 +193,8 @@ def make_track(
     artists: Iterable[str] = (),
     album_year: int | None = None,
 ) -> MagicMock:
-    """Return a Track-like MagicMock with the attributes our code reads.
+    """
+    Return a Track-like MagicMock with the attributes our code reads.
 
     :param item_id: Underlying provider item id (used as the seed in
         signature cache lookups).
@@ -233,7 +237,8 @@ def _artist_mock(name: str) -> MagicMock:
 
 
 def make_item_mapping(item_id: str, *, provider: str = "library") -> MagicMock:
-    """Return an ItemMapping-like MagicMock with item_id + provider only.
+    """
+    Return an ItemMapping-like MagicMock with item_id + provider only.
 
     :param item_id: Library item id from ``recently_played``.
     :param provider: Provider slot the mapping belongs to (typically ``"library"``).
@@ -251,7 +256,8 @@ def make_analysis_row(
     clap_embedding: Any = None,
     aa_provider_domain: str = "sonic_analysis",
 ) -> dict[str, Any]:
-    """Build an audio_analysis DB row dict in the shape iter_audio_analysis_rows yields.
+    """
+    Build an audio_analysis DB row dict in the shape iter_audio_analysis_rows yields.
 
     :param item_id: Track id (matches a key in ``_signature_cache``).
     :param provider: Provider instance the row belongs to.

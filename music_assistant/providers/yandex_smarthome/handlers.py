@@ -1,4 +1,5 @@
-"""Yandex Smart Home API request handlers.
+"""
+Yandex Smart Home API request handlers.
 
 Pure async functions handling the 4 Smart Home API actions:
 - /user/devices      — list all exposed MA players
@@ -141,7 +142,8 @@ async def handle_user_unlink() -> dict[str, Any]:
 
 
 def parse_action_payload(raw: dict[str, Any]) -> ActionRequestPayload:
-    """Parse a raw /user/devices/action message into ActionRequestPayload.
+    """
+    Parse a raw /user/devices/action message into ActionRequestPayload.
 
     Defensively handles malformed input: non-list devices, non-dict entries,
     missing/non-dict state objects are all silently skipped.

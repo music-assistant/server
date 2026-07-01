@@ -25,7 +25,8 @@ if TYPE_CHECKING:
 
 
 class TrackedPlayerState(TypedDict, total=False):
-    """Tracked state for the Snapcast MA player.
+    """
+    Tracked state for the Snapcast MA player.
 
     It is used for change detection and state synchronization, and may be
     partially populated depending on which information is
@@ -53,9 +54,6 @@ class TrackedPlayerState(TypedDict, total=False):
 class SnapCastPlayer(Player):
     """SnapCastPlayer."""
 
-    # snapcast has fixed sample rate/bit depth
-    _attr_supported_sample_rates = [(48000, 16)]
-
     def __init__(
         self,
         provider: SnapCastProvider,
@@ -65,6 +63,9 @@ class SnapCastPlayer(Player):
         """Init."""
         self.snap_client = snap_client
         super().__init__(provider, player_id)
+
+        # snapcast has fixed sample rate/bit depth
+        self._attr_supported_sample_rates = [(48000, 16)]
 
         self._snap_ma_stream: SnapcastMAStream | None = None
 
@@ -393,7 +394,8 @@ class SnapCastPlayer(Player):
                 break
 
     async def _process_snapcast_client_state(self) -> bool:
-        """Process the latest Snapcast client state and apply changes to this player.
+        """
+        Process the latest Snapcast client state and apply changes to this player.
 
         Returns:
         True if changes were applied and a state update should be emitted via

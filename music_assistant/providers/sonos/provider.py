@@ -175,7 +175,6 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/itemwindow
         """
         context_version = request.query.get("contextVersion", "1")
-        queue_version = request.query.get("queueVersion", str(int(player.sonos_queue.last_updated)))
         # because Sonos does not show our queue in the app anyways,
         # we just return the previous, current and next item in the queue.
         # the beginning/end flags must be honest though: signalling end-of-queue
@@ -187,7 +186,10 @@ class SonosPlayerProvider(PlayerProvider):
             "includesBeginningOfQueue": player.sonos_queue.includes_beginning,
             "includesEndOfQueue": player.sonos_queue.includes_end,
             "contextVersion": context_version,
-            "queueVersion": queue_version,
+            # report the version of the items we actually serve (the current window) instead of
+            # echoing the player's requested version, otherwise a refreshed window keeps a stale
+            # version label and Sonos never realises it changed.
+            "queueVersion": str(player.sonos_queue.last_updated),
             "items": [self._parse_sonos_queue_item(x) for x in items],
         }
         return web.json_response(result)
@@ -201,9 +203,11 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/version
         """
         context_version = request.query.get("contextVersion") or "1"
+        # keep sub-second resolution: the window can be rebuilt several times within the same
+        # second and Sonos treats an unchanged queueVersion as "nothing changed" (stale window).
         result = {
             "contextVersion": context_version,
-            "queueVersion": str(int(player.sonos_queue.last_updated)),
+            "queueVersion": str(player.sonos_queue.last_updated),
         }
         return web.json_response(result)
 
@@ -217,7 +221,7 @@ class SonosPlayerProvider(PlayerProvider):
         """
         result = {
             "contextVersion": "1",
-            "queueVersion": str(int(player.sonos_queue.last_updated)),
+            "queueVersion": str(player.sonos_queue.last_updated),
             "container": {
                 "type": "trackList",
                 "name": "Music Assistant",

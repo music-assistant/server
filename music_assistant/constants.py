@@ -12,7 +12,13 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlayerFeature,
+)
 from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
 APPLICATION_NAME: Final = "Music Assistant"
@@ -33,7 +39,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 32
+API_SCHEMA_VERSION: Final[int] = 34
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -64,6 +70,12 @@ GENRE_ICONS_DIR_NAME: Final[str] = "genres"
 GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
     GENRE_ICONS_DIR_NAME, "genre_mapping.json"
 )
+PODCAST_GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
+    GENRE_ICONS_DIR_NAME, "podcast_genre_mapping.json"
+)
+AUDIOBOOK_GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
+    GENRE_ICONS_DIR_NAME, "audiobook_genre_mapping.json"
+)
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
@@ -79,6 +91,7 @@ CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
+CONF_PLAYER_QUEUES: Final[str] = "player_queues"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
@@ -135,7 +148,8 @@ CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC fo
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
-CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
+CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"  # legacy; consumed by one-time migration
+CONF_CROSSFADE_MODE: Final[str] = "crossfade_mode"
 CONF_SOCKS_URL: Final[str] = "socks_url"
 CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
@@ -150,10 +164,10 @@ CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
 
 
 def _default_background_scan_concurrency() -> int:
+    # Slow and steady by default: at most 2 tracks at once even on big machines. Users who
+    # want faster overnight scans can raise it (up to 16) at the cost of more CPU at night.
     cpu_count = os.process_cpu_count() or os.cpu_count() or 4
-    if cpu_count >= 16:
-        return 4
-    if cpu_count >= 8:
+    if cpu_count >= 4:
         return 2
     return 1
 
@@ -180,8 +194,10 @@ DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
 DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
+DB_TABLE_AUDIOBOOK_ARTISTS: Final[str] = "audiobook_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
+DB_TABLE_AUDIO_ANALYSIS_FAILURES: Final[str] = "audio_analysis_failures"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
@@ -195,21 +211,23 @@ VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
 LOUDNESS_MEASUREMENT_MIN_LUFS: Final[float] = -50.0
 
 
-def load_genre_mapping() -> list[dict[str, Any]]:
-    """Load default genre mapping from JSON file.
+def load_genre_mapping(mapping_file: pathlib.Path) -> list[dict[str, Any]]:
+    """
+    Load a default genre mapping from a JSON file.
 
+    :param mapping_file: Path to the genre mapping JSON file (music / podcast / audiobook).
     :return: List of genre mapping dictionaries with 'genre' and 'aliases' keys.
-    :raises FileNotFoundError: If genre_mapping.json is missing.
+    :raises FileNotFoundError: If the mapping file is missing.
     :raises ValueError: If JSON is malformed or missing required fields.
     """
     try:
-        content = GENRE_MAPPING_FILE.read_text(encoding="utf-8")
+        content = mapping_file.read_text(encoding="utf-8")
         data = json.loads(content)
     except FileNotFoundError as err:
-        msg = f"Genre mapping file not found: {GENRE_MAPPING_FILE}"
+        msg = f"Genre mapping file not found: {mapping_file}"
         raise FileNotFoundError(msg) from err
     except json.JSONDecodeError as err:
-        msg = f"Invalid JSON in genre mapping file: {GENRE_MAPPING_FILE}"
+        msg = f"Invalid JSON in genre mapping file: {mapping_file}"
         raise ValueError(msg) from err
 
     if not isinstance(data, list):
@@ -230,7 +248,13 @@ def load_genre_mapping() -> list[dict[str, Any]]:
     return cast("list[dict[str, Any]]", data)
 
 
-DEFAULT_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping()
+DEFAULT_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping(GENRE_MAPPING_FILE)
+DEFAULT_PODCAST_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping(
+    PODCAST_GENRE_MAPPING_FILE
+)
+DEFAULT_AUDIOBOOK_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mapping(
+    AUDIOBOOK_GENRE_MAPPING_FILE
+)
 DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAULT_GENRE_MAPPING)
 
 
@@ -250,7 +274,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
-PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music")
+PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
 
 
 ####### REUSABLE CONFIG ENTRIES #######
@@ -367,7 +391,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION,
     type=ConfigEntryType.BOOLEAN,
     default_value=True,
-    category="playback",
+    category="audio",
     requires_reload=True,
 )
 
@@ -375,8 +399,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
     range=(-30, -5),
-    default_value=-17,
-    depends_on=CONF_VOLUME_NORMALIZATION,
+    default_value=-14,
     category="playback",
     advanced=True,
     requires_reload=True,
@@ -392,28 +415,17 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
 )
 
 
-CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
-    key=CONF_SMART_FADES_MODE,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("disabled"),
-        ConfigValueOption("smart_crossfade"),
-        ConfigValueOption("standard_crossfade"),
-    ],
-    default_value="disabled",
-    category="playback",
-    requires_reload=True,
-)
+# Note: the crossfade_mode select entry (standard/smart) is built dynamically in the config
+# controller because its options and default depend on smart fades availability.
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     key=CONF_CROSSFADE_DURATION,
     type=ConfigEntryType.INTEGER,
     range=(1, 15),
     default_value=8,
-    depends_on=CONF_SMART_FADES_MODE,
-    depends_on_value="standard_crossfade",
-    category="playback",
-    advanced=True,
+    category="crossfade",
+    depends_on=CONF_CROSSFADE_MODE,
+    depends_on_value=CrossfadeMode.STANDARD_CROSSFADE.value,
     requires_reload=True,
 )
 
@@ -854,6 +866,11 @@ INTERNAL_PCM_FORMAT = AudioFormat(
     channels=2,  # static for flow stream, dynamic for anything else
 )
 
+# Seconds without a new chunk before the source is treated as stalled (above ffmpeg's ~15s reconnect window).
+STREAM_STALL_TIMEOUT: Final[int] = 20
+# Longer budget for the first chunk to allow for connect + probe.
+STREAM_START_TIMEOUT: Final[int] = 30
+
 # extra data / extra attributes keys
 ATTR_FAKE_POWER: Final[str] = "fake_power"
 ATTR_FAKE_VOLUME: Final[str] = "fake_volume_level"
@@ -866,6 +883,7 @@ ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_POWERED: Final[str] = "powered"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
 ATTR_ACTIVE_PLAYLIST: Final[str] = "active_playlist"
@@ -944,6 +962,7 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # under-spec host has the auto-created config removed again at load time.
     ("smart_fades", False),
     ("lastfm_recommendations", False),
+    ("playlist_metadata", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

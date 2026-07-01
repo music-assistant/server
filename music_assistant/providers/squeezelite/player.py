@@ -31,13 +31,11 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
-    CONF_SMART_FADES_MODE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.models.smart_fades import SmartFadesMode
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -162,9 +160,8 @@ class SqueezelitePlayer(Player):
                 key=f"preset_{index}",
                 type=ConfigEntryType.STRING,
                 options=presets,
-                label=f"Preset {index}",
-                description="Assign a playable item to the player's preset. "
-                "Only supported on real squeezebox hardware or jive(lite) based emulators.",
+                translation_key="preset",
+                translation_params=[str(index)],
                 category="presets",
                 required=False,
             )
@@ -271,20 +268,16 @@ class SqueezelitePlayer(Player):
             if media.source_id and media.queue_item_id
             else None
         )
-        smart_fades_mode = (
-            await self.mass.config.get_player_config_value(
-                self.player_id,
-                CONF_SMART_FADES_MODE,
-                default=SmartFadesMode.DISABLED,
-                return_type=SmartFadesMode,
-            )
-            if media.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+        # crossfade is a queue-scoped setting; read it from the queue being played (source_id),
+        # which can differ from this player when playing on behalf of a group/linked queue
+        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
+        crossfade_enabled = bool(
+            queue and queue.crossfade_enabled and media.media_type == MediaType.TRACK
         )
         master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(
             self,
             start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
-            smartfades_enabled=smart_fades_mode != SmartFadesMode.DISABLED,
+            crossfade_enabled=crossfade_enabled,
         )
 
         # select audio source, we force flow mode
@@ -444,6 +437,7 @@ class SqueezelitePlayer(Player):
             # We need this because some players (e.g. WiiM) keep sending increasing elapsed time
             self._attr_elapsed_time_last_updated = time.time()
         # Update current media if available
+        old_item_id = self._attr_current_media.queue_item_id if self._attr_current_media else None
         if self.client.current_media and (metadata := self.client.current_media.metadata):
             self._attr_current_media = PlayerMedia(
                 uri=metadata.get("item_id"),
@@ -457,6 +451,11 @@ class SqueezelitePlayer(Player):
             )
         else:
             self._attr_current_media = None
+        new_item_id = self._attr_current_media.queue_item_id if self._attr_current_media else None
+        if old_item_id is not None and new_item_id is not None and old_item_id != new_item_id:
+            # elapsed still reflects the previous track until the next STMt heartbeat (support#3704)
+            self._attr_elapsed_time = 0
+            self._attr_elapsed_time_last_updated = time.time()
 
     async def _handle_play_url_for_slimplayer(
         self,
@@ -756,7 +755,8 @@ class SqueezelitePlayer(Player):
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
-    """Pause player and schedule unpause after specified duration.
+    """
+    Pause player and schedule unpause after specified duration.
 
     This is used instead of pause_for because WiiM devices
     don't properly auto-unpause after pause_for interval.

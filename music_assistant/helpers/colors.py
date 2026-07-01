@@ -1,4 +1,5 @@
-"""Color palette extraction from artwork.
+"""
+Color palette extraction from artwork.
 
 Derives a 6-field MediaItemPalette per the Sendspin color@v1 spec from an
 image: a `modern_colorthief` MMCQ quantizer produces image candidates, then `primary`,
@@ -90,7 +91,8 @@ def _adjust_until_contrast(
     refs: tuple[_RGB, ...],
     min_contrast: float = _MIN_CONTRAST,
 ) -> _RGB | None:
-    """Mix color toward mix_toward until contrast >= min_contrast vs all refs.
+    """
+    Mix color toward mix_toward until contrast >= min_contrast vs all refs.
 
     :param color: Starting color.
     :param mix_toward: Direction to blend (e.g. black to darken, white to lighten).
@@ -202,13 +204,14 @@ def _derive_palette(candidates: list[_RGB]) -> MediaItemPalette:
 
 
 def extract_palette(image_bytes: bytes) -> MediaItemPalette:
-    """Extract a MediaItemPalette from raw image bytes.
+    """
+    Extract a MediaItemPalette from raw image bytes.
 
     :param image_bytes: Raw image data (PNG, JPEG, etc.).
     """
     try:
         candidates = _extract_candidates(image_bytes)
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return MediaItemPalette()
     return _derive_palette(candidates)
 
@@ -282,5 +285,5 @@ async def get_palette_for_url(
         path, provider = image_url, "builtin"
     try:
         return await get_palette(mass, path, provider)
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         return None

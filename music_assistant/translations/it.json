@@ -56,7 +56,7 @@
   "common.config_entries.volume_normalization.description": "Abilita la normalizzazione del volume in base allo standard EBU-R128 senza influire sulla gamma dinamica",
   "common.config_entries.volume_normalization.label": "Abilita la normalizzazione del volume (basata su EBU-R128)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Regolazione del guadagno fisso\/alternativa per le tracce",
-  "common.config_entries.volume_normalization_target.description": "Regola il volume medio (percepito) a questo livello target, il valore predefinito è -17 LUFS\n\n**ATTENZIONE:** Impostare un livello troppo alto potrebbe causare clipping!",
+  "common.config_entries.volume_normalization_target.description": "Regola il volume medio (percepito) a questo livello target, il valore predefinito è -14 LUFS\n\n**ATTENZIONE:** Impostare un livello troppo alto potrebbe causare clipping!",
   "common.config_entries.volume_normalization_target.label": "Livello target per la normalizzazione del volume",
   "common.media.albums.name": "Album",
   "common.media.artists.name": "Artisti",

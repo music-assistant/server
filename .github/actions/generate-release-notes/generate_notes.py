@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Generate release notes based on PRs between two tags.
+"""
+Generate release notes based on PRs between two tags.
 
 Reads configuration from .github/release-notes-config.yml for categorization and formatting.
 """
@@ -218,7 +219,8 @@ def format_change_line(pr, config):
 
 
 def extract_frontend_changes(prs):
-    """Extract frontend changes from frontend update PRs.
+    """
+    Extract frontend changes from frontend update PRs.
 
     Returns tuple of (frontend_changes_list, frontend_contributors_set)
     """

@@ -184,7 +184,7 @@ async def test_select_flow_pcm_format_uses_source_bit_depth_without_processing()
 
 
 @pytest.mark.asyncio
-async def test_select_flow_pcm_format_uses_f32_when_smartfades_enabled() -> None:
+async def test_select_flow_pcm_format_uses_f32_when_crossfade_enabled() -> None:
     """Smartfades requires F32 headroom; bit depth must be 32 regardless of source."""
     audio = _make_streams_audio()
     player = _make_player(
@@ -193,7 +193,7 @@ async def test_select_flow_pcm_format_uses_f32_when_smartfades_enabled() -> None
     )
     streamdetails = _make_streamdetails(sample_rate=44100, bit_depth=16)
     fmt = await audio.select_flow_pcm_format(
-        player, start_streamdetails=streamdetails, smartfades_enabled=True
+        player, start_streamdetails=streamdetails, crossfade_enabled=True
     )
     assert fmt.bit_depth == 32
 
@@ -238,7 +238,7 @@ async def test_select_pcm_format_audio_source_passthrough_when_supported() -> No
     streamdetails = _make_streamdetails(
         sample_rate=48000, bit_depth=24, channels=1, media_type=MediaType.AUDIO_SOURCE
     )
-    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=True)
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=True)
     assert fmt.sample_rate == 48000
     assert fmt.bit_depth == 24
     assert fmt.channels == 1
@@ -252,7 +252,7 @@ async def test_select_pcm_format_audio_source_snaps_down_unsupported_rate() -> N
     streamdetails = _make_streamdetails(
         sample_rate=88200, bit_depth=24, media_type=MediaType.AUDIO_SOURCE
     )
-    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=False)
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=False)
     assert fmt.sample_rate == 48000
     assert fmt.bit_depth == 24
 
@@ -265,7 +265,7 @@ async def test_select_pcm_format_audio_source_falls_back_to_min_supported() -> N
     streamdetails = _make_streamdetails(
         sample_rate=22050, bit_depth=16, media_type=MediaType.AUDIO_SOURCE
     )
-    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=False)
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=False)
     assert fmt.sample_rate == 44100
 
 
@@ -285,7 +285,7 @@ async def test_select_flow_pcm_format_audio_source_bypasses_flow_mode() -> None:
         sample_rate=44100, bit_depth=16, media_type=MediaType.AUDIO_SOURCE
     )
     fmt = await audio.select_flow_pcm_format(
-        player, start_streamdetails=streamdetails, smartfades_enabled=True
+        player, start_streamdetails=streamdetails, crossfade_enabled=True
     )
     assert fmt.sample_rate == 44100
     assert fmt.bit_depth == 16

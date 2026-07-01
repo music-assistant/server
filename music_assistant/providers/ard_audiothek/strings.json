@@ -1,11 +1,14 @@
 {
   "config_entries": {
+    "label_text": {
+      "label": "Successfully signed in as {0} {1}."
+    },
     "email": {
       "label": "E-Mail",
       "description": "E-Mail address of ARD account."
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Password of ARD account."
     },
     "max_num_episodes": {

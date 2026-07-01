@@ -16,8 +16,13 @@ import aiofiles
 from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.auth import UserRole
+from music_assistant_models.config_entries import ProviderError
 from music_assistant_models.enums import CoreState, EventType, ProviderFeature, ProviderType
-from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedSystemError,
+)
 from music_assistant_models.event import MassEvent
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.provider import ProviderManifest
@@ -50,7 +55,6 @@ from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
 from music_assistant.helpers.util import (
     TaskManager,
-    UnsupportedSystemError,
     get_package_version,
     is_hass_supervisor,
     load_provider_module,
@@ -78,7 +82,7 @@ rename = wrap(os.rename)
 
 EventCallBackType = Callable[[MassEvent], None] | Callable[[MassEvent], Coroutine[Any, Any, None]]
 EventSubscriptionType = tuple[
-    EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
+    EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None, bool
 ]
 
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
@@ -105,6 +109,20 @@ def is_audio_analysis_provider(
 ) -> TypeGuard[AudioAnalysisProvider]:
     """Type guard that returns true if a provider is an audio analysis provider."""
     return provider.type == ProviderType.AUDIO_ANALYSIS
+
+
+def _provider_error_from_exc(exc: BaseException) -> ProviderError:
+    """Build a serializable, localizable ProviderError from a provider setup exception."""
+    message = str(exc) or type(exc).__name__
+    if isinstance(exc, MusicAssistantError):
+        return ProviderError(
+            error_code=exc.error_code,
+            message=message,
+            translation_key=exc.translation_key,
+            translation_args=list(exc.translation_args),
+            translation_owner=exc.translation_owner,
+        )
+    return ProviderError(error_code=999, message=message)
 
 
 class MusicAssistant:
@@ -396,7 +414,8 @@ class MusicAssistant:
         return_unavailable: bool = False,
         provider_type: type[_ProviderT] | None = None,
     ) -> ProviderInstanceType | _ProviderT | None:
-        """Return provider by instance id or domain.
+        """
+        Return provider by instance id or domain.
 
         :param provider_instance_or_domain: Instance ID or domain of the provider.
         :param return_unavailable: Also return unavailable providers.
@@ -494,12 +513,12 @@ class MusicAssistant:
             LOGGER.getChild("event").log(VERBOSE_LOG_LEVEL, "%s %s", event.value, object_id or "")
 
         event_obj = MassEvent(event=event, object_id=object_id, data=data)
-        for cb_func, event_filter, id_filter in list(self._subscribers):
+        for cb_func, event_filter, id_filter, is_coro in list(self._subscribers):
             if not (event_filter is None or event in event_filter):
                 continue
             if not (id_filter is None or object_id in id_filter):
                 continue
-            if inspect.iscoroutinefunction(cb_func):
+            if is_coro:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
                 self.create_task(cb_func, event_obj)
@@ -514,7 +533,8 @@ class MusicAssistant:
         event_filter: EventType | tuple[EventType, ...] | None = None,
         id_filter: str | tuple[str, ...] | None = None,
     ) -> Callable[[], None]:
-        """Add callback to event listeners.
+        """
+        Add callback to event listeners.
 
         Returns function to remove the listener.
             :param cb_func: callback function or coroutine
@@ -525,7 +545,9 @@ class MusicAssistant:
             event_filter = (event_filter,)
         if isinstance(id_filter, str):
             id_filter = (id_filter,)
-        listener = (cb_func, event_filter, id_filter)
+        # precompute whether the callback is a coroutine so signal_event does not have to
+        # re-derive it via reflection for every subscriber on every (high-frequency) event
+        listener = (cb_func, event_filter, id_filter, inspect.iscoroutinefunction(cb_func))
         self._subscribers.add(listener)
 
         def remove_listener() -> None:
@@ -542,7 +564,8 @@ class MusicAssistant:
         eager_start: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
-        """Create Task on (main) event loop from Coroutine(function).
+        """
+        Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
 
@@ -671,7 +694,8 @@ class MusicAssistant:
         required_role: str | None = None,
         alias: bool = False,
     ) -> Callable[[], None]:
-        """Dynamically register a command on the API.
+        """
+        Dynamically register a command on the API.
 
         :param command: The command name/path.
         :param handler: The function to handle the command.
@@ -758,8 +782,8 @@ class MusicAssistant:
                 # cleanup we don't need here; a direct remove persists and is guard-free.)
                 self.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
                 return
-            prov_conf.last_error = str(exc)
-            self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
+            prov_conf.last_error = _provider_error_from_exc(exc)
+            self.config.update_provider_last_error(instance_id, prov_conf.last_error)
             LOGGER.warning(
                 "Provider(instance) %s can not run on this system: %s",
                 prov_conf.name or prov_conf.instance_id,
@@ -769,8 +793,8 @@ class MusicAssistant:
         except Exception as exc:
             # if loading failed, we store the error in the config object
             # so we can show something useful to the user
-            prov_conf.last_error = str(exc)
-            self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
+            prov_conf.last_error = _provider_error_from_exc(exc)
+            self.config.update_provider_last_error(instance_id, prov_conf.last_error)
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
@@ -832,7 +856,8 @@ class MusicAssistant:
 
     async def unload_provider_with_error(self, instance_id: str, error: str) -> None:
         """Unload a provider when it got into trouble which needs user interaction."""
-        self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", error)
+        prov_error = ProviderError(error_code=999, message=error)
+        self.config.update_provider_last_error(instance_id, prov_error)
         await self.unload_provider(instance_id)
 
     async def run_provider_discovery(self, instance_id: str) -> None:
@@ -854,6 +879,21 @@ class MusicAssistant:
             raise RuntimeError(
                 f"Non-Async operation detected: {what} may only be called from the eventloop."
             )
+
+    async def __aenter__(self) -> Self:
+        """Return Context manager."""
+        await self.start()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        """Exit context manager."""
+        await self.stop()
+        return None
 
     def _register_api_commands(self) -> None:
         """Register all methods decorated as api_command within a class(instance)."""
@@ -879,14 +919,15 @@ class MusicAssistant:
                     continue
                 try:
                     obj = getattr(cls, attr_name)
-                except (AttributeError, RuntimeError):
+                except AttributeError, RuntimeError:
                     # Skip attributes that fail during initialization
                     continue
                 if hasattr(obj, "api_cmd"):
                     # method is decorated with our api decorator
                     authenticated = getattr(obj, "api_authenticated", True)
                     required_role = getattr(obj, "api_required_role", None)
-                    self.register_api_command(obj.api_cmd, obj, authenticated, required_role)
+                    alias = getattr(obj, "api_alias", False)
+                    self.register_api_command(obj.api_cmd, obj, authenticated, required_role, alias)
 
     async def _load_builtin_providers(self) -> None:
         """
@@ -1126,21 +1167,6 @@ class MusicAssistant:
                     continue
                 tg.create_task(load_provider_manifest(dir_str, dir_path))
         self.logger.debug("Loaded %s provider manifests", len(self._provider_manifests))
-
-    async def __aenter__(self) -> Self:
-        """Return Context manager."""
-        await self.start()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> bool | None:
-        """Exit context manager."""
-        await self.stop()
-        return None
 
     async def _update_available_providers_cache(self) -> None:
         """Update the global cache variable of loaded/available providers."""

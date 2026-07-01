@@ -2,17 +2,8 @@
 
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
-from bandcamp_async_api.models import BCAlbum as APIAlbum
-from bandcamp_async_api.models import BCArtist as APIArtist
-from bandcamp_async_api.models import BCTrack as APITrack
-from bandcamp_async_api.models import (
-    FeedTrack,
-    SearchResultAlbum,
-    SearchResultArtist,
-    SearchResultTrack,
-)
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import Album as MAAlbum
 from music_assistant_models.media_items import Artist as MAArtist
@@ -24,6 +15,17 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.media_items import Track as MATrack
+
+if TYPE_CHECKING:
+    from bandcamp_async_api.models import BCAlbum as APIAlbum
+    from bandcamp_async_api.models import BCArtist as APIArtist
+    from bandcamp_async_api.models import BCTrack as APITrack
+    from bandcamp_async_api.models import (
+        FeedTrack,
+        SearchResultAlbum,
+        SearchResultArtist,
+        SearchResultTrack,
+    )
 
 
 class DiscographyItem(TypedDict, total=False):
@@ -52,7 +54,8 @@ class BandcampConverters:
     def streaming_url_from_api(
         streaming_info: dict[str, str],
     ) -> tuple[str | None, int | None, ContentType]:
-        """Parse streaming URL info.
+        """
+        Parse streaming URL info.
 
         :param streaming_info: Dict of format keys to URLs from the Bandcamp API.
         """
@@ -324,7 +327,8 @@ class BandcampConverters:
         return output
 
     def album_from_discography_item(self, item: DiscographyItem) -> MAAlbum:
-        """Convert a raw discography dict to MA Album format.
+        """
+        Convert a raw discography dict to MA Album format.
 
         Discography items come from the band_details API and contain summary
         data (title, art_id, release_date string) without full album details.

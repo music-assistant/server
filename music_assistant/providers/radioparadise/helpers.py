@@ -5,7 +5,8 @@ from typing import Any
 
 
 def get_current_block_position(block_data: dict[str, Any]) -> int:
-    """Calculate current playback position within a Radio Paradise block.
+    """
+    Calculate current playback position within a Radio Paradise block.
 
     :param block_data: Block data containing sched_time_millis.
     """
@@ -17,7 +18,8 @@ def get_current_block_position(block_data: dict[str, Any]) -> int:
 def find_current_song(
     songs: dict[str, dict[str, Any]], current_time_ms: int
 ) -> dict[str, Any] | None:
-    """Find which song should currently be playing based on elapsed time.
+    """
+    Find which song should currently be playing based on elapsed time.
 
     :param songs: Dictionary of songs from Radio Paradise block data.
     :param current_time_ms: Current position in milliseconds within the block.
@@ -39,7 +41,8 @@ def find_current_song(
 
 
 def get_next_song(songs: dict[str, Any], current_song: dict[str, Any]) -> dict[str, Any] | None:
-    """Get the next song that will play after the current song.
+    """
+    Get the next song that will play after the current song.
 
     :param songs: Dictionary of songs from Radio Paradise block data.
     :param current_song: The currently playing song dictionary.

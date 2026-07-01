@@ -1,4 +1,5 @@
-"""Smoke tests for the optional 1024-dim CLAP usearch index helper.
+"""
+Smoke tests for the optional 1024-dim CLAP usearch index helper.
 
 Round-trip coverage: deterministic labels, add/contains/get, and
 persistence to the sonic_similarity_clap.usearch filename stem under

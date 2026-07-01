@@ -23,7 +23,8 @@ if TYPE_CHECKING:
 
 
 class AirPlayProtocol(ABC):
-    """Base class for AirPlay streaming protocols (RAOP and AirPlay2).
+    """
+    Base class for AirPlay streaming protocols (RAOP and AirPlay2).
 
     This class contains common logic shared between protocol implementations,
     with abstract methods for protocol-specific behavior.
@@ -39,7 +40,8 @@ class AirPlayProtocol(ABC):
         self,
         player: AirPlayPlayer,
     ) -> None:
-        """Initialize base AirPlay protocol.
+        """
+        Initialize base AirPlay protocol.
 
         Args:
             player: The player to stream to
@@ -78,7 +80,8 @@ class AirPlayProtocol(ABC):
 
     @abstractmethod
     async def start(self, start_ntp: int) -> None:
-        """Start the CLI process.
+        """
+        Start the CLI process.
 
         :param start_ntp: NTP timestamp to start streaming.
         """
@@ -128,7 +131,8 @@ class AirPlayProtocol(ABC):
         self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
     async def write_audio(self, data: bytes) -> None:
-        """Write raw audio data to the CLI process stdin.
+        """
+        Write raw audio data to the CLI process stdin.
 
         :param data: Raw audio bytes to send to the streaming process.
         """

@@ -13,13 +13,15 @@ if TYPE_CHECKING:
         Album,
         Artist,
         MediaItemMetadata,
+        Playlist,
         RecommendationFolder,
         Track,
     )
 
 
 class MetadataProvider(Provider):
-    """Base representation of a Metadata Provider (controller).
+    """
+    Base representation of a Metadata Provider (controller).
 
     Metadata Provider implementations should inherit from this base model.
     """
@@ -44,6 +46,12 @@ class MetadataProvider(Provider):
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve metadata for a track on this Metadata provider."""
         if ProviderFeature.TRACK_METADATA in self.supported_features:
+            raise NotImplementedError
+        return None
+
+    async def get_playlist_metadata(self, playlist: Playlist) -> MediaItemMetadata | None:
+        """Retrieve metadata for a playlist on this Metadata provider."""
+        if ProviderFeature.PLAYLIST_METADATA in self.supported_features:
             raise NotImplementedError
         return None
 

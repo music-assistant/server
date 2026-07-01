@@ -2,6 +2,7 @@
 
 from contextlib import suppress
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
@@ -18,8 +19,6 @@ from aioaudiobookshelf.schema.library import (
 from aioaudiobookshelf.schema.library import (
     LibraryItemPodcast as AbsLibraryItemPodcast,
 )
-from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
-from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
 from aioaudiobookshelf.schema.podcast import (
     PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
@@ -30,6 +29,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemChapter,
+    MediaItemCollection,
     MediaItemImage,
     ProviderMapping,
     UniqueList,
@@ -39,6 +39,10 @@ from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
 
 from music_assistant.helpers.datetime import from_utc_timestamp
+
+if TYPE_CHECKING:
+    from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
+    from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 
 
 def _build_cover_url(*, base_url: str, item_id: str, token: str, version: int | None = None) -> str:
@@ -161,6 +165,7 @@ def parse_podcast_episode(
     *,
     episode: AbsPodcastEpisode | AbsPodcastEpisodeExpanded,
     prov_podcast_id: str,
+    prov_podcast_name: str | None,
     fallback_episode_cnt: int | None = None,
     instance_id: str,
     domain: str,
@@ -170,7 +175,8 @@ def parse_podcast_episode(
     cover_path: str | None = None,
     cover_version: int | None = None,
 ) -> MassPodcastEpisode:
-    """Translate ABSPodcastEpisode to MassPodcastEpisode.
+    """
+    Translate ABSPodcastEpisode to MassPodcastEpisode.
 
     For an episode the id is set to f"{podcast_id} {episode_id}".
     ABS ids have no spaces, so we can split at a space to retrieve both
@@ -180,6 +186,7 @@ def parse_podcast_episode(
     A PodcastEpisode has only limited information, and is currently only used
     within the recommendations.
     """
+    # ruff: noqa: PLR0913 (too many arguments)
     episode_id = f"{prov_podcast_id} {episode.id_}"
 
     if isinstance(episode, AbsPodcastEpisodeExpanded):
@@ -210,8 +217,9 @@ def parse_podcast_episode(
     release_date: datetime | None = None
     if episode.published_at is not None:
         position = -episode.published_at
-        # abs published_at is ms epoch
-        release_date = from_utc_timestamp(episode.published_at / 1000)
+        # abs published_at is ms epoch; leave the date unset if it is out of range
+        with suppress(ValueError, OverflowError, OSError):
+            release_date = from_utc_timestamp(episode.published_at / 1000)
     else:
         position = 0
         if fallback_episode_cnt is not None:
@@ -225,7 +233,7 @@ def parse_podcast_episode(
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,
-            name=episode.title,
+            name=prov_podcast_name or episode.title,
             media_type=MediaType.PODCAST,
         ),
         provider_mappings=provider_mappings,
@@ -249,12 +257,23 @@ def parse_podcast_episode(
         mass_episode.resume_position_ms = int(media_progress.current_time * 1000)
         mass_episode.fully_played = media_progress.is_finished
 
+    if episode.chapters:
+        mass_episode.metadata.chapters = [
+            MediaItemChapter(
+                position=position,
+                name=chapter.title,
+                start=chapter.start,
+                end=chapter.end,
+            )
+            for position, chapter in enumerate(episode.chapters, 1)
+        ]
+
     return mass_episode
 
 
 def parse_audiobook(
     *,
-    abs_audiobook: AbsLibraryItemExpandedBook | AbsLibraryItemMinifiedBook,
+    abs_audiobook: AbsLibraryItemExpandedBook,
     instance_id: str,
     domain: str,
     token: str | None,
@@ -298,6 +317,17 @@ def parse_audiobook(
             mass_audiobook.metadata.release_date = datetime(
                 year=int(abs_audiobook.media.metadata.published_year), month=1, day=1
             )
+
+    book_series: list[MediaItemCollection] = []
+    for abs_series_sequence in abs_audiobook.media.metadata.series:
+        book_series.append(
+            MediaItemCollection(
+                title=abs_series_sequence.name, sequence=abs_series_sequence.sequence
+            )
+        )
+
+    if book_series:
+        mass_audiobook.metadata.collections = UniqueList(book_series)
 
     if abs_audiobook.media.metadata.genres is not None:
         mass_audiobook.metadata.genres = set(abs_audiobook.media.metadata.genres)

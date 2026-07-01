@@ -71,7 +71,7 @@ class CacheController(CoreController):
                     key=CONF_CLEAR_CACHE,
                     type=ConfigEntryType.LABEL,
                     # distinct key so the result label doesn't collide with the action's label
-                    translation_key="config_entries.clear_cache_result",
+                    translation_key="clear_cache_result",
                 ),
             )
         return (
@@ -318,7 +318,7 @@ class CacheController(CoreController):
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
@@ -439,7 +439,8 @@ class CacheController(CoreController):
             name="Cache database cleanup",
             handler=self.auto_cleanup,
             schedule=desired_schedule,
-            translation_key="background_task.cache_database_cleanup",
+            translation_key="cache_database_cleanup",
+            translation_owner=self.translation_owner,
             metadata={"task_domain": "cache_database_cleanup"},
             allow_retry=True,
         )
