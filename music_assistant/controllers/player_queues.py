@@ -426,9 +426,8 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/dont_stop_the_music")
     def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
         """Configure Don't stop the music setting on the queue."""
-        providers_available_with_similar_tracks = any(
-            ProviderFeature.SIMILAR_TRACKS in provider.supported_features
-            for provider in self.mass.music.providers
+        providers_available_with_similar_tracks = bool(
+            self.mass.get_providers_supporting_feature(ProviderFeature.SIMILAR_TRACKS)
         )
         if dont_stop_the_music_enabled and not providers_available_with_similar_tracks:
             raise UnsupportedFeaturedException(
