@@ -60,7 +60,7 @@ async def test_play_on_idle_queue_starts_at_first_item() -> None:
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
     items = _items("q1", ["a", "b", "c"])
 
-    await ctrl._enqueue_with_option("q1", items, QueueOption.PLAY, managed_pool=False)
+    await ctrl._enqueue_with_option("q1", items, QueueOption.PLAY)
 
     # the items are loaded from the very start and playback begins at the first one
     assert ctrl._queue_data["q1"].items[0] is items[0]
@@ -88,7 +88,7 @@ async def test_play_on_active_queue_inserts_after_current() -> None:
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
     new_items = _items("q1", ["n0", "n1"])
 
-    await ctrl._enqueue_with_option("q1", new_items, QueueOption.PLAY, managed_pool=False)
+    await ctrl._enqueue_with_option("q1", new_items, QueueOption.PLAY)
 
     # inserted right after the current/buffered index (2) and playback jumps there
     assert ctrl._queue_data["q1"].items[3] is new_items[0]
@@ -118,7 +118,7 @@ async def test_next_shuffle_pins_first_item_and_shuffles_rest() -> None:
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
     new_items = _items("q1", ["n0", "n1"])
 
-    await ctrl._enqueue_with_option("q1", new_items, QueueOption.NEXT, managed_pool=False)
+    await ctrl._enqueue_with_option("q1", new_items, QueueOption.NEXT)
 
     items = ctrl._queue_data["q1"].items
     # the first new item is pinned right after the buffered index (0) so it plays next
@@ -149,7 +149,7 @@ async def test_next_shuffle_single_item_keeps_tail_order() -> None:
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
     new_items = _items("q1", ["n0"])
 
-    await ctrl._enqueue_with_option("q1", new_items, QueueOption.NEXT, managed_pool=False)
+    await ctrl._enqueue_with_option("q1", new_items, QueueOption.NEXT)
 
     # inserted right after the buffered index; the existing tail keeps its order (no reshuffle)
     assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == ["e0", "n0", "e1", "e2"]
@@ -164,7 +164,7 @@ async def test_next_on_empty_queue_sets_current_index_without_playing() -> None:
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
     items = _items("q1", ["a", "b", "c"])
 
-    await ctrl._enqueue_with_option("q1", items, QueueOption.NEXT, managed_pool=False)
+    await ctrl._enqueue_with_option("q1", items, QueueOption.NEXT)
 
     assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == ["a", "b", "c"]
     assert queue.current_index == 0
@@ -180,7 +180,7 @@ async def test_replace_next_on_empty_queue_sets_current_index_without_playing() 
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
     items = _items("q1", ["a", "b"])
 
-    await ctrl._enqueue_with_option("q1", items, QueueOption.REPLACE_NEXT, managed_pool=False)
+    await ctrl._enqueue_with_option("q1", items, QueueOption.REPLACE_NEXT)
 
     assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == ["a", "b"]
     assert queue.current_index == 0
@@ -205,7 +205,7 @@ async def test_next_on_idle_queue_with_content_keeps_current_index() -> None:
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
     new_items = _items("q1", ["n0"])
 
-    await ctrl._enqueue_with_option("q1", new_items, QueueOption.NEXT, managed_pool=False)
+    await ctrl._enqueue_with_option("q1", new_items, QueueOption.NEXT)
 
     items = ctrl._queue_data["q1"].items
     # current index is untouched; the new item is inserted right after it
@@ -287,4 +287,67 @@ async def test_enter_dynamic_mode_add_on_active_keeps_current_and_rebuilds_tail(
         "p1",
     }
     assert queue.current_index == 1
+    play_index.assert_not_awaited()
+
+
+async def test_enter_dynamic_mode_replaces_old_pool_tail_stays_bounded() -> None:
+    """Re-building on an already-dynamic queue drops the whole old pool tail, keeping it bounded."""
+    ctrl = _dynamic_controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    # current + buffered (e0, e1) followed by a large existing pool tail (o0..o9)
+    existing = _items("q1", ["e0", "e1", *[f"o{i}" for i in range(10)]])
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(existing),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        index_in_buffer=1,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.ADD)
+
+    items = ctrl._queue_data["q1"].items
+    # old 10-track tail is dropped and replaced by the fresh bounded pool (2 + 2, not 2 + 10 + 2)
+    assert [item.queue_item_id for item in items[:2]] == ["e0", "e1"]
+    assert {item.media_item.item_id for item in items[2:] if item.media_item is not None} == {
+        "p0",
+        "p1",
+    }
+    assert len(items) == 4
+    play_index.assert_not_awaited()
+
+
+async def test_enter_dynamic_mode_rebuilds_from_buffer_index() -> None:
+    """The rebuild keeps the already-buffered next track and only replaces what is behind it."""
+    ctrl = _dynamic_controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    # current at 1, but the player has already buffered index 2, so it must be kept
+    existing = _items("q1", ["e0", "e1", "e2", "o0", "o1"])
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(existing),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        index_in_buffer=2,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.ADD)
+
+    items = ctrl._queue_data["q1"].items
+    # kept through the buffered index (e0, e1, e2); everything after it rebuilt from the pool
+    assert [item.queue_item_id for item in items[:3]] == ["e0", "e1", "e2"]
+    assert {item.media_item.item_id for item in items[3:] if item.media_item is not None} == {
+        "p0",
+        "p1",
+    }
     play_index.assert_not_awaited()
