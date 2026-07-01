@@ -74,7 +74,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue_id: str,
         queue_items: list[QueueItem],
         option: QueueOption | None,
-        managed_pool: bool,
     ) -> None:
         """Load queue items into the queue according to the given enqueue option."""
         queue = self._queue_data[queue_id].queue
@@ -87,8 +86,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         else:
             cur_index = queue.current_index or 0
         insert_at_index = cur_index + 1
-        # Managed-pool tracks are already ordered in a pattern we want to keep.
-        shuffle = queue.shuffle_enabled and len(queue_items) > 1 and not managed_pool
+        shuffle = queue.shuffle_enabled and len(queue_items) > 1
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
@@ -168,8 +166,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 queue_id=queue_id,
                 queue_items=queue_items,
                 insert_at_index=add_at_index,
-                # managed-pool tracks are already ordered in a pattern we want to keep
-                shuffle=queue.shuffle_enabled and not managed_pool,
+                shuffle=queue.shuffle_enabled,
             )
             self._ensure_current_index(queue_id)
 
@@ -543,10 +540,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue.enqueued_media_items.clear()
 
-        # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source) keeps
-        # feeding that pool; any other enqueue starts fresh (a REPLACE clears the sources above,
-        # and a dynamic playlist self-manages its own refills). A finite-only queue has sources
-        # recorded too, so this keys off is_dynamic rather than bool(queue.sources).
+        # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
+        # item is kept only as a source (the bounded pool materializes it) instead of being expanded
+        # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
+        # items normally. Keys off is_dynamic since a finite-only queue records sources too.
         already_dynamic = queue.is_dynamic and option in (QueueOption.ADD, QueueOption.NEXT)
 
         media_items: list[MediaItemType] = []
@@ -619,19 +616,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
                 # collect media_items to play
                 if isinstance(media_item, Playlist) and media_item.is_dynamic:
-                    # a dynamic playlist/station supplies its own tracks on demand; mark it played
+                    # a dynamic playlist/station supplies its own tracks on demand; just mark it
+                    # played. The queue goes dynamic below and the bounded pool seeds its batch from
+                    # all sources, so there is no need to fetch a batch here.
                     self.mass.create_task(
                         self.mass.music.mark_item_played(
                             media_item, userid=queue.userid, queue_id=queue_id, user_initiated=True
                         )
                     )
-                    if already_dynamic:
-                        # feed the already-active pool with this playlist's next self-managed batch
-                        media_items += await self._media_resolver.get_playlist_tracks(
-                            media_item, start_item=None
-                        )
-                    # otherwise the queue is entering dynamic mode below: the managed pool seeds the
-                    # first batch from all sources, so there is no need to fetch a batch here
                 elif already_dynamic:
                     # feed the already-active pool: keep the finite item as a (materialized) source
                     if not isinstance(media_item, (ItemMapping, BrowseFolder)):
@@ -676,21 +668,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         source_items = self._queue_data[queue_id].source_items
         queue.is_dynamic = has_dynamic_source(source_items)
 
-        if queue.is_dynamic and not already_dynamic:
-            # this enqueue introduced a dynamic source into a queue that wasn't a managed pool yet:
-            # rebuild the upcoming tail into a bounded, recency-orchestrated mix over ALL sources
-            # (existing finite content becomes materialized TRACKS seed(s), the added dynamic
-            # playlist(s) DYNAMIC seed(s)) instead of leaving a linear tail in front of the pool.
+        if queue.is_dynamic:
+            # the queue has (or just gained) a dynamic source: (re)build the upcoming tail into a
+            # single bounded, recency-orchestrated mix over ALL sources — existing finite content as
+            # materialized TRACKS seed(s), dynamic playlists as DYNAMIC seed(s). Every add rebuilds
+            # from the buffer position, so the queue stays a fixed-size mix instead of growing by
+            # each added source's own batch.
             await self._enter_dynamic_mode(queue_id, option)
-            return
-
-        if already_dynamic and not media_items:
-            # new sources were added to an already-active pool: leave the playing pool intact and
-            # let the next top-up incorporate them
-            self.signal_update(queue_id)
-            if queue.current_index is not None and (queue.items - queue.current_index) < 5:
-                task_id = f"fill_dynamic_tracks_{queue_id}"
-                self.mass.call_later(5, self._fill_dynamic_tracks, queue_id, task_id=task_id)
             return
 
         # only add valid/available items
@@ -703,29 +687,35 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_items:
             raise MediaNotFoundError("No playable items found")
 
-        # load the items into the queue (managed-pool tracks are already ordered, so don't reshuffle)
-        await self._enqueue_with_option(queue_id, queue_items, option, already_dynamic)
+        await self._enqueue_with_option(queue_id, queue_items, option)
 
     async def _enter_dynamic_mode(self, queue_id: str, option: QueueOption | None) -> None:
         """
-        Rebuild a queue's upcoming tail into a bounded managed pool as it enters dynamic mode.
+        (Re)build a queue's upcoming tail into a single bounded managed pool over all its sources.
 
-        Keeps the current track and everything before it, drops the (finite) upcoming tail, and
-        replaces it with a bounded, recency-orchestrated mix of all the queue's sources (finite
-        sources materialized as TRACKS seeds, dynamic playlists as DYNAMIC seeds). Shuffle is
+        Runs whenever an enqueue leaves the queue dynamic — both the first transition and every
+        later add. Keeps the current + already-buffered track(s), drops the rest of the upcoming
+        tail, and replaces it with a bounded, recency-orchestrated mix of all the queue's sources
+        (finite sources materialized as TRACKS seeds, dynamic playlists as DYNAMIC seeds), so the
+        queue stays a fixed-size mix instead of growing by each added source's own batch. Shuffle is
         enabled implicitly: a dynamic queue is always a smart mix.
 
-        :param queue_id: The queue entering dynamic mode.
-        :param option: The enqueue option that triggered the transition. PLAY/REPLACE start playback
+        :param queue_id: The queue to (re)build the dynamic pool for.
+        :param option: The enqueue option that triggered the (re)build. PLAY/REPLACE start playback
             on the rebuilt pool; ADD/NEXT/REPLACE_NEXT stage it without starting playback (behind the
-            current track, or from the front of an idle/empty queue).
+            current/buffered track, or from the front of an idle/empty queue).
         """
         data = self._queue_data[queue_id]
         queue = data.queue
         # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
         queue.shuffle_enabled = True
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
-        insert_at = 0 if queue.current_index is None else queue.current_index + 1
+        # rebuild from the buffered position so the already-prepared next track is kept and the
+        # crossfade isn't disturbed; fall back to the current index (or the front when idle/empty)
+        base_index = (
+            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
+        )
+        insert_at = 0 if base_index is None else base_index + 1
         # PLAY/REPLACE start playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT only stage it and
         # never start playback (an idle/empty queue stays idle on an add, just like the linear path)
         start_playing = option in (QueueOption.PLAY, QueueOption.REPLACE)
