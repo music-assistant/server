@@ -221,7 +221,7 @@ class SmartCrossFade(SmartFade):
 
     Delegates the decision-making to a ``SmartCrossFadePlanner`` (pure, over the
     stored analysis) and the filter/timing construction to a ``TransitionRenderer``.
-    A future DJ-mode fade is a sibling that swaps in its own planner.
+    Alternative transition strategies are siblings that swap in their own planner.
     """
 
     def __init__(

@@ -11,7 +11,6 @@ from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSF
 from music_assistant.controllers.streams.smart_fades.models import (
     SmartFadeNotApplicable,
     TransitionPlan,
-    TransitionStyle,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -75,7 +74,6 @@ class TestSmartCrossFadePlanner:
         """A small BPM difference (<5%) schedules a gradual stretch."""
         plan = _plan(_analysis(120.0), _analysis(123.0))
         assert plan.tempo_plan
-        assert plan.style == TransitionStyle.EXTENDED_BLEND
 
     def test_large_bpm_difference_skips_stretch(self) -> None:
         """A BPM gap beyond the stretch threshold leaves the tempo plan empty."""
@@ -101,12 +99,6 @@ class TestSmartCrossFadePlanner:
         plan = _plan(_analysis(120.0), _analysis(120.0))
         assert plan.fadeout_trim is None
         assert plan.fade_out_window == pytest.approx(45.0, abs=0.3)
-
-    def test_dj_fields_default_for_smart_crossfade(self) -> None:
-        """Smart crossfade never cuts the incoming intro and holds back its window."""
-        plan = _plan(_analysis(120.0), _analysis(120.0))
-        assert plan.mix_in_point == 0.0
-        assert plan.holdback_needed == pytest.approx(plan.fade_out_window)
 
     def test_missing_rhythm_data_raises(self) -> None:
         """Analysis without bpm/beats cannot be planned."""

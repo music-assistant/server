@@ -58,8 +58,8 @@ class SmartFadesMixer:
         :param fade_in_bytes_len: Expected length in bytes of the fade-in input.
         """
         # Degradation chain: a richer mode degrades to the next-best fade when it
-        # cannot apply. Today that is smart-crossfade → standard. A future DJ mode
-        # adds its own planned-fade builder at the head (DJ → smart → standard → none).
+        # cannot apply. Today that is smart-crossfade → standard; richer modes
+        # add their own builder at the head of the chain.
         smart_fade: SmartFade | None = None
         if mode == SmartFadesMode.SMART_CROSSFADE:
             smart_fade = await self._build_smart_crossfade(

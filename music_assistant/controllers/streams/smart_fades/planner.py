@@ -2,8 +2,8 @@
 
 A planner turns the two tracks' stored ``AudioAnalysisData`` into a
 ``TransitionPlan`` — a pure decision with no audio bytes and no FFmpeg filters.
-``SmartCrossFadePlanner`` reproduces the defensive smart-crossfade behaviour; a
-future ``DjModePlanner`` slots in as a sibling subclass.
+Alternative transition strategies slot in as sibling subclasses of
+``TransitionPlanner``.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from music_assistant.controllers.streams.smart_fades.models import (
     SweepSpec,
     TempoPlan,
     TransitionPlan,
-    TransitionStyle,
 )
 
 if TYPE_CHECKING:
@@ -150,17 +149,13 @@ class SmartCrossFadePlanner(TransitionPlanner):
 
         eq_plan = self._build_eq_plan(bpm_ratio, crossfade_bars, crossfade_duration, tempo_plan)
 
-        style = TransitionStyle.EXTENDED_BLEND if crossfade_bars >= 8 else TransitionStyle.BLEND
         return TransitionPlan(
-            style=style,
             fade_out_window=self.effective_end,
             crossfade_duration=crossfade_duration,
             eq_plan=eq_plan,
             tempo_plan=tempo_plan,
             fadeout_trim=self.fadeout_trim,
             fadein_trim_start=fadein_trim_start,
-            mix_in_point=0.0,
-            holdback_needed=self.effective_end,
         )
 
     def _init_grids(

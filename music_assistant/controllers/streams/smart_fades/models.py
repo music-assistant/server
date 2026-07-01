@@ -4,15 +4,14 @@ A ``TransitionPlan`` is the renderer-agnostic description of a transition: it
 captures every decision (where to cut, how long to blend, tempo ramp, EQ sweeps)
 without owning a single audio byte or FFmpeg filter.  A ``TransitionPlanner``
 produces it from stored ``AudioAnalysisData``; a renderer turns it into the
-``Filter`` chain.  Keeping the plan free of bytes is what lets a future planner
-(DJ mode) be a drop-in alternative and lets a plan be computed long before any
-tail is buffered.
+``Filter`` chain.  Keeping the plan free of bytes is what lets alternative
+planners be drop-in replacements and lets a plan be computed before any tail
+is buffered.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 
 
 class SmartFadeNotApplicable(Exception):
@@ -29,19 +28,10 @@ class CrossfadeTimingInfo:
     post_crossfade_duration: float = 0.0
 
 
-class TransitionStyle(Enum):
-    """How a transition joins two tracks."""
-
-    BLEND = "blend"
-    EXTENDED_BLEND = "extended_blend"
-    OUTRO_EXIT = "outro_exit"
-    PHRASE_CUT = "phrase_cut"
-
-
 @dataclass(slots=True)
 class TempoPlan:
     """
-    Bidirectional tempo ramp schedule.
+    Tempo ramp schedule for the outgoing track.
 
     ``steps`` is a list of ``(timestamp_seconds, tempo_ratio)`` points in the
     outgoing track's buffer-local time; empty means no time-stretching.
@@ -114,13 +104,9 @@ class TransitionPlan:
     """
     Renderer-agnostic description of how two tracks are joined.
 
-    All times are in the outgoing track's buffer-local seconds.  Fields beyond
-    the smart-crossfade set (``mix_in_point``, ``holdback_needed``) carry
-    defaults so a smart-crossfade plan stays valid while leaving room for DJ-mode
-    planners to populate them.
+    All times are in the outgoing track's buffer-local seconds.
     """
 
-    style: TransitionStyle
     # Audible end of the fade-out tail (buffer-local seconds).
     fade_out_window: float
     crossfade_duration: float
@@ -130,7 +116,3 @@ class TransitionPlan:
     fadeout_trim: FadeOutTrim | None = None
     # Trim this many seconds off the incoming head for beat alignment. None = no trim.
     fadein_trim_start: float | None = None
-    # Media time in B where B effectively starts (intro cut). DJ mode populates this.
-    mix_in_point: float = 0.0
-    # Tail length the buffer must hold to realize this plan. DJ mode populates this.
-    holdback_needed: float | None = None
