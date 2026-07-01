@@ -17,6 +17,7 @@ from music_assistant.controllers.player_queues.helpers import (
     handle_play_action,
     has_dynamic_source,
 )
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
@@ -152,8 +153,10 @@ class _FakeController:
 
     def __init__(self, queues: dict[str, _FakeQueue]) -> None:
         self.mass = _FakeMass()
-        self._queues = queues
-        self._play_action_refcount: dict[str, int] = {}
+        self._queue_data = {
+            queue_id: PlayerQueueData(queue=cast("PlayerQueue", queue))
+            for queue_id, queue in queues.items()
+        }
         self.signal_calls: list[str] = []
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
@@ -162,8 +165,10 @@ class _FakeController:
 
 def _flag_value(ctrl: PlayerQueuesController, queue_id: str) -> bool:
     """Return the current in-progress flag for a queue (False if unknown)."""
-    queue = ctrl._queues.get(queue_id)
-    return bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)) if queue else False
+    data = ctrl._queue_data.get(queue_id)
+    if data is None:
+        return False
+    return bool(data.queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False))
 
 
 @handle_play_action
@@ -208,7 +213,7 @@ class TestHandlePlayAction:
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         # signalled once on entry and once on exit
         assert ctrl.signal_calls == ["q1", "q1"]
-        assert ctrl._play_action_refcount == {}
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
 
     async def test_nested_actions_refcount(self) -> None:
         """Nested actions keep the flag set until the outermost one finishes."""
@@ -221,7 +226,7 @@ class TestHandlePlayAction:
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         # only the outermost entry/exit signal an update (inner sees it already in progress)
         assert ctrl.signal_calls == ["q1", "q1"]
-        assert ctrl._play_action_refcount == {}
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
 
     async def test_flag_cleared_on_exception(self) -> None:
         """The flag is cleared even when the action raises."""
@@ -230,4 +235,4 @@ class TestHandlePlayAction:
         with pytest.raises(RuntimeError, match="boom"):
             await _boom(cast("PlayerQueuesController", ctrl), "q1")
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
-        assert ctrl._play_action_refcount == {}
+        assert ctrl._queue_data["q1"].play_action_refcount == 0

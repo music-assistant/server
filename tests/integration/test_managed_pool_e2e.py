@@ -92,7 +92,7 @@ async def test_refill_gates_recent_and_weights_by_multiplicity(e2e_mass: MusicAs
     album_single = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
     album_double = await test_prov.get_album("1_0")  # tracks 1_0_0 .. 1_0_19
     sources = cast("list[MediaItemType]", [album_single, album_double, album_double])
-    e2e_mass.player_queues._source_items[queue_id] = sources
+    e2e_mass.player_queues._queue_data[queue_id].source_items = sources
 
     # singleton album: 5 tracks played a day ago -> within the 1-week song window -> hard-gated
     now = int(time.time())
@@ -127,13 +127,13 @@ async def test_refill_dedupes_only_active_tail_not_played_history(e2e_mass: Musi
 
     album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
     sources = cast("list[MediaItemType]", [album])
-    e2e_mass.player_queues._source_items[queue_id] = sources
+    e2e_mass.player_queues._queue_data[queue_id].source_items = sources
 
     # simulate a queue with played history: 0_0_0..0_0_4 already played, 0_0_5 is the current track
     queue_items = [
         QueueItem.from_media_item(queue_id, await test_prov.get_track(f"0_0_{i}")) for i in range(6)
     ]
-    e2e_mass.player_queues._queue_items[queue_id] = queue_items
+    e2e_mass.player_queues._queue_data[queue_id].items = queue_items
     queue.current_index = 5
 
     pool = await e2e_mass.player_queues._managed_pool.fill(queue_id, is_initial=False)
@@ -160,12 +160,12 @@ async def test_finite_source_materializes_and_plays_through_once(
     queue.userid = TEST_USER
 
     album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
-    e2e_mass.player_queues._source_items[queue_id] = cast("list[MediaItemType]", [album])
+    e2e_mass.player_queues._queue_data[queue_id].source_items = cast("list[MediaItemType]", [album])
 
     played: list[str] = []
     fills = 0
     # generous guard; a 20-track album drains in ~4 refills at the patched target of 5
-    while e2e_mass.player_queues._source_items.get(queue_id) and fills < 20:
+    while e2e_mass.player_queues._queue_data[queue_id].source_items and fills < 20:
         pool = await e2e_mass.player_queues._managed_pool.fill(queue_id, is_initial=(fills == 0))
         played += [track.item_id for track in pool]
         fills += 1
@@ -175,7 +175,7 @@ async def test_finite_source_materializes_and_plays_through_once(
     # plays through once: every album track exactly once, never recycled as tracks age out
     assert sorted(played) == sorted(f"0_0_{i}" for i in range(20))
     # exhausted: the source is retired from the queue and its materialized state is released
-    assert not e2e_mass.player_queues._source_items.get(queue_id)
+    assert not e2e_mass.player_queues._queue_data[queue_id].source_items
     assert queue_id not in e2e_mass.player_queues._managed_pool._materialized
 
 
@@ -192,7 +192,7 @@ async def test_recency_denied_track_rotates_to_back_not_dropped(e2e_mass: MusicA
     album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
     uri = album.uri
     assert uri is not None
-    e2e_mass.player_queues._source_items[queue_id] = cast("list[MediaItemType]", [album])
+    e2e_mass.player_queues._queue_data[queue_id].source_items = cast("list[MediaItemType]", [album])
 
     # 5 tracks played a day ago -> within the 1-week song window -> recency-denied this round
     now = int(time.time())
@@ -211,7 +211,7 @@ async def test_recency_denied_track_rotates_to_back_not_dropped(e2e_mass: MusicA
     assert remaining[-len(denied) :] == denied
     # the 15 playable tracks were dispatched; the source is not yet exhausted
     assert mat.dispatched == {f"0_0_{i}" for i in range(5, 20)}
-    assert e2e_mass.player_queues._source_items.get(queue_id)
+    assert e2e_mass.player_queues._queue_data[queue_id].source_items
 
     # once the recency block lifts, the held tracks get their second chance and the source exhausts
     await e2e_mass.music.database.delete(
@@ -221,7 +221,7 @@ async def test_recency_denied_track_rotates_to_back_not_dropped(e2e_mass: MusicA
     ids2 = sorted(track.item_id for track in pool2)
 
     assert ids2 == sorted(denied)
-    assert not e2e_mass.player_queues._source_items.get(queue_id)
+    assert not e2e_mass.player_queues._queue_data[queue_id].source_items
 
 
 @pytest.mark.asyncio
@@ -241,12 +241,12 @@ async def test_large_finite_source_is_paged_and_bounded(
     album = await test_prov.get_album("0_0")  # 20 tracks, well over the patched cap of 5
     uri = album.uri
     assert uri is not None
-    e2e_mass.player_queues._source_items[queue_id] = cast("list[MediaItemType]", [album])
+    e2e_mass.player_queues._queue_data[queue_id].source_items = cast("list[MediaItemType]", [album])
 
     played: list[str] = []
     max_held = 0
     fills = 0
-    while e2e_mass.player_queues._source_items.get(queue_id) and fills < 20:
+    while e2e_mass.player_queues._queue_data[queue_id].source_items and fills < 20:
         pool = await e2e_mass.player_queues._managed_pool.fill(queue_id, is_initial=False)
         played += [track.item_id for track in pool]
         if mat := e2e_mass.player_queues._managed_pool._materialized.get(queue_id, {}).get(uri):
@@ -257,7 +257,7 @@ async def test_large_finite_source_is_paged_and_bounded(
     assert max_held <= 5
     # paged correctly: every track played exactly once despite being fetched in chunks
     assert sorted(played) == sorted(f"0_0_{i}" for i in range(20))
-    assert not e2e_mass.player_queues._source_items.get(queue_id)
+    assert not e2e_mass.player_queues._queue_data[queue_id].source_items
 
 
 @pytest.mark.asyncio
@@ -276,7 +276,9 @@ async def test_dynamic_source_is_not_materialized(e2e_mass: MusicAssistant) -> N
     assert isinstance(radio, Playlist)
     assert radio.is_dynamic
     album = await test_prov.get_album("0_0")
-    e2e_mass.player_queues._source_items[queue_id] = cast("list[MediaItemType]", [radio, album])
+    e2e_mass.player_queues._queue_data[queue_id].source_items = cast(
+        "list[MediaItemType]", [radio, album]
+    )
 
     pool = await e2e_mass.player_queues._managed_pool.fill(queue_id, is_initial=False)
 

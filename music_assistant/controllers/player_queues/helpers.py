@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
 
 from music_assistant_models.media_items import Playlist
 
@@ -17,7 +17,8 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
-    from music_assistant.controllers.player_queues.controller import PlayerQueuesController
+    from music_assistant import MusicAssistant
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
@@ -43,9 +44,23 @@ class CompareState(TypedDict):
     output_formats: list[str] | None
 
 
-def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R](
-    func: Callable[Concatenate[PlayerQueuesControllerT, P], Awaitable[R]],
-) -> Callable[Concatenate[PlayerQueuesControllerT, P], Coroutine[Any, Any, R]]:
+class _PlayActionHost(Protocol):
+    """
+    The minimal controller surface that :func:`handle_play_action` needs.
+
+    Lets the decorator wrap actions defined either on the controller itself or on one
+    of its mixins, since both expose this surface at runtime.
+    """
+
+    mass: MusicAssistant
+    _queue_data: dict[str, PlayerQueueData]
+
+    def signal_update(self, queue_id: str, items_changed: bool = False) -> None: ...
+
+
+def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
+    func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]],
+) -> Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R]]:
     """
     Decorator for queue playback actions.
 
@@ -57,31 +72,28 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     """  # noqa: D401
 
     @functools.wraps(func)
-    async def wrapper(self: PlayerQueuesControllerT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: PlayActionHostT, *args: P.args, **kwargs: P.kwargs) -> R:
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
-        queue = self._queues.get(queue_id)
-        if queue is None:
+        data = self._queue_data.get(queue_id)
+        if data is None:
             return await func(self, *args, **kwargs)
+        queue = data.queue
         async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
             try:
-                self._play_action_refcount[queue_id] = (
-                    self._play_action_refcount.get(queue_id, 0) + 1
-                )
+                data.play_action_refcount += 1
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 if not prev_in_progress:
                     self.signal_update(queue_id)
                 return await func(self, *args, **kwargs)
             finally:
-                refcount = self._play_action_refcount.get(queue_id, 1) - 1
-                if refcount <= 0:
-                    self._play_action_refcount.pop(queue_id, None)
+                data.play_action_refcount -= 1
+                if data.play_action_refcount <= 0:
+                    data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
                     self.signal_update(queue_id)
-                else:
-                    self._play_action_refcount[queue_id] = refcount
 
     return wrapper
 
