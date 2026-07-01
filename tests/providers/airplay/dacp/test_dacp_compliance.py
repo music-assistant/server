@@ -243,6 +243,25 @@ async def test_prevent_playback_zero_schedules_reset(
     )
 
 
+async def test_denon_transient_prevent_playback_pair_keeps_stream(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """
+    A transient prevent-playback=1/=0 burst during RAOP setup must not tear down the stream.
+
+    Regression for a Denon AVR-X2700H that emits this pair while the stream is still being
+    established (https://github.com/music-assistant/support/issues/5033).
+    """
+    player = make_player(mock_mass, synced_to=None, stream_connected=False)
+
+    await replay(airplay_provider, build_dacp_request(_PREVENT_1))
+    await replay(airplay_provider, build_dacp_request(_PREVENT_0))
+
+    player.stream.stop.assert_not_called()
+    mock_mass.players.cmd_ungroup.assert_not_called()
+    assert player.stream.prevent_playback is False
+
+
 async def test_empty_request_returns_early(
     airplay_provider: AirPlayProvider, mock_mass: MagicMock
 ) -> None:
