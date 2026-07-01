@@ -413,10 +413,8 @@ class TestMixerBuild:
         #   PRE + CF == rendered_fade_out_seconds  (A's audio fully accounted for)
         #   TRIM + CF + POST == fade_in_seconds    (B's audio fully accounted for)
         # When time-stretch is active, rendered_fade_out_seconds < buffer_duration because
-        # rubberband compresses the tail; savings are computed via _stretch_savings_until.
-        rendered_fade_out_seconds = fade.effective_end - fade._stretch_savings_until(
-            fade.effective_end
-        )
+        # rubberband compresses the tail; savings come from the plan's TempoPlan.
+        rendered_fade_out_seconds = fade.effective_end - _savings_until(fade, fade.effective_end)
         fade_in_seconds = float(SMART_CROSSFADE_DURATION)
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
             rendered_fade_out_seconds, abs=0.05
@@ -805,8 +803,18 @@ class TestSilenceAwareAnchoring:
 # ---------------------------------------------------------------------------
 
 
+def _savings_until(fade: SmartCrossFade, t: float) -> float:
+    """Rendered-time savings of the built fade's tempo plan up to input time t."""
+    assert fade.plan is not None
+    return fade.plan.tempo_plan.savings_until(t)
+
+
 class TestStretchSavings:
-    """Rendered-time savings from the stretch must reach timing and the sweep."""
+    """Rendered-time savings from the stretch must reach timing and the sweep.
+
+    The savings integration math itself is unit-tested on TempoPlan in
+    tests/controllers/streams/smart_fades/test_models.py.
+    """
 
     def _stretched_fade(self) -> SmartCrossFade:
         duration = 240.0
@@ -826,51 +834,11 @@ class TestStretchSavings:
             if isinstance(f, FrequencySweepFilter) and f.stream_type == "fadeout"
         )
 
-    def test_savings_until_integrates_piecewise(self) -> None:
-        """_stretch_savings_until integrates savings piecewise over the step list."""
-        fade = SmartCrossFade(
-            logger=LOGGER,
-            fade_out_analysis=_analysis(bpm=120.0),
-            fade_in_analysis=_analysis(bpm=120.0),
-        )
-        fade.tempo_steps = [(35.0, 1.0), (40.0, 1.05)]
-        assert fade._stretch_savings_until(35.0) == 0.0
-        assert fade._stretch_savings_until(40.0) == 0.0  # ratio 1.0 segment saves nothing
-        expected = 5.0 * (1.0 - 1.0 / 1.05)
-        assert fade._stretch_savings_until(45.0) == pytest.approx(expected)
-
-    def test_savings_until_handles_slowdown(self) -> None:
-        """A ratio below 1.0 lengthens the rendered stream, so savings go negative."""
-        fade = SmartCrossFade(
-            logger=LOGGER,
-            fade_out_analysis=_analysis(bpm=120.0),
-            fade_in_analysis=_analysis(bpm=120.0),
-        )
-        fade.tempo_steps = [(35.0, 1.0), (40.0, 0.95)]
-        expected = 5.0 * (1.0 - 1.0 / 0.95)
-        assert expected < 0.0
-        assert fade._stretch_savings_until(45.0) == pytest.approx(expected)
-
-    def test_savings_counts_pre_step_span_at_first_ratio(self) -> None:
-        """The span before the first step runs at the first step's ratio, not 1.0."""
-        # rubberband is initialized at tempo_steps[0][1] from t=0, so a single
-        # step at ts>0 with ratio != 1 stretches the whole stream from the start
-        fade = SmartCrossFade(
-            logger=LOGGER,
-            fade_out_analysis=_analysis(bpm=120.0),
-            fade_in_analysis=_analysis(bpm=120.0),
-        )
-        fade.tempo_steps = [(20.0, 1.004)]
-        assert fade._stretch_savings_until(45.0) == pytest.approx(
-            20.0 * (1.0 - 1.0 / 1.004) + 25.0 * (1.0 - 1.0 / 1.004)
-        )
-        assert fade._stretch_savings_until(10.0) == pytest.approx(10.0 * (1.0 - 1.0 / 1.004))
-
     def test_pre_plus_cf_equals_rendered_tail(self) -> None:
         """PRE + CF equals the rendered tail duration (buffer minus stretch savings)."""
         fade = self._stretched_fade()
         assert fade.tempo_steps, "test requires the stretch to be active"
-        total_savings = fade._stretch_savings_until(fade.effective_end)
+        total_savings = _savings_until(fade, fade.effective_end)
         assert total_savings > 0.0
         timing = fade.timing_info
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
@@ -888,7 +856,7 @@ class TestStretchSavings:
         )
         fade.build(_seconds(45), _seconds(45), PCM)
         assert fade.tempo_steps, "test requires the stretch to be active"
-        total_savings = fade._stretch_savings_until(fade.effective_end)
+        total_savings = _savings_until(fade, fade.effective_end)
         assert total_savings < 0.0
         timing = fade.timing_info
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
@@ -899,7 +867,7 @@ class TestStretchSavings:
         """Fade-out sweep schedule ends exactly at the rendered (output-time) tail end."""
         fade = self._stretched_fade()
         sweep = self._fadeout_sweep(fade)
-        rendered_end = fade.effective_end - fade._stretch_savings_until(fade.effective_end)
+        rendered_end = fade.effective_end - _savings_until(fade, fade.effective_end)
         assert sweep.start_time + sweep.duration == pytest.approx(rendered_end, abs=0.05)
 
     def test_sweep_start_is_remapped_to_output_time(self) -> None:
@@ -919,10 +887,10 @@ class TestStretchSavings:
         timing = fade.timing_info
         input_duration = min(max(timing.crossfade_duration * 2.5, 8.0), fade.effective_end)
         input_start = max(0.0, fade.effective_end - input_duration)
-        start_shift = fade._stretch_savings_until(input_start)
+        start_shift = _savings_until(fade, input_start)
         assert start_shift > 0.0, "fixture must place the EQ start inside the stretch window"
         assert sweep.start_time == pytest.approx(input_start - start_shift, abs=1e-9)
-        rendered_end = fade.effective_end - fade._stretch_savings_until(fade.effective_end)
+        rendered_end = fade.effective_end - _savings_until(fade, fade.effective_end)
         assert sweep.start_time + sweep.duration == pytest.approx(rendered_end, abs=0.05)
 
     def test_trim_and_stretch_combined(self) -> None:
@@ -941,7 +909,7 @@ class TestStretchSavings:
         # tail trim must come first so every later schedule sees the trimmed stream
         assert isinstance(fade.filters[0], FadeOutTrimFilter)
         assert fade.tempo_steps, "test requires the stretch to be active"
-        rendered_end = fade.effective_end - fade._stretch_savings_until(fade.effective_end)
+        rendered_end = fade.effective_end - _savings_until(fade, fade.effective_end)
         timing = fade.timing_info
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
             rendered_end, abs=0.05
@@ -958,7 +926,7 @@ class TestStretchSavings:
         )
         fade.build(_seconds(45), _seconds(45), PCM)
         assert fade.tempo_steps == []
-        assert fade._stretch_savings_until(fade.effective_end) == 0.0
+        assert _savings_until(fade, fade.effective_end) == 0.0
         timing = fade.timing_info
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
             fade.effective_end, abs=0.05

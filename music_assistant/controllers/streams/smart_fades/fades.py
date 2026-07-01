@@ -18,7 +18,6 @@ from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSF
 from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
     SmartFadeNotApplicable,
-    TempoPlan,
     TransitionPlan,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
@@ -276,16 +275,6 @@ class SmartCrossFade(SmartFade):
         self.effective_end = self.plan.fade_out_window
         self.tempo_steps = self.plan.tempo_plan.steps
         self.fade_out_beats = self.planner.outgoing.beats
-
-    def _stretch_savings_until(self, t: float) -> float:
-        """
-        Seconds removed from the rendered stream by the piecewise stretch up to input time t.
-
-        Negative when the stretch slows the tail down (the rendered stream is lengthened).
-
-        :param t: Input-time position (seconds) up to which to integrate savings.
-        """
-        return TempoPlan(self.tempo_steps).savings_until(t)
 
 
 class StandardCrossFade(SmartFade):
