@@ -529,6 +529,19 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{instance_id}/default_name"
         self.set(conf_key, default_name)
 
+    def update_provider_last_error(self, instance_id: str, error: str | None) -> None:
+        """
+        Persist (or clear) a provider's last_error.
+
+        Only writes if the provider config still exists; this avoids re-creating a
+        config entry that was removed while a load was still in flight, which would
+        leave a stub entry without a domain. See #5728.
+        """
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        if not self.get(conf_key):
+            return
+        self.set(f"{conf_key}/last_error", error)
+
     @api_command("config/players")
     async def get_player_configs(
         self,
@@ -1442,6 +1455,14 @@ class ConfigController:
                 )
                 changed = True
 
+        # Drop orphaned provider config stubs: a load failure could write last_error back to a
+        # provider key whose config had already been removed (e.g. removing an unsupported
+        # provider while a load/retry was still in flight), leaving an entry with only a
+        # last_error and no 'domain'. Such stubs crash get_provider_configs on startup.
+        # TODO: remove after 2.11 release
+        if self._migrate_orphaned_provider_stubs():
+            changed = True
+
         # Clear self-referential protocol links: a player whose protocol_parent_id or
         # linked_protocol_ids pointed at its own id was hidden as its own protocol child.
         # TODO: remove after 2.10 release
@@ -1458,6 +1479,21 @@ class ConfigController:
 
         if changed:
             await self._async_save()
+
+    def _migrate_orphaned_provider_stubs(self) -> bool:
+        """Remove provider config stubs left without a 'domain' key (see #5728)."""
+        providers = self._data.get(CONF_PROVIDERS, {})
+        if not isinstance(providers, dict):
+            return False
+        orphaned = [
+            instance_id
+            for instance_id, cfg in providers.items()
+            if isinstance(cfg, dict) and "domain" not in cfg
+        ]
+        for instance_id in orphaned:
+            del providers[instance_id]
+            LOGGER.warning("Removed orphaned provider config stub %s", instance_id)
+        return bool(orphaned)
 
     def _migrate_self_referential_protocol_links(self) -> bool:
         """Clear protocol links that point a player at its own id."""
