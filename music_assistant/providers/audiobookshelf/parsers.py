@@ -39,6 +39,7 @@ from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
 
 from music_assistant.helpers.datetime import from_utc_timestamp
+from music_assistant.helpers.util import html_to_markdown
 
 
 def _build_cover_url(*, base_url: str, item_id: str, token: str, version: int | None = None) -> str:
@@ -125,7 +126,9 @@ def parse_podcast(
             )
         },
     )
-    mass_podcast.metadata.description = abs_podcast.media.metadata.description
+    if abs_podcast.media.metadata.description:
+        # ABS uses a rich-text editor, so descriptions may contain HTML markup
+        mass_podcast.metadata.description = html_to_markdown(abs_podcast.media.metadata.description)
     if token is not None and abs_podcast.media.cover_path is not None:
         image_url = _build_cover_url(
             base_url=base_url,
@@ -283,7 +286,11 @@ def parse_audiobook(
         },
         publisher=abs_audiobook.media.metadata.publisher,
     )
-    mass_audiobook.metadata.description = abs_audiobook.media.metadata.description
+    if abs_audiobook.media.metadata.description:
+        # ABS uses a rich-text editor, so descriptions may contain HTML markup
+        mass_audiobook.metadata.description = html_to_markdown(
+            abs_audiobook.media.metadata.description
+        )
     if abs_audiobook.media.metadata.language is not None:
         mass_audiobook.metadata.languages = UniqueList([abs_audiobook.media.metadata.language])
 

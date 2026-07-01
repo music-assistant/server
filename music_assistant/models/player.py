@@ -62,7 +62,7 @@ from music_assistant.constants import (
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
 )
-from music_assistant.helpers.util import get_changed_dataclass_values, strip_html_tags
+from music_assistant.helpers.util import get_changed_dataclass_values
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
@@ -1839,10 +1839,6 @@ class Player(ABC):
                 podcast = getattr(media_item, "podcast", None)
                 metadata = getattr(media_item, "metadata", None)
                 description = getattr(metadata, "description", None) if metadata else None
-                if description:
-                    # descriptions (e.g. audiobooks/podcasts) may contain HTML markup,
-                    # strip it as the player OSD shows this as plain text
-                    description = strip_html_tags(description)
                 image_url = (
                     self.mass.metadata.get_image_url(current_item.media_item.image, size=512)
                     or item_image_url

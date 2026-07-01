@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import html
 import importlib
 import logging
 import os
@@ -30,6 +29,7 @@ from urllib.parse import urlparse
 
 import chardet
 import ifaddr
+from markdownify import markdownify
 from music_assistant_models.enums import AlbumType, IdentifierType
 from music_assistant_models.errors import SetupFailedError
 from zeroconf import InterfaceChoice, IPVersion
@@ -208,7 +208,27 @@ title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", f
 german_von_pattern = re.compile(r'^"(?P<title>[^"]+)"\s+von\s+(?P<artist>.+)$', flags=re.IGNORECASE)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
-html_tag_pattern = re.compile(r"<[^>]+>")
+
+# HTML tags worth preserving as markdown; any other tag is stripped (text kept)
+MARKDOWN_SAFE_TAGS = [
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "i",
+    "li",
+    "ol",
+    "p",
+    "strong",
+    "ul",
+]
 
 VERSION_PARTS = (
     # list of common version strings
@@ -508,9 +528,15 @@ def strip_multi_space(line: str) -> str:
     return multi_space_pattern.sub(" ", line)
 
 
-def strip_html_tags(line: str) -> str:
-    """Strip HTML tags and unescape HTML entities from a string, returning plain text."""
-    return strip_multi_space(html.unescape(html_tag_pattern.sub(" ", line))).strip()
+def html_to_markdown(line: str) -> str:
+    """
+    Convert the safe subset of HTML markup in a string to markdown.
+
+    Unsupported or unsafe tags are stripped while their text content is kept.
+    Used to normalise provider descriptions (e.g. audiobooks/podcasts) so the
+    frontend renders them as markdown and the player OSD shows readable text.
+    """
+    return markdownify(line, convert=MARKDOWN_SAFE_TAGS).strip()
 
 
 def multi_strip(line: str) -> str:
