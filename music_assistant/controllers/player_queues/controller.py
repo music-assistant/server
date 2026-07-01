@@ -1488,7 +1488,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param items: The full source media items; an empty list clears the queue's sources.
         """
         self._queue_data[queue.queue_id].source_items = items
-        queue.sources = [ItemMapping.from_item(item) for item in items]
+        # keep every occurrence server-side (a source added more than once weights it up in the
+        # managed pool), but expose each distinct source only once on the wire for clients to show
+        seen: set[str] = set()
+        sources: list[ItemMapping] = []
+        for item in items:
+            mapping = ItemMapping.from_item(item)
+            if mapping.uri and mapping.uri in seen:
+                continue
+            if mapping.uri:
+                seen.add(mapping.uri)
+            sources.append(mapping)
+        queue.sources = sources
         # release any materialized finite-source state whose source is no longer present
         self._managed_pool.retain(
             queue.queue_id, {item.uri for item in items if item.uri is not None}

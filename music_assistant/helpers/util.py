@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import html
 import importlib
 import logging
 import os
@@ -30,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, T
 from urllib.parse import urlparse
 
 import ifaddr
+from markdownify import markdownify
 from music_assistant_models.enums import AlbumType, IdentifierType
 from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
@@ -472,6 +474,27 @@ english_by_pattern = re.compile(
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
 
+# HTML tags worth preserving as markdown; any other tag is stripped (text kept)
+MARKDOWN_SAFE_TAGS = [
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "i",
+    "li",
+    "ol",
+    "p",
+    "strong",
+    "ul",
+]
+
 VERSION_PARTS = (
     # list of common version strings
     "version",
@@ -769,6 +792,18 @@ def swap_title_artist_order(line: str) -> str:
 def strip_multi_space(line: str) -> str:
     """Strip multi-whitespace from line."""
     return multi_space_pattern.sub(" ", line)
+
+
+def html_to_markdown(line: str) -> str:
+    """Convert the safe subset of HTML in a string to markdown, stripping other tags."""
+    # unescape first so entity-encoded markup (e.g. "&lt;p&gt;") is handled too
+    return markdownify(
+        html.unescape(line),
+        convert=MARKDOWN_SAFE_TAGS,
+        escape_asterisks=False,
+        escape_underscores=False,
+        escape_misc=False,
+    ).strip()
 
 
 def multi_strip(line: str) -> str:
