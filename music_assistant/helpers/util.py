@@ -529,13 +529,7 @@ def strip_multi_space(line: str) -> str:
 
 
 def html_to_markdown(line: str) -> str:
-    """
-    Convert the safe subset of HTML markup in a string to markdown.
-
-    Unsupported or unsafe tags are stripped while their text content is kept.
-    Used to normalise provider descriptions (e.g. audiobooks/podcasts) so the
-    frontend renders them as markdown and the player OSD shows readable text.
-    """
+    """Convert the safe subset of HTML in a string to markdown, stripping other tags."""
     return markdownify(line, convert=MARKDOWN_SAFE_TAGS).strip()
 
 
