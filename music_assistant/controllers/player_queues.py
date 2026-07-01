@@ -1552,13 +1552,16 @@ class PlayerQueuesController(CoreController):
             return
         # handle play: replace current loaded/playing index with new item(s)
         if option == QueueOption.PLAY:
+            # an idle/empty queue has no current item to insert after, so insert at and
+            # start from the very first index instead of skipping past it
+            play_at_index = 0 if queue.current_index is None else insert_at_index
             await self.load(
                 queue_id,
                 queue_items=queue_items,
-                insert_at_index=insert_at_index,
+                insert_at_index=play_at_index,
                 shuffle=shuffle,
             )
-            next_index = min(insert_at_index, len(self._queue_items[queue_id]) - 1)
+            next_index = min(play_at_index, len(self._queue_items[queue_id]) - 1)
             await self.play_index(queue_id, next_index)
             return
         # handle add: add/append item(s) to the remaining queue items
