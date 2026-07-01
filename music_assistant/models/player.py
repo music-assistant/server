@@ -62,7 +62,7 @@ from music_assistant.constants import (
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
 )
-from music_assistant.helpers.util import get_changed_dataclass_values
+from music_assistant.helpers.util import get_changed_dataclass_values, html_to_markdown
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
@@ -1837,6 +1837,9 @@ class Player(ABC):
                 podcast = getattr(media_item, "podcast", None)
                 metadata = getattr(media_item, "metadata", None)
                 description = getattr(metadata, "description", None) if metadata else None
+                if description:
+                    # descriptions may contain HTML markup; the OSD shows plain text
+                    description = html_to_markdown(description)
                 image_url = (
                     self.mass.metadata.get_image_url(current_item.media_item.image, size=512)
                     or item_image_url

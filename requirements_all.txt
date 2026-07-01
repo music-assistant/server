@@ -46,6 +46,7 @@ ifaddr==0.2.0
 liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.12.2
+markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
 music-assistant-frontend==2.17.186
