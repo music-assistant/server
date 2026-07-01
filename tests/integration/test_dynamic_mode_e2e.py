@@ -144,6 +144,36 @@ async def test_entering_dynamic_mode_enables_smart_shuffle(e2e_mass: MusicAssist
 
 
 @pytest.mark.asyncio
+async def test_replace_next_dynamic_keeps_current_track_playing(e2e_mass: MusicAssistant) -> None:
+    """REPLACE_NEXT with a dynamic source rebuilds the tail without interrupting the current track."""
+    queue_id = demo_players(e2e_mass)[0].player_id
+    await _play_finite_album(e2e_mass, queue_id)
+    queue = e2e_mass.player_queues.get(queue_id)
+    assert queue is not None
+    assert queue.current_item is not None
+    assert queue.current_item.media_item is not None
+    playing_before = queue.current_item.media_item.item_id
+
+    test_prov = cast("MusicProvider", e2e_mass.get_provider("test"))
+    assert test_prov is not None
+    seed = await test_prov.get_track("4_4_0")
+    await e2e_mass.player_queues.play_media(
+        queue_id, radio_playlist_uri(seed), option=QueueOption.REPLACE_NEXT
+    )
+
+    queue = e2e_mass.player_queues.get(queue_id)
+    assert queue is not None
+    assert queue.is_dynamic is True
+    # the current track keeps playing across the tail rebuild (REPLACE_NEXT does not jump playback)
+    assert queue.current_item is not None
+    assert queue.current_item.media_item is not None
+    assert queue.current_item.media_item.item_id == playing_before
+    # the upcoming tail was replaced by the managed pool
+    assert queue.current_index is not None
+    assert len(e2e_mass.player_queues.items(queue_id)) > queue.current_index + 1
+
+
+@pytest.mark.asyncio
 async def test_shuffle_and_repeat_locked_while_dynamic(e2e_mass: MusicAssistant) -> None:
     """Shuffle and repeat toggles are rejected while the queue is in dynamic mode."""
     queue_id = demo_players(e2e_mass)[0].player_id

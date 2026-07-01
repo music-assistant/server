@@ -684,22 +684,24 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         :param queue_id: The queue entering dynamic mode.
         :param option: The enqueue option that triggered the transition. PLAY/REPLACE (or an empty
-            queue) rebuild from the front and start playback; ADD/NEXT keep the current track playing
-            and only rebuild the tail behind it.
+            queue) start playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT keep the current track
+            playing and only rebuild the tail behind it.
         """
         data = self._queue_data[queue_id]
         queue = data.queue
         # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
         queue.shuffle_enabled = True
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
-        if queue.current_index is not None and option in (QueueOption.ADD, QueueOption.NEXT):
-            # keep the current track + history playing; rebuild only the tail behind it
-            insert_at = queue.current_index + 1
-            start_playing = False
-        else:
-            # fresh start (PLAY/REPLACE or an empty queue): the pool becomes the whole upcoming queue
-            insert_at = queue.current_index + 1 if queue.current_index is not None else 0
+        if queue.current_index is None:
+            # nothing is playing yet (REPLACE cleared the queue, or it was empty): the pool becomes
+            # the whole queue and playback starts on it
+            insert_at = 0
             start_playing = True
+        else:
+            insert_at = queue.current_index + 1
+            # PLAY/REPLACE restart playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT keep the
+            # current track playing and only rebuild the tail behind it
+            start_playing = option in (QueueOption.PLAY, QueueOption.REPLACE)
         # drop the finite upcoming tail up front so the pool is sized and deduped against the kept
         # head only (the tail we are discarding must not exclude its own tracks from the new pool)
         data.items = data.items[:insert_at]
