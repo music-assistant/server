@@ -183,6 +183,7 @@ class TracksController(MediaControllerBase[Track]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -225,6 +226,7 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            played_only=played_only,
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
@@ -580,19 +582,6 @@ class TracksController(MediaControllerBase[Track]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_track.item_id, match)
                 processed_domains.add(provider.domain)
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Track,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Track to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        return [item]
 
     async def _add_library_item(self, item: Track, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""

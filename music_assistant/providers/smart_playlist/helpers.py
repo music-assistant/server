@@ -125,7 +125,6 @@ class SmartPlaylistRules:
     excluded_album_names: dict[int, str] = field(default_factory=dict)
     excluded_genre_ids: list[int] = field(default_factory=list)
     excluded_genre_names: dict[int, str] = field(default_factory=dict)
-    dedup_hours: int | None = None
     album_types: list[str] = field(default_factory=list)
     excluded_album_types: list[str] = field(default_factory=list)
     explicit: bool | None = None
@@ -173,7 +172,6 @@ class SmartPlaylistRules:
             "excluded_album_names": {str(k): v for k, v in self.excluded_album_names.items()},
             "excluded_genre_ids": self.excluded_genre_ids,
             "excluded_genre_names": {str(k): v for k, v in self.excluded_genre_names.items()},
-            "dedup_hours": self.dedup_hours,
             "album_types": self.album_types,
             "excluded_album_types": self.excluded_album_types,
             "explicit": self.explicit,
@@ -224,7 +222,6 @@ class SmartPlaylistRules:
             excluded_genre_names=_coerce_int_keyed_dict(
                 data.get("excluded_genre_names"), "excluded_genre_names"
             ),
-            dedup_hours=_coerce_optional_int(data.get("dedup_hours"), "dedup_hours"),
             album_types=_coerce_str_list(data.get("album_types"), "album_types"),
             excluded_album_types=_coerce_str_list(
                 data.get("excluded_album_types"), "excluded_album_types"
@@ -271,8 +268,6 @@ class SmartPlaylistRules:
             parts.append(f"Excl. genres: {', '.join(names)}")
         if self.excluded_track_uris:
             parts.append(f"Excl. {len(self.excluded_track_uris)} track(s)")
-        if self.dedup_hours is not None:
-            parts.append(f"No repeat within {self.dedup_hours}h")
         if self.album_types:
             parts.append(f"Album types: {', '.join(self.album_types)}")
         if self.excluded_album_types:
@@ -316,10 +311,6 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
     total_seeds = len(rules.all_seed_uris())
     if total_seeds > MAX_SEEDS:
         msg = f"Too many seeds: {total_seeds} > {MAX_SEEDS}"
-        raise InvalidDataError(msg)
-    if rules.dedup_hours is not None and not (1 <= rules.dedup_hours <= 2160):
-        # 2160h == 90 days, matching the playlog retention window the dedup relies on.
-        msg = f"dedup_hours must be between 1 and 2160, got {rules.dedup_hours}"
         raise InvalidDataError(msg)
     valid_album_types = {t.value for t in AlbumType}
     for at in rules.album_types:

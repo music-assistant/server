@@ -38,6 +38,23 @@ async def migrate(data: dict[str, Any]) -> bool:
         LOGGER.warning("Repaired corrupt tasks core configuration")
         changed = True
 
+    # Drop orphaned provider config stubs: a load failure could write last_error back to a
+    # provider key whose config had already been removed (e.g. removing an unsupported provider
+    # while a load/retry was still in flight), leaving an entry with only a last_error and no
+    # 'domain'. Such stubs are dead data and crash get_provider_configs on startup.
+    # TODO: remove after 2.11 release
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if isinstance(all_provider_configs, dict):
+        orphaned = [
+            instance_id
+            for instance_id, cfg in all_provider_configs.items()
+            if isinstance(cfg, dict) and "domain" not in cfg
+        ]
+        for instance_id in orphaned:
+            del all_provider_configs[instance_id]
+            LOGGER.warning("Removed orphaned provider config stub %s", instance_id)
+            changed = True
+
     # Collapse legacy multi-instance Fully Kiosk provider configs into a single
     # provider instance with a list of devices (matching the MPD provider pattern).
     # TODO: remove after 2.10 release

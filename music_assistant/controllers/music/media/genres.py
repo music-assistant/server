@@ -152,8 +152,12 @@ class GenreController(MediaControllerBase[Genre]):
             self.get_overview,
         )
         self.mass.register_api_command(
-            "music/genres/radio_mode_base_tracks",
-            self.get_radio_mode_base_tracks,
+            "music/genres/tracks",
+            self.tracks,
+        )
+        self.mass.register_api_command(
+            "music/genres/albums",
+            self.albums,
         )
         self.mass.register_api_command(
             "music/genres/scan_mappings",
@@ -230,7 +234,7 @@ class GenreController(MediaControllerBase[Genre]):
         FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
         return query, {}
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -239,6 +243,7 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         hide_empty: bool | None = None,
         media_type: MediaType | None = None,
         content_type: str | None = None,
@@ -302,6 +307,7 @@ class GenreController(MediaControllerBase[Genre]):
             order_by=order_by,
             extra_query_params=extra_params,
             extra_query_parts=extra_parts,
+            played_only=played_only,
         )
         if kwargs.get("_localized_fallback", True) and search and not items:
             # retry with the canonical name behind a localized query, so genres are findable
@@ -312,36 +318,69 @@ class GenreController(MediaControllerBase[Genre]):
                 offset=offset,
                 favorite=favorite,
                 order_by=order_by,
+                played_only=played_only,
                 hide_empty=hide_empty,
                 media_type=media_type,
                 content_type=content_type,
             )
         return items
 
-    async def radio_mode_base_tracks(
+    async def tracks(
         self,
-        item: Genre,
-        preferred_provider_instances: list[str] | None = None,
+        item_id: str | int,
+        limit: int = 500,
+        offset: int = 0,
+        order_by: str | None = None,
     ) -> list[Track]:
         """
-        Get the list of base tracks for a genre.
+        Return the tracks mapped to a genre.
 
-        :param item: The Genre to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        :param item_id: The genre's library item ID.
+        :param limit: Maximum number of tracks to return (0 = unlimited).
+        :param offset: Offset for pagination.
+        :param order_by: Sort order (e.g. "random").
         """
-        db_id = int(item.item_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
         query = (
             f"EXISTS(SELECT 1 FROM {gm} gm "
             "WHERE gm.media_id = tracks.item_id "
-            "AND gm.media_type = 'track' "
-            "AND gm.genre_id = :genre_id)"
+            "AND gm.media_type = 'track' AND gm.genre_id = :genre_id)"
         )
         return await self.mass.music.tracks.get_library_items_by_query(
             extra_query_parts=[query],
-            extra_query_params={"genre_id": db_id},
-            limit=50,
-            order_by="random",
+            extra_query_params={"genre_id": int(item_id)},
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+        )
+
+    async def albums(
+        self,
+        item_id: str | int,
+        limit: int = 500,
+        offset: int = 0,
+        order_by: str | None = None,
+    ) -> list[Album]:
+        """
+        Return the albums mapped to a genre.
+
+        :param item_id: The genre's library item ID.
+        :param limit: Maximum number of albums to return (0 = unlimited).
+        :param offset: Offset for pagination.
+        :param order_by: Sort order (e.g. "random").
+        """
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+        query = (
+            f"EXISTS(SELECT 1 FROM {gm} gm "
+            "WHERE gm.media_id = albums.item_id "
+            "AND gm.media_type = 'album' AND gm.genre_id = :genre_id)"
+        )
+        return await self.mass.music.albums.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"genre_id": int(item_id)},
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
         )
 
     async def mapped_media(
@@ -370,17 +409,6 @@ class GenreController(MediaControllerBase[Genre]):
         t_limit = track_limit if track_limit is not None else limit
         a_limit = album_limit if album_limit is not None else limit
         ar_limit = artist_limit if artist_limit is not None else limit
-
-        track_query = (
-            f"EXISTS(SELECT 1 FROM {gm} gm "
-            "WHERE gm.media_id = tracks.item_id "
-            "AND gm.media_type = 'track' AND gm.genre_id = :genre_id)"
-        )
-        album_query = (
-            f"EXISTS(SELECT 1 FROM {gm} gm "
-            "WHERE gm.media_id = albums.item_id "
-            "AND gm.media_type = 'album' AND gm.genre_id = :genre_id)"
-        )
         artist_query = (
             f"EXISTS(SELECT 1 FROM {gm} gm "
             "WHERE gm.media_id = artists.item_id "
@@ -388,20 +416,8 @@ class GenreController(MediaControllerBase[Genre]):
         )
 
         tracks, albums, artists = await asyncio.gather(
-            self.mass.music.tracks.get_library_items_by_query(
-                extra_query_parts=[track_query],
-                extra_query_params={"genre_id": db_id},
-                limit=t_limit,
-                offset=offset,
-                order_by=order_by,
-            ),
-            self.mass.music.albums.get_library_items_by_query(
-                extra_query_parts=[album_query],
-                extra_query_params={"genre_id": db_id},
-                limit=a_limit,
-                offset=offset,
-                order_by=order_by,
-            ),
+            self.tracks(db_id, limit=t_limit, offset=offset, order_by=order_by),
+            self.albums(db_id, limit=a_limit, offset=offset, order_by=order_by),
             self.mass.music.artists.get_library_items_by_query(
                 extra_query_parts=[artist_query],
                 extra_query_params={"genre_id": db_id},
@@ -482,17 +498,6 @@ class GenreController(MediaControllerBase[Genre]):
             {"media_type": media_type.value, "media_id": media_id_int, "is_derived": 1},
         )
         return row is not None
-
-    async def get_radio_mode_base_tracks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str | None = None,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """Return base tracks for genre radio mode."""
-        provider = provider_instance_id_or_domain or "library"
-        item = await self.get(item_id, provider)
-        return await self.radio_mode_base_tracks(item, preferred_provider_instances)
 
     async def get_overview(
         self,

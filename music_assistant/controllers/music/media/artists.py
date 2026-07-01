@@ -105,6 +105,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
         **kwargs: Any,
@@ -141,6 +142,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            played_only=played_only,
             in_library_only=True,
         )
 
@@ -798,24 +800,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         # delete the artist itself from db
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Artist,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Artist to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        if item.artist_type != ArtistType.SINGER:
-            raise MusicAssistantError("Radio mode tracks only exists for artists of type ARTIST.")
-        # prefer the (top) tracks listing as radio seed, falling back to all tracks
-        if result := await self.top_tracks(item.item_id, item.provider):
-            return result
-        return await self.tracks(item.item_id, item.provider)
 
     async def match_provider(
         self, db_artist: Artist, provider: MusicProvider, strict: bool = True

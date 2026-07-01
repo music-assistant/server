@@ -47,7 +47,7 @@ ARTIST_REPAIR_PASSES = 4
 ARTIST_SWAP_WINDOW = 6
 
 
-class SmartShuffleHelper:
+class SmartShuffle:
     """Produce a recency-aware, well-spaced ordering of upcoming queue items."""
 
     def __init__(self, queues: PlayerQueuesController) -> None:
@@ -79,11 +79,11 @@ class SmartShuffleHelper:
         :param queue: The queue being (re)shuffled; its owner scopes the play history.
         :param items: The upcoming queue items to reorder.
         """
-        windows = self._windows(queue.queue_id)
+        windows = self.windows(queue.queue_id)
         snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
         return _arrange(items, snapshot, windows)
 
-    def _windows(self, queue_id: str) -> RecencyWindows:
+    def windows(self, queue_id: str) -> RecencyWindows:
         """Read the configured recency windows (in seconds) for the queue."""
         return RecencyWindows(
             song_seconds=self._window_seconds(

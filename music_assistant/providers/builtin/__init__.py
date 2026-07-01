@@ -71,6 +71,7 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
+from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
@@ -1169,24 +1170,30 @@ class BuiltinProvider(MusicProvider):
 
     async def _get_builtin_playlist_infinite_mix(self) -> list[Track]:
         """Return 25 random library tracks for the Infinite Mix dynamic playlist."""
-        result: list[Track] = []
-        for idx, track in enumerate(
-            await self.mass.music.tracks.library_items(limit=25, order_by="random"), 1
-        ):
-            track.position = idx
-            result.append(track)
-        return result
+        return await self._infinite_mix_tracks(favorite=None)
 
     async def _get_builtin_playlist_infinite_mix_favorites(self) -> list[Track]:
         """Return 25 random favorited tracks for the Infinite Mix (favorites) dynamic playlist."""
-        result: list[Track] = []
-        for idx, track in enumerate(
-            await self.mass.music.tracks.library_items(favorite=True, limit=25, order_by="random"),
-            1,
-        ):
+        return await self._infinite_mix_tracks(favorite=True)
+
+    async def _infinite_mix_tracks(self, *, favorite: bool | None) -> list[Track]:
+        """
+        Return up to 25 random (optionally favorited) library tracks for an Infinite Mix.
+
+        :param favorite: Restrict to favorited tracks when True; all library tracks when None.
+        """
+        # over-fetch when a recency filter is published so dropping recently-played tracks still
+        # leaves a full mix; the pool is trimmed back to the mix size after filtering
+        limit = 25 * 3 if get_track_filter() is not None else 25
+        candidates = list(
+            await self.mass.music.tracks.library_items(
+                favorite=favorite, limit=limit, order_by="random"
+            )
+        )
+        tracks = filter_tracks(candidates)[:25]
+        for idx, track in enumerate(tracks, 1):
             track.position = idx
-            result.append(track)
-        return result
+        return tracks
 
     async def _get_builtin_playlist_tracks(
         self, builtin_playlist_id: str

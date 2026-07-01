@@ -25,7 +25,6 @@ from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
-    from music_assistant_models.media_items import Track
 
     from music_assistant import MusicAssistant
 
@@ -55,6 +54,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         **kwargs: Any,
     ) -> list[Podcast]:
         """
@@ -76,6 +76,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
+            played_only=played_only,
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
@@ -152,20 +153,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 and not podcast.provider_mappings.intersection(prov_item.provider_mappings)
             )
         return result
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Podcast,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Podcast to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        msg = "Dynamic tracks not supported for Podcast MediaItem"
-        raise NotImplementedError(msg)
 
     async def match_provider(
         self, db_podcast: Podcast, provider: MusicProvider, strict: bool = True

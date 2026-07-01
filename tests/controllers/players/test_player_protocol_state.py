@@ -123,6 +123,25 @@ class TestFinalPlaybackStateWithActiveProtocol:
 
         assert player.state.playback_state == PlaybackState.PLAYING
 
+    def test_negative_elapsed_time_is_clamped(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+    ) -> None:
+        """A negative provider elapsed time is clamped at the elapsed_time accessor."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_playback_state = PlaybackState.PAUSED
+        player._attr_elapsed_time = -1.0
+        player._attr_elapsed_time_last_updated = time.time()
+
+        controller._players = {"player_1": player}
+
+        player.update_state(signal_event=False)
+
+        assert player.elapsed_time == 0
+        assert player.corrected_elapsed_time == 0
+        assert player.state.elapsed_time == 0
+
 
 def _audio_source_queue(elapsed: float, updated: float) -> MagicMock:
     """Build a mock queue whose current item is an AudioSource carrying a source clock."""

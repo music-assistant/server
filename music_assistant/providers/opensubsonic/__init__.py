@@ -14,7 +14,6 @@ from .sonic_provider import (
     CONF_ENABLE_LEGACY_AUTH,
     CONF_ENABLE_PODCASTS,
     CONF_NEW_ALBUMS,
-    CONF_OVERRIDE_OFFSET,
     CONF_PAGE_SIZE,
     CONF_PLAYED_ALBUMS,
     CONF_RAW_FILE,
@@ -100,12 +99,6 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=CONF_ENABLE_LEGACY_AUTH,
-            type=ConfigEntryType.BOOLEAN,
-            required=True,
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_OVERRIDE_OFFSET,
             type=ConfigEntryType.BOOLEAN,
             required=True,
             default_value=False,

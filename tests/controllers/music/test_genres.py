@@ -1273,32 +1273,48 @@ class TestRestoreDefaultGenres:
 
 
 class TestQueryMethods:
-    """Tests for radio_mode, mapped_media, and overview endpoints."""
+    """Tests for the tracks, albums, mapped_media, and overview endpoints."""
 
-    async def test_radio_mode_empty(self, genre_ctrl: GenreController) -> None:
-        """No mapped tracks returns empty list."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("EmptyRadio"))
-        tracks = await genre_ctrl.radio_mode_base_tracks(genre)
-        assert tracks == []
+    async def test_genre_tracks_empty(self, genre_ctrl: GenreController) -> None:
+        """A genre with no mapped tracks returns an empty list."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("EmptyGenre"))
+        assert await genre_ctrl.tracks(genre.item_id) == []
 
-    async def test_radio_mode_returns_tracks(
+    async def test_genre_tracks_returns_mapped(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Mapped tracks are returned."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("RadioGenre"))
-        track = await _add_test_track(mass, "Radio Track")
+        """Tracks mapped to a genre are returned."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("TracksGenre"))
+        track = await _add_test_track(mass, "Genre Track")
         await genre_ctrl.add_media_mapping(
-            genre.item_id, MediaType.TRACK, track.item_id, "RadioGenre"
+            genre.item_id, MediaType.TRACK, track.item_id, "TracksGenre"
         )
-        tracks = await genre_ctrl.radio_mode_base_tracks(genre)
-        assert len(tracks) >= 1
-        assert any(t.name == "Radio Track" for t in tracks)
+        tracks = await genre_ctrl.tracks(genre.item_id)
+        assert any(t.name == "Genre Track" for t in tracks)
 
-    async def test_radio_mode_limit_50(self, genre_ctrl: GenreController) -> None:
-        """At most 50 tracks returned (hardcoded limit in radio_mode_base_tracks)."""
-        genre = await genre_ctrl.add_item_to_library(_make_genre("RadioLimit"))
-        tracks = await genre_ctrl.radio_mode_base_tracks(genre)
-        assert len(tracks) <= 50
+    async def test_genre_tracks_respects_limit(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """The limit parameter caps the number of tracks returned."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("LimitGenre"))
+        for i in range(3):
+            track = await _add_test_track(mass, f"Limit Track {i}")
+            await genre_ctrl.add_media_mapping(
+                genre.item_id, MediaType.TRACK, track.item_id, "LimitGenre"
+            )
+        assert len(await genre_ctrl.tracks(genre.item_id, limit=2)) == 2
+
+    async def test_genre_albums_returns_mapped(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Albums mapped to a genre are returned."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("AlbumsGenre"))
+        album = await _add_test_album(mass, "Genre Album")
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.ALBUM, album.item_id, "AlbumsGenre"
+        )
+        albums = await genre_ctrl.albums(genre.item_id)
+        assert any(a.name == "Genre Album" for a in albums)
 
     async def test_mapped_media_returns_all_types(
         self, mass: MusicAssistant, genre_ctrl: GenreController

@@ -13,7 +13,7 @@ from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.autoplay import (
     AUTOPLAY_BATCH_SIZE,
-    AutoplayHelper,
+    Autoplay,
     AutoplayMode,
 )
 
@@ -50,15 +50,15 @@ def _playlist(item_id: str = "pl1") -> Playlist:
     )
 
 
-def _helper() -> tuple[AutoplayHelper, MagicMock]:
+def _helper() -> tuple[Autoplay, MagicMock]:
     """
-    Build an AutoplayHelper and return it together with its mocked controller.
+    Build an Autoplay and return it together with its mocked controller.
 
     The returned MagicMock stands in for the owning controller; configure expectations and
     make assertions through it (its attributes are untyped, so mock wiring stays simple).
     """
     queues = MagicMock()
-    return AutoplayHelper(queues), queues
+    return Autoplay(queues), queues
 
 
 def _queue(*seeds: Track, queue_id: str = "q1") -> PlayerQueue:
