@@ -10,13 +10,6 @@ from abc import ABC, abstractmethod
 from enum import StrEnum
 
 
-class ShelfType(StrEnum):
-    """Shelving EQ band; values are the ffmpeg filter names."""
-
-    LOW = "lowshelf"
-    HIGH = "highshelf"
-
-
 class Filter(ABC):
     """Abstract base class for audio filters."""
 
@@ -130,6 +123,13 @@ class FadeOutTrimFilter(Filter):
     def __repr__(self) -> str:
         """Return string representation of FadeOutTrimFilter."""
         return f"FadeOutTrim(end={self.fadeout_end_pos:.2f}s, trimmed={self.trimmed_seconds:.2f}s)"
+
+
+class ShelfType(StrEnum):
+    """Shelving EQ band; values are the ffmpeg filter names."""
+
+    LOW = "lowshelf"
+    HIGH = "highshelf"
 
 
 class ShelfFilter(Filter):
