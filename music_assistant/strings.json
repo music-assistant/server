@@ -319,6 +319,8 @@
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
     "playback": "Queue Playback",
+    "items_to_select": "Items to select",
+    "default_enqueue_option": "Default enqueue option",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
     "smart_shuffle": "Smart shuffle",

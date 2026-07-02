@@ -90,6 +90,7 @@ if TYPE_CHECKING:
         ConfigEntry,
         ConfigValueOption,
         ConfigValueType,
+        CoreConfig,
     )
     from music_assistant_models.queue_item import QueueItem
 
@@ -140,8 +141,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
-        """Return all Config Entries for this core module (if any)."""
-        return core_config_entries()
+        """Return the core-module (global) config entries: the queue-controller defaults."""
+        # kept cheap (no library lookup): the config controller populates the global autoplay
+        # playlist dropdown for the UI, so this stays fast on the config value/parse path
+        return core_config_entries(self.mass)
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Apply a global queue-settings change: refresh derived per-queue state and notify clients."""
+        await super().update_config(config, changed_keys)
+        if not any(key.startswith("values/") for key in changed_keys):
+            return
+        # queues that follow a changed global value may flip their derived indicators, so refresh
+        # and signal them (mirrors what save_player_queue_config does for a single queue)
+        for queue in self.all():
+            queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+            queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+            self.signal_update(queue.queue_id)
 
     def get_queue_config_entries(
         self, playlist_options: list[ConfigValueOption] | None = None
@@ -1403,9 +1418,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         return await self._media_resolver.get_playlist_tracks(playlist, start_item, sort_by)
 
-    def recency_windows(self, queue_id: str) -> RecencyWindows:
-        """Return the configured recency windows for a queue (used for recency-aware gating)."""
-        return self._smart_shuffle.windows(queue_id)
+    def recency_windows(self) -> RecencyWindows:
+        """Return the configured recency windows (a global setting; used for recency-aware gating)."""
+        return self._smart_shuffle.windows()
 
     async def player_media_from_queue_item(self, queue_item: QueueItem) -> PlayerMedia:
         """

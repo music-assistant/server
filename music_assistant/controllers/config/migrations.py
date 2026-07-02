@@ -9,16 +9,24 @@ from music_assistant_models.enums import CrossfadeMode
 
 from music_assistant.constants import (
     CONF_CORE,
+    CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_SMART_FADES_MODE,
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+    CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
+)
+from music_assistant.controllers.player_queues.constants import (
+    CONF_SMART_SHUFFLE_ARTIST_RECENCY,
+    CONF_SMART_SHUFFLE_DUPLICATE_GAP,
+    CONF_SMART_SHUFFLE_ENABLED,
+    CONF_SMART_SHUFFLE_SONG_RECENCY,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -130,14 +138,22 @@ async def migrate(data: dict[str, Any]) -> bool:
     if _migrate_player_queue_settings(data):
         changed = True
 
+    # Adopt the global-with-override model for queue settings: convert the former boolean toggles to
+    # their select strings, and promote the now global-only settings (crossfade duration, smart
+    # shuffle recency windows) to the Player Queues core config. Runs after the player->queue move
+    # above so any values it just landed are picked up here.
+    # TODO: remove after 2.10 release
+    if _migrate_global_queue_settings(data):
+        changed = True
+
     return changed
 
 
 def _migrate_player_queue_settings(data: dict[str, Any]) -> bool:
     """Move queue-scoped settings from the per-player config to the per-queue config."""
     moved_keys = (
-        CONF_ENTRY_CROSSFADE_DURATION.key,
-        CONF_ENTRY_VOLUME_NORMALIZATION.key,
+        CONF_CROSSFADE_DURATION,
+        CONF_VOLUME_NORMALIZATION,
     )
     all_player_configs = data.get(CONF_PLAYERS, {})
     if not isinstance(all_player_configs, dict):
@@ -175,6 +191,85 @@ def _migrate_player_queue_settings(data: dict[str, Any]) -> bool:
         LOGGER.info("Migrated queue settings for %s", player_id)
         changed = True
     return changed
+
+
+def _migrate_global_queue_settings(data: dict[str, Any]) -> bool:
+    """
+    Adopt the global-with-override model for the per-queue settings.
+
+    The two former boolean toggles become their select strings (so a queue can also follow the
+    global value), and the settings that are now global-only are promoted to the Player Queues core
+    config. Queues that stored nothing keep nothing and therefore fall back to the new "global"
+    default. Idempotent: a second run finds only select strings and no per-queue global-only values.
+    """
+    all_queue_configs = data.get(CONF_PLAYER_QUEUES, {})
+    if not isinstance(all_queue_configs, dict):
+        return False
+    changed = False
+    # 1. convert the former booleans (True/False) to their select strings (enabled/disabled)
+    bool_to_select = {True: CONF_VALUE_ENABLED, False: CONF_VALUE_DISABLED}
+    for queue_cfg in all_queue_configs.values():
+        if not isinstance(queue_cfg, dict):
+            continue
+        values = queue_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        for key in (CONF_VOLUME_NORMALIZATION, CONF_SMART_SHUFFLE_ENABLED):
+            if isinstance(values.get(key), bool):
+                values[key] = bool_to_select[values[key]]
+                changed = True
+    # 2. promote the now global-only settings to the Player Queues core config
+    global_only_keys = (
+        CONF_CROSSFADE_DURATION,
+        CONF_SMART_SHUFFLE_SONG_RECENCY,
+        CONF_SMART_SHUFFLE_ARTIST_RECENCY,
+        CONF_SMART_SHUFFLE_DUPLICATE_GAP,
+    )
+    for key in global_only_keys:
+        if _promote_queue_setting_to_global(data, key):
+            changed = True
+    return changed
+
+
+def _promote_queue_setting_to_global(data: dict[str, Any], key: str) -> bool:
+    """
+    Promote a (now global-only) per-queue setting to global config and drop the per-queue copies.
+
+    A single value shared by every queue that set it is promoted so the user's preference is kept;
+    mixed values fall back to the new default. Mirrors _migrate_volume_normalization_target.
+    """
+    all_queue_configs = data.get(CONF_PLAYER_QUEUES, {})
+    if not isinstance(all_queue_configs, dict):
+        return False
+    stored_values: set[Any] = set()
+    for queue_cfg in all_queue_configs.values():
+        if not isinstance(queue_cfg, dict):
+            continue
+        values = queue_cfg.get("values")
+        if isinstance(values, dict) and key in values:
+            stored_values.add(values[key])
+    if not stored_values:
+        return False
+    # promote only a single consistent value (mixed values fall back to the new default), and never
+    # clobber a value the user already set globally; only touch the core config when promoting
+    existing_core = data.get(CONF_CORE, {}).get(CONF_PLAYER_QUEUES, {})
+    existing_values = existing_core.get("values", {}) if isinstance(existing_core, dict) else {}
+    if len(stored_values) == 1 and key not in existing_values:
+        core_values = (
+            data.setdefault(CONF_CORE, {})
+            .setdefault(CONF_PLAYER_QUEUES, {"domain": CONF_PLAYER_QUEUES})
+            .setdefault("values", {})
+        )
+        core_values[key] = next(iter(stored_values))
+        LOGGER.info("Promoted per-queue %s to the global Player Queues config", key)
+    # the setting is global-only now, so drop every per-queue copy
+    for queue_cfg in all_queue_configs.values():
+        if not isinstance(queue_cfg, dict):
+            continue
+        values = queue_cfg.get("values")
+        if isinstance(values, dict):
+            values.pop(key, None)
+    return True
 
 
 def _migrate_volume_normalization_target(data: dict[str, Any]) -> bool:

@@ -124,7 +124,7 @@ class ManagedPool:
         """
         queue_data = self.queues.queue_data(queue_id)
         queue = queue_data.queue
-        windows = self.queues.recency_windows(queue_id)
+        windows = self.queues.recency_windows()
         snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
         # publish a best-effort recency filter so dynamic-playlist generation can pre-skip recently
         # played tracks while over-generating; allocate_refill still applies the authoritative gate

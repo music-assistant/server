@@ -55,6 +55,10 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_FLOW_MODE_SAMPLE_RATE,
     CONF_OUTPUT_CHANNELS,
+    CONF_PLAYER_QUEUES,
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+    CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_TARGET,
@@ -353,7 +357,6 @@ class StreamsAudio:
         streamdetails.fade_in = fade_in
 
         streamdetails.prefer_album_loudness = prefer_album_loudness
-        queue_settings = mass.config.get_player_queue_config(streamdetails.queue_id)
         core_config = await mass.config.get_core_config("streams")
         conf_volume_normalization_target = float(
             str(core_config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
@@ -374,8 +377,14 @@ class StreamsAudio:
                 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value,
             )
         streamdetails.target_loudness = conf_volume_normalization_target
+        volume_normalization_enabled = (
+            mass.config.get_effective_player_queue_config_value(
+                streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
+            )
+            != CONF_VALUE_DISABLED
+        )
         streamdetails.volume_normalization_mode = get_normalization_mode(
-            core_config, queue_settings, streamdetails
+            core_config, volume_normalization_enabled, streamdetails
         )
 
         # attach the DSP details of all group members
@@ -1504,9 +1513,14 @@ class StreamsAudio:
             # updated streamdetails.loudness since get_stream_details was called
             if streamdetails.queue_id:
                 core_config = await self.mass.config.get_core_config("streams")
-                queue_settings = self.mass.config.get_player_queue_config(streamdetails.queue_id)
+                volume_normalization_enabled = (
+                    self.mass.config.get_effective_player_queue_config_value(
+                        streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
+                    )
+                    != CONF_VALUE_DISABLED
+                )
                 streamdetails.volume_normalization_mode = get_normalization_mode(
-                    core_config, queue_settings, streamdetails
+                    core_config, volume_normalization_enabled, streamdetails
                 )
 
         # handle volume normalization
@@ -2036,9 +2050,10 @@ class StreamsAudio:
             standard_crossfade_duration = 0
         else:
             crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
-            # fallback matches CONF_ENTRY_CROSSFADE_DURATION's default
-            standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 8
+            # crossfade duration is a global (queue controller) setting; fallback matches
+            # CONF_ENTRY_CROSSFADE_DURATION's default
+            standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
         flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART

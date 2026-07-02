@@ -31,7 +31,6 @@ CONF_SMART_SHUFFLE_SONG_RECENCY = "smart_shuffle_song_recency"
 CONF_SMART_SHUFFLE_ARTIST_RECENCY = "smart_shuffle_artist_recency"
 CONF_SMART_SHUFFLE_DUPLICATE_GAP = "smart_shuffle_duplicate_gap"
 
-SMART_SHUFFLE_ENABLED_DEFAULT = False
 # window preset values are stored in seconds (0 = off)
 SMART_SHUFFLE_SONG_RECENCY_DEFAULT = 7 * 24 * 3600
 SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT = 30 * 60
