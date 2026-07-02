@@ -15,7 +15,10 @@
         "similar": "Similar to what you played",
         "library": "Infinite mix from your library",
         "playlist": "Tracks from a playlist",
-        "global": "Global default"
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {
         "similar": "No music or metadata provider that can supply similar tracks is currently available."
@@ -38,7 +41,10 @@
       "options": {
         "standard_crossfade": "Standard crossfade",
         "smart_crossfade": "Smart crossfade (beat-matched)",
-        "global": "Global default"
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {
         "smart_crossfade": "Not available on this server: smart crossfade needs the smart fades analysis provider and a larger audio buffer (balanced or higher)."
@@ -53,7 +59,10 @@
       "options": {
         "enabled": "Enabled",
         "disabled": "Disabled",
-        "global": "Global default"
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
       }
     },
     "smart_shuffle_song_recency": {
@@ -104,7 +113,10 @@
       "options": {
         "enabled": "Enabled",
         "disabled": "Disabled",
-        "global": "Global default"
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
       }
     },
     "default_enqueue_select_artist": {
