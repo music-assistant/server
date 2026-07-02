@@ -418,7 +418,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         # route the autoplay batch through the recency engine so a recently-heard track isn't
         # immediately re-added (ungated fallback keeps autoplay going if everything is recent)
-        windows = self._smart_shuffle.windows(queue_id)
+        windows = self._smart_shuffle.windows()
         snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
         tracks = gate_tracks(
             [track for track in tracks if isinstance(track, Track)], snapshot, windows

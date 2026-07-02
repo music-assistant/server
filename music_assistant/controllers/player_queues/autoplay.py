@@ -65,9 +65,11 @@ class Autoplay:
         """
         Return the configured Autoplay mode for the given queue.
 
+        Follows the global (queue controller) mode when the per-queue value is "global".
+
         :param queue_id: The queue to read the configured Autoplay mode for.
         """
-        raw = self.mass.config.get_raw_player_queue_config_value(
+        raw = self.mass.config.get_effective_player_queue_config_value(
             queue_id, CONF_AUTOPLAY_MODE, AUTOPLAY_MODE_DEFAULT_VALUE
         )
         try:
@@ -113,7 +115,7 @@ class Autoplay:
         :param queue: The queue being refilled.
         :param exclude: Tracks already present in the queue, to avoid immediate repeats.
         """
-        uri = self.mass.config.get_raw_player_queue_config_value(
+        uri = self.mass.config.get_effective_player_queue_config_value(
             queue.queue_id, CONF_AUTOPLAY_PLAYLIST
         )
         if not uri:

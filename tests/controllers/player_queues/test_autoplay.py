@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import CrossfadeMode
 from music_assistant_models.media_items import Playlist, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 
+from music_assistant.constants import CONF_VALUE_GLOBAL
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.autoplay import (
     AUTOPLAY_BATCH_SIZE,
@@ -75,14 +75,14 @@ def _queue(*seeds: Track, queue_id: str = "q1") -> PlayerQueue:
 def test_resolve_mode_reads_config() -> None:
     """A stored mode value is parsed into the matching enum."""
     helper, queues = _helper()
-    queues.mass.config.get_raw_player_queue_config_value = MagicMock(return_value="library")
+    queues.mass.config.get_effective_player_queue_config_value = MagicMock(return_value="library")
     assert helper.resolve_mode("q1") == AutoplayMode.LIBRARY
 
 
 def test_resolve_mode_defaults_to_auto() -> None:
     """An unknown/blank value falls back to the AUTO mode."""
     helper, queues = _helper()
-    queues.mass.config.get_raw_player_queue_config_value = MagicMock(return_value="bogus")
+    queues.mass.config.get_effective_player_queue_config_value = MagicMock(return_value="bogus")
     assert helper.resolve_mode("q1") == AutoplayMode.AUTO
 
 
@@ -163,7 +163,7 @@ async def test_get_library_tracks_tops_up_past_unavailable_genre_matches() -> No
 async def test_get_playlist_tracks_returns_filtered_batch() -> None:
     """The configured playlist's tracks are returned minus the excluded ones."""
     helper, queues = _helper()
-    queues.mass.config.get_raw_player_queue_config_value = MagicMock(
+    queues.mass.config.get_effective_player_queue_config_value = MagicMock(
         return_value="library://playlist/pl1"
     )
     queues.mass.music.get_item_by_uri = AsyncMock(return_value=_playlist())
@@ -178,7 +178,7 @@ async def test_get_playlist_tracks_returns_filtered_batch() -> None:
 async def test_get_playlist_tracks_without_config_returns_empty() -> None:
     """Playlist mode with no configured playlist yields nothing (and does not crash)."""
     helper, queues = _helper()
-    queues.mass.config.get_raw_player_queue_config_value = MagicMock(return_value=None)
+    queues.mass.config.get_effective_player_queue_config_value = MagicMock(return_value=None)
 
     assert await helper.get_playlist_tracks(_queue(), exclude=set()) == []
 
@@ -187,7 +187,7 @@ async def test_get_playlist_tracks_without_config_returns_empty() -> None:
 
 
 def test_get_queue_config_entries_categories_and_dependencies() -> None:
-    """Autoplay and crossfade entries land in their own categories with the playlist depends_on."""
+    """Per-queue entries land in their categories, default to 'global' and offer a global option."""
     fake = MagicMock()
     fake.mass.music.providers = []
     fake.mass.streams.smart_fades_available = False
@@ -196,19 +196,19 @@ def test_get_queue_config_entries_categories_and_dependencies() -> None:
     by_key = {entry.key: entry for entry in entries}
 
     assert by_key["autoplay_mode"].category == "autoplay"
-    assert by_key["autoplay_mode"].default_value == AutoplayMode.AUTO.value
+    assert by_key["autoplay_mode"].default_value == CONF_VALUE_GLOBAL
     assert by_key["autoplay_playlist"].depends_on == "autoplay_mode"
     assert by_key["autoplay_playlist"].depends_on_value == AutoplayMode.PLAYLIST.value
     assert by_key["crossfade_mode"].category == "crossfade"
-    assert by_key["crossfade_duration"].category == "crossfade"
+    assert by_key["crossfade_mode"].default_value == CONF_VALUE_GLOBAL
     assert by_key["volume_normalization"].category == "audio"
-    # the standard crossfade duration is a normal (non-advanced) setting that only applies when
-    # the standard crossfade mode is selected, and is ordered after the mode entry
-    assert by_key["crossfade_duration"].advanced is False
-    assert by_key["crossfade_duration"].depends_on == "crossfade_mode"
-    assert by_key["crossfade_duration"].depends_on_value == CrossfadeMode.STANDARD_CROSSFADE.value
-    keys = [entry.key for entry in entries]
-    assert keys.index("crossfade_mode") < keys.index("crossfade_duration")
+    assert by_key["volume_normalization"].default_value == CONF_VALUE_GLOBAL
+    # crossfade duration and the recency windows are global-only, so they are not per-queue entries
+    assert "crossfade_duration" not in by_key
+    assert "smart_shuffle_song_recency" not in by_key
+    # every headline setting offers a 'global' option that follows the queue-controller default
+    for key in ("autoplay_mode", "crossfade_mode", "volume_normalization", "smart_shuffle_enabled"):
+        assert CONF_VALUE_GLOBAL in {opt.value for opt in by_key[key].options}
     # the 'similar' option is disabled when no provider can supply similar tracks
     similar_option = next(
         opt for opt in by_key["autoplay_mode"].options if opt.value == AutoplayMode.SIMILAR.value

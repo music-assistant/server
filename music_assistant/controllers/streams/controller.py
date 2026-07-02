@@ -49,6 +49,7 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
+    CONF_PLAYER_QUEUES,
     CONF_PUBLISH_IP,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -213,7 +214,7 @@ class StreamsController(CoreController):
             if self.smart_fades_available
             else CrossfadeMode.STANDARD_CROSSFADE
         )
-        mode = self.mass.config.get_raw_player_queue_config_value(
+        mode = self.mass.config.get_effective_player_queue_config_value(
             queue.queue_id, CONF_CROSSFADE_MODE, default_mode
         )
         if mode == CrossfadeMode.SMART_CROSSFADE and self.smart_fades_available:
@@ -687,9 +688,10 @@ class StreamsController(CoreController):
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
-                # fallback matches CONF_ENTRY_CROSSFADE_DURATION's default
-                standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
-                    queue.queue_id, CONF_CROSSFADE_DURATION, 8
+                # crossfade duration is a global (queue controller) setting; fallback matches
+                # CONF_ENTRY_CROSSFADE_DURATION's default
+                standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                    CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
                 )
             if (
                 crossfade_mode != CrossfadeMode.DISABLED
