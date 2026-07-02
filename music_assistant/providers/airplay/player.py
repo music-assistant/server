@@ -244,18 +244,17 @@ class AirPlayPlayer(Player):
                 key=CONF_AIRPLAY_PROTOCOL,
                 type=ConfigEntryType.INTEGER,
                 required=False,
+                # a protocol the device does not advertise is shown disabled (with a reason)
+                # rather than omitted, so the option set is consistent across devices.
                 options=[
-                    opt
-                    for opt in (
-                        ConfigValueOption(0),
-                        ConfigValueOption(StreamingProtocol.RAOP.value)
-                        if self.raop_discovery_info
-                        else None,
-                        ConfigValueOption(StreamingProtocol.AIRPLAY2.value)
-                        if self.airplay_discovery_info
-                        else None,
-                    )
-                    if opt is not None
+                    ConfigValueOption(0),
+                    ConfigValueOption(
+                        StreamingProtocol.RAOP.value, disabled=not self.raop_discovery_info
+                    ),
+                    ConfigValueOption(
+                        StreamingProtocol.AIRPLAY2.value,
+                        disabled=not self.airplay_discovery_info,
+                    ),
                 ],
                 default_value=0,
                 category="protocol_generic",
