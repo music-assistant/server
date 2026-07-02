@@ -48,7 +48,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
-    ATTR_ACTIVE_PLAYLIST,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
@@ -162,18 +161,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def __iter__(self) -> Iterator[PlayerQueue]:
         """Iterate over (available) players."""
-        return iter(data.queue for data in self._queue_data.values())
+        return iter(queue_data.queue for queue_data in self._queue_data.values())
 
     @api_command("player_queues/all")
     def all(self) -> tuple[PlayerQueue, ...]:
         """Return all registered PlayerQueues."""
-        return tuple(data.queue for data in self._queue_data.values())
+        return tuple(queue_data.queue for queue_data in self._queue_data.values())
 
     @api_command("player_queues/get")
     def get(self, queue_id: str) -> PlayerQueue | None:
         """Return PlayerQueue by queue_id or None if not found."""
-        data = self._queue_data.get(queue_id)
-        return data.queue if data else None
+        queue_data = self._queue_data.get(queue_id)
+        return queue_data.queue if queue_data else None
 
     def queue_data(self, queue_id: str) -> PlayerQueueData:
         """
@@ -191,9 +190,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command("player_queues/items")
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
-        if (data := self._queue_data.get(queue_id)) is None:
+        if (queue_data := self._queue_data.get(queue_id)) is None:
             return []
-        return data.items[offset : offset + limit]
+        return queue_data.items[offset : offset + limit]
 
     @api_command("player_queues/get_active_queue")
     def get_active_queue(self, player_id: str) -> PlayerQueue | None:
@@ -254,14 +253,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command("player_queues/autoplay")
     def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
         """Configure Autoplay setting on the queue."""
-        data = self._queue_data[queue_id]
-        queue = data.queue
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         queue.autoplay_enabled = autoplay_enabled
         # if we're already at/near the end of the queue, kick off a refill right away
         # (an active dynamic source manages its own refills, so leave it be)
         if (
             queue.autoplay_enabled
-            and data.enqueued_media_items
+            and queue_data.enqueued_media_items
             and not queue.is_dynamic
             and queue.current_index is not None
             and (queue.items - queue.current_index) < 5
@@ -512,7 +511,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        queue_items = data.items if (data := self._queue_data.get(queue_id)) else []
+        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
         if not queue_items:
             raise QueueEmpty("Cannot save an empty queue as a playlist.")
         # collect URIs from queue items that are playlist-compatible
@@ -805,8 +804,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._set_transitioning(queue_id, True)
         try:
-            data = self._queue_data[queue_id]
-            queue = data.queue
+            queue_data = self._queue_data[queue_id]
+            queue = queue_data.queue
             queue.resume_pos = 0
             if isinstance(index, str):
                 temp_index = self.index_by_id(queue_id, index)
@@ -815,14 +814,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 index = temp_index
             # At this point index is guaranteed to be int
             queue.index_in_buffer = index
-            data.flow_mode_stream_log = []
-            data.flow_buffer_completed = None
+            queue_data.flow_mode_stream_log = []
+            queue_data.flow_buffer_completed = None
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
-            data.next_item_id_enqueued = None
+            queue_data.next_item_id_enqueued = None
             # always update session id when we start a new playback session
-            data.session_id = shortuuid.random(length=8)
+            queue_data.session_id = shortuuid.random(length=8)
             # handle resume point of audiobook(chapter) or podcast(episode)
             if (
                 not seek_position
@@ -841,7 +840,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             ):
                 stored_speed = await self.mass.music.get_playback_speed(
                     cast("Audiobook | PodcastEpisode", queue_item.media_item),
-                    userid=data.userid,
+                    userid=queue_data.userid,
                 )
                 if stored_speed != 1.0:
                     queue_item.extra_attributes["playback_speed"] = stored_speed
@@ -998,7 +997,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     async def on_player_register(self, player: Player) -> None:
         """Register PlayerQueue for given player/queue id."""
         queue_id = player.player_id
-        data: PlayerQueueData | None = None
+        queue_data: PlayerQueueData | None = None
         # try to restore previous state
         if prev_state := await self.mass.cache.get(
             key=queue_id,
@@ -1012,7 +1011,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                     default=[],
                 )
-                data = PlayerQueueData.from_cache(prev_state, prev_items)
+                queue_data = PlayerQueueData.from_cache(prev_state, prev_items)
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",
@@ -1020,9 +1019,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     str(err),
                 )
                 # Reset to clean state on failure
-                data = None
-        if data is None:
-            data = PlayerQueueData(
+                queue_data = None
+        if queue_data is None:
+            queue_data = PlayerQueueData(
                 queue=PlayerQueue(
                     queue_id=queue_id,
                     active=False,
@@ -1033,10 +1032,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 )
             )
 
-        self._queue_data[queue_id] = data
+        self._queue_data[queue_id] = queue_data
         # always call update to calculate state etc
         self.on_player_update(player, {})
-        self.mass.signal_event(EventType.QUEUE_ADDED, object_id=queue_id, data=data.queue)
+        self.mass.signal_event(EventType.QUEUE_ADDED, object_id=queue_id, data=queue_data.queue)
 
     def on_player_update(
         self,
@@ -1231,18 +1230,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.logger.debug("Queue flow buffer completed for %s", queue.display_name)
 
         # capture session_id so we can bail out if playback restarts
-        data = self._queue_data[queue_id]
-        original_session_id = data.session_id
+        queue_data = self._queue_data[queue_id]
+        original_session_id = queue_data.session_id
         # record so player providers can detect flow EOF without an idle report
         if original_session_id is not None:
-            data.flow_buffer_completed = original_session_id
+            queue_data.flow_buffer_completed = original_session_id
 
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
             idle_detected = False
             for _ in range(60):
                 await asyncio.sleep(1)
-                if not queue.active or data.session_id != original_session_id:
+                if not queue.active or queue_data.session_id != original_session_id:
                     return
                 if queue.state == PlaybackState.IDLE:
                     idle_detected = True
@@ -1251,7 +1250,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 return
             # player went idle, give it a brief moment to settle
             await asyncio.sleep(1)
-            if queue.state != PlaybackState.IDLE or data.session_id != original_session_id:
+            if queue.state != PlaybackState.IDLE or queue_data.session_id != original_session_id:
                 return
             # check if new items were added to the queue after the flow stream ended
             if queue.current_index is not None and (
@@ -1277,10 +1276,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: The queue ID.
         """
-        data = self.queue_data_or_none(queue_id)
-        if data is None or data.session_id is None:
+        queue_data = self.queue_data_or_none(queue_id)
+        if queue_data is None or queue_data.session_id is None:
             return False
-        return data.flow_buffer_completed == data.session_id
+        return queue_data.flow_buffer_completed == queue_data.session_id
 
     # Main queue manipulation methods
 
@@ -1345,9 +1344,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Get queue item by index or item_id."""
         if item_id_or_index is None:
             return None
-        if (data := self._queue_data.get(queue_id)) is None:
+        if (queue_data := self._queue_data.get(queue_id)) is None:
             return None
-        queue_items = data.items
+        queue_items = queue_data.items
         if isinstance(item_id_or_index, int) and len(queue_items) > item_id_or_index:
             return queue_items[item_id_or_index]
         if isinstance(item_id_or_index, str):
@@ -1356,16 +1355,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
         """Signal state changed of given queue."""
-        if (data := self._queue_data.get(queue_id)) is None:
+        if (queue_data := self._queue_data.get(queue_id)) is None:
             return
-        queue = data.queue
-        # set 'active_playlist' in extra attributes as a human readable list
-        # of the enqueued media items for API clients to display if they want to
-        queue.extra_attributes[ATTR_ACTIVE_PLAYLIST] = " / ".join(
-            [x.name for x in data.enqueued_media_items]
-        )
+        queue = queue_data.queue
         if items_changed:
-            data.items_cache_dirty = True
+            queue_data.items_cache_dirty = True
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
@@ -1382,9 +1376,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
         """Get index by queue_item_id."""
-        if (data := self._queue_data.get(queue_id)) is None:
+        if (queue_data := self._queue_data.get(queue_id)) is None:
             return None
-        for index, item in enumerate(data.items):
+        for index, item in enumerate(queue_data.items):
             if item.queue_item_id == queue_item_id:
                 return index
         return None
@@ -1419,7 +1413,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_item: The queue item to create media from.
         """
-        data = self._queue_data[queue_item.queue_id]
+        queue_data = self._queue_data[queue_item.queue_id]
         if queue_item.streamdetails:
             # prefer netto duration
             # when seeking, the player only receives the remaining duration
@@ -1428,7 +1422,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 duration = int(duration - queue_item.streamdetails.seek_position)
         else:
             duration = queue_item.duration
-        if data.session_id is None:
+        if queue_data.session_id is None:
             raise InvalidDataError("Queue session_id is None")
         media = PlayerMedia(
             uri=queue_item.uri,
@@ -1439,7 +1433,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
             custom_data={
-                "session_id": data.session_id,
+                "session_id": queue_data.session_id,
                 "original_uri": queue_item.uri,
             },
         )
@@ -1508,28 +1502,33 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     async def _save_queue_to_cache(self, queue_id: str) -> None:
         """Persist the queue's state (and its items when changed) to the cache."""
-        if (data := self._queue_data.get(queue_id)) is None:
+        if (queue_data := self._queue_data.get(queue_id)) is None:
             return
         try:
             # persistent so a cache clear/reset does not wipe the user's queues; the default
-            # expiration still applies but is refreshed on every write
-            await self.mass.cache.set(
-                key=queue_id,
-                data=data.to_cache(),
-                provider=self.domain,
-                category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                persistent=True,
-            )
-            if data.items_cache_dirty:
+            # expiration still applies but is refreshed on every write. Skip the state write when its
+            # persist-worthy content is unchanged (i.e. only playback progress advanced).
+            state = queue_data.to_cache()
+            significant = queue_data.cache_significant(state)
+            if significant != queue_data.last_saved_state:
+                await self.mass.cache.set(
+                    key=queue_id,
+                    data=state,
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+                    persistent=True,
+                )
+                queue_data.last_saved_state = significant
+            if queue_data.items_cache_dirty:
                 # only cache items with a valid media_item
                 await self.mass.cache.set(
                     key=queue_id,
-                    data=data.items_to_cache(),
+                    data=queue_data.items_to_cache(),
                     provider=self.domain,
                     category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                     persistent=True,
                 )
-                data.items_cache_dirty = False
+                queue_data.items_cache_dirty = False
         except Exception as err:
             self.logger.warning("Failed to persist the queue for %s - %s", queue_id, err)
 
@@ -1564,5 +1563,5 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def _set_transitioning(self, queue_id: str, value: bool) -> None:
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
-        if (data := self._queue_data.get(queue_id)) is not None:
-            data.transitioning = value
+        if (queue_data := self._queue_data.get(queue_id)) is not None:
+            queue_data.transitioning = value

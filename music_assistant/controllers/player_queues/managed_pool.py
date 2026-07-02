@@ -122,10 +122,10 @@ class ManagedPool:
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
-        data = self.queues.queue_data(queue_id)
-        queue = data.queue
+        queue_data = self.queues.queue_data(queue_id)
+        queue = queue_data.queue
         windows = self.queues.recency_windows(queue_id)
-        snapshot = await self.mass.music.recency.snapshot(windows, userid=data.userid)
+        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
         # publish a best-effort recency filter so dynamic-playlist generation can pre-skip recently
         # played tracks while over-generating; allocate_refill still applies the authoritative gate
         with track_filter(lambda track: not snapshot.track_recent(track, windows.song_seconds)):
@@ -342,7 +342,11 @@ class ManagedPool:
 
     def _unplayed(self, queue: PlayerQueue) -> int:
         """Return how many not-yet-played items remain in the queue."""
-        items = data.items if (data := self.queues.queue_data_or_none(queue.queue_id)) else []
+        items = (
+            queue_data.items
+            if (queue_data := self.queues.queue_data_or_none(queue.queue_id))
+            else []
+        )
         if queue.current_index is None:
             return len(items)
         return max(len(items) - (queue.current_index + 1), 0)

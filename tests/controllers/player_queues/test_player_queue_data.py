@@ -209,3 +209,21 @@ def test_from_cache_reads_legacy_flat_layout() -> None:
         item.uri for item in data.enqueued_media_items
     ]
     assert restored.userid == "user-1"
+
+
+def test_cache_significant_ignores_playback_progress() -> None:
+    """Change detection ignores volatile playback-progress fields but catches real changes."""
+    data = _data_with_dynamic_source()
+    state = data.to_cache()
+    # only elapsed time / playback speed advanced -> not a persist-worthy change
+    progressed = {
+        **state,
+        "queue": {**state["queue"], "elapsed_time": 999.0, "playback_speed": 2.0},
+    }
+    assert PlayerQueueData.cache_significant(progressed) == PlayerQueueData.cache_significant(state)
+    # a real settings change -> detected
+    shuffled = {
+        **state,
+        "queue": {**state["queue"], "shuffle_enabled": not state["queue"]["shuffle_enabled"]},
+    }
+    assert PlayerQueueData.cache_significant(shuffled) != PlayerQueueData.cache_significant(state)

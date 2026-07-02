@@ -1,10 +1,13 @@
 """
-Server-side per-queue data for the Player Queues controller.
+Server-side per-queue state for the Player Queues controller.
 
-`PlayerQueueData` is the controller's internal record for a single queue: it holds the wire-facing
-`PlayerQueue` plus the server-only state that used to live in a pile of parallel dicts keyed by
-queue_id (its items, its dynamic-source items, and a handful of runtime-only fields). It also owns
-the (de)serialization of the parts that must survive a restart.
+Two distinct types model a queue. `PlayerQueue` (in the models package) is the lightweight *wire
+snapshot* shared with API clients — the client-relevant playback state and flags only.
+`PlayerQueueData`, defined here, is the *complete server-side record*: it wraps that wire
+`PlayerQueue` and adds the state that never leaves the server — the ordered queue items, the full
+media items behind the dynamic sources, the enqueued parent items, the owning user, the transient
+stream-session fields, and a handful of runtime-only fields. It also owns the (de)serialization of
+the parts that must survive a restart; the wire model itself carries no cache logic.
 """
 
 from __future__ import annotations
@@ -26,10 +29,15 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.player_queues")
 
+# playback-progress fields on the queue snapshot that advance constantly while playing; a change in
+# only these does not warrant a fresh cache write, so they are ignored when deciding whether the
+# persisted state actually changed (see `cache_significant`).
+_VOLATILE_CACHE_FIELDS = ("elapsed_time", "elapsed_time_last_updated", "playback_speed")
+
 
 @dataclass(slots=True)
 class PlayerQueueData:
-    """The controller's server-side record for a single queue."""
+    """The complete server-side record for a queue: the wire `PlayerQueue` plus all server-only state."""
 
     queue: PlayerQueue
     # the queue's items (the wire `PlayerQueue` only carries a count)
@@ -37,8 +45,8 @@ class PlayerQueueData:
     # the full media items behind the queue's dynamic `sources`; mutated as finite sources are
     # added and retired, projected onto the lighter `queue.sources` for the wire
     source_items: list[MediaItemType] = field(default_factory=list)
-    # the parent media items the user enqueued; the seed for autoplay's "similar" mode and the
-    # human-readable active-playlist label. Persisted so autoplay survives a restart.
+    # the parent media items the user enqueued; the seed for autoplay's "similar" mode.
+    # Persisted so autoplay survives a restart.
     enqueued_media_items: list[MediaItemType] = field(default_factory=list)
     # the user this queue plays for (drives per-user recency/filtering). Persisted.
     userid: str | None = None
@@ -57,8 +65,11 @@ class PlayerQueueData:
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
     # set when the queue items changed since the last cache write; the debounced saver writes the
-    # (heavier) items payload only when this is set, while the small state is written every save
+    # (heavier) items payload only when this is set
     items_cache_dirty: bool = False
+    # the significant part of the state last written to cache (volatile playback-progress fields
+    # stripped); lets the debounced saver skip a redundant write when nothing meaningful changed
+    last_saved_state: dict[str, Any] | None = None
 
     def to_cache(self) -> dict[str, Any]:
         """
@@ -86,6 +97,18 @@ class PlayerQueueData:
             "source_items": [item.to_dict() for item in self.source_items],
             "userid": self.userid,
         }
+
+    @staticmethod
+    def cache_significant(state: dict[str, Any]) -> dict[str, Any]:
+        """
+        Return the change-detection view of a `to_cache` dict.
+
+        Strips the volatile playback-progress fields from the queue snapshot so the debounced saver
+        only writes when persist-worthy content (settings, items, sources, current index, ...)
+        actually changed, not merely because the elapsed time advanced.
+        """
+        queue = {k: v for k, v in state["queue"].items() if k not in _VOLATILE_CACHE_FIELDS}
+        return {**state, "queue": queue}
 
     def items_to_cache(self) -> list[dict[str, Any]]:
         """Return the cacheable representation of the queue items (only those with a media item)."""
