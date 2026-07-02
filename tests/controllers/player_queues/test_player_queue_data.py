@@ -158,9 +158,25 @@ def test_from_cache_keeps_settings_when_item_unreadable() -> None:
     assert [item.queue_item_id for item in restored.items] == [
         item.queue_item_id for item in data.items
     ]
+    # the wire-facing count matches the items actually restored (not the cached count)
+    assert restored.queue.items == len(restored.items) == 1
     # and the settings are untouched by the item failure
     assert restored.queue.shuffle_enabled is True
     assert restored.queue.crossfade_enabled is True
+
+
+def test_from_cache_keeps_settings_when_source_unreadable() -> None:
+    """An unreadable source mapping is skipped instead of aborting the whole restore."""
+    queue = _queue(shuffle_enabled=True, sources=[ItemMapping.from_item(_dynamic_playlist())])
+    data = PlayerQueueData(queue=queue)
+    state = data.to_cache()
+    # corrupt the persisted source mappings so their deserialization raises
+    state["queue"]["sources"] = [{"not": "a mapping"}]
+
+    restored = PlayerQueueData.from_cache(state, data.items_to_cache())
+
+    assert restored.queue.sources == []
+    assert restored.queue.shuffle_enabled is True
 
 
 def test_from_cache_keeps_settings_when_enqueued_media_unreadable() -> None:

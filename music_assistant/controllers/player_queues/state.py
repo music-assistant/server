@@ -138,19 +138,27 @@ class PlayerQueueData:
         # the part that must survive a restart; deserialize them first and independently of the
         # media payloads below, which are versioned MediaItem dicts far more likely to fail across a
         # provider/model change. A single unreadable item must not cost the user their settings.
-        queue = PlayerQueue.from_dict(queue_data)
+        # `sources` is a typed list[ItemMapping] that mashumaro deserializes all-or-nothing, so a
+        # single unreadable mapping would abort the whole restore. Pull it out (and the legacy
+        # `radio_source` key for pre-rename caches) before from_dict and rebuild it resiliently,
+        # skipping any mapping that no longer deserializes.
+        raw_sources = queue_data.get("sources", queue_data.get("radio_source", []))
+        wire = {k: v for k, v in queue_data.items() if k not in ("sources", "radio_source")}
+        queue = PlayerQueue.from_dict(wire)
         # reset the play-action-in-progress flag on restore (MA may have been killed mid-action)
         queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
-        # re-deserialize the source ItemMappings (from_dict/mashumaro can leave them as plain dicts);
-        # the legacy `radio_source` key is still read for caches written before the rename
         queue.sources = [
             item
-            for x in queue_data.get("sources", queue_data.get("radio_source", []))
-            if isinstance(x, dict) and isinstance(item := media_from_dict(x), ItemMapping)
+            for item in cls._deserialize_media(raw_sources, queue.queue_id, "queue source")
+            if isinstance(item, ItemMapping)
         ]
-        enqueued_media_items = cls._full_media_items(
-            state_data.get("enqueued_media_items"), queue.queue_id
-        )
+        enqueued_media_items = [
+            item
+            for item in cls._deserialize_media(
+                state_data.get("enqueued_media_items"), queue.queue_id, "enqueued item"
+            )
+            if not isinstance(item, ItemMapping)
+        ]
         source_items = cls._source_items_from_cache(state_data, queue, enqueued_media_items)
         queue.is_dynamic = has_dynamic_source(source_items)
         items: list[QueueItem] = []
@@ -159,6 +167,9 @@ class PlayerQueueData:
                 items.append(QueueItem.from_cache(item_data))
             except Exception as err:
                 LOGGER.warning("Skipping unreadable queue item for %s: %s", queue.queue_id, err)
+        # keep the wire-facing count consistent with the items actually restored (some may have been
+        # skipped above), so refill / "running low" logic reads the right number
+        queue.items = len(items)
         return cls(
             queue=queue,
             items=items,
@@ -168,20 +179,18 @@ class PlayerQueueData:
         )
 
     @staticmethod
-    def _full_media_items(raw: list[Any] | None, queue_id: str) -> list[MediaItemType]:
-        """Deserialize a list of full media items, skipping any that no longer deserialize."""
-        result: list[MediaItemType] = []
+    def _deserialize_media(
+        raw: list[Any] | None, queue_id: str, label: str
+    ) -> list[MediaItemType | ItemMapping]:
+        """Deserialize media dicts, skipping (and logging) any that no longer deserialize."""
+        result: list[MediaItemType | ItemMapping] = []
         for x in raw or []:
             if not isinstance(x, dict):
                 continue
             try:
-                item = media_from_dict(x)
+                result.append(media_from_dict(x))
             except Exception as err:
-                LOGGER.warning("Skipping unreadable media item for %s: %s", queue_id, err)
-                continue
-            # keep only full media items; ItemMappings are the lighter wire projection
-            if not isinstance(item, ItemMapping):
-                result.append(item)
+                LOGGER.warning("Skipping unreadable %s for %s: %s", label, queue_id, err)
         return result
 
     @staticmethod
@@ -195,4 +204,10 @@ class PlayerQueueData:
             # matching the persisted `sources` ItemMappings against the enqueued media items
             by_uri = {item.uri: item for item in enqueued_media_items}
             return [by_uri[mapping.uri] for mapping in queue.sources if mapping.uri in by_uri]
-        return PlayerQueueData._full_media_items(raw_sources, queue.queue_id)
+        return [
+            item
+            for item in PlayerQueueData._deserialize_media(
+                raw_sources, queue.queue_id, "source item"
+            )
+            if not isinstance(item, ItemMapping)
+        ]
