@@ -8,12 +8,12 @@ import contextlib
 import logging
 import os
 from copy import deepcopy
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 from uuid import uuid4
 
 import aiofiles
 import shortuuid
-from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 from music_assistant_models import config_entries
 from music_assistant_models.config_entries import (
@@ -112,7 +112,12 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
+from music_assistant.helpers.json import (
+    JSON_DECODE_EXCEPTIONS,
+    async_json_dumps,
+    async_json_loads,
+    json_loads,
+)
 from music_assistant.helpers.util import load_provider_module, validate_announcement_chime_url
 from music_assistant.models import ProviderModuleType
 from music_assistant.models.music_provider import MusicProvider
@@ -132,10 +137,6 @@ BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
-isfile = wrap(os.path.isfile)
-remove = wrap(os.remove)
-rename = wrap(os.rename)
-
 
 class ConfigController:
     """Controller that handles storage of persistent configuration settings."""
@@ -149,6 +150,7 @@ class ConfigController:
         self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
+        self._save_lock = asyncio.Lock()
 
     async def setup(self) -> None:
         """Async initialize of controller."""
@@ -1615,16 +1617,34 @@ class ConfigController:
 
     async def _async_save(self) -> None:
         """Save persistent data to disk."""
-        filename_backup = f"{self.filename}.backup"
-        # make backup before we write a new file
-        if await isfile(self.filename):
-            with contextlib.suppress(FileNotFoundError):
-                await remove(filename_backup)
-            await rename(self.filename, filename_backup)
-
-        async with aiofiles.open(self.filename, "w", encoding="utf-8") as _file:
-            await _file.write(await async_json_dumps(self._data, indent=True))
+        async with self._save_lock:
+            json_data = await async_json_dumps(self._data, indent=True)
+            await asyncio.to_thread(self._save_to_disk, json_data)
         LOGGER.debug("Saved data to persistent storage")
+
+    def _save_to_disk(self, json_data: str) -> None:
+        """Atomically write the settings file to disk, rotating the previous one to backup."""
+        filename = Path(self.filename)
+        filename_temp = Path(f"{self.filename}.tmp")
+        with filename_temp.open("w", encoding="utf-8") as _file:
+            _file.write(json_data)
+            _file.flush()
+            # fsync so a power failure can not leave a zero-length file behind (#5716)
+            os.fsync(_file.fileno())
+        with contextlib.suppress(FileNotFoundError, *JSON_DECODE_EXCEPTIONS):
+            # only rotate a parseable file to the backup, so a corrupt
+            # (crash leftover) file can never clobber a possibly good backup
+            json_loads(filename.read_bytes())
+            filename.replace(f"{self.filename}.backup")
+        filename_temp.replace(filename)
+        # best effort: fsync the directory as well so the renames themselves
+        # survive a power failure (not supported on all platforms/filesystems)
+        with contextlib.suppress(OSError):
+            dir_fd = os.open(os.path.dirname(self.filename), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
 
     @api_command("config/providers/reload", required_role="admin")
     async def _reload_provider(self, instance_id: str) -> None:
