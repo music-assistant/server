@@ -95,11 +95,9 @@ class TempoPlan:
 class ShelfSchedule:
     """One shelving-EQ gain schedule for a ShelfFilter."""
 
-    # 'lowshelf' | 'highshelf'
     shelf_type: str
-    # corner frequency in Hz
     frequency: int
-    # (time_seconds, gain_db) steps; the first step at t=0 sets the initial gain
+    # (time_seconds, gain_db); the step at t=0 sets the initial gain
     steps: list[tuple[float, float]]
 
 
@@ -107,15 +105,12 @@ class ShelfSchedule:
 class EqPlan:
     """Bass-swap EQ across the transition: who owns the low end, and when it swaps."""
 
-    # position of the bass swap, seconds into the (rendered) crossfade
+    # seconds into the rendered crossfade
     swap_at: float
-    # outgoing low shelf (input time — rendered before the tempo stretch)
+    # A-side schedules are in input time (pre-stretch), B-side in post-trim time
     low_out: ShelfSchedule
-    # incoming low shelf (post-trim time; t=0 equals the crossfade start)
     low_in: ShelfSchedule
-    # outgoing high shelf (input time)
     high_out: ShelfSchedule
-    # incoming high shelf (post-trim time)
     high_in: ShelfSchedule
 
 
@@ -135,12 +130,11 @@ class TransitionPlan:
     All times are in the outgoing track's buffer-local seconds.
     """
 
-    # Audible end of the fade-out tail (buffer-local seconds).
+    # audible end of the fade-out tail (buffer-local seconds)
     fade_out_window: float
     crossfade_duration: float
     eq_plan: EqPlan
     tempo_plan: TempoPlan = field(default_factory=TempoPlan)
-    # Drop the silent outro tail before the audible end. None = no trim.
     fadeout_trim: FadeOutTrim | None = None
-    # Trim this many seconds off the incoming head for beat alignment. None = no trim.
+    # seconds trimmed off the incoming head for beat alignment
     fadein_trim_start: float | None = None

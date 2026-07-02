@@ -77,14 +77,12 @@ class SmartCrossFadePlanner(TransitionPlanner):
     # Only apply time stretching if BPM difference is < this %
     time_stretch_bpm_percentage_threshold: float = 5.0
 
-    # Bass-swap EQ (research-validated: shelf topology like real club mixers)
+    # Bass-swap EQ: shelf corners/depths as on real club mixers
     low_shelf_freq: int = 100
     high_shelf_freq: int = 13000
     eq_kill_db: float = -26.0
     high_ease_db: float = -20.0
-    # Proportional bass handover: half the overlap, clamped to 2..8 bars.
-    # Club DJs swap in ~1 bar (energy move); the documented gradual range is
-    # 4-8 bars, and beyond ~8 bars the ramp is masked by the winning track.
+    # bass handover spans half the overlap; <2 bars reads as an event, >8 bars is masked
     bass_swap_fraction: float = 0.5
     bass_swap_min_bars: int = 2
     bass_swap_max_bars: int = 8
@@ -556,9 +554,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
         )
         ease = 0.25 * crossfade_duration
 
-        # rendered crossfade offsets map to A-input offsets via the final ramp
-        # ratio: the ramp completes before the crossfade starts, so the region is
-        # linear (offset_input = offset_rendered * r)
+        # the ramp completes before the crossfade, so rendered-to-A-input mapping is linear
         ratio = tempo_plan.steps[-1][1] if tempo_plan else 1.0
         cf_start_input = self.effective_end - crossfade_duration * ratio
         swap_at_input = cf_start_input + swap_at * ratio

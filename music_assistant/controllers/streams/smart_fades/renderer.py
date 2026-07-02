@@ -79,8 +79,7 @@ class TransitionRenderer:
     def _build_filters(self, plan: TransitionPlan, crossfade_samples: int) -> list[Filter]:
         """Assemble the ordered filter chain from the plan."""
         filters: list[Filter] = []
-        # FadeOutTrim must precede any time-stretch: its cut point is on the
-        # untrimmed input timeline.
+        # FadeOutTrim first: its cut point is on the untrimmed input timeline
         if plan.fadeout_trim is not None:
             filters.append(
                 FadeOutTrimFilter(
@@ -89,8 +88,7 @@ class TransitionRenderer:
                     trimmed_seconds=plan.fadeout_trim.trimmed_seconds,
                 )
             )
-        # Outgoing shelves sit BEFORE the stretch so their schedules stay in
-        # musical input time (no rendered-time remapping needed).
+        # outgoing shelves before the stretch keep their schedules in musical input time
         filters.append(self._shelf_filter(plan.eq_plan.low_out, "fadeout"))
         filters.append(self._shelf_filter(plan.eq_plan.high_out, "fadeout"))
         if plan.tempo_plan:

@@ -250,7 +250,7 @@ class SmartCrossFade(SmartFade):
         self.planner = SmartCrossFadePlanner(logger)
         self.renderer = TransitionRenderer(logger)
         self.plan: TransitionPlan | None = None
-        # Inspection surface, populated by build() (read by timing/lyrics-sync tests).
+        # populated by build(); read by the timing/lyrics-sync tests
         self.effective_end: float = float(SMART_CROSSFADE_DURATION)
         self.tempo_steps: list[tuple[float, float]] = []
 
@@ -271,7 +271,7 @@ class SmartCrossFade(SmartFade):
         self.filters, self.timing_info = self.renderer.render(
             self.plan, pcm_format, fade_in_bytes_len
         )
-        # Convenience copies of plan values the timing/lyrics-sync tests inspect.
+        # convenience copies for the timing/lyrics-sync tests
         self.effective_end = self.plan.fade_out_window
         self.tempo_steps = self.plan.tempo_plan.steps
         self.fade_out_beats = self.planner.outgoing.beats
