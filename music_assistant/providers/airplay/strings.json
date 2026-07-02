@@ -24,10 +24,6 @@
       "label": "Device password",
       "description": "Some devices require a password to connect/play."
     },
-    "ignore_volume": {
-      "label": "Ignore volume reports sent by the device itself",
-      "description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports."
-    },
     "airplay_latency": {
       "label": "Milliseconds of data to buffer",
       "description": "The number of milliseconds of data to buffer\nNOTE: This adds to the latency experienced for commencement of playback. \nTry increasing value if playback is unreliable."

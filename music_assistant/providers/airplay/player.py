@@ -41,7 +41,6 @@ from .constants import (
     CONF_ALAC_ENCODE,
     CONF_AP2PASSWORD,
     CONF_ENCRYPTION,
-    CONF_IGNORE_VOLUME,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
@@ -293,13 +292,6 @@ class AirPlayPlayer(Player):
                 advanced=True,
             ),
             ConfigEntry(
-                key=CONF_IGNORE_VOLUME,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                category="protocol_generic",
-                advanced=True,
-            ),
-            ConfigEntry(
                 key=CONF_RAOP_LATENCY,
                 type=ConfigEntryType.INTEGER,
                 default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
@@ -539,12 +531,8 @@ class AirPlayPlayer(Player):
 
     def update_volume_from_device(self, volume: int) -> None:
         """Update volume from device feedback."""
-        ignore_volume_report = (
-            self.config.get_value(CONF_IGNORE_VOLUME)
-            or self.device_info.manufacturer.lower() == "apple"
-        )
-
-        if ignore_volume_report:
+        # Apple devices report volume on their own scale; ignore to avoid feedback loops.
+        if self.device_info.manufacturer.lower() == "apple":
             return
 
         cur_volume = self.volume_level or 0

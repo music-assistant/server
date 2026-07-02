@@ -26,7 +26,6 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
-    CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
@@ -308,10 +307,8 @@ class AirPlayProvider(PlayerProvider):
                 parent_player = player
 
             player_id = player.player_id
-            ignore_volume_report = (
-                self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
-                or player.device_info.manufacturer.lower() == "apple"
-            )
+            # Apple devices report volume on their own scale; ignore to avoid feedback loops.
+            ignore_volume_report = player.device_info.manufacturer.lower() == "apple"
             if path == "/ctrl-int/1/nextitem":
                 self.mass.create_task(self.mass.players.cmd_next_track(player_id))
             elif path == "/ctrl-int/1/previtem":

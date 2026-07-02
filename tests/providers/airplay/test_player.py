@@ -7,7 +7,6 @@ import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 
 from music_assistant.providers.airplay.constants import (
-    CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
     StreamingProtocol,
 )
@@ -146,13 +145,6 @@ async def test_start_pairing__pin_decision(flags: bytes, pin_call_expected: bool
         pairing_instance.start_pin_pairing.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlayer) -> None:
-    """The ignore_volume setting must be offered in the player config entries."""
-    entries = await airplay_player.get_config_entries()
-    assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
-
-
 # --- Volume and Mute tests ---
 
 
@@ -242,7 +234,6 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     parent.state.volume_level = 42
     parent.volume_control = PLAYER_CONTROL_NATIVE
     airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
-    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
     airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 57
     airplay_player.last_command_sent = time.time()

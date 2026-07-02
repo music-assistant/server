@@ -315,9 +315,9 @@ Handled in `_handle_dacp_request()` in [provider.py](provider.py):
 
 Both **RAOP** and **AirPlay 2** protocols support devices reporting their volume level via DACP.
 
-**Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
-- Useful when device volume reports are unreliable
-- Apple devices always ignore volume feedback (handled internally)
+Volume feedback keeps MA's known volume in sync with the device, so the volume sent on
+stream (re)start matches reality. Apple devices report on their own scale, so their volume
+feedback is always ignored (handled internally).
 
 ### Device Source Switching
 
@@ -427,7 +427,6 @@ The provider creates players with different types based on whether the device is
 ### RAOP-Specific
 - **`encryption`**: Enable/disable encryption (default: enabled)
 - **`alac_encode`**: Enable ALAC compression to save bandwidth (default: enabled)
-- **`ignore_volume`**: Ignore device volume reports (default: false)
 
 ### General
 - **`password`**: Device password if required

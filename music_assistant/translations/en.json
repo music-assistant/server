@@ -724,8 +724,6 @@
   "provider.airplay.config_entries.encryption.label": "Enable encryption",
   "provider.airplay.config_entries.finish_pairing_password.label": "Complete {0} pairing with the password",
   "provider.airplay.config_entries.finish_pairing_pin.label": "Complete {0} pairing with the PIN",
-  "provider.airplay.config_entries.ignore_volume.description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports.",
-  "provider.airplay.config_entries.ignore_volume.label": "Ignore volume reports sent by the device itself",
   "provider.airplay.config_entries.pairing_instructions.label": "This device requires {0} pairing before it can be used. Click the button below to start the pairing process.",
   "provider.airplay.config_entries.pairing_password.label": "Enter the device password",
   "provider.airplay.config_entries.pairing_pin.label": "Enter the 4-digit PIN shown on the device",
