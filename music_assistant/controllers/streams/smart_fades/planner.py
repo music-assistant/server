@@ -1,4 +1,5 @@
-"""Smart Fades - Transition planners.
+"""
+Smart Fades - Transition planners.
 
 A planner is the DJ brain of smart fades: it turns the two tracks' stored
 ``AudioAnalysisData`` into a ``TransitionPlan`` — a pure decision with no audio

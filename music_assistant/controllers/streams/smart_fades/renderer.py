@@ -1,4 +1,5 @@
-"""Smart Fades - Transition renderer.
+"""
+Smart Fades - Transition renderer.
 
 The renderer is the DJ's hands: it picks the tools from the filter toolset
 (``filters.py``) that realize a ``TransitionPlan``, and produces the

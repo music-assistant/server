@@ -1,4 +1,5 @@
-"""Smart Fades - data models.
+"""
+Smart Fades - data models.
 
 A ``TransitionPlan`` is the renderer-agnostic description of a transition: it
 captures every decision (where to cut, how long to blend, tempo ramp, EQ sweeps)
