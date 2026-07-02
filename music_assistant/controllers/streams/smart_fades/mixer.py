@@ -58,9 +58,7 @@ class SmartFadesMixer:
         :param fade_out_data: PCM buffer of the outgoing track's tail.
         :param fade_in_bytes_len: Expected length in bytes of the fade-in input.
         """
-        # Degradation chain: a richer mode degrades to the next-best fade when it
-        # cannot apply. Today that is smart-crossfade → standard; richer modes
-        # add their own builder at the head of the chain.
+        # degradation chain: smart-crossfade → standard; richer modes prepend their builder
         smart_fade: SmartFade | None = None
         if mode == CrossfadeMode.SMART_CROSSFADE:
             smart_fade = await self._build_smart_crossfade(

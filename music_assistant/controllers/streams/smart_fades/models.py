@@ -2,7 +2,7 @@
 Smart Fades - data models.
 
 A ``TransitionPlan`` is the renderer-agnostic description of a transition: it
-captures every decision (where to cut, how long to blend, tempo ramp, EQ sweeps)
+captures every decision (where to cut, how long to blend, tempo ramp, shelf EQ)
 without owning a single audio byte or FFmpeg filter.  A ``TransitionPlanner``
 produces it from stored ``AudioAnalysisData``; a renderer turns it into the
 ``Filter`` chain.  Keeping the plan free of bytes is what lets alternative
@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from music_assistant.controllers.streams.smart_fades.filters import ShelfType
 
 if TYPE_CHECKING:
     import numpy as np
@@ -92,26 +94,26 @@ class TempoPlan:
 
 
 @dataclass(slots=True)
-class SweepSpec:
-    """Parameters for one ``FrequencySweepFilter`` in the EQ plan."""
+class ShelfSchedule:
+    """One shelving-EQ gain schedule for a ShelfFilter."""
 
-    sweep_type: str
-    target_freq: int
-    duration: float
-    start_time: float
-    sweep_direction: str
-    poles: int
-    curve_type: str
-    stream_type: str
+    shelf_type: ShelfType
+    frequency: int
+    # (time_seconds, gain_db); the step at t=0 sets the initial gain
+    steps: list[tuple[float, float]]
 
 
 @dataclass(slots=True)
 class EqPlan:
-    """Spectral shaping applied across the transition region."""
+    """Bass-swap EQ across the transition: who owns the low end, and when it swaps."""
 
-    crossover_freq: int
-    fadeout: SweepSpec
-    fadein: SweepSpec
+    # seconds into the rendered crossfade
+    swap_at: float
+    # A-side schedules are in input time (pre-stretch), B-side in post-trim time
+    low_out: ShelfSchedule
+    low_in: ShelfSchedule
+    high_out: ShelfSchedule
+    high_in: ShelfSchedule
 
 
 @dataclass(slots=True)
@@ -130,12 +132,11 @@ class TransitionPlan:
     All times are in the outgoing track's buffer-local seconds.
     """
 
-    # Audible end of the fade-out tail (buffer-local seconds).
+    # audible end of the fade-out tail (buffer-local seconds)
     fade_out_window: float
     crossfade_duration: float
     eq_plan: EqPlan
     tempo_plan: TempoPlan = field(default_factory=TempoPlan)
-    # Drop the silent outro tail before the audible end. None = no trim.
     fadeout_trim: FadeOutTrim | None = None
-    # Trim this many seconds off the incoming head for beat alignment. None = no trim.
+    # seconds trimmed off the incoming head for beat alignment
     fadein_trim_start: float | None = None

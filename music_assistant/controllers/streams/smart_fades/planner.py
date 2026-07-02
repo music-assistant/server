@@ -20,11 +20,14 @@ import numpy as np
 import numpy.typing as npt
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.filters import ShelfType
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
     SMART_CROSSFADE_DURATION,
     compute_gradual_tempo_steps,
+    db_ramp,
     detect_effective_audio_end,
+    detect_groove_entry,
     extrapolate_downbeats,
     generate_synthetic_timestamps,
 )
@@ -32,8 +35,8 @@ from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
     EqPlan,
     FadeOutTrim,
+    ShelfSchedule,
     SmartFadeNotApplicable,
-    SweepSpec,
     TempoPlan,
     TransitionPlan,
 )
@@ -75,6 +78,16 @@ class SmartCrossFadePlanner(TransitionPlanner):
     # Only apply time stretching if BPM difference is < this %
     time_stretch_bpm_percentage_threshold: float = 5.0
 
+    # Bass-swap EQ: shelf corners/depths as on real club mixers
+    low_shelf_freq: int = 100
+    high_shelf_freq: int = 13000
+    eq_kill_db: float = -26.0
+    high_ease_db: float = -20.0
+    # bass handover spans half the overlap; <2 bars reads as an event, >8 bars is masked
+    bass_swap_fraction: float = 0.5
+    bass_swap_min_bars: int = 2
+    bass_swap_max_bars: int = 8
+
     # Working state for one plan() run, (re)set by _prepare_decks
     outgoing: Deck
     incoming: Deck
@@ -107,7 +120,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
             crossfade_duration, fadein_start_pos, tempo_plan
         )
 
-        eq_plan = self._choose_eq(crossfade_bars, crossfade_duration, tempo_plan)
+        eq_plan = self._choose_eq(crossfade_duration, tempo_plan, fadein_trim_start)
 
         return TransitionPlan(
             fade_out_window=self.effective_end,
@@ -514,64 +527,99 @@ class SmartCrossFadePlanner(TransitionPlanner):
 
     def _choose_eq(
         self,
-        crossfade_bars: int,
         crossfade_duration: float,
         tempo_plan: TempoPlan,
+        fadein_trim_start: float | None,
     ) -> EqPlan:
-        """Choose the crossover frequency, curves, and both frequency sweeps."""
-        # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
-        avg_bpm = (self.outgoing.bpm + self.incoming.bpm) / 2
-        crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 2500))
+        """
+        Plan the bass swap between the two tracks.
 
-        # Adjust for BPM mismatch
-        if abs(self._bpm_ratio - 1.0) > 0.3:
-            crossover_freq = int(crossover_freq * 0.85)
+        B enters bass-killed; both low shelves trade over a proportional window
+        (half the overlap, clamped to 2-8 bars) CENTERED on the swap point, so
+        the handover reads as a morph around the musical moment rather than an
+        event.  Highs ease in before the exchange and out after it.  A-side
+        schedules are in the outgoing track's input time (the renderer places
+        them before the tempo stretch); B-side schedules are in the incoming
+        track's post-trim time, where t=0 equals the crossfade start.
 
-        # For shorter fades, use exp/exp curves to avoid abruptness
-        if crossfade_bars < 8:
-            fadeout_curve = "exponential"
-            fadein_curve = "exponential"
-        # For long fades, use log/linear curves
-        else:
-            # Use logarithmic curve to give the next track more space
-            fadeout_curve = "logarithmic"
-            # Use linear curve for transition, predictable and not too abrupt
-            fadein_curve = "linear"
+        :param crossfade_duration: Rendered overlap length in seconds.
+        :param tempo_plan: Tempo ramp (maps rendered offsets to A-input offsets).
+        :param fadein_trim_start: Incoming head trim, if beat alignment applied one.
+        """
+        bar_in = 4 * 60.0 / self.incoming.bpm
+        swap_at = self._choose_swap_point(crossfade_duration, fadein_trim_start)
+        swap_len = min(
+            max(self.bass_swap_fraction * crossfade_duration, self.bass_swap_min_bars * bar_in),
+            self.bass_swap_max_bars * bar_in,
+            crossfade_duration,
+        )
+        # pull a late swap point back so the centered window still fits the overlap
+        swap_at = min(swap_at, crossfade_duration - swap_len / 2)
+        ease = 0.25 * crossfade_duration
 
-        # Create lowpass filter on the outgoing track (unfiltered → low-pass)
-        # Extended lowpass effect to gradually remove bass frequencies
-        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), self.effective_end)
-        # The crossfade always happens at the END of the audible tail
-        fadeout_eq_start = max(0.0, self.effective_end - fadeout_eq_duration)
-        if tempo_plan:
-            # post-rubberband filters run on OUTPUT time: remap the schedule so the
-            # sweep still completes exactly when the rendered tail ends
-            rendered_end = self.effective_end - tempo_plan.savings_until(self.effective_end)
-            fadeout_eq_start -= tempo_plan.savings_until(fadeout_eq_start)
-            # defensive floor keeping the sweep non-degenerate; cannot bind given
-            # the 5% stretch cap and the 10s minimum audible tail
-            fadeout_eq_duration = max(rendered_end - fadeout_eq_start, 1.0)
-        fadeout = SweepSpec(
-            sweep_type="lowpass",
-            target_freq=crossover_freq,
-            duration=fadeout_eq_duration,
-            start_time=fadeout_eq_start,
-            sweep_direction="fade_in",
-            poles=1,
-            curve_type=fadeout_curve,
-            stream_type="fadeout",
+        # the ramp completes before the crossfade, so rendered-to-A-input mapping is linear
+        ratio = tempo_plan.steps[-1][1] if tempo_plan else 1.0
+        cf_start_input = self.effective_end - crossfade_duration * ratio
+        swap_at_input = cf_start_input + swap_at * ratio
+        swap_len_input = swap_len * ratio
+        start_in = max(0.0, swap_at - swap_len / 2)
+        start_out = max(cf_start_input, swap_at_input - swap_len_input / 2)
+
+        low_out = ShelfSchedule(
+            ShelfType.LOW,
+            self.low_shelf_freq,
+            [(0.0, 0.0), *db_ramp(start_out, swap_len_input, 0.0, self.eq_kill_db)],
+        )
+        low_in = ShelfSchedule(
+            ShelfType.LOW,
+            self.low_shelf_freq,
+            [(0.0, self.eq_kill_db), *db_ramp(start_in, swap_len, self.eq_kill_db, 0.0)],
+        )
+        high_out = ShelfSchedule(
+            ShelfType.HIGH,
+            self.high_shelf_freq,
+            [
+                (0.0, 0.0),
+                *db_ramp(start_out + swap_len_input, ease * ratio, 0.0, self.high_ease_db),
+            ],
+        )
+        high_in = ShelfSchedule(
+            ShelfType.HIGH,
+            self.high_shelf_freq,
+            [
+                (0.0, self.high_ease_db),
+                *db_ramp(max(0.0, start_in - ease), ease, self.high_ease_db, 0.0),
+            ],
+        )
+        return EqPlan(
+            swap_at=swap_at, low_out=low_out, low_in=low_in, high_out=high_out, high_in=high_in
         )
 
-        # Create high pass filter on the incoming track (high-pass → unfiltered)
-        # Quicker highpass removal to avoid lingering vocals after crossfade
-        fadein = SweepSpec(
-            sweep_type="highpass",
-            target_freq=crossover_freq,
-            duration=crossfade_duration / 1.5,
-            start_time=0,
-            sweep_direction="fade_out",
-            poles=1,
-            curve_type=fadein_curve,
-            stream_type="fadein",
+    def _choose_swap_point(
+        self, crossfade_duration: float, fadein_trim_start: float | None
+    ) -> float:
+        """
+        Pick the bass-swap moment, in rendered seconds into the crossfade.
+
+        Prefers the incoming track's groove entry (drums coming in) when it lands
+        anywhere inside the overlap; otherwise the incoming downbeat nearest to
+        60% through the overlap.
+
+        :param crossfade_duration: Rendered overlap length in seconds.
+        :param fadein_trim_start: Incoming head trim, if beat alignment applied one.
+        """
+        trim = fadein_trim_start or 0.0
+        entry = detect_groove_entry(
+            self.incoming.analysis.rms_energy,
+            self.incoming.analysis.duration,
+            self.incoming.downbeats,
         )
-        return EqPlan(crossover_freq=crossover_freq, fadeout=fadeout, fadein=fadein)
+        candidate = entry - trim
+        if not 0.0 < candidate <= crossfade_duration:
+            candidate = 0.6 * crossfade_duration
+        # snap to the incoming grid so the new bassline lands on its own 1
+        post_trim = self.incoming.downbeats - trim
+        post_trim = post_trim[(post_trim > 0.0) & (post_trim < crossfade_duration)]
+        if len(post_trim):
+            candidate = float(post_trim[np.argmin(np.abs(post_trim - candidate))])
+        return candidate

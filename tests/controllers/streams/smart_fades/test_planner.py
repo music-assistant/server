@@ -7,6 +7,7 @@ import logging
 import numpy as np
 import pytest
 
+from music_assistant.controllers.streams.smart_fades.filters import ShelfType
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.models import (
     SmartFadeNotApplicable,
@@ -61,8 +62,19 @@ class TestSmartCrossFadePlanner:
         plan = _plan(_analysis(120.0), _analysis(122.0))
         assert isinstance(plan, TransitionPlan)
         assert plan.crossfade_duration > 0
-        assert plan.eq_plan.fadeout.sweep_type == "lowpass"
-        assert plan.eq_plan.fadein.sweep_type == "highpass"
+        eq = plan.eq_plan
+        assert eq.low_out.shelf_type is ShelfType.LOW
+        assert eq.low_in.shelf_type is ShelfType.LOW
+        assert eq.high_out.shelf_type is ShelfType.HIGH
+        assert eq.high_in.shelf_type is ShelfType.HIGH
+        # B enters with the low end killed and ends open
+        assert eq.low_in.steps[0] == (0.0, -26.0)
+        assert eq.low_in.steps[-1][1] == pytest.approx(0.0)
+        # A starts open and ends killed
+        assert eq.low_out.steps[0][1] == pytest.approx(0.0)
+        assert eq.low_out.steps[-1][1] == pytest.approx(-26.0)
+        # the swap sits inside the overlap
+        assert 0.0 < eq.swap_at < plan.crossfade_duration
 
     def test_is_deterministic(self) -> None:
         """Planning the same inputs twice yields identical plans (pure function)."""
@@ -109,3 +121,38 @@ class TestSmartCrossFadePlanner:
         """The planned window is bounded by the available holdback."""
         plan = _plan(_analysis(120.0), _analysis(120.0), buffer=float(SMART_CROSSFADE_DURATION))
         assert plan.fade_out_window <= SMART_CROSSFADE_DURATION + 1e-6
+
+    def test_swap_lands_on_incoming_groove_entry(self) -> None:
+        """B's groove entry inside the overlap becomes the bass-swap moment."""
+        inc = _analysis(120.0, duration=240.0)
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        t = np.linspace(0, 240.0, 1800)
+        bins[t < 8.0] = 0.05
+        inc.rms_energy = bins
+        plan = _plan(_analysis(120.0, duration=240.0), inc)
+        trim = plan.fadein_trim_start or 0.0
+        assert plan.eq_plan.swap_at == pytest.approx(8.0 - trim, abs=0.1)
+
+    def test_swap_window_fits_inside_the_overlap(self) -> None:
+        """A late swap point never pushes the low ramps past the crossfade end."""
+        inc = _analysis(120.0, duration=240.0)
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        t = np.linspace(0, 240.0, 1800)
+        bins[t < 20.0] = 0.05
+        inc.rms_energy = bins
+        plan = _plan(_analysis(120.0, duration=240.0), inc)
+        # B's bass must be fully restored before the rendered mix ends
+        assert plan.eq_plan.low_in.steps[-1][0] <= plan.crossfade_duration + 1e-6
+        # A's bass kill must complete before A's audible end
+        assert plan.eq_plan.low_out.steps[-1][0] <= plan.fade_out_window + 1e-6
+
+    def test_bass_swap_is_proportional_and_centered(self) -> None:
+        """The low exchange spans half the overlap (clamped) centered on the swap."""
+        plan = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
+        bar = 4 * 60.0 / 120.0
+        expected = min(max(plan.crossfade_duration / 2, 2 * bar), 8 * bar)
+        ramp = plan.eq_plan.low_in.steps[1:]  # steps[0] is the (0.0, kill) pin
+        span = ramp[-1][0] - ramp[0][0]
+        assert span == pytest.approx(expected, rel=0.05)
+        midpoint = (ramp[0][0] + ramp[-1][0]) / 2
+        assert midpoint == pytest.approx(plan.eq_plan.swap_at, abs=0.2)
