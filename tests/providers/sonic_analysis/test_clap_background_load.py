@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,7 +22,8 @@ from music_assistant.providers.sonic_analysis import (
 
 
 def _make_provider() -> SonicAnalysisProvider:
-    """Construct a SonicAnalysisProvider with mocked MA infrastructure.
+    """
+    Construct a SonicAnalysisProvider with mocked MA infrastructure.
 
     Uses ``__new__`` to bypass ``__init__`` (no model downloads) and manually
     sets the attributes the load + start-analysis paths touch.
@@ -71,6 +73,16 @@ def _make_streamdetails(
     return sd
 
 
+@pytest.fixture(autouse=True)
+def _stub_ml_inference_gate() -> Generator[None]:
+    """Stub the hardware gate so these unit tests never spawn the real capability probe."""
+    with patch(
+        "music_assistant.providers.sonic_analysis.verify_system_meets_requirements",
+        new=AsyncMock(),
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # handle_async_init populates state on success
 # ---------------------------------------------------------------------------
@@ -110,7 +122,8 @@ async def test_handle_async_init_populates_state_on_success() -> None:
 
 @pytest.mark.asyncio
 async def test_handle_async_init_propagates_load_failure() -> None:
-    """Synchronous load: failures must propagate, not be swallowed.
+    """
+    Synchronous load: failures must propagate, not be swallowed.
 
     The AudioAnalysisController gates work on ``provider.available``, which
     stays ``False`` if ``handle_async_init`` raises. Swallowing here would
@@ -160,7 +173,8 @@ async def test_handle_async_init_offloads_load_to_thread() -> None:
 
 @pytest.mark.asyncio
 async def test_start_analysis_returns_false_when_clap_not_loaded() -> None:
-    """``_start_analysis`` must decline tracks while CLAP is unavailable.
+    """
+    ``_start_analysis`` must decline tracks while CLAP is unavailable.
 
     Defensive: with synchronous loading + raise-on-failure, the normal path
     keeps ``_clap_model`` populated whenever the provider is available. This
@@ -202,7 +216,8 @@ async def test_start_analysis_proceeds_when_clap_loaded() -> None:
 async def test_start_analysis_returns_false_without_duration(
     duration: float | None,
 ) -> None:
-    """``_start_analysis`` must decline tracks without a usable duration.
+    """
+    ``_start_analysis`` must decline tracks without a usable duration.
 
     Without duration, CLAP windows can't be planned and the resulting record
     would be librosa-only. Rejecting at start keeps the retry path open for a
@@ -223,13 +238,13 @@ async def test_start_analysis_returns_false_without_duration(
     assert any("duration missing or zero" in c for c in debug_msgs)
 
 
-async def test_handle_async_init_raises_on_unsupported_cpu() -> None:
-    """Setup fails before any model load when the CPU lacks AVX2."""
+async def test_handle_async_init_raises_when_requirements_not_met() -> None:
+    """Setup fails before any model load when the system does not meet requirements."""
     provider = _make_provider()
     with (
         patch(
-            "music_assistant.providers.sonic_analysis.verify_cpu_supports_ml_inference",
-            side_effect=SetupFailedError("CPU lacks AVX2"),
+            "music_assistant.providers.sonic_analysis.verify_system_meets_requirements",
+            side_effect=SetupFailedError("unsupported system"),
         ),
         patch.object(SonicAnalysisProvider, "_load_clap") as load_clap_mock,
         pytest.raises(SetupFailedError),

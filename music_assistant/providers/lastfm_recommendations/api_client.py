@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from aiohttp import ClientError
 from music_assistant_models.errors import (
@@ -13,12 +13,12 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.lastfm_recommendations.constants import CONF_API_KEY
 
 # Built-in Last.fm API key (read-only access, no secret needed)
-_DEFAULT_API_KEY: str = app_var(12)
+_DEFAULT_API_KEY: str = app_var("lastfm_api_key")
 
 if TYPE_CHECKING:
     import logging
@@ -36,7 +36,7 @@ class LastFMAPIClient:
 
     # Map known Last.fm API error codes to MA exceptions. Unmapped codes raise
     # InvalidDataError which callers treat as a recoverable empty response.
-    _ERROR_MAP: dict[int, type[MusicAssistantError]] = {
+    _ERROR_MAP: ClassVar[dict[int, type[MusicAssistantError]]] = {
         4: AuthenticationFailed,
         10: InvalidToken,
         26: InvalidToken,
@@ -299,27 +299,74 @@ class LastFMAPIClient:
 
         return tracks
 
-    async def get_user_top_tags(self, username: str, limit: int = 1) -> list[dict[str, Any]]:
+    async def get_user_top_artists(
+        self, username: str, period: str = "overall", limit: int = 50
+    ) -> list[dict[str, Any]]:
         """
-        Get a user's top tags from Last.fm.
+        Get a user's most played artists from Last.fm, most played first.
 
         :param username: Last.fm username.
-        :param limit: Maximum number of tags to return (default 1 for top genre).
+        :param period: Span to rank over (overall, 7day, 1month, 3month, 6month, 12month).
+        :param limit: Maximum number of artists to return.
         """
-        self.logger.debug("Fetching top tags for user: %s", username)
+        self.logger.debug("Fetching top artists for user: %s (period: %s)", username, period)
         try:
-            data = await self._get_data("user.getTopTags", user=username, limit=limit)
+            data = await self._get_data(
+                "user.getTopArtists", user=username, period=period, limit=limit
+            )
         except (TimeoutError, ClientError, InvalidDataError) as err:
-            self.logger.debug("User top tags request failed: %s", err)
+            self.logger.debug("User top artists request failed: %s", err)
             return []
 
-        tags: list[dict[str, Any]] | dict[str, Any] = data.get("toptags", {}).get("tag", [])
+        artists: list[dict[str, Any]] | dict[str, Any] = data.get("topartists", {}).get(
+            "artist", []
+        )
 
         # Last.fm returns a single dict when only one result is present.
-        if isinstance(tags, dict):
-            return [tags]
+        if isinstance(artists, dict):
+            return [artists]
 
-        return tags
+        return artists
+
+    async def get_artist_top_tags(
+        self, artist_name: str, artist_mbid: str | None = None, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """
+        Get an artist's top community tags from Last.fm, most agreed-upon first.
+
+        :param artist_name: Name of the artist.
+        :param artist_mbid: Optional MusicBrainz ID for more accurate matching.
+        :param limit: Maximum number of tags to return.
+        """
+        self.logger.debug(
+            "Fetching top tags for artist: %s (MBID: %s)", artist_name, artist_mbid or "none"
+        )
+        name_params: dict[str, Any] | None = (
+            {"artist": artist_name, "autocorrect": 1} if artist_name else None
+        )
+        primary_params: dict[str, Any] | None
+        fallback_params: dict[str, Any] | None
+        # Lead with the MBID (exact when Last.fm has it), fall back to the name lookup.
+        if artist_mbid:
+            primary_params = {"mbid": artist_mbid}
+            fallback_params = name_params
+        else:
+            primary_params = name_params
+            fallback_params = None
+
+        if primary_params is None:
+            return []
+
+        # artist.getTopTags has no limit parameter, so cap the (count-ordered) result ourselves.
+        tags = await self._get_list(
+            "artist.getTopTags",
+            "toptags",
+            "tag",
+            "Artist top tags",
+            primary_params,
+            fallback_params,
+        )
+        return tags[:limit]
 
     async def get_tag_top_artists(self, tag: str, limit: int = 10) -> list[dict[str, Any]]:
         """

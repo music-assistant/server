@@ -1,4 +1,5 @@
-"""Tests for the auto-create action wired into get_config_entries.
+"""
+Tests for the auto-create action wired into get_config_entries.
 
 Exercises _run_auto_create_action via the public _handle_config_actions
 entry point so the integration between config values, artifacts, and
@@ -225,7 +226,8 @@ async def test_auto_create_non_action_is_noop(monkeypatch) -> None:  # type: ign
 
 @pytest.mark.asyncio
 async def test_session_id_forwarded_from_frontend(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """Frontend-supplied ``values['session_id']`` is forwarded to the orchestrator.
+    """
+    Frontend-supplied ``values['session_id']`` is forwarded to the orchestrator.
 
     The session_id is what AuthenticationHelper listens on — if the
     wiring drops it and generates a local uuid instead, MA's popup
@@ -260,7 +262,8 @@ async def test_session_id_forwarded_from_frontend(monkeypatch) -> None:  # type:
 
 @pytest.mark.asyncio
 async def test_auto_create_cancelled_error_propagates(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """CancelledError must not be absorbed into a FAILED artifact.
+    """
+    CancelledError must not be absorbed into a FAILED artifact.
 
     Config-flow shutdown and HA stop rely on cooperative cancellation;
     converting it into state=FAILED would both leak the error into the
@@ -295,7 +298,8 @@ async def test_auto_create_cancelled_error_propagates(monkeypatch) -> None:  # t
 
 @pytest.mark.asyncio
 async def test_auto_create_prefers_saved_direct_secret(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """SECURE_STRING client secret: saved_config beats empty ``values`` on re-open.
+    """
+    SECURE_STRING client secret: saved_config beats empty ``values`` on re-open.
 
     On re-open MA does not echo SECURE_STRING values back into ``values``,
     so reading from ``values`` alone would pass an empty secret into the

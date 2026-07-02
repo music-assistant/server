@@ -52,7 +52,8 @@ CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 
 
 class MusicProvider(Provider):
-    """Base representation of a Music Provider (controller).
+    """
+    Base representation of a Music Provider (controller).
 
     Music Provider implementations should inherit from this base model.
     """
@@ -81,7 +82,8 @@ class MusicProvider(Provider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -185,6 +187,22 @@ class MusicProvider(Provider):
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
+        raise NotImplementedError
+
+    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """
+        Get a list of all audiobooks for the given author.
+
+        Only called if provider supports ProviderFeature.AUTHOR_AUDIOBOOKS.
+        """
+        raise NotImplementedError
+
+    async def get_narrator_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """
+        Get a list of all audiobooks for the given narrator.
+
+        Only called if provider supports ProviderFeature.NARRATOR_AUDIOBOOKS.
+        """
         raise NotImplementedError
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -356,7 +374,8 @@ class MusicProvider(Provider):
             raise NotImplementedError
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Add track(s) to playlist.
+        """
+        Add track(s) to playlist.
 
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
         """
@@ -492,7 +511,8 @@ class MusicProvider(Provider):
         return path
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
@@ -974,6 +994,34 @@ class MusicProvider(Provider):
                 prov_item.provider_mappings,
             )
             try:
+                if ProviderFeature.AUTHOR_AUDIOBOOKS in self.supported_features and not all(
+                    isinstance(author, Artist) for author in prov_item.authors
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} supports ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide Artist instances."
+                    )
+                if ProviderFeature.NARRATOR_AUDIOBOOKS in self.supported_features and not all(
+                    isinstance(narrator, Artist) for narrator in prov_item.narrators
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} supports ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide Artist instances."
+                    )
+                if ProviderFeature.AUTHOR_AUDIOBOOKS not in self.supported_features and not all(
+                    isinstance(author, str) for author in prov_item.authors
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} does not support ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide strings."
+                    )
+                if ProviderFeature.NARRATOR_AUDIOBOOKS not in self.supported_features and not all(
+                    isinstance(narrator, str) for narrator in prov_item.narrators
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} does not support ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide strings."
+                    )
                 if not library_item:
                     # add item to the library
                     for prov_map in prov_item.provider_mappings:
@@ -989,6 +1037,33 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.audiobooks.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                else:
+                    # detect a change in ProviderFeature
+                    lib_author: str | Artist | ItemMapping | None = None
+                    prov_author: str | Artist | ItemMapping | None = None
+                    lib_narrator: str | Artist | ItemMapping | None = None
+                    prov_narrator: str | Artist | ItemMapping | None = None
+                    if len(library_item.authors) > 0:
+                        lib_author = library_item.authors[0]
+                    if len(prov_item.authors) > 0:
+                        prov_author = prov_item.authors[0]
+                    if len(library_item.narrators) > 0:
+                        lib_narrator = library_item.narrators[0]
+                    if len(prov_item.narrators) > 0:
+                        prov_narrator = prov_item.narrators[0]
+                    for possible_type in [Artist, str]:
+                        if (
+                            isinstance(lib_author, possible_type)
+                            and not isinstance(prov_author, possible_type)
+                        ) or (
+                            isinstance(lib_narrator, possible_type)
+                            and not isinstance(prov_narrator, possible_type)
+                        ):
+                            library_item = await self.mass.music.audiobooks.update_item_in_library(
+                                library_item.item_id, prov_item
+                            )
+                            break
+
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.audiobooks.set_favorite(library_item.item_id, True)
@@ -1064,6 +1139,23 @@ class MusicProvider(Provider):
                     # update if supported mediatypes changed
                     library_item = await self.mass.music.playlists.update_item_in_library(
                         library_item.item_id, prov_item
+                    )
+                elif (
+                    prov_item.is_dynamic
+                    and not library_item.is_editable
+                    and (
+                        prov_item.name != library_item.name
+                        or prov_item.metadata.images != library_item.metadata.images
+                    )
+                ):
+                    # the provider is the sole source of truth for non-editable dynamic
+                    # playlists (e.g. Pandora/personalized-radio stations): overwrite=True
+                    # replaces the full stored record (not just name/images), which is fine
+                    # here since there's no local customization on these to lose. Restricted
+                    # to is_dynamic so static non-editable playlists (e.g. provider
+                    # "favorites") keep their locally-enriched metadata/images.
+                    library_item = await self.mass.music.playlists.update_item_in_library(
+                        library_item.item_id, prov_item, overwrite=True
                     )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be

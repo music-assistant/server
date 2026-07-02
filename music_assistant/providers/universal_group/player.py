@@ -190,12 +190,10 @@ class UniversalGroupPlayer(Player):
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Group members",
                 default_value=[],
-                description="Select all players you want to be part of this group",
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=[
-                    ConfigValueOption(x.display_name, x.player_id)
+                    ConfigValueOption(x.player_id, title=x.display_name)
                     for x in self.mass.players.all_players(True, False)
                     if x.type != PlayerType.GROUP
                 ],
@@ -203,8 +201,6 @@ class UniversalGroupPlayer(Player):
             ConfigEntry(
                 key=CONF_DYNAMIC_GROUP_MEMBERS,
                 type=ConfigEntryType.BOOLEAN,
-                label="Enable dynamic members",
-                description="Allow members to (temporary) join/leave the group dynamically.",
                 default_value=False,
                 required=False,
             ),
@@ -280,70 +276,6 @@ class UniversalGroupPlayer(Player):
             self._attr_group_members = self._attr_static_group_members.copy()
         self.update_state()
 
-    async def _capture_members(self) -> None:
-        """
-        Resolve collisions and prepare the configured members for grouping.
-
-        Rebuilds the effective member list from the configured static set,
-        powers on each member that has a power control, releases members
-        that are currently captured by another group / sync session, and
-        leaves the group ready for playback. Idempotent: safe to call on an
-        already-prepared group.
-        """
-        # rebuild the effective member list from the configured static set
-        self._attr_group_members = []
-        for static_group_member in self._attr_static_group_members:
-            if (
-                (member_player := self.mass.players.get_player(static_group_member))
-                and member_player.available
-                and member_player.enabled
-            ):
-                self._attr_group_members.append(static_group_member)
-        # ensure each member is free of any prior group/sync allegiance and ready to play
-        for member in self.mass.players.iter_group_members(
-            self, only_powered=False, active_only=False
-        ):
-            if (
-                member.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-                and member.active_source != self.active_source
-            ):
-                # Use internal handler to get protocol selection and avoid redirect
-                await self.mass.players._handle_cmd_stop(member.player_id)
-            if (
-                member.state.active_group is not None
-                and member.state.active_group != self.player_id
-            ):
-                # collision: child is currently captured by a different group
-                if other_group := self.mass.players.get_player(member.state.active_group):
-                    if (
-                        other_group.supports_feature(PlayerFeature.SET_MEMBERS)
-                        and member.player_id not in other_group.static_group_members
-                    ):
-                        async with self.mass.players.wait_for_player_update(
-                            member.player_id, timeout=5
-                        ):
-                            await other_group.set_members(player_ids_to_remove=[member.player_id])
-                    # the other group can't release this member dynamically — stop
-                    # it entirely so the member is freed. Route power-off through
-                    # the controller so a FAKE-power group also gets its extra_data
-                    # updated; calling other_group.power() directly would only set
-                    # _attr_powered and leave the cached fake state out of sync.
-                    elif other_group.state.power_control != PLAYER_CONTROL_NONE:
-                        async with self.mass.players.wait_for_player_update(
-                            member.player_id, timeout=5
-                        ):
-                            await self.mass.players._handle_cmd_power(other_group.player_id, False)
-                    else:
-                        async with self.mass.players.wait_for_player_update(
-                            member.player_id, timeout=5
-                        ):
-                            await other_group.stop()
-            if member.synced_to:
-                # member is part of a syncgroup — release it first
-                await member.ungroup()
-            if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                await self.mass.players.cmd_power(member.player_id, True)
-
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         # group volume is already handled in the player manager
@@ -411,7 +343,10 @@ class UniversalGroupPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
-                f"Group {self.display_name} does not allow dynamically adding/removing members!"
+                f"Group {self.display_name} does not allow dynamically adding/removing members!",
+                translation_key="group_not_dynamic",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
             )
         # handle additions
         for player_id in player_ids_to_add or []:
@@ -419,7 +354,10 @@ class UniversalGroupPlayer(Player):
                 continue
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
-                    f"Cannot add {self.display_name} to itself as a member!"
+                    f"Cannot add {self.display_name} to itself as a member!",
+                    translation_key="cannot_add_group_to_itself",
+                    translation_owner=self.translation_owner,
+                    translation_args=[self.display_name],
                 )
             child_player = self.mass.players.get_player(player_id, True)
             assert child_player  # for type checking
@@ -453,7 +391,11 @@ class UniversalGroupPlayer(Player):
                 continue
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
-                    f"Cannot remove {self.display_name} from itself as a member!"
+                    f"Cannot remove {self.display_name} from itself as a member!",
+                    translation_key=(
+                        "provider.universal_group.errors.cannot_remove_group_from_itself"
+                    ),
+                    translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(player_id)
             child_player = self.mass.players.get_player(player_id, True)
@@ -479,6 +421,70 @@ class UniversalGroupPlayer(Player):
             # tear down any in-flight session before unloading
             await self.stop()
             self._attr_powered = False
+
+    async def _capture_members(self) -> None:
+        """
+        Resolve collisions and prepare the configured members for grouping.
+
+        Rebuilds the effective member list from the configured static set,
+        powers on each member that has a power control, releases members
+        that are currently captured by another group / sync session, and
+        leaves the group ready for playback. Idempotent: safe to call on an
+        already-prepared group.
+        """
+        # rebuild the effective member list from the configured static set
+        self._attr_group_members = []
+        for static_group_member in self._attr_static_group_members:
+            if (
+                (member_player := self.mass.players.get_player(static_group_member))
+                and member_player.available
+                and member_player.enabled
+            ):
+                self._attr_group_members.append(static_group_member)
+        # ensure each member is free of any prior group/sync allegiance and ready to play
+        for member in self.mass.players.iter_group_members(
+            self, only_powered=False, active_only=False
+        ):
+            if (
+                member.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                and member.active_source != self.active_source
+            ):
+                # Use internal handler to get protocol selection and avoid redirect
+                await self.mass.players._handle_cmd_stop(member.player_id)
+            if (
+                member.state.active_group is not None
+                and member.state.active_group != self.player_id
+            ):
+                # collision: child is currently captured by a different group
+                if other_group := self.mass.players.get_player(member.state.active_group):
+                    if (
+                        other_group.supports_feature(PlayerFeature.SET_MEMBERS)
+                        and member.player_id not in other_group.static_group_members
+                    ):
+                        async with self.mass.players.wait_for_player_update(
+                            member.player_id, timeout=5
+                        ):
+                            await other_group.set_members(player_ids_to_remove=[member.player_id])
+                    # the other group can't release this member dynamically — stop
+                    # it entirely so the member is freed. Route power-off through
+                    # the controller so a FAKE-power group also gets its extra_data
+                    # updated; calling other_group.power() directly would only set
+                    # _attr_powered and leave the cached fake state out of sync.
+                    elif other_group.state.power_control != PLAYER_CONTROL_NONE:
+                        async with self.mass.players.wait_for_player_update(
+                            member.player_id, timeout=5
+                        ):
+                            await self.mass.players._handle_cmd_power(other_group.player_id, False)
+                    else:
+                        async with self.mass.players.wait_for_player_update(
+                            member.player_id, timeout=5
+                        ):
+                            await other_group.stop()
+            if member.synced_to:
+                # member is part of a syncgroup — release it first
+                await member.ungroup()
+            if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
+                await self.mass.players.cmd_power(member.player_id, True)
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""
@@ -627,7 +633,7 @@ class UniversalGroupPlayer(Player):
         ):
             try:
                 await resp.write(chunk)
-            except (ConnectionError, ConnectionResetError):
+            except ConnectionError, ConnectionResetError:
                 break
 
         return resp

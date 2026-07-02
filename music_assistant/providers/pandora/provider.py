@@ -168,7 +168,7 @@ class PandoraProvider(MusicProvider):
                 try:
                     flags: list[str] = response_data.get("config", {}).get("flags", [])
                     self._high_quality_available = ACCOUNT_FLAG_HIGH_QUALITY in flags
-                except (AttributeError, TypeError):
+                except AttributeError, TypeError:
                     self._high_quality_available = False
 
                 self.logger.info(
@@ -277,8 +277,10 @@ class PandoraProvider(MusicProvider):
         """Get single radio station details."""
         return Radio(
             item_id=prov_radio_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=f"Pandora Station {prov_radio_id}",
+            translation_key="pandora_station",
+            translation_params=[prov_radio_id],
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_radio_id,

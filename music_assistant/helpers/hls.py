@@ -29,7 +29,7 @@ class HLSMediaSegment:
         try:
             duration_part = self.extinf_line.split("#EXTINF:")[1].split(",", 1)[0]
             return float(duration_part.strip())
-        except (IndexError, ValueError):
+        except IndexError, ValueError:
             return 0.0
 
     @property
@@ -71,7 +71,8 @@ class HLSMediaPlaylistParser:
         self.segments_started = False
 
     def parse(self) -> HLSMediaPlaylist:
-        """Parse HLS media playlist text into structured data.
+        """
+        Parse HLS media playlist text into structured data.
 
         Returns:
             HLSMediaPlaylist object with extracted structure

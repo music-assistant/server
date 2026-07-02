@@ -56,7 +56,8 @@ async def test_listing_filters_disabled_tools() -> None:
 
 
 async def test_call_disabled_tool_blocked() -> None:
-    """A client cannot bypass the listing filter by calling the disabled tool by name.
+    """
+    A client cannot bypass the listing filter by calling the disabled tool by name.
 
     FastMCP's ``call_tool`` raises ``ToolError`` for any server-side rejection
     (the middleware re-raises ``NotFoundError`` as a tool-call failure).
@@ -89,7 +90,8 @@ async def test_untagged_tool_always_callable() -> None:
 
 
 async def test_disabled_resource_blocked_on_read() -> None:
-    """Reading a disabled resource by URI raises rather than silently succeeding.
+    """
+    Reading a disabled resource by URI raises rather than silently succeeding.
 
     ``read_resource`` lifts server errors to ``McpError`` (the MCP SDK's own
     JSON-RPC error envelope class), not to ``ToolError`` — different transport
@@ -102,7 +104,8 @@ async def test_disabled_resource_blocked_on_read() -> None:
 
 
 async def test_template_resource_read_via_concrete_uri() -> None:
-    """A concrete URI matched by a template resource is readable when its tag is enabled.
+    """
+    A concrete URI matched by a template resource is readable when its tag is enabled.
 
     The middleware lookup must fall back from ``get_resource`` (statically
     registered URIs only) to ``get_resource_template`` (URI-template matching);

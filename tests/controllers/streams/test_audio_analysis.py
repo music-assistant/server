@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
@@ -15,7 +16,10 @@ from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
-from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
+from music_assistant.constants import (
+    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    _default_background_scan_concurrency,
+)
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_ANALYSIS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
@@ -25,7 +29,10 @@ from music_assistant.controllers.streams.audio_analysis import (
 )
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis_provider import (
+    AudioAnalysisProvider,
+    InstrumentedSemaphore,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 
@@ -45,6 +52,107 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
     p1.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
     p2.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
+
+
+def test_ensure_inference_runtime_configured_is_idempotent() -> None:
+    """The inference runtime (torch + native BLAS caps) is configured once per controller."""
+    controller = _make_controller()
+    with (
+        patch("torch.set_num_threads") as set_threads,
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits") as blas_limits,
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+        controller.ensure_inference_runtime_configured()
+    set_threads.assert_called_once()
+    blas_limits.assert_called_once()
+    if controller.analysis_executor is not None:
+        controller.analysis_executor.shutdown(wait=False)
+
+
+def test_ensure_inference_runtime_creates_solo_lock_and_executor() -> None:
+    """Runtime config creates the playback-priority solo lock and a dedicated worker pool."""
+    controller = _make_controller()
+    with (
+        patch("torch.set_num_threads"),
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits"),
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+    try:
+        assert isinstance(controller.analysis_solo_lock, asyncio.Lock)
+        assert isinstance(controller.analysis_executor, ThreadPoolExecutor)
+    finally:
+        if controller.analysis_executor is not None:
+            controller.analysis_executor.shutdown(wait=False)
+
+
+def test_playback_active_delegates_to_streams() -> None:
+    """playback_active reflects the streams controller's active-output-stream gauge."""
+    controller = _make_controller()
+    controller.streams.output_stream_active = MagicMock(return_value=True)  # type: ignore[method-assign]
+    assert controller.playback_active() is True
+    controller.streams.output_stream_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+    assert controller.playback_active() is False
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "expected_permits"),
+    [(2, 1), (4, 2), (8, 4), (16, 8)],
+)
+@pytest.mark.asyncio
+async def test_analysis_concurrency_capped_at_half_cores(
+    cpu_count: int, expected_permits: int
+) -> None:
+    """The analysis concurrency cap is half the cores (min 1) on every host."""
+    controller = _make_controller()
+    with (
+        patch(
+            "music_assistant.controllers.streams.audio_analysis.os.process_cpu_count",
+            return_value=cpu_count,
+        ),
+        patch("torch.set_num_threads"),
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits"),
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+    semaphore = controller.analysis_semaphore
+    assert isinstance(semaphore, asyncio.Semaphore)
+    # Exactly `expected_permits` acquires exhaust the cap.
+    for _ in range(expected_permits):
+        await semaphore.acquire()
+    assert semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_instrumented_semaphore_tracks_in_flight_and_waiters() -> None:
+    """InstrumentedSemaphore exposes live permit-in-use and queued-acquirer counts."""
+    sem = InstrumentedSemaphore(2)
+    assert (sem.capacity, sem.in_flight, sem.waiters) == (2, 0, 0)
+
+    await sem.acquire()
+    await sem.acquire()
+    assert sem.in_flight == 2
+    assert sem.locked()
+
+    # A third acquire blocks behind the cap and registers as a waiter.
+    blocked = asyncio.ensure_future(sem.acquire())
+    await asyncio.sleep(0)
+    assert sem.waiters == 1
+    assert sem.in_flight == 2
+
+    # Freeing a permit lets the queued acquirer through; the queue drains.
+    sem.release()
+    await blocked
+    assert sem.waiters == 0
+    assert sem.in_flight == 2
+
+    sem.release()
+    sem.release()
+    assert sem.in_flight == 0
 
 
 @pytest.mark.asyncio
@@ -98,10 +206,10 @@ def test_get_scan_concurrency_returns_default_on_unset() -> None:
 
 
 def test_get_scan_concurrency_clamps_to_max() -> None:
-    """Values above 8 are clamped to 8."""
+    """Values above 16 are clamped to 16."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=99)  # type: ignore[method-assign]
-    assert controller._get_scan_concurrency() == 8
+    assert controller._get_scan_concurrency() == 16
 
 
 def test_get_scan_concurrency_clamps_to_min() -> None:
@@ -111,6 +219,16 @@ def test_get_scan_concurrency_clamps_to_min() -> None:
     # doesn't swap us out for the default before the min-clamp runs.
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=-1)  # type: ignore[method-assign]
     assert controller._get_scan_concurrency() == 1
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "expected"),
+    [(1, 1), (2, 1), (3, 1), (4, 2), (8, 2), (16, 2)],
+)
+def test_default_background_scan_concurrency(cpu_count: int, expected: int) -> None:
+    """Background scan defaults to 1 below 4 cores, 2 at/above (never more than 2)."""
+    with patch("music_assistant.constants.os.process_cpu_count", return_value=cpu_count):
+        assert _default_background_scan_concurrency() == expected
 
 
 def _make_stream_mock(chunks: list[bytes]) -> object:
@@ -331,6 +449,7 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     controller = _make_controller()
     p1 = _make_aa_provider("prov-1", available=True)
     p1.domain = "loudness_analysis"
+    p1.analysis_version = 1
     p1.available = True
     monkeypatch.setattr(
         controller.__class__,
@@ -667,7 +786,8 @@ def test_merged_from_rows_priority_domain_not_available_is_excluded() -> None:
 
 
 def test_merged_from_rows_regression_sonic_does_not_clobber_loudness() -> None:
-    """Regression: sonic_analysis' RMS loudness must not overwrite the EBU R128 value.
+    """
+    Regression: sonic_analysis' RMS loudness must not overwrite the EBU R128 value.
 
     Reproduces the volume-jump bug: a newer sonic_analysis row carries an RMS-proxy
     loudness_integrated that wins under last-write-wins, but scoping to loudness_analysis
@@ -1097,11 +1217,12 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     assert "aa.analysis_version IS NOT NULL" in sql
     assert "aa.analysis_version >= :current_version" in sql
     assert f"'{domain}'" in sql
-    assert params == {
-        "media_type": MediaType.TRACK.value,
-        "aa_domain": "sonic_analysis",
-        "current_version": 2,
-    }
+    assert params["media_type"] == MediaType.TRACK.value
+    assert params["aa_domain"] == "sonic_analysis"
+    assert params["current_version"] == 2
+    assert "now" in params
+    assert "aa.analysis_version IS NOT NULL" in sql
+    assert "aa.analysis_version >= :current_version" in sql
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:

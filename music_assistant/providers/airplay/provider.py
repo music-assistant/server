@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import socket
 from contextlib import suppress
 from ipaddress import ip_address
@@ -12,6 +14,7 @@ from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
     get_ip_pton,
@@ -129,6 +132,14 @@ class AirPlayProvider(PlayerProvider):
         # shutdown DACP zeroconf service
         if self._dacp_info:
             await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
+
+    def get_players(self) -> list[AirPlayPlayer]:
+        """Return all airplay players belonging to this instance."""
+        return cast("list[AirPlayPlayer]", self.players)
+
+    def get_player(self, player_id: str) -> AirPlayPlayer | None:
+        """Return AirplayPlayer by id."""
+        return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
 
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
@@ -275,6 +286,18 @@ class AirPlayProvider(PlayerProvider):
                 path,
                 body,
             )
+            # machine-parseable capture of raw DACP traffic for building replay test fixtures
+            if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                capture = {
+                    "player": player.name if player else None,
+                    "active_remote": active_remote,
+                    "method": headers_split[0].split(" ", 1)[0],
+                    "path": path,
+                    "headers": headers,
+                    "body": body,
+                    "raw_b64": base64.b64encode(raw_request).decode("ascii"),
+                }
+                self.logger.log(VERBOSE_LOG_LEVEL, "AIRPLAY_DACP_CAPTURE %s", json.dumps(capture))
             if not player:
                 return
             if player.protocol_parent_id and (
@@ -415,11 +438,3 @@ class AirPlayProvider(PlayerProvider):
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
-
-    def get_players(self) -> list[AirPlayPlayer]:
-        """Return all airplay players belonging to this instance."""
-        return cast("list[AirPlayPlayer]", self.players)
-
-    def get_player(self, player_id: str) -> AirPlayPlayer | None:
-        """Return AirplayPlayer by id."""
-        return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))

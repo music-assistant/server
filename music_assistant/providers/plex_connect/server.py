@@ -36,7 +36,8 @@ class PlayerRemoteInstance:
         device_class: str = "speaker",
         remote_control: bool = False,
     ) -> None:
-        """Initialize player remote instance.
+        """
+        Initialize player remote instance.
 
         :param plex_provider: Plex provider instance.
         :param ma_player_id: Music Assistant player ID.
@@ -123,7 +124,8 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         ma_player_id: str | None = None,
         device_class: str = "speaker",
     ) -> None:
-        """Initialize remote control server.
+        """
+        Initialize remote control server.
 
         :param plex_provider: Plex provider instance.
         :param port: Port for the HTTP server.

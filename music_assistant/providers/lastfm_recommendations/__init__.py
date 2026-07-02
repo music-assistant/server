@@ -81,81 +81,52 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="Last.fm API Key",
             required=False,
-            description="Optional. Override the built-in API key.",
             value=values.get(CONF_API_KEY) if values else None,
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Last.fm Username",
             required=False,
-            description="Your Last.fm username for genre-based recommendations (optional)",
             value=values.get(CONF_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_ENABLE_PERSONALIZED,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Personalized Recommendations",
             default_value=False,
-            description=(
-                "Provide 'Similar Artists' and 'Similar Tracks' rows based on your "
-                "listening history"
-            ),
-            category="Recommendations",
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GLOBAL_CHARTS,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Global Charts",
             default_value=False,
-            description=(
-                "Provide 'Global Top Artists' and 'Global Top Tracks' rows from "
-                "Last.fm's worldwide charts"
-            ),
-            category="Recommendations",
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GENRE,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Genre Recommendations",
             default_value=False,
-            description=(
-                "Provide 'Top Artists', 'Top Albums' and 'Top Tracks' rows for your "
-                "most played genre (requires username)"
-            ),
-            category="Recommendations",
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GEO,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Geographic Charts",
             default_value=False,
-            description=("Provide 'Top Artists' and 'Top Tracks' rows for the selected country"),
-            category="Recommendations",
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_GEO_COUNTRY,
             type=ConfigEntryType.STRING,
-            label="Country for Geographic Charts",
             default_value="Argentina",
-            description="Select country for geography-based top artists and tracks",
-            options=[ConfigValueOption(country, country) for country in GEO_COUNTRIES],
-            category="Recommendations",
+            options=[ConfigValueOption(country, title=country) for country in GEO_COUNTRIES],
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_ACTION_CLEAR_CACHE,
             type=ConfigEntryType.ACTION,
-            label="Refresh Recommendations",
-            description=(
-                "Rebuild recommendations immediately instead of waiting for the next "
-                "scheduled refresh."
-            ),
             action=CONF_ACTION_CLEAR_CACHE,
-            action_label="Refresh Now",
-            category="Recommendations",
+            category="recommendations",
             advanced=True,
             required=False,
         ),
@@ -178,7 +149,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
             name="Refresh Last.fm recommendations",
             handler=self._refresh_recommendations,
             schedule=TaskSchedule.hourly(every=6),
-            translation_key="background_task.refresh_lastfm_recommendations",
+            translation_key="refresh_lastfm_recommendations",
+            translation_owner=self.translation_owner,
         )
 
         # Populate on every startup so the UI isn't empty until the next scheduled refresh.
@@ -223,7 +195,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
         return self._recommendation_folders
 
     async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
-        """Retrieve similar artists from Last.fm.
+        """
+        Retrieve similar artists from Last.fm.
 
         :param artist: The reference artist.
         :param limit: Maximum number of similar artists to return.
@@ -239,7 +212,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
         return [a for a in resolved if a is not None]
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """Retrieve similar tracks from Last.fm.
+        """
+        Retrieve similar tracks from Last.fm.
 
         :param track: The reference track.
         :param limit: Maximum number of similar tracks to return.
@@ -256,7 +230,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
         return [t for t in resolved if t is not None]
 
     async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
-        """Retrieve an artist's top tracks from Last.fm.
+        """
+        Retrieve an artist's top tracks from Last.fm.
 
         :param artist: The reference artist.
         :param limit: Maximum number of top tracks to return.

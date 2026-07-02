@@ -2,7 +2,7 @@
 
 from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -26,7 +26,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.FAVORITE_PLAYLISTS_EDIT,
 }
 
-MUSIC_APP_TOKEN = app_var(8)
+MUSIC_APP_TOKEN = app_var("apple_music_token")
 WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"

@@ -15,8 +15,10 @@ from music_assistant.providers.sonic_similarity.helpers import (
     _parse_similar_params,
     _parse_weights,
     apply_filters,
+    format_text_query,
 )
 from music_assistant.providers.sonic_similarity.similarity import Candidate, ScoredCandidate
+from music_assistant.providers.sonic_similarity.vectors import FEATURE_GROUPS
 from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
@@ -87,6 +89,7 @@ class TestParseSimilarParams:
         assert params.depth == 1
         assert params.branch_factor == 5
         assert params.blend_mode == "centroid"
+        assert params.candidates == 200
         assert params.seed_weights is None
         assert params.diversity == 0.0
         assert params.preset == "balanced"
@@ -95,6 +98,32 @@ class TestParseSimilarParams:
         assert params.filter_providers is None
         assert params.exclude_track_ids is None
         assert params.exclude_artists is None
+
+
+class TestFormatTextQuery:
+    """Tests for the CLAP query template helper."""
+
+    def test_appends_music_suffix(self) -> None:
+        """A bare query is framed toward CLAP's caption form."""
+        assert format_text_query("aggressive metal") == "aggressive metal music"
+
+    def test_skips_when_music_present(self) -> None:
+        """No double 'music' when the query already mentions it."""
+        assert format_text_query("upbeat dance music") == "upbeat dance music"
+        assert format_text_query("Music for studying") == "Music for studying"
+
+    def test_matches_word_not_substring(self) -> None:
+        """The skip guard matches the word 'music', not substrings like 'musician'."""
+        assert format_text_query("musician") == "musician music"
+        assert format_text_query("musical theatre") == "musical theatre music"
+
+    def test_strips_whitespace(self) -> None:
+        """Surrounding whitespace is trimmed before framing."""
+        assert format_text_query("  jazzy  ") == "jazzy music"
+
+    def test_empty_stays_empty(self) -> None:
+        """An empty/whitespace query is left as an empty string."""
+        assert format_text_query("   ") == ""
 
 
 class TestApplyFilters:
@@ -209,6 +238,31 @@ class TestParseWeights:
             "era",
         ):
             assert key in result
+
+
+class TestSimilarityPresets:
+    """
+    Structural invariants over the SIMILARITY_PRESETS weight dicts.
+
+    Each preset is a hand-edited dict; these guard against a typo (a dropped,
+    misspelled or extra key, or an out-of-range value) shipping as a runtime
+    KeyError or a degenerate weighting.
+    """
+
+    @pytest.mark.parametrize("preset", SIMILARITY_PRESETS.values(), ids=SIMILARITY_PRESETS.keys())
+    def test_exact_key_set(self, preset: dict[str, float]) -> None:
+        """A preset weights exactly the feature groups plus the genre/era knobs."""
+        assert set(preset) == set(FEATURE_GROUPS) | {"genre", "era"}
+
+    @pytest.mark.parametrize("preset", SIMILARITY_PRESETS.values(), ids=SIMILARITY_PRESETS.keys())
+    def test_weights_in_unit_range(self, preset: dict[str, float]) -> None:
+        """Every weight sits in [0, 1] (preset baselines are not clamped at use)."""
+        assert all(0.0 <= w <= 1.0 for w in preset.values())
+
+    @pytest.mark.parametrize("preset", SIMILARITY_PRESETS.values(), ids=SIMILARITY_PRESETS.keys())
+    def test_has_a_nonzero_audio_group(self, preset: dict[str, float]) -> None:
+        """At least one audio group is weighted, so the distance stays meaningful."""
+        assert any(preset[group] > 0.0 for group in FEATURE_GROUPS)
 
 
 class TestSingleSeedAPI:

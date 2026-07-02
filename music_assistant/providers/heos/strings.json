@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "ip_address": {
+      "label": "Main controller hostname or IP address.",
+      "description": "Hostname or IP address of the HEOS device to be used as the main controller. It is recommended to use a wired device as the main controller."
+    },
+    "timeout": {
+      "label": "Command timeout value",
+      "description": "Set the timeout value to use when sending commands to the HEOS system. Some devices could reply slower to commands, if you are seeing Command timeout logs, try increasing this value."
+    }
+  },
+  "manifest": {
+    "description": "Play to Denon & Marantz devices via HEOS."
+  }
+}

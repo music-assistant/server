@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -10,10 +11,10 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.mass import MusicAssistant
 
 from .constants import (
-    CONF_VOLUME_CONTROL,
-    VOLUME_CONTROL_DISABLED,
-    VOLUME_CONTROL_HARDWARE,
-    VOLUME_CONTROL_SOFTWARE,
+    AUDIO_BACKEND_ALSA,
+    AUDIO_BACKEND_AUTO,
+    AUDIO_BACKEND_PULSEAUDIO,
+    CONF_AUDIO_BACKEND,
 )
 from .provider import LocalAudioProvider
 
@@ -29,29 +30,29 @@ SUPPORTED_FEATURES = {
 
 
 async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+    mass: MusicAssistant,  # noqa: ARG001
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_VOLUME_CONTROL,
-            type=ConfigEntryType.STRING,
-            label="Volume control mode",
-            options=[
-                ConfigValueOption(title="Hardware (preferred)", value=VOLUME_CONTROL_HARDWARE),
-                ConfigValueOption(title="Software", value=VOLUME_CONTROL_SOFTWARE),
-                ConfigValueOption(title="Disabled", value=VOLUME_CONTROL_DISABLED),
-            ],
-            default_value=VOLUME_CONTROL_HARDWARE,
-            description="Hardware uses OS/ALSA-level volume control. "
-            "Software applies volume scaling to PCM audio data. "
-            "Disabled passes audio at full volume.",
-        ),
-    )
+    entries: list[ConfigEntry] = []
+
+    if sys.platform == "linux":
+        entries.append(
+            ConfigEntry(
+                key=CONF_AUDIO_BACKEND,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(AUDIO_BACKEND_AUTO),
+                    ConfigValueOption(AUDIO_BACKEND_PULSEAUDIO),
+                    ConfigValueOption(AUDIO_BACKEND_ALSA),
+                ],
+                default_value=AUDIO_BACKEND_AUTO,
+            )
+        )
+
+    return tuple(entries)
 
 
 async def setup(

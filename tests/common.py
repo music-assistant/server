@@ -5,15 +5,18 @@ import contextlib
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import aiofiles.os
 from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
-from music_assistant_models.event import MassEvent
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
 
 
 def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:

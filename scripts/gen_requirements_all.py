@@ -22,7 +22,8 @@ def _load_pyproject() -> dict:
 
 
 def gather_uv_index_config(data: dict) -> tuple[list[str], dict[str, str]]:
-    """Read [tool.uv.index] and [tool.uv.sources] from pyproject.toml.
+    """
+    Read [tool.uv.index] and [tool.uv.sources] from pyproject.toml.
 
     :return: Tuple of (extra_index_urls, package_variant_suffixes).
         extra_index_urls: URLs to emit as --extra-index-url.

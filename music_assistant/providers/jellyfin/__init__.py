@@ -96,31 +96,22 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="Server",
             required=True,
-            description="The url of the Jellyfin server to connect to.",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
-            description="The username to authenticate to the remote server."
-            "the remote host, For example 'media'.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="The password to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL",
             required=False,
-            description="Whether or not to verify the certificate of SSL/TLS connections.",
             advanced=True,
             default_value=True,
         ),
@@ -239,7 +230,8 @@ class JellyfinProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 20,
     ) -> SearchResults:
-        """Perform search on the Jellyfin library.
+        """
+        Perform search on the Jellyfin library.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.

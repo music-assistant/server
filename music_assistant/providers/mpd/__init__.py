@@ -41,12 +41,6 @@ async def get_config_entries(
         ConfigEntry(
             key="manual_discovery_ip_addresses",
             type=ConfigEntryType.STRING,
-            label="MPD Servers",
-            description=(
-                "List of MPD servers to connect to. "
-                "Enter one server per line as host or host:port. "
-                "Port defaults to 6600 if not specified."
-            ),
             default_value=[],
             required=True,
             multi_value=True,

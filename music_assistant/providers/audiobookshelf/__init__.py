@@ -171,64 +171,44 @@ async def get_config_entries(
         ConfigEntry(
             key="label",
             type=ConfigEntryType.LABEL,
-            label="Please provide the address of your Audiobookshelf instance. To authenticate "
-            "you have two options: "
-            "a) Provide username AND password. Leave the API key empty. "
-            "b) Provide ONLY an API key.",
         ),
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="Server",
             required=True,
-            description="The URL of the Audiobookshelf server to connect to. For example "
-            "https://abs.domain.tld/ or http://192.168.1.4:13378/",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=False,
-            description="The username to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="The password to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_API_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="API key _instead_ of user/ password. (ABS version >= 2.26)",
             required=False,
-            description="Instead of using a username and password, "
-            "you may provide an API key (ABS version >= 2.26). "
-            "Please consult the docs.",
         ),
         ConfigEntry(
             key=CONF_OLD_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="old token",
             required=False,
             hidden=True,
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL",
             required=False,
-            description="Whether or not to verify the certificate of SSL/TLS connections.",
             advanced=True,
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_HIDE_EMPTY_PODCASTS,
             type=ConfigEntryType.BOOLEAN,
-            label="Hide empty podcasts.",
             required=False,
-            description="This will skip podcasts with no episodes associated.",
             advanced=True,
             default_value=False,
         ),
@@ -298,7 +278,12 @@ class Audiobookshelf(MusicProvider):
                 )
             await self._client_socket.init_client()
         except AbsLoginError as exc:
-            raise LoginFailed(f"Login to abs instance at {base_url} failed.") from exc
+            raise LoginFailed(
+                f"Login to abs instance at {base_url} failed.",
+                translation_key="login_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[base_url],
+            ) from exc
 
         if token_old is not None and token_api is None:
             # Log Message that the old token won't work
@@ -415,7 +400,8 @@ for more details.
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
-        """Get supported features.
+        """
+        Get supported features.
 
         ABS supports multiple libraries, but they must be of the same media type. If we only
         have a single library of a media type, mapping the playlist creation is unambiguous.
@@ -533,6 +519,7 @@ for more details.
                     parse_podcast_episode(
                         episode=item.episode,
                         prov_podcast_id=item.library_item.id_,
+                        prov_podcast_name=item.library_item.media.metadata.title,
                         fallback_episode_cnt=None,
                         instance_id=self.instance_id,
                         domain=self.domain,
@@ -550,7 +537,8 @@ for more details.
 
     @handle_refresh_token
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a playlist in ABS.
+        """
+        Create a playlist in ABS.
 
         This method may only be called, if we have not more than one library per media item in ABS.
         """
@@ -638,7 +626,8 @@ for more details.
 
     @handle_refresh_token
     async def library_add(self, item: MediaItemType) -> bool:
-        """Add library item.
+        """
+        Add library item.
 
         This method is only called, if this item in question is not part of your library
         yet, e.g. a "top 500 mix playlist". This doesn't exist in ABS.
@@ -650,7 +639,8 @@ for more details.
         return False
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
-        """Retrieve library/subscribed podcasts from the provider.
+        """
+        Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
         """
@@ -701,7 +691,8 @@ for more details.
         )
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
-        """Get all podcast episodes of podcast.
+        """
+        Get all podcast episodes of podcast.
 
         Adds progress information.
         """
@@ -721,6 +712,7 @@ for more details.
             mass_episode = parse_podcast_episode(
                 episode=abs_episode,
                 prov_podcast_id=prov_podcast_id,
+                prov_podcast_name=abs_podcast.media.metadata.title,
                 fallback_episode_cnt=episode_cnt,
                 instance_id=self.instance_id,
                 domain=self.domain,
@@ -751,6 +743,7 @@ for more details.
                 return parse_podcast_episode(
                     episode=abs_episode,
                     prov_podcast_id=prov_podcast_id,
+                    prov_podcast_name=abs_podcast.media.metadata.title,
                     fallback_episode_cnt=episode_cnt,
                     instance_id=self.instance_id,
                     domain=self.domain,
@@ -765,7 +758,8 @@ for more details.
         raise MediaNotFoundError("Episode not found")
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
-        """Get Audiobook libraries.
+        """
+        Get Audiobook libraries.
 
         Need expanded version for chapters.
         """
@@ -804,7 +798,8 @@ for more details.
 
     @handle_refresh_token
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get a single audiobook.
+        """
+        Get a single audiobook.
 
         Progress is added here.
         """
@@ -837,7 +832,8 @@ for more details.
         session_helper: SessionHelper,
         media_type: MediaType,
     ) -> StreamDetails:
-        """Streamdetails audiobook.
+        """
+        Streamdetails audiobook.
 
         We always use a custom stream type, also for single file, such
         that we can handle an ffmpeg error and refresh our tokens.
@@ -1134,13 +1130,16 @@ for more details.
                                 continue
                             _cover_path = None
                             _cover_version = None
+                            _podcast_title = None
                             if isinstance(entity, ShelfLibraryItemMinifiedPodcast):
                                 _cover_path = entity.media.cover_path
                                 _cover_version = entity.updated_at
+                                _podcast_title = entity.media.metadata.title
                             # we only have a PodcastEpisode here, with limited information
                             item = parse_podcast_episode(
                                 episode=entity.recent_episode,
                                 prov_podcast_id=podcast_id,
+                                prov_podcast_name=_podcast_title,
                                 instance_id=self.instance_id,
                                 domain=self.domain,
                                 token=self._client.token,
@@ -1219,7 +1218,8 @@ for more details.
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Update progress in Audiobookshelf.
+        """
+        Update progress in Audiobookshelf.
 
         In our case media_type may have 3 values:
             - PODCAST
@@ -1338,7 +1338,8 @@ for more details.
 
     @handle_refresh_token
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse for audiobookshelf.
+        """
+        Browse for audiobookshelf.
 
         Generates this view:
         Library_Name_A (Audiobooks)
@@ -1776,7 +1777,8 @@ for more details.
     async def _socket_abs_user_item_progress_updated(
         self, id_: str, progress: MediaProgress
     ) -> None:
-        """To update continue listening.
+        """
+        To update continue listening.
 
         ABS reports every 15s and immediately on play state change.
         This callback is called per item if a progress is changed:
@@ -1881,7 +1883,8 @@ for more details.
         return known_ids
 
     async def _set_playlog_from_user(self, user: User) -> None:
-        """Update on user callback.
+        """
+        Update on user callback.
 
         User holds also all media progresses specific to that user.
 

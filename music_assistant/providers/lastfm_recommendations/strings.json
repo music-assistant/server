@@ -1,0 +1,83 @@
+{
+  "config_entries": {
+    "api_key": {
+      "label": "Last.fm API Key",
+      "description": "Optional. Override the built-in API key."
+    },
+    "username": {
+      "label": "Last.fm Username",
+      "description": "Your Last.fm username for genre-based recommendations (optional)"
+    },
+    "enable_personalized": {
+      "label": "Enable Personalized Recommendations",
+      "description": "Provide 'Similar Artists' and 'Similar Tracks' rows based on your listening history"
+    },
+    "enable_global_charts": {
+      "label": "Enable Global Charts",
+      "description": "Provide 'Global Top Artists' and 'Global Top Tracks' rows from Last.fm's worldwide charts"
+    },
+    "enable_genre": {
+      "label": "Enable Genre Recommendations",
+      "description": "Provide 'Top Artists', 'Top Albums' and 'Top Tracks' rows for your most played genre (requires username)"
+    },
+    "enable_geo": {
+      "label": "Enable Geographic Charts",
+      "description": "Provide 'Top Artists' and 'Top Tracks' rows for the selected country"
+    },
+    "geo_country": {
+      "label": "Country for Geographic Charts",
+      "description": "Select country for geography-based top artists and tracks"
+    },
+    "clear_cache": {
+      "label": "Refresh Recommendations",
+      "description": "Rebuild recommendations immediately instead of waiting for the next scheduled refresh.",
+      "action_label": "Refresh Now"
+    }
+  },
+  "media": {
+    "recommendations": {
+      "discover_similar_artists": {
+        "name": "Discover Similar Artists",
+        "subtitle": "Based on your top {0} artists"
+      },
+      "discover_similar_tracks": {
+        "name": "Discover Similar Tracks",
+        "subtitle": "Based on your top {0} tracks"
+      },
+      "global_top_artists": {
+        "name": "Global Top Artists",
+        "subtitle": "Most popular artists worldwide"
+      },
+      "global_top_tracks": {
+        "name": "Global Top Tracks",
+        "subtitle": "Most popular tracks worldwide"
+      },
+      "genre_artists": {
+        "name": "Discover {0} Artists",
+        "subtitle": "Top artists in your top genres"
+      },
+      "genre_albums": {
+        "name": "Discover {0} Albums",
+        "subtitle": "Top albums in your top genres"
+      },
+      "genre_tracks": {
+        "name": "Discover {0} Tracks",
+        "subtitle": "Top tracks in your top genres"
+      },
+      "geo_artists": {
+        "name": "Top artists for {0}",
+        "subtitle": "Most popular artists in {0}"
+      },
+      "geo_tracks": {
+        "name": "Top tracks for {0}",
+        "subtitle": "Most popular tracks in {0}"
+      }
+    }
+  },
+  "background_task": {
+    "refresh_lastfm_recommendations": "Refresh Last.fm recommendations"
+  },
+  "manifest": {
+    "description": "Get music recommendations from Last.fm based on your listening history"
+  }
+}

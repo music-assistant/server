@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
@@ -128,25 +128,21 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_ARTIST_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist metadata.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_ALBUM_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of album metadata.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_TRACK_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of track metadata.",
             default_value=False,
         ),
         ConfigEntry(
             key=CONF_ENABLE_IMAGES,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist/album/track images",
             default_value=True,
         ),
     )
@@ -435,7 +431,7 @@ class AudioDbMetadataProvider(MetadataProvider):
     @use_cache(86400 * 90, persistent=True)  # Cache for 90 days
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
-        url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
+        url = f"https://theaudiodb.com/api/v1/json/{app_var('theaudiodb_api_key')}/{endpoint}"
         async with (
             self.throttler,
             self.mass.http_session.get(url, params=kwargs, ssl=False) as response,

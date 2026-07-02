@@ -6,7 +6,8 @@ from typing import Any
 
 
 def plex_item_fields(item: Any) -> tuple[str | None, int | None]:
-    """Return the ``(key, playQueueItemID)`` of a Plex play queue item.
+    """
+    Return the ``(key, playQueueItemID)`` of a Plex play queue item.
 
     Either field may be absent on a given item, in which case it is returned as None.
 
@@ -16,7 +17,8 @@ def plex_item_fields(item: Any) -> tuple[str | None, int | None]:
 
 
 def plex_key_for_item(media_item: Any, provider_instance: str) -> str | None:
-    """Return the Plex item_id mapped to the given provider instance, if any.
+    """
+    Return the Plex item_id mapped to the given provider instance, if any.
 
     :param media_item: A Music Assistant media item (or None).
     :param provider_instance: The Plex provider instance_id to match.
