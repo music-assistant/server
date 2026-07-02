@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import get_global_cache_value
-from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
+from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track, UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.helpers.compare import compare_strings
@@ -322,10 +322,11 @@ class MetadataEnrichmentMixin:
         self, playlist: Playlist, force_refresh: bool = False
     ) -> None:
         """Get/update rich metadata for a playlist."""
-        # dynamic playlists (e.g. Pandora stations, Apple Music stations) are
-        # provider-driven and endless: scanning "all" tracks for aggregate metadata
-        # doesn't make sense
-        if playlist.is_dynamic:
+        # Skip endless provider-driven playlists (radio stations), but allow smart playlists
+        has_smart_playlist_mapping = any(
+            pm.provider_domain == "smart_playlist" for pm in playlist.provider_mappings
+        )
+        if playlist.is_dynamic and not has_smart_playlist_mapping:
             return
         # collect metadata + create collage images
         # NOTE: we only do/allow this every REFRESH_INTERVAL
@@ -375,6 +376,15 @@ class MetadataEnrichmentMixin:
                 continue
             try:
                 if prov_metadata := await provider.get_playlist_metadata(playlist):
+                    # Remove fallback images before adding high-quality generated ones
+                    if prov_metadata.images:
+                        playlist.metadata.images = UniqueList(
+                            [
+                                img
+                                for img in playlist.metadata.images
+                                if img.provider != "smart_playlist"
+                            ]
+                        )
                     playlist.metadata.update(prov_metadata)
                     self.logger.debug(
                         "Retrieved playlist metadata from provider %s for %s",
