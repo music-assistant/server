@@ -7,6 +7,14 @@ stream pair; the renderer picks and orders them to realize a ``TransitionPlan``.
 
 import logging
 from abc import ABC, abstractmethod
+from enum import StrEnum
+
+
+class ShelfType(StrEnum):
+    """Shelving EQ band; values are the ffmpeg filter names."""
+
+    LOW = "lowshelf"
+    HIGH = "highshelf"
 
 
 class Filter(ABC):
@@ -130,7 +138,7 @@ class ShelfFilter(Filter):
     def __init__(
         self,
         logger: logging.Logger,
-        shelf_type: str,
+        shelf_type: ShelfType,
         frequency: int,
         gain_steps: list[tuple[float, float]],
         stream_type: str,
@@ -138,7 +146,7 @@ class ShelfFilter(Filter):
         """
         Initialize shelf filter.
 
-        :param shelf_type: 'lowshelf' or 'highshelf'.
+        :param shelf_type: Which shelving band to process.
         :param frequency: Shelf corner frequency in Hz.
         :param gain_steps: Schedule of (time_seconds, gain_db); the first step at
             t=0 sets the initial gain.
@@ -148,7 +156,7 @@ class ShelfFilter(Filter):
         self.frequency = frequency
         self.gain_steps = gain_steps
         self.stream_type = stream_type
-        band = "low" if shelf_type == "lowshelf" else "high"
+        band = "low" if shelf_type is ShelfType.LOW else "high"
         if stream_type == "fadeout":
             self.output_fadeout_label = f"fadeout_{band}shelf"
             self.output_fadein_label = f"fadein_pt_{band}_out"
@@ -165,7 +173,7 @@ class ShelfFilter(Filter):
         else:
             input_label, output_label = input_fadein_label, self.output_fadein_label
             pass_in, pass_out = input_fadeout_label, self.output_fadeout_label
-        band = "low" if self.shelf_type == "lowshelf" else "high"
+        band = "low" if self.shelf_type is ShelfType.LOW else "high"
         instance = f"{self.shelf_type}@{self.stream_type}_{band}"
         cmd = "; ".join(f"{t:.3f} {instance} g {g:.2f}" for t, g in self.gain_steps)
         initial = self.gain_steps[0][1]

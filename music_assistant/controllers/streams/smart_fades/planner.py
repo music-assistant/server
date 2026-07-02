@@ -20,6 +20,7 @@ import numpy as np
 import numpy.typing as npt
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.filters import ShelfType
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
     SMART_CROSSFADE_DURATION,
@@ -563,22 +564,22 @@ class SmartCrossFadePlanner(TransitionPlanner):
         start_out = max(cf_start_input, swap_at_input - swap_len_input / 2)
 
         low_out = ShelfSchedule(
-            "lowshelf",
+            ShelfType.LOW,
             self.low_shelf_freq,
             [(0.0, 0.0), *db_ramp(start_out, swap_len_input, 0.0, self.eq_kill_db)],
         )
         low_in = ShelfSchedule(
-            "lowshelf",
+            ShelfType.LOW,
             self.low_shelf_freq,
             [(0.0, self.eq_kill_db), *db_ramp(start_in, swap_len, self.eq_kill_db, 0.0)],
         )
         high_out = ShelfSchedule(
-            "highshelf",
+            ShelfType.HIGH,
             self.high_shelf_freq,
             [(0.0, 0.0), *db_ramp(start_out + swap_len_input, ease, 0.0, self.high_ease_db)],
         )
         high_in = ShelfSchedule(
-            "highshelf",
+            ShelfType.HIGH,
             self.high_shelf_freq,
             [
                 (0.0, self.high_ease_db),

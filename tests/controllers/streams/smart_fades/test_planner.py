@@ -7,6 +7,7 @@ import logging
 import numpy as np
 import pytest
 
+from music_assistant.controllers.streams.smart_fades.filters import ShelfType
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.models import (
     SmartFadeNotApplicable,
@@ -62,10 +63,10 @@ class TestSmartCrossFadePlanner:
         assert isinstance(plan, TransitionPlan)
         assert plan.crossfade_duration > 0
         eq = plan.eq_plan
-        assert eq.low_out.shelf_type == "lowshelf"
-        assert eq.low_in.shelf_type == "lowshelf"
-        assert eq.high_out.shelf_type == "highshelf"
-        assert eq.high_in.shelf_type == "highshelf"
+        assert eq.low_out.shelf_type is ShelfType.LOW
+        assert eq.low_in.shelf_type is ShelfType.LOW
+        assert eq.high_out.shelf_type is ShelfType.HIGH
+        assert eq.high_in.shelf_type is ShelfType.HIGH
         # B enters with the low end killed and ends open
         assert eq.low_in.steps[0] == (0.0, -26.0)
         assert eq.low_in.steps[-1][1] == pytest.approx(0.0)

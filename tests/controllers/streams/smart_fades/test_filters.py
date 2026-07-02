@@ -10,6 +10,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
     FadeOutTrimFilter,
     ShelfFilter,
+    ShelfType,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class TestShelfFilter:
         """A fadeout lowshelf emits an asendcmd gain schedule and a fadein passthrough."""
         f = ShelfFilter(
             LOGGER,
-            "lowshelf",
+            ShelfType.LOW,
             100,
             [(0.0, 0.0), (30.0, -13.0), (31.0, -26.0)],
             "fadeout",
@@ -87,7 +88,7 @@ class TestShelfFilter:
 
     def test_fadein_highshelf_processes_other_stream(self) -> None:
         """A fadein highshelf processes the incoming stream and passes the outgoing through."""
-        f = ShelfFilter(LOGGER, "highshelf", 13000, [(0.0, -20.0), (5.0, 0.0)], "fadein")
+        f = ShelfFilter(LOGGER, ShelfType.HIGH, 13000, [(0.0, -20.0), (5.0, 0.0)], "fadein")
         strings = f.apply("[1]", "[0]")
         chain = next(s for s in strings if "[1]" in s)
         assert "highshelf@fadein_high" in chain
@@ -97,9 +98,9 @@ class TestShelfFilter:
 
     def test_labels_unique_per_band_and_stream(self) -> None:
         """Output labels differ per band and stream so four instances can coexist."""
-        a = ShelfFilter(LOGGER, "lowshelf", 100, [(0.0, -26.0)], "fadein")
-        b = ShelfFilter(LOGGER, "highshelf", 13000, [(0.0, -20.0)], "fadein")
+        a = ShelfFilter(LOGGER, ShelfType.LOW, 100, [(0.0, -26.0)], "fadein")
+        b = ShelfFilter(LOGGER, ShelfType.HIGH, 13000, [(0.0, -20.0)], "fadein")
         assert a.output_fadein_label != b.output_fadein_label
         assert a.output_fadeout_label != b.output_fadeout_label
-        c = ShelfFilter(LOGGER, "lowshelf", 100, [(0.0, -26.0)], "fadeout")
+        c = ShelfFilter(LOGGER, ShelfType.LOW, 100, [(0.0, -26.0)], "fadeout")
         assert a.output_fadein_label != c.output_fadein_label

@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from music_assistant.controllers.streams.smart_fades.filters import ShelfType
+
 if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
@@ -95,7 +97,7 @@ class TempoPlan:
 class ShelfSchedule:
     """One shelving-EQ gain schedule for a ShelfFilter."""
 
-    shelf_type: str
+    shelf_type: ShelfType
     frequency: int
     # (time_seconds, gain_db); the step at t=0 sets the initial gain
     steps: list[tuple[float, float]]

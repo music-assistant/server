@@ -14,6 +14,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     FadeOutTrimFilter,
     GradualTimeStretchFilter,
     ShelfFilter,
+    ShelfType,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
     EqPlan,
@@ -35,10 +36,10 @@ def _seconds(seconds: float) -> int:
 def _eq_plan() -> EqPlan:
     return EqPlan(
         swap_at=6.0,
-        low_out=ShelfSchedule("lowshelf", 100, [(0.0, 0.0), (36.0, -26.0)]),
-        low_in=ShelfSchedule("lowshelf", 100, [(0.0, -26.0), (7.0, 0.0)]),
-        high_out=ShelfSchedule("highshelf", 13000, [(0.0, 0.0), (38.0, -20.0)]),
-        high_in=ShelfSchedule("highshelf", 13000, [(0.0, -20.0), (5.0, 0.0)]),
+        low_out=ShelfSchedule(ShelfType.LOW, 100, [(0.0, 0.0), (36.0, -26.0)]),
+        low_in=ShelfSchedule(ShelfType.LOW, 100, [(0.0, -26.0), (7.0, 0.0)]),
+        high_out=ShelfSchedule(ShelfType.HIGH, 13000, [(0.0, 0.0), (38.0, -20.0)]),
+        high_in=ShelfSchedule(ShelfType.HIGH, 13000, [(0.0, -20.0), (5.0, 0.0)]),
     )
 
 
