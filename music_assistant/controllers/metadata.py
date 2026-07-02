@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import os
 import pathlib
 import random
 import threading
-import urllib.parse
 from base64 import b64encode
 from collections import OrderedDict
 from contextlib import suppress
@@ -130,43 +128,6 @@ def _normalize_imageproxy_format(value: str | None) -> str | None:
     return None
 
 
-# Schemes accepted from a client on the legacy /imageproxy?path= endpoint.
-# Allowlist (not blacklist) so a leading-whitespace or unknown-scheme value
-# cannot sneak through. Provider-supplied paths resolved internally via
-# `resolve_image` are not subject to this — only inbound client paths are.
-_ALLOWED_IMAGEPROXY_REQUEST_SCHEMES: frozenset[str] = frozenset({"", "http", "https"})
-
-
-def _is_safe_imageproxy_request_path(path: str) -> bool:
-    r"""
-    Return True if `path` is safe to fetch on behalf of an imageproxy client.
-
-    Rejects any input containing control characters or surrounding whitespace
-    (so a leading `\t`, ` `, or `\x00` cannot mask an otherwise-forbidden
-    scheme), restricts the scheme to http, https, or empty (local / relative
-    path), and for http(s) targets rejects IP-literal hosts that resolve to
-    loopback, private, link-local or multicast ranges. DNS-resolved hostnames
-    are trusted; full DNS-rebinding mitigation is out of scope here.
-    """
-    if any(ord(c) < 0x20 for c in path) or path != path.strip():
-        return False
-    parsed = urllib.parse.urlparse(path)
-    scheme = parsed.scheme.lower()
-    if scheme not in _ALLOWED_IMAGEPROXY_REQUEST_SCHEMES:
-        return False
-    if scheme in ("http", "https"):
-        host = parsed.hostname  # already lowercased; brackets stripped for IPv6
-        if not host or host == "localhost":
-            return False
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            return True
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast:
-            return False
-    return True
-
-
 LOCALES = {
     "af_ZA": "African",
     "ar_AE": "Arabic (United Arab Emirates)",
@@ -243,10 +204,6 @@ _ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
 
 _IMAGEPROXY_PATH_PREFIX = "/imageproxy/"
 
-# Deprecation logging for the legacy /imageproxy query-string endpoint.
-_LEGACY_DEPRECATION_LOG_INTERVAL = 60  # seconds between log lines per IP
-_LEGACY_DEPRECATION_PRUNE_AFTER = 300  # drop tracking entries idle this long
-
 
 class MetaDataController(CoreController):
     """Several helpers to search and store metadata for mediaitems."""
@@ -272,8 +229,6 @@ class MetaDataController(CoreController):
         # thread during outbound websocket serialization.
         self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._image_id_lock = threading.Lock()
-        # per-IP throttle for the legacy /imageproxy deprecation warning
-        self._legacy_imageproxy_warn_at: dict[str, float] = {}
 
     async def get_config_entries(
         self,
@@ -360,15 +315,12 @@ class MetaDataController(CoreController):
         # and the streams server (the latter is what player metadata URLs hit)
         self.mass.streams.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
         self.mass.webserver.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
-        # deprecated /imageproxy?provider=&path=&size=&fmt= form (kept for back-compat)
-        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_legacy_imageproxy)
         self._register_maintenance_tasks()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
         self.mass.streams.unregister_dynamic_route("/imageproxy/*")
         self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
-        self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
     def providers(self) -> list[MetadataProvider]:
@@ -698,50 +650,6 @@ class MetaDataController(CoreController):
         ) or _detect_image_format(path)
         return await self._serve_thumbnail(path, provider, size, image_format)
 
-    async def handle_legacy_imageproxy(self, request: web.Request) -> web.Response:
-        """
-        Serve an image for a legacy `/imageproxy?provider=&path=&size=&fmt=` request.
-
-        DEPRECATED: this form requires the client to carry the full provider id
-        and (often URL-shaped) path on the query string, which produces
-        unwieldy double-encoded URLs and an open surface for arbitrary path
-        injection. New clients must use the `proxy_id` field on
-        `MediaItemImage` and hit `handle_imageproxy` instead. Each remote IP
-        gets a throttled deprecation `warning` log per minute.
-        """
-        self._maybe_log_legacy_imageproxy(request)
-        try:
-            path = request.query["path"]
-        except KeyError:
-            return web.Response(status=400)
-        provider = request.query.get("provider", "builtin")
-        if provider in ("url", "file", "http"):
-            # legacy aliases kept for backwards compatibility with old clients
-            provider = "builtin"
-        try:
-            size = int(request.query.get("size", "0"))
-        except ValueError:
-            return web.Response(status=400)
-        if size not in _ALLOWED_IMAGEPROXY_SIZES:
-            return web.Response(status=400)
-        image_format = _normalize_imageproxy_format(
-            request.query.get("fmt")
-        ) or _detect_image_format(path)
-        # path was double-encoded by old get_image_url(); decode iteratively
-        # until stable so we cope with any extra wrapping clients may have done
-        for _ in range(3):
-            if "%" not in path:
-                break
-            decoded = urllib.parse.unquote_plus(path)
-            if decoded == path:
-                break
-            path = decoded
-        if not _is_safe_imageproxy_request_path(path):
-            return web.Response(status=400)
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            return web.Response(status=404)
-        return await self._serve_thumbnail(path, provider, size, image_format)
-
     async def _resolve_thumbnail(
         self,
         path: str,
@@ -823,30 +731,6 @@ class MetaDataController(CoreController):
             body=image_data,
             headers=response_headers,
             content_type=_IMAGEPROXY_CONTENT_TYPES[content_format],
-        )
-
-    def _maybe_log_legacy_imageproxy(self, request: web.Request) -> None:
-        """Emit a throttled deprecation warning for the legacy /imageproxy form."""
-        remote = request.remote or "unknown"
-        now = time()
-        if len(self._legacy_imageproxy_warn_at) > 100:
-            self._legacy_imageproxy_warn_at = {
-                ip: ts
-                for ip, ts in self._legacy_imageproxy_warn_at.items()
-                if now - ts < _LEGACY_DEPRECATION_PRUNE_AFTER
-            }
-        if (
-            now - self._legacy_imageproxy_warn_at.get(remote, 0.0)
-            < _LEGACY_DEPRECATION_LOG_INTERVAL
-        ):
-            return
-        self._legacy_imageproxy_warn_at[remote] = now
-        self.logger.warning(
-            "Deprecated /imageproxy?provider=&path= request from %s (UA: %s); "
-            "clients should read the proxy_id field on MediaItemImage and use "
-            "the canonical /imageproxy/<proxy_id> endpoint instead",
-            remote,
-            request.headers.get("User-Agent", "?"),
         )
 
     async def create_collage_image(
