@@ -5,7 +5,8 @@ The renderer is the DJ's hands: it picks the tools from the filter toolset
 (``filters.py``) that realize a ``TransitionPlan``, and produces the
 ``CrossfadeTimingInfo`` breakdown.  This is the only place where bytes
 re-enter: the plan is sized in seconds, the renderer reconciles it with the
-actual buffer lengths for the timing bookkeeping.
+actual buffer lengths and drives both the acrossfade overlap and the timing
+bookkeeping from that one reconciled value.
 """
 
 from __future__ import annotations
@@ -51,11 +52,31 @@ class TransitionRenderer:
         :param pcm_format: PCM format of both input buffers and the output.
         :param fade_in_bytes_len: Length in bytes of the incoming track's head buffer.
         """
-        filters = self._build_filters(plan)
-        timing = self._build_timing(plan, pcm_format, fade_in_bytes_len)
+        fade_out_seconds = plan.fade_out_window - plan.tempo_plan.savings_until(
+            plan.fade_out_window
+        )
+        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
+        fadein_trimmed = plan.fadein_trim_start or 0.0
+        # clamp CF to fit shorter inputs (defensive — normally full buffers)
+        crossfade_samples = int(
+            min(
+                plan.crossfade_duration,
+                fade_out_seconds,
+                max(0.0, fade_in_seconds - fadein_trimmed),
+            )
+            * pcm_format.sample_rate
+        )
+        crossfade_seconds = crossfade_samples / pcm_format.sample_rate
+        filters = self._build_filters(plan, crossfade_samples)
+        timing = CrossfadeTimingInfo(
+            pre_crossfade_duration=max(0.0, fade_out_seconds - crossfade_seconds),
+            crossfade_duration=crossfade_seconds,
+            fadein_trimmed_duration=fadein_trimmed,
+            post_crossfade_duration=max(0.0, fade_in_seconds - fadein_trimmed - crossfade_seconds),
+        )
         return filters, timing
 
-    def _build_filters(self, plan: TransitionPlan) -> list[Filter]:
+    def _build_filters(self, plan: TransitionPlan, crossfade_samples: int) -> list[Filter]:
         """Assemble the ordered filter chain from the plan."""
         filters: list[Filter] = []
         # FadeOutTrim must precede any time-stretch: its cut point is on the
@@ -76,9 +97,7 @@ class TransitionRenderer:
             )
         filters.append(self._sweep_filter(plan.eq_plan.fadeout))
         filters.append(self._sweep_filter(plan.eq_plan.fadein))
-        filters.append(
-            CrossfadeFilter(logger=self.logger, crossfade_duration=plan.crossfade_duration)
-        )
+        filters.append(CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples))
         return filters
 
     def _sweep_filter(self, spec: SweepSpec) -> FrequencySweepFilter:
@@ -93,29 +112,4 @@ class TransitionRenderer:
             poles=spec.poles,
             curve_type=spec.curve_type,
             stream_type=spec.stream_type,
-        )
-
-    def _build_timing(
-        self,
-        plan: TransitionPlan,
-        pcm_format: AudioFormat,
-        fade_in_bytes_len: int,
-    ) -> CrossfadeTimingInfo:
-        """Compute the PRE | CF | POST timing breakdown for the rendered mix."""
-        fade_out_seconds = plan.fade_out_window - plan.tempo_plan.savings_until(
-            plan.fade_out_window
-        )
-        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
-        fadein_trimmed = plan.fadein_trim_start or 0.0
-        # clamp CF to fit shorter inputs (defensive — normally full buffers)
-        crossfade_duration = min(
-            plan.crossfade_duration,
-            fade_out_seconds,
-            max(0.0, fade_in_seconds - fadein_trimmed),
-        )
-        return CrossfadeTimingInfo(
-            pre_crossfade_duration=max(0.0, fade_out_seconds - crossfade_duration),
-            crossfade_duration=crossfade_duration,
-            fadein_trimmed_duration=fadein_trimmed,
-            post_crossfade_duration=max(0.0, fade_in_seconds - fadein_trimmed - crossfade_duration),
         )

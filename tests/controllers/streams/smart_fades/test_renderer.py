@@ -100,6 +100,30 @@ class TestTransitionRenderer:
         assert timing.crossfade_duration == pytest.approx(4.0)
         assert timing.post_crossfade_duration == 0.0
 
+    def test_short_fadein_clamps_acrossfade_overlap(self) -> None:
+        """
+        Regression: the acrossfade overlap must never exceed the audio it is fed.
+
+        acrossfade silently emits nothing (a hard cut) when its requested overlap
+        exceeds the incoming buffer, so the filter must use the same clamped,
+        frame-exact overlap as the timing info.
+        """
+        plan = _plan(crossfade_duration=10.0, fadein_trim_start=1.0)
+        filters, timing = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(5))
+        crossfade = filters[-1]
+        assert isinstance(crossfade, CrossfadeFilter)
+        # 5s buffer minus the 1s trim leaves 4s of incoming audio
+        assert crossfade.crossfade_samples == 4 * PCM.sample_rate
+        assert timing.crossfade_duration == pytest.approx(4.0)
+
+    def test_full_buffers_render_plan_duration_as_samples(self) -> None:
+        """With full buffers the filter carries the plan duration, frame-exact."""
+        filters, timing = TransitionRenderer(LOGGER).render(_plan(), PCM, _seconds(45))
+        crossfade = filters[-1]
+        assert isinstance(crossfade, CrossfadeFilter)
+        assert crossfade.crossfade_samples == 10 * PCM.sample_rate
+        assert timing.crossfade_duration == pytest.approx(10.0)
+
     def test_stretch_savings_shorten_fadeout_accounting(self) -> None:
         """A speed-up ramp removes time from the rendered fade-out total."""
         plan = _plan(tempo_plan=TempoPlan(steps=[(30.0, 1.0), (35.0, 1.02)]))
