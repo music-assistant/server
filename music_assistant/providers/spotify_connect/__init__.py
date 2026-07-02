@@ -37,11 +37,11 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import select_free_port
+from music_assistant.helpers.util import interface_name_for_ip, select_free_port
 from music_assistant.models.plugin import PluginProvider
 
 from .client import GoLibrespotClient
-from .helpers import generate_device_id, get_go_librespot_binary, interface_name_for_ip
+from .helpers import generate_device_id, get_go_librespot_binary
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig

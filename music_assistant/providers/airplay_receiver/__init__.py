@@ -46,6 +46,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.helpers.util import interface_name_for_ip
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
 from music_assistant.providers.airplay_receiver.metadata import MetadataReader
@@ -455,6 +456,7 @@ class AirPlayReceiverProvider(PluginProvider):
         config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe.path)
         config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(self.airplay_port))
+        config_content = config_content.replace("{INTERFACE_LINE}", self._get_mdns_interface_line())
 
         # Set default volume based on default player's current volume if available
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
@@ -473,6 +475,27 @@ class AirPlayReceiverProvider(PluginProvider):
                 f.write(config_content)
 
         await asyncio.to_thread(_write_config)
+
+    def _get_mdns_interface_line(self) -> str:
+        """
+        Build the shairport-sync ``general.interface`` directive, or an empty string.
+
+        When the stream server is bound to a specific interface (not 0.0.0.0), pin
+        the AirPlay mDNS advertisement to that same interface so the receiver is
+        announced on the intended network instead of an unrelated one (e.g. a
+        Docker bridge). Returns an empty string to advertise on all interfaces.
+        """
+        bind_ip = self.mass.streams.bind_ip
+        if not bind_ip or bind_ip == "0.0.0.0":
+            return ""
+        iface_name = interface_name_for_ip(bind_ip)
+        if not iface_name:
+            self.logger.debug(
+                "No interface found for stream bind IP %s; advertising on all interfaces",
+                bind_ip,
+            )
+            return ""
+        return f'\tinterface = "{iface_name}";\n'
 
     async def _setup_pipes_and_config(self) -> None:
         """Set up named pipes and configuration file for shairport-sync.

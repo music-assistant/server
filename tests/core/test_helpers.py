@@ -327,6 +327,7 @@ def _make_mock_adapter(
     :param ipv6_addrs: List of (address, flowinfo, scope_id) tuples for IPv6.
     """
     adapter = MagicMock()
+    adapter.name = name
     adapter.nice_name = name
     ips = []
     for addr in ipv4_addrs or []:
@@ -399,6 +400,34 @@ def test_get_zeroconf_args_all_interfaces() -> None:
     assert result["ip_version"] == IPVersion.All
     assert isinstance(result["interfaces"], list)
     assert "192.168.1.10" in result["interfaces"]
+
+
+def test_interface_name_for_ip_ipv4_match() -> None:
+    """An IPv4 address returns the name of the interface that holds it."""
+    adapters = [
+        _make_mock_adapter("lo", ["127.0.0.1"]),
+        _make_mock_adapter("eth0", ["192.168.1.10"]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        assert util.interface_name_for_ip("192.168.1.10") == "eth0"
+
+
+def test_interface_name_for_ip_ipv6_match() -> None:
+    """An IPv6 address (stored as an (addr, flowinfo, scope_id) tuple) resolves by its address."""
+    adapters = [
+        _make_mock_adapter("eth0", ipv6_addrs=[("fd00::1", 0, 2)]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        assert util.interface_name_for_ip("fd00::1") == "eth0"
+
+
+def test_interface_name_for_ip_no_match() -> None:
+    """An address that no interface holds returns None."""
+    adapters = [
+        _make_mock_adapter("eth0", ["192.168.1.10"]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        assert util.interface_name_for_ip("10.0.0.1") is None
 
 
 @pytest.mark.parametrize("capability", ["DEFAULT", "NO AVX"])
