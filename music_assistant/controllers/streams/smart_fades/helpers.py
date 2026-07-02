@@ -214,3 +214,77 @@ def generate_synthetic_timestamps(
     bar_duration = 4.0 * (60.0 / bpm)
     n_points = max(n_min, int(stretch_duration / bar_duration))
     return np.linspace(0, stretch_duration, n_points, dtype=np.float32)
+
+
+def sustained_energy_floor(rms_energy: npt.NDArray[np.float32]) -> float:
+    """
+    Median energy of the track's active (non-silent) bins.
+
+    :param rms_energy: Peak-normalized RMS energy bins spanning the full track.
+    """
+    active = rms_energy[rms_energy > 0.01]
+    return float(np.median(active)) if len(active) else 0.0
+
+
+def detect_groove_entry(
+    rms_energy: npt.NDArray[np.float32] | None,
+    track_duration: float | None,
+    downbeats: npt.NDArray[np.float32],
+    k_sigma: float = 1.5,
+) -> float:
+    """
+    Return the media time where the track's groove enters (first sustained energy step).
+
+    Detects the first bar whose energy steps up by more than ``k_sigma`` standard
+    deviations over the preceding bars AND holds for the following 4 bars —
+    typically the drums/kick entering after an intro.  Returns ``0.0`` when the
+    track opens at full energy or no usable data exists.
+
+    :param rms_energy: Peak-normalized RMS energy bins spanning the full track.
+    :param track_duration: Full track duration in seconds.
+    :param downbeats: Downbeat grid in media time.
+    :param k_sigma: Step threshold in standard deviations of bar-to-bar changes.
+    """
+    if rms_energy is None or not track_duration or len(downbeats) < 12:
+        return 0.0
+    t = (np.arange(len(rms_energy)) + 0.5) * (track_duration / len(rms_energy))
+    bar_rms = np.array(
+        [
+            float(rms_energy[(t >= downbeats[i]) & (t < downbeats[i + 1])].mean())
+            if ((t >= downbeats[i]) & (t < downbeats[i + 1])).any()
+            else 0.0
+            for i in range(len(downbeats) - 1)
+        ]
+    )
+    diffs = np.diff(bar_rms)
+    sigma = float(np.std(diffs)) or 1e-6
+    floor = 0.5 * sustained_energy_floor(rms_energy)
+    for i in range(1, len(bar_rms) - 4):
+        pre = bar_rms[max(0, i - 4) : i].mean()
+        post = bar_rms[i : i + 4].mean()
+        if bar_rms[i] - pre > k_sigma * sigma and post > max(pre * 1.5, floor):
+            return float(downbeats[i])
+    return 0.0
+
+
+def db_ramp(
+    start: float,
+    duration: float,
+    from_db: float,
+    to_db: float,
+    step_interval: float = 0.1,
+) -> list[tuple[float, float]]:
+    """
+    Build a linear-in-dB gain schedule for asendcmd-driven filters.
+
+    :param start: Schedule start time in seconds.
+    :param duration: Ramp length in seconds.
+    :param from_db: Gain at the start of the ramp.
+    :param to_db: Gain at the end of the ramp.
+    :param step_interval: Seconds between steps (small enough to avoid zipper noise).
+    """
+    n_steps = max(2, int(duration / step_interval))
+    return [
+        (start + (i / n_steps) * duration, from_db + (to_db - from_db) * (i / n_steps))
+        for i in range(n_steps + 1)
+    ]

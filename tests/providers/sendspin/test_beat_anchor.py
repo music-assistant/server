@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, cast
 from music_assistant.providers.sendspin.player import SendspinPlayer
 
 if TYPE_CHECKING:
-    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
 def _queue_item(queue_item_id: str, seek: int = 0) -> QueueItem:
@@ -28,8 +29,8 @@ def _log_entry(queue_item_id: str, seconds_streamed: float | None) -> SimpleName
 
 def test_flow_offset_sums_prior_tracks() -> None:
     """A later track anchors past the summed stream-time of all prior flow tracks."""
-    queue = cast(
-        "PlayerQueue",
+    data = cast(
+        "PlayerQueueData",
         SimpleNamespace(
             flow_mode_stream_log=[
                 _log_entry("t1", 100.0),
@@ -38,5 +39,5 @@ def test_flow_offset_sums_prior_tracks() -> None:
             ]
         ),
     )
-    offset_us = SendspinPlayer._flow_track_offset_us(queue, _queue_item("t3"))
+    offset_us = SendspinPlayer._flow_track_offset_us(data, _queue_item("t3"))
     assert offset_us == int((100.0 + 200.5) * 1_000_000)

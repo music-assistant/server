@@ -82,7 +82,9 @@ class SmartShuffle:
         :param items: The upcoming queue items to reorder.
         """
         windows = self.windows()
-        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+        snapshot = await self.mass.music.recency.snapshot(
+            windows, userid=self.queues.queue_data(queue.queue_id).userid
+        )
         return _arrange(items, snapshot, windows)
 
     def windows(self) -> RecencyWindows:

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -24,6 +26,9 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
+
+# Matches the leading timestamp of an LRC lyric line, e.g. "[01:23.45]".
+_LRC_TIMESTAMP_RE = re.compile(r"^\s*\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]", re.MULTILINE)
 
 # Library type constants
 CONF_LIBRARY_TYPE = "library_type"
@@ -273,3 +278,106 @@ def get_favorite_from_rating(plex_media: PlexObject, threshold: float) -> bool |
     if rating is None:
         return None
     return float(rating) >= threshold
+
+
+def get_explicit(plex_media: PlexObject) -> bool | None:
+    """
+    Derive explicit status from a Plex object's content rating.
+
+    Returns True or False based on the content rating, or None when it is unset.
+
+    :param plex_media: The Plex object to read the content rating from.
+    """
+    # contentRating is not typed by plexapi on audio items, so read it from the raw payload.
+    content_rating = plex_media._data.attrib.get("contentRating")
+    if not content_rating or not isinstance(content_rating, str):
+        return None
+    return content_rating.lower() == "explicit"
+
+
+def get_musicbrainz_id(plex_media: PlexObject) -> str | None:
+    """
+    Get the MusicBrainz identifier from a Plex object's guids, if available.
+
+    :param plex_media: The Plex object (artist, album or track) to read from.
+    """
+    # Read guids from the cached payload so partial listing objects don't trigger a reload.
+    for guid in plex_media._data.findall("Guid"):
+        guid_id = str(guid.attrib.get("id") or "")
+        if guid_id.startswith("mbid://"):
+            return guid_id.removeprefix("mbid://")
+    return None
+
+
+def parse_plex_lyrics_payload(content: str) -> tuple[str, bool] | None:
+    """
+    Parse a Plex lyric stream payload into ``(lyrics, is_synced)``.
+
+    Returns the lyrics as an LRC string when synced, plain text when not, or
+    None when no usable lyrics are found.
+
+    :param content: The raw lyric stream body returned by Plex.
+    """
+    if not content or not content.strip():
+        return None
+    # Sniff the payload shape: structured JSON, then timestamped LRC, then plain text.
+    if (parsed := _lyrics_from_plex_json(content)) is not None:
+        return parsed
+    if _LRC_TIMESTAMP_RE.search(content):
+        return content.strip(), True
+    return content.strip(), False
+
+
+def _lyrics_from_plex_json(content: str) -> tuple[str, bool] | None:
+    """
+    Parse Plex structured JSON lyrics into ``(lyrics, is_synced)`` or None.
+
+    :param content: The raw lyric stream body to parse as JSON.
+    """
+    try:
+        data = json.loads(content)
+    except ValueError, TypeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    container = data.get("MediaContainer")
+    if not isinstance(container, dict):
+        return None
+    lyrics_objs = container.get("Lyrics")
+    if not isinstance(lyrics_objs, list) or not lyrics_objs:
+        return None
+    raw_lines = lyrics_objs[0].get("Line") if isinstance(lyrics_objs[0], dict) else None
+    if not isinstance(raw_lines, list):
+        return None
+    lrc_lines: list[str] = []
+    plain_lines: list[str] = []
+    synced = False
+    for raw_line in raw_lines:
+        spans = raw_line.get("Span") if isinstance(raw_line, dict) else None
+        if not isinstance(spans, list):
+            lrc_lines.append("")
+            plain_lines.append("")
+            continue
+        text = "".join(span.get("text") or "" for span in spans if isinstance(span, dict))
+        plain_lines.append(text)
+        start_offset = spans[0].get("startOffset") if spans and isinstance(spans[0], dict) else None
+        if isinstance(start_offset, int) and not isinstance(start_offset, bool):
+            synced = True
+            lrc_lines.append(f"[{_ms_to_lrc_timestamp(start_offset)}]{text}")
+        else:
+            lrc_lines.append(text)
+    if synced:
+        return "\n".join(lrc_lines), True
+    plain = "\n".join(plain_lines).strip()
+    return (plain, False) if plain else None
+
+
+def _ms_to_lrc_timestamp(milliseconds: int) -> str:
+    """
+    Format a millisecond offset as an LRC ``mm:ss.cc`` timestamp body.
+
+    :param milliseconds: The offset from the start of the track, in milliseconds.
+    """
+    minutes, remainder = divmod(max(milliseconds, 0), 60000)
+    seconds, remainder = divmod(remainder, 1000)
+    return f"{minutes:02d}:{seconds:02d}.{remainder // 10:02d}"
