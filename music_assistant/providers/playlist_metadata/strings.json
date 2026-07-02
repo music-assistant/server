@@ -2,7 +2,7 @@
   "config_entries": {
     "template": {
       "label": "Artwork template",
-      "description": "Choose how playlist artwork is generated. 'Album Grid' uses album covers in a grid layout. 'Artist Mosaic' places the most-played artist large in the centre with others as smaller tiles. 'Artist Grid' shows up to four unique artist images in equal tiles. 'Artist Radio' centers the main artist on a solid background with overlapping circles. 'Artist Banner' overlays the playlist name on a full-bleed artist image (Tidal / Essentials style). 'Album Fan' stacks album covers as framed photo cards, slightly rotated (Apple Music style). 'Album Grid Tilted' renders a grid with white gaps and rotates the whole image ~15° (Apple Music tilted collage style).",
+      "description": "Choose how playlist artwork is generated.",
       "options": {
         "album_grid": "Album Grid",
         "album_fan": "Album Fan",
@@ -11,6 +11,15 @@
         "artist_grid": "Artist Grid",
         "artist_radio": "Artist Radio",
         "artist_banner": "Artist Banner"
+      },
+      "option_descriptions": {
+        "album_grid": "Album covers arranged in a grid.",
+        "album_fan": "Album covers stacked as framed photo cards, slightly rotated (Apple Music style).",
+        "album_grid_tilted": "A grid with white gaps, tilted ~15° (Apple Music tilted-collage style).",
+        "artist_mosaic": "The most-played artist large in the centre, others as smaller tiles.",
+        "artist_grid": "Up to four unique artist images in equal tiles.",
+        "artist_radio": "The main artist centred on a solid background with overlapping circles.",
+        "artist_banner": "The playlist name over a full-bleed artist image (Tidal / Essentials style)."
       }
     },
     "skip_provider_playlists": {
