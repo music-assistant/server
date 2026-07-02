@@ -82,9 +82,12 @@ class SmartCrossFadePlanner(TransitionPlanner):
     high_shelf_freq: int = 13000
     eq_kill_db: float = -26.0
     high_ease_db: float = -20.0
-    # Club DJs swap in 1 bar (energy move); smooth home listening favors the
-    # gentler 2-bar handover (the "relaxed" profile in the auto-DJ literature)
-    bass_swap_bars: int = 2
+    # Proportional bass handover: half the overlap, clamped to 2..8 bars.
+    # Club DJs swap in ~1 bar (energy move); the documented gradual range is
+    # 4-8 bars, and beyond ~8 bars the ramp is masked by the winning track.
+    bass_swap_fraction: float = 0.5
+    bass_swap_min_bars: int = 2
+    bass_swap_max_bars: int = 8
 
     # Working state for one plan() run, (re)set by _prepare_decks
     outgoing: Deck
@@ -532,19 +535,25 @@ class SmartCrossFadePlanner(TransitionPlanner):
         """
         Plan the bass swap between the two tracks.
 
-        B enters bass-killed, the low end swaps in one bar at the swap point,
-        and highs ease in before it and out after it.  A-side schedules are in
-        the outgoing track's input time (the renderer
-        places them before the tempo stretch); B-side schedules are in the
-        incoming track's post-trim time, where t=0 equals the crossfade start.
+        B enters bass-killed; both low shelves trade over a proportional window
+        (half the overlap, clamped to 2-8 bars) CENTERED on the swap point, so
+        the handover reads as a morph around the musical moment rather than an
+        event.  Highs ease in before the exchange and out after it.  A-side
+        schedules are in the outgoing track's input time (the renderer places
+        them before the tempo stretch); B-side schedules are in the incoming
+        track's post-trim time, where t=0 equals the crossfade start.
 
         :param crossfade_duration: Rendered overlap length in seconds.
         :param tempo_plan: Tempo ramp (maps rendered offsets to A-input offsets).
         :param fadein_trim_start: Incoming head trim, if beat alignment applied one.
         """
-        bar_out = self.bass_swap_bars * 4 * 60.0 / self.outgoing.bpm
-        bar_in = self.bass_swap_bars * 4 * 60.0 / self.incoming.bpm
+        bar_in = 4 * 60.0 / self.incoming.bpm
         swap_at = self._choose_swap_point(crossfade_duration, fadein_trim_start)
+        swap_len = min(
+            max(self.bass_swap_fraction * crossfade_duration, self.bass_swap_min_bars * bar_in),
+            self.bass_swap_max_bars * bar_in,
+            crossfade_duration,
+        )
         ease = 0.25 * crossfade_duration
 
         # rendered crossfade offsets map to A-input offsets via the final ramp
@@ -553,28 +562,31 @@ class SmartCrossFadePlanner(TransitionPlanner):
         ratio = tempo_plan.steps[-1][1] if tempo_plan else 1.0
         cf_start_input = self.effective_end - crossfade_duration * ratio
         swap_at_input = cf_start_input + swap_at * ratio
+        swap_len_input = swap_len * ratio
+        start_in = max(0.0, swap_at - swap_len / 2)
+        start_out = max(cf_start_input, swap_at_input - swap_len_input / 2)
 
         low_out = ShelfSchedule(
             "lowshelf",
             self.low_shelf_freq,
-            [(0.0, 0.0), *db_ramp(swap_at_input, bar_out, 0.0, self.eq_kill_db)],
+            [(0.0, 0.0), *db_ramp(start_out, swap_len_input, 0.0, self.eq_kill_db)],
         )
         low_in = ShelfSchedule(
             "lowshelf",
             self.low_shelf_freq,
-            [(0.0, self.eq_kill_db), *db_ramp(swap_at, bar_in, self.eq_kill_db, 0.0)],
+            [(0.0, self.eq_kill_db), *db_ramp(start_in, swap_len, self.eq_kill_db, 0.0)],
         )
         high_out = ShelfSchedule(
             "highshelf",
             self.high_shelf_freq,
-            [(0.0, 0.0), *db_ramp(swap_at_input + bar_out, ease, 0.0, self.high_ease_db)],
+            [(0.0, 0.0), *db_ramp(start_out + swap_len_input, ease, 0.0, self.high_ease_db)],
         )
         high_in = ShelfSchedule(
             "highshelf",
             self.high_shelf_freq,
             [
                 (0.0, self.high_ease_db),
-                *db_ramp(max(0.0, swap_at - ease), ease, self.high_ease_db, 0.0),
+                *db_ramp(max(0.0, start_in - ease), ease, self.high_ease_db, 0.0),
             ],
         )
         return EqPlan(
