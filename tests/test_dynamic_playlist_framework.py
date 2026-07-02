@@ -46,6 +46,7 @@ async def test_update_playlist_metadata_skips_dynamic_playlists() -> None:
     mixin.logger = Mock()
     playlist = Mock()
     playlist.is_dynamic = True
+    playlist.provider_mappings = {_provider_mapping()}
 
     await mixin._update_playlist_metadata(playlist)
 
