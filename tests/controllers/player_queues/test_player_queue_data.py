@@ -58,11 +58,12 @@ def _data_with_dynamic_source() -> PlayerQueueData:
     """Build a PlayerQueueData for a queue playing a dynamic radio playlist plus one queued track."""
     playlist = _dynamic_playlist()
     queue = _queue(is_dynamic=True, sources=[ItemMapping.from_item(playlist)])
-    queue.enqueued_media_items = [playlist]
     return PlayerQueueData(
         queue=queue,
         items=[QueueItem.from_media_item("q1", _track("t1"))],
         source_items=[playlist],
+        enqueued_media_items=[playlist],
+        userid="user-1",
         # runtime-only fields set to non-defaults to prove they do not survive the round-trip
         transitioning=True,
         play_action_refcount=3,
@@ -83,6 +84,11 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
         item.queue_item_id for item in data.items
     ]
     assert [item.uri for item in restored.source_items] == [item.uri for item in data.source_items]
+    # the server-only persisted fields survive too
+    assert [item.uri for item in restored.enqueued_media_items] == [
+        item.uri for item in data.enqueued_media_items
+    ]
+    assert restored.userid == "user-1"
     # is_dynamic is recomputed from the restored source items (a dynamic playlist is present)
     assert restored.queue.is_dynamic is True
     # runtime-only fields are reset to their defaults, never persisted
@@ -95,9 +101,11 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
 def test_cache_round_trip_non_dynamic_has_no_sources() -> None:
     """A queue with no dynamic source restores with is_dynamic False and empty sources."""
     queue = _queue()
-    queue.enqueued_media_items = [_track("seed")]
     data = PlayerQueueData(
-        queue=queue, items=[QueueItem.from_media_item("q1", _track("t1"))], source_items=[]
+        queue=queue,
+        items=[QueueItem.from_media_item("q1", _track("t1"))],
+        source_items=[],
+        enqueued_media_items=[_track("seed")],
     )
 
     restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
@@ -158,15 +166,14 @@ def test_from_cache_keeps_settings_when_item_unreadable() -> None:
 def test_from_cache_keeps_settings_when_enqueued_media_unreadable() -> None:
     """Unreadable enqueued media clears only the media payload, never the queue settings."""
     queue = _queue(shuffle_enabled=True, crossfade_enabled=True)
-    queue.enqueued_media_items = [_track("seed")]
-    data = PlayerQueueData(queue=queue)
+    data = PlayerQueueData(queue=queue, enqueued_media_items=[_track("seed")])
     state = data.to_cache()
     # corrupt the persisted enqueued media so its deserialization raises
     state["enqueued_media_items"] = [{"not": "a media item"}]
 
     restored = PlayerQueueData.from_cache(state, data.items_to_cache())
 
-    assert restored.queue.enqueued_media_items == []
+    assert restored.enqueued_media_items == []
     assert restored.queue.shuffle_enabled is True
     assert restored.queue.crossfade_enabled is True
 
@@ -179,3 +186,26 @@ def test_from_cache_incompatible_version_raises() -> None:
 
     with pytest.raises(ValueError, match="incompatible queue cache format"):
         PlayerQueueData.from_cache(state, data.items_to_cache())
+
+
+def test_from_cache_reads_legacy_flat_layout() -> None:
+    """A pre-refactor cache (wire fields at the top level, no envelope) is still restored."""
+    data = _data_with_dynamic_source()
+    nested = data.to_cache()
+    # rebuild the old flat layout: wire fields at the top level, server-state keys alongside, and
+    # no cache_format_version (caches written before the refactor had no version stamp)
+    flat = {
+        **nested["queue"],
+        "enqueued_media_items": nested["enqueued_media_items"],
+        "source_items": nested["source_items"],
+        "userid": nested["userid"],
+    }
+
+    restored = PlayerQueueData.from_cache(flat, data.items_to_cache())
+
+    assert restored.queue.is_dynamic is True
+    assert [item.uri for item in restored.source_items] == [item.uri for item in data.source_items]
+    assert [item.uri for item in restored.enqueued_media_items] == [
+        item.uri for item in data.enqueued_media_items
+    ]
+    assert restored.userid == "user-1"

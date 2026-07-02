@@ -254,13 +254,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command("player_queues/autoplay")
     def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
         """Configure Autoplay setting on the queue."""
-        queue = self._queue_data[queue_id].queue
+        data = self._queue_data[queue_id]
+        queue = data.queue
         queue.autoplay_enabled = autoplay_enabled
         # if we're already at/near the end of the queue, kick off a refill right away
         # (an active dynamic source manages its own refills, so leave it be)
         if (
             queue.autoplay_enabled
-            and queue.enqueued_media_items
+            and data.enqueued_media_items
             and not queue.is_dynamic
             and queue.current_index is not None
             and (queue.items - queue.current_index) < 5
@@ -804,7 +805,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._set_transitioning(queue_id, True)
         try:
-            queue = self._queue_data[queue_id].queue
+            data = self._queue_data[queue_id]
+            queue = data.queue
             queue.resume_pos = 0
             if isinstance(index, str):
                 temp_index = self.index_by_id(queue_id, index)
@@ -813,14 +815,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 index = temp_index
             # At this point index is guaranteed to be int
             queue.index_in_buffer = index
-            queue.flow_mode_stream_log = []
-            self._queue_data[queue_id].flow_buffer_completed = None
+            data.flow_mode_stream_log = []
+            data.flow_buffer_completed = None
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
-            queue.next_item_id_enqueued = None
+            data.next_item_id_enqueued = None
             # always update session id when we start a new playback session
-            queue.session_id = shortuuid.random(length=8)
+            data.session_id = shortuuid.random(length=8)
             # handle resume point of audiobook(chapter) or podcast(episode)
             if (
                 not seek_position
@@ -839,7 +841,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             ):
                 stored_speed = await self.mass.music.get_playback_speed(
                     cast("Audiobook | PodcastEpisode", queue_item.media_item),
-                    userid=queue.userid,
+                    userid=data.userid,
                 )
                 if stored_speed != 1.0:
                     queue_item.extra_attributes["playback_speed"] = stored_speed
@@ -974,7 +976,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         target_queue.sources = list(source_queue.sources)
         target_queue.is_dynamic = source_queue.is_dynamic
         target_queue.smart_shuffle_active = self.is_smart_shuffle_active(target_queue)
-        target_queue.enqueued_media_items = source_queue.enqueued_media_items
+        self._queue_data[target_queue_id].enqueued_media_items = list(
+            self._queue_data[source_queue_id].enqueued_media_items
+        )
         target_queue.resume_pos = source_resume_pos
         target_queue.current_index = source_current_index
         if source_current_item:
@@ -1227,17 +1231,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.logger.debug("Queue flow buffer completed for %s", queue.display_name)
 
         # capture session_id so we can bail out if playback restarts
-        original_session_id = queue.session_id
+        data = self._queue_data[queue_id]
+        original_session_id = data.session_id
         # record so player providers can detect flow EOF without an idle report
         if original_session_id is not None:
-            self._queue_data[queue_id].flow_buffer_completed = original_session_id
+            data.flow_buffer_completed = original_session_id
 
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
             idle_detected = False
             for _ in range(60):
                 await asyncio.sleep(1)
-                if not queue.active or queue.session_id != original_session_id:
+                if not queue.active or data.session_id != original_session_id:
                     return
                 if queue.state == PlaybackState.IDLE:
                     idle_detected = True
@@ -1246,7 +1251,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 return
             # player went idle, give it a brief moment to settle
             await asyncio.sleep(1)
-            if queue.state != PlaybackState.IDLE or queue.session_id != original_session_id:
+            if queue.state != PlaybackState.IDLE or data.session_id != original_session_id:
                 return
             # check if new items were added to the queue after the flow stream ended
             if queue.current_index is not None and (
@@ -1272,10 +1277,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: The queue ID.
         """
-        queue = self.get(queue_id)
-        if queue is None or queue.session_id is None:
+        data = self.queue_data_or_none(queue_id)
+        if data is None or data.session_id is None:
             return False
-        return self._queue_data[queue_id].flow_buffer_completed == queue.session_id
+        return data.flow_buffer_completed == data.session_id
 
     # Main queue manipulation methods
 
@@ -1321,10 +1326,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._queue_data[queue_id].items = queue_items
         queue = self._queue_data[queue_id].queue
         queue.items = len(self._queue_data[queue_id].items)
-        # to track if the queue items changed we set a timestamp
-        # this is a simple way to detect changes in the list of items
-        # without having to compare the entire list
-        queue.items_last_updated = time.time()
         self.signal_update(queue_id, True)
         if (
             queue.state == PlaybackState.PLAYING
@@ -1361,7 +1362,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # set 'active_playlist' in extra attributes as a human readable list
         # of the enqueued media items for API clients to display if they want to
         queue.extra_attributes[ATTR_ACTIVE_PLAYLIST] = " / ".join(
-            [x.name for x in queue.enqueued_media_items]
+            [x.name for x in data.enqueued_media_items]
         )
         if items_changed:
             data.items_cache_dirty = True
@@ -1418,7 +1419,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_item: The queue item to create media from.
         """
-        queue = self._queue_data[queue_item.queue_id].queue
+        data = self._queue_data[queue_item.queue_id]
         if queue_item.streamdetails:
             # prefer netto duration
             # when seeking, the player only receives the remaining duration
@@ -1427,7 +1428,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 duration = int(duration - queue_item.streamdetails.seek_position)
         else:
             duration = queue_item.duration
-        if queue.session_id is None:
+        if data.session_id is None:
             raise InvalidDataError("Queue session_id is None")
         media = PlayerMedia(
             uri=queue_item.uri,
@@ -1438,7 +1439,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
             custom_data={
-                "session_id": queue.session_id,
+                "session_id": data.session_id,
                 "original_uri": queue_item.uri,
             },
         )

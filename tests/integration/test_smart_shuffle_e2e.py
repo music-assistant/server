@@ -56,7 +56,7 @@ async def test_smart_shuffle_pushes_recently_played_to_back(e2e_mass: MusicAssis
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
     # scope the recency window to a known user (no session user exists under test)
-    queue.userid = TEST_USER
+    e2e_mass.player_queues._queue_data[queue_id].userid = TEST_USER
 
     # mark the later half of the tracks as recently played for this user
     recent_tracks = tracks[5:]

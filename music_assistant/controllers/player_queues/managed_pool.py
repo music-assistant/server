@@ -122,9 +122,10 @@ class ManagedPool:
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
-        queue = self.queues.queue_data(queue_id).queue
+        data = self.queues.queue_data(queue_id)
+        queue = data.queue
         windows = self.queues.recency_windows(queue_id)
-        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+        snapshot = await self.mass.music.recency.snapshot(windows, userid=data.userid)
         # publish a best-effort recency filter so dynamic-playlist generation can pre-skip recently
         # played tracks while over-generating; allocate_refill still applies the authoritative gate
         with track_filter(lambda track: not snapshot.track_recent(track, windows.song_seconds)):

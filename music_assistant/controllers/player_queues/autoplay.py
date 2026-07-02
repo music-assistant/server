@@ -142,7 +142,7 @@ class Autoplay:
         genre_ids: set[int] = set()
         seeds = [
             item
-            for item in reversed(queue.enqueued_media_items)
+            for item in reversed(self.queues.queue_data(queue.queue_id).enqueued_media_items)
             if item.media_type in GENRE_SEED_MEDIA_TYPES
         ][:GENRE_SEED_ITEM_COUNT]
         for seed in seeds:

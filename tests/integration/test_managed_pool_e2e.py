@@ -86,7 +86,7 @@ async def test_refill_gates_recent_and_weights_by_multiplicity(e2e_mass: MusicAs
     assert test_prov is not None
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
-    queue.userid = TEST_USER
+    e2e_mass.player_queues._queue_data[queue_id].userid = TEST_USER
 
     # two albums (20 tracks each) as TRACKS sources; the second is added twice (multiplicity 2)
     album_single = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
@@ -123,7 +123,7 @@ async def test_refill_dedupes_only_active_tail_not_played_history(e2e_mass: Musi
     assert test_prov is not None
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
-    queue.userid = TEST_USER
+    e2e_mass.player_queues._queue_data[queue_id].userid = TEST_USER
 
     album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
     sources = cast("list[MediaItemType]", [album])
@@ -157,7 +157,7 @@ async def test_finite_source_materializes_and_plays_through_once(
     assert test_prov is not None
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
-    queue.userid = TEST_USER
+    e2e_mass.player_queues._queue_data[queue_id].userid = TEST_USER
 
     album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
     e2e_mass.player_queues._queue_data[queue_id].source_items = cast("list[MediaItemType]", [album])
@@ -187,7 +187,7 @@ async def test_recency_denied_track_rotates_to_back_not_dropped(e2e_mass: MusicA
     assert test_prov is not None
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
-    queue.userid = TEST_USER
+    e2e_mass.player_queues._queue_data[queue_id].userid = TEST_USER
 
     album = await test_prov.get_album("0_0")  # tracks 0_0_0 .. 0_0_19
     uri = album.uri
@@ -236,7 +236,7 @@ async def test_large_finite_source_is_paged_and_bounded(
     assert test_prov is not None
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
-    queue.userid = TEST_USER
+    e2e_mass.player_queues._queue_data[queue_id].userid = TEST_USER
 
     album = await test_prov.get_album("0_0")  # 20 tracks, well over the patched cap of 5
     uri = album.uri
@@ -268,7 +268,7 @@ async def test_dynamic_source_is_not_materialized(e2e_mass: MusicAssistant) -> N
     assert test_prov is not None
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
-    queue.userid = TEST_USER
+    e2e_mass.player_queues._queue_data[queue_id].userid = TEST_USER
 
     # a dynamic radio playlist (self-managing) mixed with a finite album (materialized)
     seed = await test_prov.get_track("4_4_0")
