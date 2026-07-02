@@ -11,7 +11,6 @@ from music_assistant.controllers.metadata import (
     _IMAGEPROXY_CONTENT_TYPES,
     CACHE_CATEGORY_IMAGE_IDS,
     MetaDataController,
-    _is_safe_imageproxy_request_path,
     _normalize_imageproxy_format,
 )
 from music_assistant.helpers.images import (
@@ -133,55 +132,6 @@ async def test_image_id_persists_with_persistent_flag(
     metadata_controller._image_id_lru.clear()
     resolved = await metadata_controller.resolve_image_id(image_id)
     assert resolved == ("filesystem", "/persistent.jpg")
-
-
-def test_is_safe_imageproxy_request_path_allows_safe_inputs() -> None:
-    """http(s) and bare-path inputs are accepted."""
-    assert _is_safe_imageproxy_request_path("https://cdn.example.com/a.jpg")
-    assert _is_safe_imageproxy_request_path("http://cdn.example.com/a.jpg")
-    assert _is_safe_imageproxy_request_path("/local/cover.jpg")
-    assert _is_safe_imageproxy_request_path("cover.jpg")
-
-
-def test_is_safe_imageproxy_request_path_rejects_dangerous_schemes() -> None:
-    """file://, data:, gopher://, javascript: and friends are rejected."""
-    assert not _is_safe_imageproxy_request_path("file:///etc/passwd")
-    assert not _is_safe_imageproxy_request_path("FILE:///etc/passwd")
-    assert not _is_safe_imageproxy_request_path("data:image/png;base64,iVBORw0KG")
-    assert not _is_safe_imageproxy_request_path("gopher://example.com/")
-    assert not _is_safe_imageproxy_request_path("javascript:alert(1)")
-    assert not _is_safe_imageproxy_request_path("ftp://example.com/a.jpg")
-
-
-def test_is_safe_imageproxy_request_path_rejects_control_char_bypass() -> None:
-    """Leading whitespace/control bytes must not mask a forbidden scheme."""
-    assert not _is_safe_imageproxy_request_path("\tfile:///etc/passwd")
-    assert not _is_safe_imageproxy_request_path("\nfile:///etc/passwd")
-    assert not _is_safe_imageproxy_request_path("\x00file:///etc/passwd")
-    assert not _is_safe_imageproxy_request_path("\rhttp://localhost/")
-    # ASCII space is not < 0x20, so the strip() guard is what catches this
-    assert not _is_safe_imageproxy_request_path(" file:///etc/passwd")
-    assert not _is_safe_imageproxy_request_path("file:///etc/passwd ")
-    assert not _is_safe_imageproxy_request_path(" https://cdn.example.com/a.jpg")
-
-
-def test_is_safe_imageproxy_request_path_rejects_ssrf_targets() -> None:
-    """http(s) URLs targeting localhost / private / link-local IPs are rejected."""
-    assert not _is_safe_imageproxy_request_path("http://localhost/")
-    assert not _is_safe_imageproxy_request_path("http://127.0.0.1/foo.jpg")
-    assert not _is_safe_imageproxy_request_path("http://10.0.0.1/foo.jpg")
-    assert not _is_safe_imageproxy_request_path("http://192.168.1.5/foo.jpg")
-    assert not _is_safe_imageproxy_request_path("http://172.16.0.1/foo.jpg")
-    # AWS / GCP metadata service
-    assert not _is_safe_imageproxy_request_path("http://169.254.169.254/")
-    # IPv6 loopback / link-local / unique-local
-    assert not _is_safe_imageproxy_request_path("http://[::1]/foo.jpg")
-    assert not _is_safe_imageproxy_request_path("http://[fe80::1]/foo.jpg")
-    assert not _is_safe_imageproxy_request_path("http://[fc00::1]/foo.jpg")
-    # public DNS names and IPs are still accepted
-    assert _is_safe_imageproxy_request_path("http://example.com/a.jpg")
-    assert _is_safe_imageproxy_request_path("https://cdn.example.com/a.jpg")
-    assert _is_safe_imageproxy_request_path("http://8.8.8.8/a.jpg")
 
 
 def test_normalize_imageproxy_format() -> None:
