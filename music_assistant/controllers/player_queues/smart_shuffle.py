@@ -21,11 +21,7 @@ import random
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING
 
-from music_assistant.constants import (
-    CONF_PLAYER_QUEUES,
-    CONF_VALUE_DISABLED,
-    CONF_VALUE_ENABLED,
-)
+from music_assistant.constants import CONF_PLAYER_QUEUES
 from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
@@ -67,11 +63,8 @@ class SmartShuffle:
 
         :param queue_id: The queue to read the smart-shuffle setting for.
         """
-        return (
-            self.mass.config.get_effective_player_queue_config_value(
-                queue_id, CONF_SMART_SHUFFLE_ENABLED, CONF_VALUE_DISABLED
-            )
-            == CONF_VALUE_ENABLED
+        return self.mass.config.get_effective_player_queue_toggle(
+            queue_id, CONF_SMART_SHUFFLE_ENABLED, default=False
         )
 
     async def arrange(self, queue: PlayerQueue, items: list[QueueItem]) -> list[QueueItem]:

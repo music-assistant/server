@@ -197,3 +197,18 @@ async def test_get_player_queue_config_for_api_populates_playlist_options() -> N
         ("Chill", "library://playlist/1"),
         ("Party", "library://playlist/2"),
     ]
+
+
+def test_effective_player_queue_toggle_interprets_values() -> None:
+    """The toggle reader coerces the select strings and tolerates legacy booleans."""
+
+    def _toggle(effective: object) -> bool:
+        fake = MagicMock()
+        fake.get_effective_player_queue_config_value = MagicMock(return_value=effective)
+        return ConfigController.get_effective_player_queue_toggle(fake, "q1", "k", default=False)
+
+    assert _toggle(CONF_VALUE_ENABLED) is True
+    assert _toggle(CONF_VALUE_DISABLED) is False
+    # legacy booleans (pre-migration data / older API clients) are honored, not misread
+    assert _toggle(True) is True
+    assert _toggle(False) is False

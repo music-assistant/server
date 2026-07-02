@@ -56,8 +56,6 @@ from music_assistant.constants import (
     CONF_FLOW_MODE_SAMPLE_RATE,
     CONF_OUTPUT_CHANNELS,
     CONF_PLAYER_QUEUES,
-    CONF_VALUE_DISABLED,
-    CONF_VALUE_ENABLED,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -377,11 +375,8 @@ class StreamsAudio:
                 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value,
             )
         streamdetails.target_loudness = conf_volume_normalization_target
-        volume_normalization_enabled = (
-            mass.config.get_effective_player_queue_config_value(
-                streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
-            )
-            != CONF_VALUE_DISABLED
+        volume_normalization_enabled = mass.config.get_effective_player_queue_toggle(
+            streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, default=True
         )
         streamdetails.volume_normalization_mode = get_normalization_mode(
             core_config, volume_normalization_enabled, streamdetails
@@ -1513,11 +1508,8 @@ class StreamsAudio:
             # updated streamdetails.loudness since get_stream_details was called
             if streamdetails.queue_id:
                 core_config = await self.mass.config.get_core_config("streams")
-                volume_normalization_enabled = (
-                    self.mass.config.get_effective_player_queue_config_value(
-                        streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
-                    )
-                    != CONF_VALUE_DISABLED
+                volume_normalization_enabled = self.mass.config.get_effective_player_queue_toggle(
+                    streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, default=True
                 )
                 streamdetails.volume_normalization_mode = get_normalization_mode(
                     core_config, volume_normalization_enabled, streamdetails

@@ -12,7 +12,12 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_GLOBAL
+from music_assistant.constants import (
+    CONF_PLAYER_QUEUES,
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+    CONF_VALUE_GLOBAL,
+)
 from music_assistant.controllers.config.constants import (
     PLAYER_QUEUE_CONFIG_OWNER,
     _ConfigValueT,
@@ -123,6 +128,24 @@ class PlayerQueueConfigMixin:
             # self is the ConfigController; go via mass.config for the typed (overloaded) accessor
             return self.mass.config.get_raw_core_config_value(CONF_PLAYER_QUEUES, key, default)
         return value
+
+    def get_effective_player_queue_toggle(self, queue_id: str, key: str, *, default: bool) -> bool:
+        """
+        Return an on/off queue setting as a bool, following the global (queue controller) value.
+
+        Tolerates legacy boolean values (pre-migration data or older API clients) alongside the
+        "enabled"/"disabled" select strings.
+
+        :param queue_id: The queue to read the value for.
+        :param key: The config key (an enabled/disabled/global select).
+        :param default: Fallback on/off state when nothing is stored at either level.
+        """
+        value = self.get_effective_player_queue_config_value(
+            queue_id, key, CONF_VALUE_ENABLED if default else CONF_VALUE_DISABLED
+        )
+        if isinstance(value, bool):
+            return value
+        return value == CONF_VALUE_ENABLED
 
     @api_command("config/player_queues/save", required_role="admin")
     async def save_player_queue_config(
