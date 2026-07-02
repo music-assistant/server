@@ -63,6 +63,7 @@ from music_assistant.controllers.player_queues.config import (
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+    QUEUE_CACHE_SAVE_DELAY,
 )
 from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
@@ -130,6 +131,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         for queue in self.all():
             if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
                 await self.stop(queue.queue_id)
+        # flush any pending (debounced) state writes so the latest queue survives shutdown/update
+        for queue in self.all():
+            self.mass.cancel_timer(f"save_queue_cache_{queue.queue_id}")
+            await self._save_queue_to_cache(queue.queue_id)
 
     async def get_config_entries(
         self,
@@ -1101,6 +1106,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Call when a player is removed from the registry."""
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{player_id}")
+        # cancel any pending debounced cache write so it can't recreate a deleted entry
+        self.mass.cancel_timer(f"save_queue_cache_{player_id}")
         self._set_transitioning(player_id, False)
         if permanent:
             # if the player is permanently removed, we also remove the cached queue data
@@ -1355,28 +1362,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             [x.name for x in queue.enqueued_media_items]
         )
         if items_changed:
+            data.items_cache_dirty = True
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
-            # save items in cache - only cache items with valid media_item
-            self.mass.create_task(
-                self.mass.cache.set(
-                    key=queue_id,
-                    data=data.items_to_cache(),
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
-                )
-            )
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
         # also signal update to the player itself so it can update its current_media
         self.mass.players.trigger_player_update(queue_id)
-        # save state
-        self.mass.create_task(
-            self.mass.cache.set(
-                key=queue_id,
-                data=data.to_cache(),
-                provider=self.domain,
-                category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-            )
+        # persist the (settings-bearing) queue state, debounced so a burst of updates or the
+        # per-track updates during playback collapse into a single cache write
+        self.mass.call_later(
+            QUEUE_CACHE_SAVE_DELAY,
+            self._save_queue_to_cache,
+            queue_id,
+            task_id=f"save_queue_cache_{queue_id}",
         )
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
@@ -1504,6 +1502,33 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._managed_pool.retain(
             queue.queue_id, {item.uri for item in items if item.uri is not None}
         )
+
+    async def _save_queue_to_cache(self, queue_id: str) -> None:
+        """Persist the queue's state (and its items when changed) to the cache."""
+        if (data := self._queue_data.get(queue_id)) is None:
+            return
+        try:
+            # persistent so a cache clear/reset does not wipe the user's queues; the default
+            # expiration still applies but is refreshed on every write
+            await self.mass.cache.set(
+                key=queue_id,
+                data=data.to_cache(),
+                provider=self.domain,
+                category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+                persistent=True,
+            )
+            if data.items_cache_dirty:
+                # only cache items with a valid media_item
+                await self.mass.cache.set(
+                    key=queue_id,
+                    data=data.items_to_cache(),
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+                    persistent=True,
+                )
+                data.items_cache_dirty = False
+        except Exception as err:
+            self.logger.warning("Failed to persist the queue for %s - %s", queue_id, err)
 
     def _check_player_permission(self, queue_id: str) -> None:
         """

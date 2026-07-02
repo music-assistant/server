@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+from music_assistant_models.enums import RepeatMode
 from music_assistant_models.media_items import ItemMapping, Playlist, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.controllers.player_queues.constants import CACHE_FORMAT_VERSION
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
@@ -115,3 +118,64 @@ def test_from_cache_legacy_rebuilds_source_items_from_sources() -> None:
     # the full source item is recovered by matching `sources` against the enqueued media items
     assert [item.uri for item in restored.source_items] == [item.uri for item in data.source_items]
     assert restored.queue.is_dynamic is True
+
+
+def test_cache_round_trip_restores_settings() -> None:
+    """The queue settings (shuffle/repeat/crossfade/autoplay) survive a cache round-trip."""
+    queue = _queue(
+        shuffle_enabled=True,
+        repeat_mode=RepeatMode.ALL,
+        crossfade_enabled=True,
+        autoplay_enabled=True,
+    )
+    data = PlayerQueueData(queue=queue)
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
+
+    assert restored.queue.shuffle_enabled is True
+    assert restored.queue.repeat_mode == RepeatMode.ALL
+    assert restored.queue.crossfade_enabled is True
+    assert restored.queue.autoplay_enabled is True
+
+
+def test_from_cache_keeps_settings_when_item_unreadable() -> None:
+    """One unreadable queue item is skipped without losing the other items or the settings."""
+    queue = _queue(shuffle_enabled=True, crossfade_enabled=True)
+    data = PlayerQueueData(queue=queue, items=[QueueItem.from_media_item("q1", _track("t1"))])
+    items_data = [*data.items_to_cache(), {"sort_index": 0}]  # 2nd entry misses required fields
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), items_data)
+
+    # the good item is kept, the unreadable one is dropped
+    assert [item.queue_item_id for item in restored.items] == [
+        item.queue_item_id for item in data.items
+    ]
+    # and the settings are untouched by the item failure
+    assert restored.queue.shuffle_enabled is True
+    assert restored.queue.crossfade_enabled is True
+
+
+def test_from_cache_keeps_settings_when_enqueued_media_unreadable() -> None:
+    """Unreadable enqueued media clears only the media payload, never the queue settings."""
+    queue = _queue(shuffle_enabled=True, crossfade_enabled=True)
+    queue.enqueued_media_items = [_track("seed")]
+    data = PlayerQueueData(queue=queue)
+    state = data.to_cache()
+    # corrupt the persisted enqueued media so its deserialization raises
+    state["enqueued_media_items"] = [{"not": "a media item"}]
+
+    restored = PlayerQueueData.from_cache(state, data.items_to_cache())
+
+    assert restored.queue.enqueued_media_items == []
+    assert restored.queue.shuffle_enabled is True
+    assert restored.queue.crossfade_enabled is True
+
+
+def test_from_cache_incompatible_version_raises() -> None:
+    """A cache written with an incompatible format version is rejected rather than misread."""
+    data = _data_with_dynamic_source()
+    state = data.to_cache()
+    state["cache_format_version"] = CACHE_FORMAT_VERSION + 1
+
+    with pytest.raises(ValueError, match="incompatible queue cache format"):
+        PlayerQueueData.from_cache(state, data.items_to_cache())
