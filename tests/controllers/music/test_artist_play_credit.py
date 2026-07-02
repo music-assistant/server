@@ -185,12 +185,13 @@ def test_enqueued_album_decision() -> None:
     items = [QueueItem.from_media_item("q1", track) for track in (t1, t2, t3)]
 
     tracker = PlayerQueuesController.__new__(PlayerQueuesController)
-    queue = cast("PlayerQueue", Mock(queue_id="q1", enqueued_media_items=[album_x]))
-    tracker._queue_data = {"q1": PlayerQueueData(queue=queue, items=items)}
+    queue = cast("PlayerQueue", Mock(queue_id="q1"))
+    data = PlayerQueueData(queue=queue, items=items, enqueued_media_items=[album_x])
+    tracker._queue_data = {"q1": data}
 
     # first track of the enqueued album -> credit it
-    assert tracker._enqueued_album_for_track(queue, items[0], t1) is album_x
+    assert tracker._enqueued_album_for_track(data, items[0], t1) is album_x
     # second track shares the previous queue item's album -> already handled
-    assert tracker._enqueued_album_for_track(queue, items[1], t2) is None
+    assert tracker._enqueued_album_for_track(data, items[1], t2) is None
     # a track whose album was never enqueued -> not credited
-    assert tracker._enqueued_album_for_track(queue, items[2], t3) is None
+    assert tracker._enqueued_album_for_track(data, items[2], t3) is None

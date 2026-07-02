@@ -64,3 +64,11 @@ MANAGED_POOL_SOURCE_CAP = 250
 
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
+
+# The queue's cached state/items are written through a debounced timer, so a burst of updates (or
+# the per-track updates during playback) collapses into a single write instead of hitting the cache
+# db on every signal_update.
+QUEUE_CACHE_SAVE_DELAY = 5
+# Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
+# mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
+CACHE_FORMAT_VERSION = 1
