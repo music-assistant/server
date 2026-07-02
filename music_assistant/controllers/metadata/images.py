@@ -31,7 +31,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.colors import get_palette, get_palette_for_url
+from music_assistant.helpers.colors import get_palette
 from music_assistant.helpers.images import (
     create_collage,
     create_thumb_hash,
@@ -233,21 +233,24 @@ class ImageProxyMixin:
         return image.path
 
     @api_command("metadata/get_image_palette")
-    async def get_image_palette(self, image: MediaItemImage | str) -> MediaItemPalette | None:
+    async def get_image_palette(self, image_id: str) -> MediaItemPalette | None:
         """
-        Get the color palette extracted from an image.
+        Get the color palette extracted from a (proxied) image.
 
         The palette follows the Sendspin color@v1 spec (primary, accent, on_dark,
         on_light, background_dark and background_light). Results are cached, so
         repeated requests for the same image are cheap.
 
-        :param image: A MediaItemImage to read colors from, or an image URL (either a
-            direct URL or an imageproxy URL as produced by `get_image_url`).
+        :param image_id: The opaque imageproxy image id (the ``proxy_id`` field on a
+            ``MediaItemImage``). Resolved to the image registered for that id; an
+            unknown id yields None.
         """
-        if not isinstance(image, MediaItemImage):
-            return await get_palette_for_url(self.mass, image)
+        resolved = await self.resolve_image_id(image_id)
+        if resolved is None:
+            return None
+        provider, path = resolved
         try:
-            return await get_palette(self.mass, image.path, image.provider)
+            return await get_palette(self.mass, path, provider)
         except MediaNotFoundError, OSError:
             return None
 
