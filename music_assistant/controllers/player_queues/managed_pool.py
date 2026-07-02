@@ -19,8 +19,9 @@ so a recently-heard track isn't pulled back in. A dynamic batch is offered least
 first and de-prioritizes tracks whose artist is within the artist-recency window (a soft nudge, not
 a hard exclusion, so a single-artist station still plays); a finite source keeps its own
 (materialized) order so it plays through coherently. Once the batch is assembled it is passed
-through a seam-aware artist-spacing pass so no two directly-adjacent tracks share an artist, and the
-first added track is kept clear of the currently-queued tail's last artist.
+through a seam-aware artist-spacing pass that best-effort keeps directly-adjacent tracks from
+sharing an artist, and the first added track is kept clear of the currently-queued tail's last
+artist.
 """
 
 from __future__ import annotations
@@ -506,7 +507,7 @@ def _ungated_fallback(
 
 def _space_tracks(tracks: list[Track], preceding: set[str] | None) -> list[Track]:
     """
-    Reorder the batch so no two directly-adjacent tracks share an artist.
+    Reorder the batch to best-effort keep directly-adjacent tracks from sharing an artist.
 
     :param tracks: The assembled batch to space.
     :param preceding: Artist names of the track that will sit directly before the batch (the seam

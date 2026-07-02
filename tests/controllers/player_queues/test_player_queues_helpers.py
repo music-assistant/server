@@ -242,18 +242,18 @@ class TestHandlePlayAction:
 class TestSpaceByArtist:
     """Tests for space_by_artist."""
 
-    def test_separates_adjacent_same_artist(self) -> None:
-        """Directly-adjacent same-artist entries are pulled apart, dropping nothing."""
-        sets = [{"a"}, {"a"}, {"b"}, {"c"}]
+    def test_separates_adjacent_shared_artist(self) -> None:
+        """Adjacent entries sharing an artist are pulled apart (by intersection), dropping nothing."""
+        sets = [{"a"}, {"a", "b"}, {"b"}, {"c"}]
         spaced = [sets[index] for index in space_by_artist(sets)]
         assert sorted(spaced, key=sorted) == sorted(sets, key=sorted)
-        assert all(spaced[i] != spaced[i + 1] for i in range(len(spaced) - 1))
+        assert all(not (spaced[i] & spaced[i + 1]) for i in range(len(spaced) - 1))
 
     def test_honours_preceding_seam(self) -> None:
-        """The first entry is kept clear of the preceding (seam) artist set."""
-        sets = [{"a"}, {"b"}, {"c"}]
+        """The first entry shares no artist with the preceding (seam) set."""
+        sets = [{"a", "b"}, {"c"}, {"d"}]
         order = space_by_artist(sets, preceding={"a"})
-        assert sets[order[0]] != {"a"}
+        assert not (sets[order[0]] & {"a"})
 
     def test_identity_when_already_clear(self) -> None:
         """With no clashes and no seam, the order is left untouched."""
