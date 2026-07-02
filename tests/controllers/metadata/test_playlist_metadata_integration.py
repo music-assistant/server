@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -249,12 +249,12 @@ async def test_update_playlist_metadata_calls_providers_for_dynamic_playlists(
 
     # Mock playlist tracks iterator (returns no tracks)
     async def mock_tracks(
-        item_id: str,
+        item_id: str,  # noqa: ARG001
         provider: str,  # noqa: ARG001
     ) -> AsyncIterator[Track]:
         """Empty async generator."""
-        return
-        yield  # pragma: no cover
+        if False:
+            yield  # type: ignore[unreachable]  # pragma: no cover
 
     enrichment.mass.music.playlists.tracks = mock_tracks
 

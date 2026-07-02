@@ -35,24 +35,24 @@ def _provider_mapping(item_id: str = "station_1") -> ProviderMapping:
 
 
 # --------------------------------------------------------------------------- #
-#  Metadata refresh scan processes all playlists (providers decide filtering)  #
+#  _update_playlist_metadata processes all playlists when called directly      #
 # --------------------------------------------------------------------------- #
 
 
 async def test_update_playlist_metadata_processes_dynamic_playlists() -> None:
-    """Dynamic playlists go through enrichment; providers decide whether to return metadata."""
+    """_update_playlist_metadata processes dynamic playlists; providers decide filtering."""
     mixin = MetadataEnrichmentMixin()
     mixin.mass = Mock()
     mixin.logger = Mock()
-    mixin.providers = []
+    mixin.providers = []  # type: ignore[misc]
 
     async def mock_tracks(
-        item_id: str,
+        item_id: str,  # noqa: ARG001
         provider: str,  # noqa: ARG001
     ) -> AsyncIterator[Track]:
         """Empty async generator."""
-        return
-        yield  # pragma: no cover
+        if False:
+            yield  # type: ignore[unreachable]  # pragma: no cover
 
     mixin.mass.music.playlists.tracks = mock_tracks
     mixin.mass.music.playlists.update_item_in_library = AsyncMock()
@@ -74,7 +74,7 @@ async def test_update_playlist_metadata_processes_dynamic_playlists() -> None:
 
 
 async def test_refresh_playlist_metadata_batch_query_excludes_dynamic_playlists() -> None:
-    """The metadata-refresh batch query filters out is_dynamic playlists at the DB level."""
+    """Batch query filters is_dynamic playlists; single updates process all playlists."""
     ctrl = _controller()
     mass = Mock()
     mass.music.playlists.get_library_items_by_query = AsyncMock(return_value=[])
@@ -84,6 +84,7 @@ async def test_refresh_playlist_metadata_batch_query_excludes_dynamic_playlists(
 
     _, kwargs = mass.music.playlists.get_library_items_by_query.call_args
     query_parts = kwargs["extra_query_parts"]
+    # Batch query should still filter dynamic playlists (automated refresh)
     assert any(f"{DB_TABLE_PLAYLISTS}.is_dynamic = 0" in part for part in query_parts)
 
 

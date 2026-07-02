@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     RecommendationFolder,
     Track,
+    UniqueList,
 )
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
@@ -228,6 +229,8 @@ class SmartPlaylistProvider(PluginProvider):
         )
         # Re-add playlists missing from the library (e.g. after a DB reset).
         self.mass.create_task(self._reconcile_library())
+        # One-time migration: remove legacy icon.svg from smart playlists
+        self.mass.create_task(self._migrate_legacy_icon())
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -364,6 +367,42 @@ class SmartPlaylistProvider(PluginProvider):
                 await self.mass.music.playlists.add_item_to_library(playlist)
             except Exception as exc:
                 self.logger.warning("Could not re-add smart playlist %s: %s", playlist_id, exc)
+
+    async def _migrate_legacy_icon(self) -> None:
+        """Remove legacy icon.svg from smart playlists (added by versions prior to PR #4447)."""
+        try:
+            library_playlists = await self.mass.music.playlists.library_items()
+            migrated_count = 0
+            for playlist in library_playlists:
+                if not any(
+                    m.provider_instance == self.instance_id for m in playlist.provider_mappings
+                ):
+                    continue
+
+                if not playlist.metadata.images:
+                    continue
+
+                old_images = [
+                    img
+                    for img in playlist.metadata.images
+                    if not (img.path == "icon.svg" and img.provider == self.instance_id)
+                ]
+
+                if len(old_images) != len(playlist.metadata.images):
+                    playlist.metadata.images = UniqueList(old_images)
+                    await self.mass.music.playlists.update_item_in_library(
+                        playlist.item_id, playlist
+                    )
+                    migrated_count += 1
+                    self.logger.debug(
+                        "Migrated smart playlist '%s' - removed legacy icon.svg", playlist.name
+                    )
+            if migrated_count > 0:
+                self.logger.info(
+                    "Migrated %d smart playlist(s) - removed legacy icon.svg", migrated_count
+                )
+        except Exception as exc:
+            self.logger.warning("Failed to migrate legacy icons: %s", exc)
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
         """Remove the rules for a deleted smart playlist."""
