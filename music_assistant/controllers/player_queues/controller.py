@@ -1106,8 +1106,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Call when a player is removed from the registry."""
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{player_id}")
-        # cancel any pending debounced cache write so it can't recreate a deleted entry
+        # cancel a pending debounced cache write AND an already-started one, so neither can
+        # recreate a deleted entry after the player is gone (the timer becomes a task once it fires)
         self.mass.cancel_timer(f"save_queue_cache_{player_id}")
+        self.mass.cancel_task(f"save_queue_cache_{player_id}")
         self._set_transitioning(player_id, False)
         if permanent:
             # if the player is permanently removed, we also remove the cached queue data
