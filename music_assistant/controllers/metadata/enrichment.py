@@ -377,13 +377,14 @@ class MetadataEnrichmentMixin:
             try:
                 if prov_metadata := await provider.get_playlist_metadata(playlist):
                     # Remove fallback images before adding high-quality generated ones
-                    if prov_metadata.images:
-                        playlist.metadata.images = UniqueList(
-                            [
+                    if prov_metadata.images and playlist.metadata.images:
+                        playlist.metadata.images = (
+                            UniqueList(
                                 img
                                 for img in playlist.metadata.images
                                 if img.provider != "smart_playlist"
-                            ]
+                            )
+                            or None
                         )
                     playlist.metadata.update(prov_metadata)
                     self.logger.debug(
