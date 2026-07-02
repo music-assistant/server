@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import shortuuid
 from music_assistant_models.enums import (
@@ -98,6 +98,20 @@ if TYPE_CHECKING:
     from music_assistant.constants import PlaylistPlayableItem
     from music_assistant.controllers.music.recency import RecencyWindows
     from music_assistant.models.player import Player
+
+
+# the container media types worth surfacing as a queue "source" for clients to display. Individual
+# items (single tracks, radio streams, podcast episodes, live audio sources, ...) carry no grouping
+# and only clutter the "playing from" representation, so they are omitted from the wire `sources`.
+_WIRE_SOURCE_MEDIA_TYPES: Final = frozenset(
+    {
+        MediaType.ARTIST,
+        MediaType.ALBUM,
+        MediaType.PLAYLIST,
+        MediaType.PODCAST,
+        MediaType.AUDIOBOOK,
+    }
+)
 
 
 class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
@@ -1499,10 +1513,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         self._queue_data[queue.queue_id].source_items = items
         # keep every occurrence server-side (a source added more than once weights it up in the
-        # managed pool), but expose each distinct source only once on the wire for clients to show
+        # managed pool), but expose only the distinct container sources on the wire for clients to
+        # show. Individual items (tracks, radio streams, podcast episodes, ...) are omitted; see
+        # `_WIRE_SOURCE_MEDIA_TYPES`. Autoplay/pool refill reads the full `source_items` above, not
+        # this projected list, so it is unaffected.
         seen: set[str] = set()
         sources: list[ItemMapping] = []
         for item in items:
+            if item.media_type not in _WIRE_SOURCE_MEDIA_TYPES:
+                continue
             mapping = ItemMapping.from_item(item)
             if mapping.uri and mapping.uri in seen:
                 continue
