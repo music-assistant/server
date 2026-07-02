@@ -282,6 +282,9 @@
         "native": "Native power control",
         "none": "None",
         "fake": "Fake power control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native power control."
       }
     },
     "volume_control": {
@@ -290,6 +293,9 @@
         "native": "Native volume control",
         "follow_protocol": "Auto-select (based on active/preferred protocol)",
         "none": "None"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native volume control."
       }
     },
     "mute_control": {
@@ -299,6 +305,9 @@
         "follow_protocol": "Auto-select (based on active/preferred protocol)",
         "none": "None",
         "fake": "Fake mute control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native mute control."
       }
     },
     "preferred_output_protocol": {

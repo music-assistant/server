@@ -80,6 +80,22 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 
+def _first_enabled_control_value(options: list[ConfigValueOption]) -> ConfigValueType:
+    """
+    Return the value of the first selectable option, so a disabled option is never the default.
+
+    Player-control selects always list the "native" option (shown disabled when the feature is
+    unsupported); this picks the first enabled option as the entry default and falls back to the
+    always-present "none" control.
+
+    :param options: The control entry's options, in display order.
+    """
+    for option in options:
+        if not option.disabled:
+            return option.value
+    return PLAYER_CONTROL_NONE
+
+
 class PlayerConfigMixin:
     """Mixin providing player configuration handling for the ConfigController."""
 
@@ -651,24 +667,24 @@ class PlayerConfigMixin:
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
         auto_option = ConfigValueOption(PLAYER_CONTROL_PROTOCOL)
-        # work out player supported features
-        power_options: list[ConfigValueOption] = []
-        if player.supports_feature(PlayerFeature.POWER):
-            power_options.append(
-                ConfigValueOption(PLAYER_CONTROL_NATIVE),
+        # the "native" option is always listed (disabled when the feature is unsupported) so the
+        # option set is consistent across players; the entry default skips disabled options.
+        power_options: list[ConfigValueOption] = [
+            ConfigValueOption(
+                PLAYER_CONTROL_NATIVE,
+                disabled=not player.supports_feature(PlayerFeature.POWER),
             )
-        volume_options: list[ConfigValueOption] = []
-        has_native_volume_control = False
-        if player.supports_feature(PlayerFeature.VOLUME_SET):
-            has_native_volume_control = True
-            volume_options.append(
-                ConfigValueOption(PLAYER_CONTROL_NATIVE),
+        ]
+        has_native_volume_control = player.supports_feature(PlayerFeature.VOLUME_SET)
+        volume_options: list[ConfigValueOption] = [
+            ConfigValueOption(PLAYER_CONTROL_NATIVE, disabled=not has_native_volume_control)
+        ]
+        mute_options: list[ConfigValueOption] = [
+            ConfigValueOption(
+                PLAYER_CONTROL_NATIVE,
+                disabled=not player.supports_feature(PlayerFeature.VOLUME_MUTE),
             )
-        mute_options: list[ConfigValueOption] = []
-        if player.supports_feature(PlayerFeature.VOLUME_MUTE):
-            mute_options.append(
-                ConfigValueOption(PLAYER_CONTROL_NATIVE),
-            )
+        ]
         # add player protocols as volume controls if native player has no volume control
         for linked_protocol in player.linked_output_protocols:
             if has_native_volume_control:
@@ -717,7 +733,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_POWER_CONTROL,
                 type=ConfigEntryType.STRING,
-                default_value=power_options[0].value if power_options else PLAYER_CONTROL_NONE,
+                default_value=_first_enabled_control_value(power_options),
                 required=False,
                 options=[
                     *power_options,
@@ -729,7 +745,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,
                 type=ConfigEntryType.STRING,
-                default_value=volume_options[0].value if volume_options else PLAYER_CONTROL_NONE,
+                default_value=_first_enabled_control_value(volume_options),
                 required=True,
                 options=[
                     *volume_options,
@@ -741,7 +757,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_MUTE_CONTROL,
                 type=ConfigEntryType.STRING,
-                default_value=mute_options[0].value if mute_options else PLAYER_CONTROL_NONE,
+                default_value=_first_enabled_control_value(mute_options),
                 required=True,
                 options=[
                     *mute_options,
