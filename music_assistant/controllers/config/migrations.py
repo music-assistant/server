@@ -142,7 +142,7 @@ async def migrate(data: dict[str, Any]) -> bool:
     # their select strings, and promote the now global-only settings (crossfade duration, smart
     # shuffle recency windows) to the Player Queues core config. Runs after the player->queue move
     # above so any values it just landed are picked up here.
-    # TODO: remove after 2.13 release
+    # TODO: remove after 2.10 release
     if _migrate_global_queue_settings(data):
         changed = True
 
