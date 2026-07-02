@@ -82,8 +82,9 @@ class SmartCrossFadePlanner(TransitionPlanner):
     high_shelf_freq: int = 13000
     eq_kill_db: float = -26.0
     high_ease_db: float = -20.0
-    # DJ practice swaps in one bar; more bars soften the handover into a morph
-    bass_swap_bars: int = 1
+    # Club DJs swap in 1 bar (energy move); smooth home listening favors the
+    # gentler 2-bar handover (the "relaxed" profile in the auto-DJ literature)
+    bass_swap_bars: int = 2
 
     # Working state for one plan() run, (re)set by _prepare_decks
     outgoing: Deck
