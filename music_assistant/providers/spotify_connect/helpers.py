@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import shutil
 
-import ifaddr
-
 GO_LIBRESPOT_BINARY = "go-librespot"
 
 
@@ -42,21 +40,3 @@ def generate_device_id(instance_id: str) -> str:
     :param instance_id: The provider instance id.
     """
     return hashlib.sha256(instance_id.encode()).hexdigest()[:40]
-
-
-def interface_name_for_ip(ip: str) -> str | None:
-    """
-    Return the name of the network interface that holds the given IP, or None.
-
-    go-librespot selects which interfaces to advertise the Spotify Connect device
-    on by interface name, so callers map the streams server's bind IP to its
-    interface to keep the advertisement on the right network.
-
-    :param ip: The IPv4/IPv6 address to look up.
-    """
-    for adapter in ifaddr.get_adapters():
-        for ip_config in adapter.ips:
-            addr = ip_config.ip if isinstance(ip_config.ip, str) else ip_config.ip[0]
-            if addr == ip:
-                return adapter.name
-    return None
