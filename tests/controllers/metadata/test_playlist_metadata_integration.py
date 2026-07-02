@@ -226,19 +226,40 @@ async def test_update_playlist_metadata_skips_providers_without_feature(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_update_playlist_metadata_skips_dynamic_playlists(tmp_path: Any) -> None:
-    """_update_playlist_metadata should skip dynamic playlists (endless radio stations)."""
+async def test_update_playlist_metadata_calls_providers_for_dynamic_playlists(
+    tmp_path: Any,
+) -> None:
+    """
+    _update_playlist_metadata should call providers even for dynamic playlists.
+
+    Providers decide themselves whether to return metadata (e.g., playlist_metadata
+    provider skips provider playlists via CONF_SKIP_PROVIDER_PLAYLISTS).
+    """
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
     enrichment._collage_images_dir = str(tmp_path / "collage")
 
-    # Mock metadata provider
+    # Mock metadata provider that returns None for dynamic playlists
     provider = MagicMock()
     provider.name = "playlist_metadata"
     provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
-    provider.get_playlist_metadata = AsyncMock()
+    provider.get_playlist_metadata = AsyncMock(return_value=None)
     enrichment.providers = [provider]  # type: ignore[misc]
+
+    # Mock playlist tracks iterator (returns no tracks)
+    async def mock_tracks(
+        item_id: str,
+        provider: str,  # noqa: ARG001
+    ) -> AsyncIterator[Track]:
+        """Empty async generator."""
+        return
+        yield  # pragma: no cover
+
+    enrichment.mass.music.playlists.tracks = mock_tracks
+
+    # Mock update_item_in_library
+    enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
 
     # Create dynamic playlist (e.g., Pandora station, Apple Music station)
     playlist = Playlist(
@@ -258,8 +279,8 @@ async def test_update_playlist_metadata_skips_dynamic_playlists(tmp_path: Any) -
 
     await enrichment._update_playlist_metadata(playlist, force_refresh=True)
 
-    # Should not have called provider.get_playlist_metadata
-    provider.get_playlist_metadata.assert_not_called()
+    # Provider should be called (provider decides whether to return metadata)
+    provider.get_playlist_metadata.assert_called_once_with(playlist)
 
 
 @pytest.mark.asyncio

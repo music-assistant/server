@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ProviderMapping, UniqueList
+from music_assistant_models.media_items import ProviderMapping, Track, UniqueList
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.controllers.metadata import MetaDataController
@@ -35,23 +35,42 @@ def _provider_mapping(item_id: str = "station_1") -> ProviderMapping:
 
 
 # --------------------------------------------------------------------------- #
-#  Metadata refresh scan skips dynamic playlists                              #
+#  Metadata refresh scan processes all playlists (providers decide filtering)  #
 # --------------------------------------------------------------------------- #
 
 
-async def test_update_playlist_metadata_skips_dynamic_playlists() -> None:
-    """Dynamic playlists must not be scanned for aggregate track metadata."""
+async def test_update_playlist_metadata_processes_dynamic_playlists() -> None:
+    """Dynamic playlists go through enrichment; providers decide whether to return metadata."""
     mixin = MetadataEnrichmentMixin()
     mixin.mass = Mock()
     mixin.logger = Mock()
+    mixin.providers = []
+
+    async def mock_tracks(
+        item_id: str,
+        provider: str,  # noqa: ARG001
+    ) -> AsyncIterator[Track]:
+        """Empty async generator."""
+        return
+        yield  # pragma: no cover
+
+    mixin.mass.music.playlists.tracks = mock_tracks
+    mixin.mass.music.playlists.update_item_in_library = AsyncMock()
+
     playlist = Mock()
     playlist.is_dynamic = True
     playlist.provider_mappings = {_provider_mapping()}
+    playlist.provider = "pandora"
+    playlist.item_id = "test_dynamic"
+    playlist.name = "Test Dynamic Playlist"
+    playlist.metadata = Mock()
+    playlist.metadata.last_refresh = 0
+    playlist.metadata.genres = set()
 
-    await mixin._update_playlist_metadata(playlist)
+    await mixin._update_playlist_metadata(playlist, force_refresh=True)
 
-    mixin.mass.music.playlists.tracks.assert_not_called()
-    mixin.logger.debug.assert_not_called()
+    # Track scanning should happen (providers decide whether to use this data)
+    mixin.logger.debug.assert_called()
 
 
 async def test_refresh_playlist_metadata_batch_query_excludes_dynamic_playlists() -> None:

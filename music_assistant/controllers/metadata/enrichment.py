@@ -321,12 +321,6 @@ class MetadataEnrichmentMixin:
         self, playlist: Playlist, force_refresh: bool = False
     ) -> None:
         """Get/update rich metadata for a playlist."""
-        # Skip endless provider-driven playlists (radio stations), but allow smart playlists
-        has_smart_playlist_mapping = any(
-            pm.provider_domain == "smart_playlist" for pm in playlist.provider_mappings
-        )
-        if playlist.is_dynamic and not has_smart_playlist_mapping:
-            return
         # collect metadata + create collage images
         # NOTE: we only do/allow this every REFRESH_INTERVAL
         needs_refresh = (time() - (playlist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
@@ -375,16 +369,6 @@ class MetadataEnrichmentMixin:
                 continue
             try:
                 if prov_metadata := await provider.get_playlist_metadata(playlist):
-                    # Remove fallback images before adding high-quality generated ones
-                    if prov_metadata.images and playlist.metadata.images:
-                        playlist.metadata.images = (
-                            UniqueList(
-                                img
-                                for img in playlist.metadata.images
-                                if img.provider != "smart_playlist"
-                            )
-                            or None
-                        )
                     playlist.metadata.update(prov_metadata)
                     self.logger.debug(
                         "Retrieved playlist metadata from provider %s for %s",
