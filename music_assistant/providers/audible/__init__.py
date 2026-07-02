@@ -7,7 +7,7 @@ import os
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from logging import getLevelName
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 from urllib.parse import quote, unquote
 from uuid import uuid4
 
@@ -248,7 +248,7 @@ class Audibleprovider(MusicProvider):
         await self._login()
 
     # Cache for authenticators to avoid repeated file I/O
-    _AUTH_CACHE: dict[str, audible.Authenticator] = {}
+    _AUTH_CACHE: ClassVar[dict[str, audible.Authenticator]] = {}
 
     async def _login(self) -> None:
         """Authenticate with Audible using the saved authentication file."""
@@ -330,7 +330,8 @@ class Audibleprovider(MusicProvider):
         return await self.helper.get_audiobook(asin=prov_audiobook_id, use_cache=False)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://authors).
         """
@@ -534,7 +535,8 @@ class Audibleprovider(MusicProvider):
         return await self.helper.get_podcast_episode(prov_episode_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get stream details for an audiobook or podcast episode.
+        """
+        Get stream details for an audiobook or podcast episode.
 
         :param item_id: The ASIN of the audiobook or podcast episode.
         :param media_type: The type of media (audiobook or podcast episode).

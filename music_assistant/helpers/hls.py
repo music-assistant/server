@@ -71,7 +71,8 @@ class HLSMediaPlaylistParser:
         self.segments_started = False
 
     def parse(self) -> HLSMediaPlaylist:
-        """Parse HLS media playlist text into structured data.
+        """
+        Parse HLS media playlist text into structured data.
 
         Returns:
             HLSMediaPlaylist object with extracted structure

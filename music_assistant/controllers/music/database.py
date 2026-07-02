@@ -25,6 +25,8 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
@@ -282,7 +284,8 @@ class MusicDatabaseSetupMixin:
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [artist_type] TEXT NOT NULL
             );"""
         )
         await self.database.execute(
@@ -310,6 +313,8 @@ class MusicDatabaseSetupMixin:
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
+            [translation_key] TEXT,
+            [translation_params] json,
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
@@ -403,7 +408,8 @@ class MusicDatabaseSetupMixin:
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
             [is_excluded] BOOLEAN NOT NULL DEFAULT 0,
-            [is_default] BOOLEAN NOT NULL DEFAULT 0
+            [is_default] BOOLEAN NOT NULL DEFAULT 0,
+            [content_type] TEXT
             );"""
         )
         await self.database.execute(
@@ -477,6 +483,15 @@ class MusicDatabaseSetupMixin:
             UNIQUE(album_id, artist_id)
             );"""
         )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIOBOOK_ARTISTS}(
+            [audiobook_id] INTEGER NOT NULL,
+            [artist_id] INTEGER NOT NULL,
+            FOREIGN KEY([audiobook_id]) REFERENCES [audiobooks]([item_id]),
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+            UNIQUE(audiobook_id, artist_id)
+            );"""
+        )
 
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
@@ -487,6 +502,20 @@ class MusicDatabaseSetupMixin:
                     [aa_provider_domain] TEXT NOT NULL,
                     [analysis_data] json NOT NULL,
                     [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS_FAILURES}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [reason] TEXT NOT NULL,
+                    [analysis_version] INTEGER NOT NULL DEFAULT 1,
+                    [next_retry] INTEGER,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
                     UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
         )
@@ -614,6 +643,11 @@ class MusicDatabaseSetupMixin:
         await self.database.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_unique_idx "
             f"on {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid);"
+        )
+        # speed up recency lookups (smart shuffle / dedup) by user and time window
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_userid_timestamp_idx "
+            f"on {DB_TABLE_PLAYLOG}(userid,timestamp);"
         )
         await self.database.commit()
 

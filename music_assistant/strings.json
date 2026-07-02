@@ -50,10 +50,6 @@
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
     },
-    "crossfade_duration": {
-      "label": "Crossfade duration",
-      "description": "Duration in seconds of the crossfade between tracks (if enabled)"
-    },
     "enable_icy_metadata": {
       "label": "Try to inject metadata into stream (ICY)",
       "description": "Try to inject metadata into the stream (ICY) to show track info on the player, even when flow mode is enabled.\n\nThis is called ICY metadata and is what is used by online radio stations to show you what is playing. \n\nBe aware that not all players support this correctly. If you experience issues with playback, try disabling this setting.",
@@ -212,15 +208,6 @@
         "384000||24": "384kHz / 24 bits"
       }
     },
-    "smart_fades_mode": {
-      "label": "Enable Smart Fades",
-      "description": "Select the crossfade mode to use when transitioning between tracks.\n\n- 'Smart Crossfade': Uses beat matching and EQ filters to create smooth transitions between tracks.\n- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a track.",
-      "options": {
-        "disabled": "Disabled",
-        "smart_crossfade": "Smart Crossfade",
-        "standard_crossfade": "Standard Crossfade"
-      }
-    },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
       "description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit."
@@ -232,13 +219,9 @@
     "unofficial_provider_note": {
       "label": "This is an unofficial integration that is not affiliated with, supported by, or endorsed by the music service. It relies on interfaces that are not officially supported and may stop working at any time. Use of this provider may also be subject to the service's terms of use."
     },
-    "volume_normalization": {
-      "label": "Enable volume normalization (EBU-R128 based)",
-      "description": "Enable volume normalization based on the EBU-R128 standard without affecting dynamic range"
-    },
     "volume_normalization_target": {
       "label": "Target level for volume normalization",
-      "description": "Adjust average (perceived) loudness to this target level, default is -17 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
+      "description": "Adjust average (perceived) loudness to this target level, default is -14 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
     },
     "zeroconf_interfaces": {
       "label": "Mdns/Zeroconf discovery interface(s)",
@@ -296,9 +279,6 @@
         "auto": "Auto-select"
       }
     },
-    "smart_crossfade_unavailable": {
-      "label": "Smart Crossfade is unavailable because this system has limited memory. It requires more RAM than is currently available for audio buffering."
-    },
     "bind_port": {
       "label": "TCP Port",
       "description": "The TCP port to run the server. Make sure that this server can be reached on the given IP and TCP port by players on the local network."
@@ -339,6 +319,9 @@
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
     "playback": "Queue Playback",
+    "autoplay": "Autoplay",
+    "crossfade": "Crossfade",
+    "smart_shuffle": "Smart shuffle",
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
     "dsp": "Digital Signal Processing (DSP)",
@@ -351,7 +334,13 @@
     "protocol_general": "General",
     "audio_analysis": "Audio Analysis",
     "presets": "Presets",
-    "settings": "Settings"
+    "settings": "Settings",
+    "features": "Features",
+    "status": "Status",
+    "discover": "Discover",
+    "debug": "Debug",
+    "server": "Server",
+    "recommendations": "Recommendations"
   },
   "media": {
     "genre": {
@@ -592,30 +581,168 @@
         "description": "Meditation music is music performed to aid in the practice of meditation. It can have a specific religious content, but also more recently has been associated with modern composers who use meditation techniques in their process of composition, or who compose such music with no particular religious group as a focus. The concept also includes music performed as an act of meditation."
       }
     },
-    "playlist": {
-      "all_favorite_tracks": {
-        "name": "All favorited tracks"
+    "podcast_genre": {
+      "arts": {
+        "name": "Arts",
+        "description": "Podcasts about the arts — books and literature, design, fashion and beauty, food, and the performing and visual arts."
       },
-      "random_artist": {
-        "name": "Random Artist (from library)"
+      "business": {
+        "name": "Business",
+        "description": "Podcasts on business and the world of work, from careers and entrepreneurship to investing, management and marketing."
       },
-      "random_album": {
-        "name": "Random Album (from library)"
+      "comedy": {
+        "name": "Comedy",
+        "description": "Comedy podcasts, including stand-up, improv and comedic interviews made to entertain and make listeners laugh."
       },
-      "random_tracks": {
-        "name": "500 Random tracks (from library)"
+      "education": {
+        "name": "Education",
+        "description": "Educational podcasts covering courses, how-to guides, language learning and self-improvement."
       },
-      "recently_played": {
-        "name": "Recently played tracks"
+      "fiction": {
+        "name": "Fiction",
+        "description": "Scripted and storytelling podcasts, including audio drama, comedy fiction and science fiction."
       },
-      "recently_added_tracks": {
-        "name": "Recently added tracks"
+      "government": {
+        "name": "Government",
+        "description": "Podcasts about government, public policy and the workings of the state."
       },
-      "infinite_mix": {
-        "name": "Infinite Mix (library)"
+      "health_and_fitness": {
+        "name": "Health & Fitness",
+        "description": "Podcasts on health and fitness, covering nutrition, exercise, medicine, mental health and wellbeing."
       },
-      "infinite_mix_favorites": {
-        "name": "Infinite Mix (favorites)"
+      "history": {
+        "name": "History",
+        "description": "Podcasts exploring history — events, people and eras from the ancient world to recent times."
+      },
+      "kids_and_family": {
+        "name": "Kids & Family",
+        "description": "Family-friendly podcasts for children and parents, including stories for kids, parenting and education."
+      },
+      "leisure": {
+        "name": "Leisure",
+        "description": "Podcasts about hobbies and pastimes, from games and crafts to automotive, aviation and home & garden."
+      },
+      "music": {
+        "name": "Music",
+        "description": "Podcasts about music — commentary, interviews and the history behind artists, songs and genres."
+      },
+      "news": {
+        "name": "News",
+        "description": "News podcasts covering daily headlines, politics, business, technology, sports and entertainment."
+      },
+      "religion_and_spirituality": {
+        "name": "Religion & Spirituality",
+        "description": "Podcasts on religion and spirituality across faiths and traditions, and on personal spiritual practice."
+      },
+      "science": {
+        "name": "Science",
+        "description": "Science podcasts spanning astronomy, physics, chemistry, the life and earth sciences, nature and more."
+      },
+      "society_and_culture": {
+        "name": "Society & Culture",
+        "description": "Podcasts about society and culture, including documentaries, personal journals, philosophy, travel and relationships."
+      },
+      "sports": {
+        "name": "Sports",
+        "description": "Sports podcasts covering teams, athletes and competitions across the world's games and pastimes."
+      },
+      "technology": {
+        "name": "Technology",
+        "description": "Podcasts about technology, gadgets, software and the people and ideas shaping the digital world."
+      },
+      "true_crime": {
+        "name": "True Crime",
+        "description": "Podcasts investigating real crimes, cases and the people behind them."
+      },
+      "tv_and_film": {
+        "name": "TV & Film",
+        "description": "Podcasts about television and film, including reviews, interviews, after-shows and screen history."
+      }
+    },
+    "audiobook_genre": {
+      "arts_and_entertainment": {
+        "name": "Arts & Entertainment",
+        "description": "Audiobooks on the arts, media and entertainment, from film and music to the performing and visual arts."
+      },
+      "biography_and_memoir": {
+        "name": "Biography & Memoir",
+        "description": "Life stories — biographies and memoirs of notable people and personal accounts of lived experience."
+      },
+      "business": {
+        "name": "Business",
+        "description": "Audiobooks on business, careers, money and finance, management, marketing and economics."
+      },
+      "classics": {
+        "name": "Classics",
+        "description": "Classic works of literature that have stood the test of time."
+      },
+      "comedy_and_humor": {
+        "name": "Comedy & Humor",
+        "description": "Humorous and comedic audiobooks written to entertain and amuse."
+      },
+      "drama_and_poetry": {
+        "name": "Drama & Poetry",
+        "description": "Dramatic works and poetry, including plays, verse and performance pieces."
+      },
+      "fantasy_and_science_fiction": {
+        "name": "Fantasy & Science Fiction",
+        "description": "Speculative fiction — fantasy, science fiction and imagined worlds."
+      },
+      "fiction": {
+        "name": "Fiction",
+        "description": "Fiction and literature — novels and stories spanning every style and genre."
+      },
+      "foreign_language": {
+        "name": "Foreign Language",
+        "description": "Language-learning audiobooks and works in or about foreign languages."
+      },
+      "history": {
+        "name": "History",
+        "description": "Audiobooks exploring history — events, people and eras across the ages."
+      },
+      "kids_and_young_adult": {
+        "name": "Kids & Young Adult",
+        "description": "Audiobooks for children, teens and young adults, from picture-book stories to young-adult fiction."
+      },
+      "mystery": {
+        "name": "Mystery",
+        "description": "Mystery, thriller and suspense — crime stories, whodunits and page-turners."
+      },
+      "nonfiction": {
+        "name": "Nonfiction",
+        "description": "Nonfiction across every subject — real events, ideas, people and knowledge."
+      },
+      "religion_and_spirituality": {
+        "name": "Religion & Spirituality",
+        "description": "Audiobooks on religion, faith and spirituality across traditions and personal practice."
+      },
+      "romance": {
+        "name": "Romance",
+        "description": "Romance audiobooks, from contemporary love stories to historical and steamy reads."
+      },
+      "science": {
+        "name": "Science",
+        "description": "Science and nature audiobooks spanning the natural world, discovery and how things work."
+      },
+      "self_help": {
+        "name": "Self Help",
+        "description": "Self-help and personal development — guidance for growth, habits, wellbeing and success."
+      },
+      "speakers_and_storytellers": {
+        "name": "Speakers & Storytellers",
+        "description": "Lectures, talks and storytelling performances by notable speakers and storytellers."
+      },
+      "sports": {
+        "name": "Sports",
+        "description": "Audiobooks about sport and recreation — athletes, teams, games and the outdoors."
+      },
+      "technology": {
+        "name": "Technology",
+        "description": "Audiobooks about technology, computing and the ideas shaping the digital world."
+      },
+      "travel_and_adventure": {
+        "name": "Travel & Adventure",
+        "description": "Travel writing and adventure — journeys, places and tales of exploration."
       }
     },
     "folder": {
@@ -908,6 +1035,7 @@
     "unsupported_system_cpu_cores": "This system does not meet the minimal requirements for {0}: at least {1} CPU cores are required ({2} detected).",
     "unsupported_system_memory": "This system does not meet the minimal requirements for {0}: at least {1}GB of RAM is required ({2}GB detected).",
     "unsupported_system_avx2": "On-device audio analysis requires a CPU with AVX2 support (Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. If you are running in a virtual machine (e.g. Proxmox), changing the CPU type to 'host' may expose AVX2 to the guest.",
+    "unsupported_system_ml_inference_failed": "On-device audio analysis cannot run on this CPU: it reports AVX2 support but fails to execute the required instructions. This is common on virtual machines without host CPU passthrough -- if you are running in a VM (e.g. Proxmox or TrueNAS), set the CPU type to 'host'.",
     "player_unavailable": "The player is not available.",
     "player_command_failed": "The command to the player failed.",
     "invalid_command": "Invalid or unsupported command.",

@@ -65,7 +65,7 @@
   "common.config_entries.volume_normalization.description": "Möjliggör volymnormalisering baserat på EBU-R128-standarden utan att påverka dynamikomfånget",
   "common.config_entries.volume_normalization.label": "Aktivera volymnormalisering (EBU-R128-baserad)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Fast\/reservförstärkningsjustering för spår",
-  "common.config_entries.volume_normalization_target.description": "Justera genomsnittlig (upplevd) ljudnivå till denna målnivå, standard är -17 LUFS \n\n **VARNING:** Om nivån ställs in för högt kan det leda till att ljudet hackar!",
+  "common.config_entries.volume_normalization_target.description": "Justera genomsnittlig (upplevd) ljudnivå till denna målnivå, standard är -14 LUFS \n\n **VARNING:** Om nivån ställs in för högt kan det leda till att ljudet hackar!",
   "common.config_entries.volume_normalization_target.label": "Målnivå för normalisering av volym",
   "common.media.afrobeats.name": "Afrobeats (Västafrikansk Urban\/Pop Musik)",
   "common.media.albums.name": "Album",

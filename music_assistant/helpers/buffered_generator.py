@@ -100,7 +100,8 @@ async def buffered(
         return
 
     async def producer() -> None:
-        """Read from the original generator and fill the buffer.
+        """
+        Read from the original generator and fill the buffer.
 
         Note: When the buffer is full, buffer.put() will naturally wait for the consumer
         to drain items. This is the intended buffering behavior and may trigger asyncio

@@ -29,7 +29,6 @@ from music_assistant_models.media_items import (
     MediaItemMetadata,
     MediaItemType,
     ProviderMapping,
-    Track,
     UniqueList,
 )
 
@@ -68,6 +67,8 @@ JSON_KEYS = (
     "authors",
     "genre_aliases",
     "supported_mediatypes",
+    "translation_params",
+    "audiobook_artists",
 )
 
 # When set (task-local), per-item MEDIA_ITEM_UPDATED events are suppressed.
@@ -194,35 +195,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return library_item
 
     @final
-    async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
-        if item.provider == "library":
-            return int(item.item_id)
-        # search by provider mappings if item is ItemMapping
-        if isinstance(item, ItemMapping):
-            if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-                return int(cur_item.item_id)
-
-        # for all other items that are MediaItemType, check provider_mappings if it exists
-        provider_mappings = getattr(item, "provider_mappings", None)
-        if provider_mappings:
-            if cur_item := await self.get_library_item_by_prov_mappings(provider_mappings):
-                return int(cur_item.item_id)
-        if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
-            # existing item match by external id
-            # Double check external IDs - if MBID exists, regards that as overriding
-            if compare_media_item(item, cur_item):
-                return int(cur_item.item_id)
-        # search by (exact) name match
-        query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
-        query_params = {"name": item.name, "sort_name": item.sort_name}
-        for db_item in await self.get_library_items_by_query(
-            extra_query_parts=[query], extra_query_params=query_params
-        ):
-            if compare_media_item(db_item, item, True):
-                return int(db_item.item_id)
-        return None
-
-    @final
     async def update_item_in_library(
         self, item_id: str | int, update: ItemCls, overwrite: bool = False
     ) -> ItemCls:
@@ -314,6 +286,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         **kwargs: Any,
     ) -> list[ItemCls]:
         """
@@ -326,6 +299,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param played_only: Only include items that have been played (last_played > 0).
         """
         items = await self.get_library_items_by_query(
             favorite=favorite,
@@ -335,6 +309,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
             genre_ids=genre,
+            played_only=played_only,
             in_library_only=True,
         )
         if (
@@ -353,36 +328,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 genre=genre,
             )
         return items
-
-    async def _localized_search_fallback(
-        self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
-    ) -> list[ItemCls]:
-        """
-        Retry a library search using the canonical names behind a localized query.
-
-        For genre/playlist searches that return nothing literally, reverse-resolve the query to the
-        canonical (English) names of matching localized items and search those, so an item is
-        findable by the localized name the user sees. The caller's other filters (favorite,
-        order_by, provider and any controller-specific kwargs) are forwarded unchanged so the retry
-        behaves like the literal search; results are merged, de-duplicated and paginated here. See
-        ``TranslationController.reverse_lookup_media_names``.
-        """
-        seen: set[Any] = set()
-        merged: list[ItemCls] = []
-        # iterate the canonical names in a stable order, and fetch each from the start so the
-        # offset/limit window can be applied to the merged, de-duplicated result set
-        for name in sorted(await self.mass.translations.reverse_lookup_media_names(search_query)):
-            for item in await self.library_items(
-                search=name,
-                limit=limit + offset,
-                offset=0,
-                _localized_fallback=False,
-                **call_kwargs,
-            ):
-                if item.item_id not in seen:
-                    seen.add(item.item_id)
-                    merged.append(item)
-        return merged[offset : offset + limit]
 
     async def iter_library_items(
         self,
@@ -976,39 +921,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
 
     @abstractmethod
-    async def _add_library_item(
-        self,
-        item: ItemCls,
-        overwrite_existing: bool = False,
-    ) -> int:
-        """Add artist to library and return the database id."""
-
-    @abstractmethod
-    async def _update_library_item(
-        self, item_id: str | int, update: ItemCls, overwrite: bool = False
-    ) -> None:
-        """Update existing library record in the database."""
-
-    @abstractmethod
     async def match_providers(self, db_item: ItemCls) -> None:
         """
         Try to find match on all (streaming) providers for the provided (database) item.
 
         This is used to link objects of different providers/qualities together.
-        """
-
-    @abstractmethod
-    async def radio_mode_base_tracks(
-        self,
-        item: ItemCls,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The MediaItem to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-            When provided, these providers will be tried first before falling back to others.
         """
 
     @final
@@ -1024,6 +941,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         extra_query_params: dict[str, Any] | None = None,
         extra_join_parts: list[str] | None = None,
         genre_ids: int | list[int] | None = None,
+        played_only: bool = False,
         in_library_only: bool = False,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
@@ -1042,6 +960,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 search=search,
                 genre_ids=genre_ids,
                 provider_filter=provider_filter,
+                played_only=played_only,
                 limit=limit,
                 in_library_only=in_library_only,
             )
@@ -1055,6 +974,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 search=search,
                 genre_ids=genre_ids,
                 provider_filter=provider_filter,
+                played_only=played_only,
                 in_library_only=in_library_only,
             )
         # build and execute final query
@@ -1067,6 +987,79 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 sql_query, query_params, limit=limit, offset=offset
             )
         ]
+
+    @final
+    async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
+        if item.provider == "library":
+            return int(item.item_id)
+        # search by provider mappings if item is ItemMapping
+        if isinstance(item, ItemMapping):
+            if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+                return int(cur_item.item_id)
+
+        # for all other items that are MediaItemType, check provider_mappings if it exists
+        provider_mappings = getattr(item, "provider_mappings", None)
+        if provider_mappings:
+            if cur_item := await self.get_library_item_by_prov_mappings(provider_mappings):
+                return int(cur_item.item_id)
+        if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            # Double check external IDs - if MBID exists, regards that as overriding
+            if compare_media_item(item, cur_item):
+                return int(cur_item.item_id)
+        # search by (exact) name match
+        query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
+        query_params = {"name": item.name, "sort_name": item.sort_name}
+        for db_item in await self.get_library_items_by_query(
+            extra_query_parts=[query], extra_query_params=query_params
+        ):
+            if compare_media_item(db_item, item, True):
+                return int(db_item.item_id)
+        return None
+
+    async def _localized_search_fallback(
+        self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
+    ) -> list[ItemCls]:
+        """
+        Retry a library search using the canonical names behind a localized query.
+
+        For genre/playlist searches that return nothing literally, reverse-resolve the query to the
+        canonical (English) names of matching localized items and search those, so an item is
+        findable by the localized name the user sees. The caller's other filters (favorite,
+        order_by, provider and any controller-specific kwargs) are forwarded unchanged so the retry
+        behaves like the literal search; results are merged, de-duplicated and paginated here. See
+        ``TranslationController.reverse_lookup_media_names``.
+        """
+        seen: set[Any] = set()
+        merged: list[ItemCls] = []
+        # iterate the canonical names in a stable order, and fetch each from the start so the
+        # offset/limit window can be applied to the merged, de-duplicated result set
+        for name in sorted(await self.mass.translations.reverse_lookup_media_names(search_query)):
+            for item in await self.library_items(
+                search=name,
+                limit=limit + offset,
+                offset=0,
+                _localized_fallback=False,
+                **call_kwargs,
+            ):
+                if item.item_id not in seen:
+                    seen.add(item.item_id)
+                    merged.append(item)
+        return merged[offset : offset + limit]
+
+    @abstractmethod
+    async def _add_library_item(
+        self,
+        item: ItemCls,
+        overwrite_existing: bool = False,
+    ) -> int:
+        """Add item to library and return the database id."""
+
+    @abstractmethod
+    async def _update_library_item(
+        self, item_id: str | int, update: ItemCls, overwrite: bool = False
+    ) -> None:
+        """Update existing library record in the database."""
 
     @property
     def _search_filter_clause(self) -> str:
@@ -1108,7 +1101,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None,
         genre_ids: list[int] | None,
         provider_filter: list[str] | None,
-        limit: int,
+        played_only: bool = False,
+        limit: int = 500,
         in_library_only: bool = False,
     ) -> None:
         """Build a fast random subquery with all filters applied."""
@@ -1124,6 +1118,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search=search,
             genre_ids=genre_ids,
             provider_filter=provider_filter,
+            played_only=played_only,
             in_library_only=in_library_only,
         )
 
@@ -1154,6 +1149,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None,
         genre_ids: list[int] | None,
         provider_filter: list[str] | None,
+        played_only: bool = False,
         in_library_only: bool = False,
     ) -> None:
         """Apply search, favorite, and provider filters."""
@@ -1164,6 +1160,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
+        # handle played_only filter
+        if played_only:
+            query_parts.append(f"{self.db_table}.last_played > 0")
         # handle genre filter
         if genre_ids:
             query_params["genre_ids"] = genre_ids
@@ -1270,6 +1269,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     ]
                 else:
                     db_row_dict["metadata"]["images"] = [album_thumb]
+
+        if audiobook_artists := db_row_dict.get("audiobook_artists"):
+            _narrators = []
+            _authors = []
+            for artist in audiobook_artists:
+                artist_type = artist.get("artist_type")
+                if artist_type == "author":
+                    _authors.append(artist)
+                elif artist_type == "narrator":
+                    _narrators.append(artist)
+            if _authors:
+                # prevent overwriting string values
+                db_row_dict["authors"] = _authors
+            if _narrators:
+                # prevent overwriting string values
+                db_row_dict["narrators"] = _narrators
 
         return db_row_dict
 

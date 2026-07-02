@@ -171,7 +171,8 @@ class VBANReceiverProvider(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the VBAN PCM audio to a queue.
+        """
+        Return StreamDetails for streaming the VBAN PCM audio to a queue.
 
         Side-effect-free: ownership is claimed in on_source_selected (which the
         streams controller fires before this method on the actual stream

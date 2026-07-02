@@ -32,6 +32,11 @@ SHIPPED_SNAPSERVER_CONFIG_FILE = (
     pathlib.Path(__file__).parent / "snapserver" / "snapserver.conf"
 ).resolve()
 
+# snapserver has no TCP keepalive (https://github.com/snapcast/snapcast/issues/995) and
+# never times out abruptly powered-off clients, so we poll lastSeen freshness ourselves.
+SNAPCLIENT_LIVENESS_POLL_INTERVAL = 5  # poll_interval (seconds) for snapcast players
+SNAPCLIENT_STALE_THRESHOLD = 15  # mark unavailable if lastSeen frozen this long (seconds)
+
 # Socket path template for control script communication
 # The {queue_id} placeholder will be replaced with the actual queue ID
 CONTROL_SOCKET_PATH_TEMPLATE = "/tmp/ma-snapcast-{queue_id}.sock"  # noqa: S108

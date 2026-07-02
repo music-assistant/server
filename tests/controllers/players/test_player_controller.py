@@ -1,4 +1,5 @@
-"""Tests for PlayerController high-level operations.
+"""
+Tests for PlayerController high-level operations.
 
 This module tests:
 - cmd_set_members validation and execution
@@ -11,11 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
+from music_assistant_models.enums import EventType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
@@ -53,6 +57,12 @@ def mock_mass() -> MagicMock:
 def controller(mock_mass: MagicMock) -> PlayerController:
     """Create a PlayerController instance."""
     return PlayerController(mock_mass)
+
+
+@pytest.fixture
+def provider(mock_mass: MagicMock) -> MockProvider:
+    """Create a mock provider."""
+    return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
 
 
 class TestSetMembersValidation:
@@ -284,6 +294,93 @@ class TestStateForwarding:
         on_sync_parent_updated.assert_not_called()
 
 
+class TestSleepTimer:
+    """Test native sleep timer handling."""
+
+    def test_set_and_clear_sleep_timer(self, mock_mass: MagicMock) -> None:
+        """Setting a sleep timer exposes state and schedules the stop callback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+
+        expires_at = controller.set_sleep_timer("player_1", 30)
+
+        assert controller.get_sleep_timer("player_1") == expires_at
+        assert player.sleep_timer_expires_at == expires_at
+        mock_mass.call_later.assert_called_with(
+            30,
+            controller._handle_sleep_timer_expired,
+            "player_1",
+            task_id="player_sleep_timer_player_1",
+        )
+        mock_mass.signal_event.assert_any_call(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id="player_1",
+            data=expires_at,
+        )
+
+        controller.clear_sleep_timer("player_1")
+
+        # get_sleep_timer reads the model field directly, so this also asserts it cleared
+        assert controller.get_sleep_timer("player_1") is None
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
+        mock_mass.signal_event.assert_any_call(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id="player_1",
+            data=None,
+        )
+
+    async def test_sleep_timer_removed_when_player_unregistered(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player cancels and clears its sleep timer."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_sleep_timer_expires_at(123.0)
+
+        await controller.unregister("player_1")
+
+        assert player.sleep_timer_expires_at is None
+        mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
+
+    async def test_sleep_timer_expiry_stops_player(self, mock_mass: MagicMock) -> None:
+        """An expired sleep timer clears its state and stops playback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        player.set_sleep_timer_expires_at(123.0)
+        controller.cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_sleep_timer_expired("player_1")
+
+        assert controller.get_sleep_timer("player_1") is None
+        assert player.sleep_timer_expires_at is None
+        controller.cmd_stop.assert_awaited_once_with("player_1")
+        mock_mass.signal_event.assert_any_call(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id="player_1",
+            data=None,
+        )
+
+    def test_set_sleep_timer_rejects_invalid_duration(self, mock_mass: MagicMock) -> None:
+        """A non-positive or float-overflowing duration raises and schedules nothing."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+
+        # 0/-30 are non-positive; 10**400 exceeds the float range for the expiry math
+        for invalid in (0, -30, 10**400):
+            with pytest.raises(InvalidDataError):
+                controller.set_sleep_timer("player_1", invalid)
+
+        assert controller.get_sleep_timer("player_1") is None
+        mock_mass.call_later.assert_not_called()
+
+
 class TestUnregisterCleanup:
     """Test that unregister cleans up leaked internal state."""
 
@@ -366,7 +463,8 @@ class TestUnregisterCleanup:
 
 
 def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
-    """Configure get_raw_player_config_value to return ``value`` for the play-media override key.
+    """
+    Configure get_raw_player_config_value to return ``value`` for the play-media override key.
 
     Other keys keep the existing defaults from the shared fixture. Use this in
     tests for ``play_media`` override behavior so the legacy/new branch is
@@ -385,7 +483,8 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
 
 
 class TestCmdUngroupNewBranches:
-    """Regression tests for the post-refactor cmd_ungroup flow.
+    """
+    Regression tests for the post-refactor cmd_ungroup flow.
 
     The refactor changed two things:
 
@@ -485,8 +584,79 @@ class TestCmdUngroupNewBranches:
         assert power_called == []  # powerless group → never goes through cmd_power
 
 
+class TestExternalPowerOffUnsync:
+    """
+    Tests for unsyncing a player when its power is turned off outside of MA.
+
+    When a player's (final) power state flips on->off because its linked power
+    control was switched off directly - rather than via an MA power command -
+    the player must be removed from any (sync)group it is part of.
+    """
+
+    def _make_synced_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer]:
+        """Build a controller with a player synced to a registered leader."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_group_members = ["leader", "p1"]
+        player = MockPlayer(provider, "p1", "Player")
+        controller._players = {"leader": leader, "p1": player}
+        mock_mass.players = controller
+        for _player in (leader, player):
+            _player.set_initialized()
+            _player._cache.clear()
+            _player.update_state(signal_event=False)
+        # isolate the unsync branch from the unrelated state-forwarding machinery
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
+        return controller, player
+
+    def test_power_off_unsyncs_synced_player(self, mock_mass: MagicMock) -> None:
+        """An on->off power transition ungroups a synced player."""
+        controller, player = self._make_synced_player(mock_mass)
+        assert player.state.synced_to == "leader"
+
+        controller.signal_player_state_update(player, {"powered": (True, False)})
+
+        controller.cmd_ungroup.assert_called_once_with("p1")  # type: ignore[attr-defined]
+
+    def test_power_on_does_not_unsync(self, mock_mass: MagicMock) -> None:
+        """An off->on power transition leaves the player synced."""
+        controller, player = self._make_synced_player(mock_mass)
+
+        controller.signal_player_state_update(player, {"powered": (False, True)})
+
+        controller.cmd_ungroup.assert_not_called()  # type: ignore[attr-defined]
+
+    def test_no_power_control_is_ignored(self, mock_mass: MagicMock) -> None:
+        """A None->off transition (player without power control) is ignored."""
+        controller, player = self._make_synced_player(mock_mass)
+
+        controller.signal_player_state_update(player, {"powered": (None, False)})
+
+        controller.cmd_ungroup.assert_not_called()  # type: ignore[attr-defined]
+
+    def test_power_off_ungrouped_player_is_noop(self, mock_mass: MagicMock) -> None:
+        """Powering off a player that is not in any group does nothing."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "p1", "Player")
+        controller._players = {"p1": player}
+        mock_mass.players = controller
+        player.set_initialized()
+        player._cache.clear()
+        player.update_state(signal_event=False)
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
+
+        controller.signal_player_state_update(player, {"powered": (True, False)})
+
+        controller.cmd_ungroup.assert_not_called()
+
+
 class TestPlayMediaOverride:
-    """Tests for the new CONF_PLAY_MEDIA_OVERRIDES_GROUP behavior.
+    """
+    Tests for the new CONF_PLAY_MEDIA_OVERRIDES_GROUP behavior.
 
     When a captured child player receives an explicit play_media command, the
     default behavior is to *release* it from the active group/sync and play
@@ -666,6 +836,225 @@ class TestPlayMediaOverride:
         assert power_calls == []
         # ... and play_media was issued directly on the member
         assert played_on == ["member"]
+
+
+class TestExternalSourcePlayPause:
+    """Pause/play handling for externally-initiated sources (no active output protocol)."""
+
+    @staticmethod
+    def _make_external_source_player(
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+        *,
+        playback_state: PlaybackState,
+        can_play_pause: bool = True,
+        supports_pause: bool = True,
+    ) -> MockPlayer:
+        """Build a player playing a passive external source, with no active output protocol."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_supported_features = {PlayerFeature.PAUSE} if supports_pause else set()
+        player._attr_source_list = [
+            PlayerSource(
+                id="spotify",
+                name="Spotify",
+                passive=True,
+                can_play_pause=can_play_pause,
+                can_next_previous=True,
+                can_seek=True,
+            )
+        ]
+        player._attr_active_source = "spotify"
+        player._attr_playback_state = playback_state
+        player._cache.clear()
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        player.update_state(signal_event=False)
+        return player
+
+    def test_pause_external_source_forwards_to_player(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Pausing a pausable external source forwards to the player, not STOP."""
+        player = self._make_external_source_player(
+            provider, controller, mock_mass, playback_state=PlaybackState.PLAYING
+        )
+        player.pause = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_pause("player_1"))
+
+        player.pause.assert_awaited_once()
+        controller._handle_cmd_stop.assert_not_called()
+
+    def test_play_external_source_unpauses_player(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Unpausing a paused external source forwards to the player, not a restart."""
+        player = self._make_external_source_player(
+            provider, controller, mock_mass, playback_state=PlaybackState.PAUSED
+        )
+        player.play = AsyncMock()  # type: ignore[method-assign]
+        player.play_media = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_play("player_1"))
+
+        player.play.assert_awaited_once()
+        player.play_media.assert_not_called()
+        controller._handle_select_source.assert_not_called()
+
+    def test_pause_falls_back_to_stop_without_pause_support(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """A player that cannot pause natively still falls back to STOP."""
+        player = self._make_external_source_player(
+            provider,
+            controller,
+            mock_mass,
+            playback_state=PlaybackState.PLAYING,
+            supports_pause=False,
+        )
+        player.pause = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_pause("player_1"))
+
+        controller._handle_cmd_stop.assert_awaited_once()
+        player.pause.assert_not_called()
+
+
+class TestMirrorsParentMedia:
+    """Tests for _mirrors_parent_media (palette-fetch gating for grouped players)."""
+
+    @staticmethod
+    def _fake_player(
+        *,
+        player_id: str = "p1",
+        active_group: str | None = None,
+        synced_to: str | None = None,
+        player_type: PlayerType = PlayerType.PLAYER,
+        protocol_parent_id: str | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            player_id=player_id,
+            state=SimpleNamespace(active_group=active_group, synced_to=synced_to, type=player_type),
+            protocol_parent_id=protocol_parent_id,
+        )
+
+    def test_standalone_player_owns_media(self, controller: PlayerController) -> None:
+        """A standalone player resolves its own media (and palette)."""
+        assert controller._mirrors_parent_media(self._fake_player()) is False  # type: ignore[arg-type]
+
+    def test_group_member_mirrors(self, controller: PlayerController) -> None:
+        """A group member borrows its parent's media."""
+        assert controller._mirrors_parent_media(self._fake_player(active_group="g1")) is True  # type: ignore[arg-type]
+
+    def test_synced_member_mirrors(self, controller: PlayerController) -> None:
+        """A synced member borrows its leader's media."""
+        assert controller._mirrors_parent_media(self._fake_player(synced_to="leader")) is True  # type: ignore[arg-type]
+
+    def test_protocol_child_mirrors(self, controller: PlayerController) -> None:
+        """A protocol child borrows its parent's media."""
+        player = self._fake_player(player_type=PlayerType.PROTOCOL, protocol_parent_id="parent")
+        assert controller._mirrors_parent_media(player) is True  # type: ignore[arg-type]
+
+    def test_protocol_player_without_parent_owns_media(self, controller: PlayerController) -> None:
+        """A protocol player with no parent resolves its own media."""
+        player = self._fake_player(player_type=PlayerType.PROTOCOL)
+        assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
+
+    def test_self_referential_parent_owns_media(self, controller: PlayerController) -> None:
+        """A self-referential active_group/synced_to is not a real parent, so resolve locally."""
+        player = self._fake_player(player_id="p1", synced_to="p1", active_group="p1")
+        assert controller._mirrors_parent_media(player) is False  # type: ignore[arg-type]
+
+
+class TestVolumeScalingOnRedirect:
+    """min/max volume scaling must survive a redirect to a protocol player or external control."""
+
+    @staticmethod
+    def _volume_player(
+        player_id: str,
+        volume_control: str,
+        volume_set: AsyncMock | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            player_id=player_id,
+            type=PlayerType.PLAYER,
+            protocol_parent_id=None,
+            extra_data={},
+            volume_control=volume_control,
+            volume_set=volume_set or AsyncMock(),
+            update_state=MagicMock(),
+            provider=MagicMock(),
+            state=SimpleNamespace(
+                name=player_id,
+                volume_control=volume_control,
+                volume_muted=False,
+                mute_control=PLAYER_CONTROL_NONE,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_protocol_redirect_forwards_scaled_volume(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A volume command redirected to a protocol player honors the user-facing max_volume."""
+
+        def _conf(player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                # user-facing player caps at 50, the protocol player has no limits of its own
+                return 50 if player_id == "user_player" else 100
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+
+        protocol = self._volume_player("protocol_player", PLAYER_CONTROL_NATIVE)
+        user = self._volume_player("user_player", "protocol_player")
+        players = {"user_player": user, "protocol_player": protocol}
+
+        with (
+            patch.object(controller, "get_player", side_effect=players.get),
+            patch.object(controller, "_get_active_audio_source", return_value=None),
+        ):
+            controller._controls = {}
+            await controller._handle_cmd_volume_set("user_player", 100)
+
+        # logical 100 with a max_volume of 50 must reach the protocol player as 50, not the raw 100
+        protocol.volume_set.assert_awaited_once_with(50)
+
+    @pytest.mark.asyncio
+    async def test_external_control_redirect_forwards_scaled_volume(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A volume command redirected to an external control honors the user-facing max_volume."""
+
+        def _conf(_player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 50
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+
+        control = SimpleNamespace(name="External Amp", supports_volume=True, volume_set=AsyncMock())
+        user = self._volume_player("user_player", "ext_control")
+        players = {"user_player": user}
+
+        with (
+            patch.object(controller, "get_player", side_effect=players.get),
+            patch.object(controller, "_get_active_audio_source", return_value=None),
+        ):
+            controller._controls = {"ext_control": control}  # type: ignore[dict-item]
+            await controller._handle_cmd_volume_set("user_player", 100)
+
+        control.volume_set.assert_awaited_once_with(50)
 
 
 if __name__ == "__main__":

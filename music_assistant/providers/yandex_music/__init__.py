@@ -48,7 +48,8 @@ from .provider import YandexMusicProvider
 
 
 def _save_wave_preset_action(values: dict[str, ConfigValueType]) -> None:
-    """Merge the current draft fields into the stored preset list.
+    """
+    Merge the current draft fields into the stored preset list.
 
     Overwrites an existing preset with the same name instead of creating a
     duplicate. Clears draft fields after persisting so the UI returns to a
@@ -79,7 +80,8 @@ def _save_wave_preset_action(values: dict[str, ConfigValueType]) -> None:
 
 
 def _delete_wave_preset_action(values: dict[str, ConfigValueType]) -> None:
-    """Remove the preset named by CONF_WAVE_PRESET_TO_DELETE from the store.
+    """
+    Remove the preset named by CONF_WAVE_PRESET_TO_DELETE from the store.
 
     Raises ``InvalidDataError`` when no name is selected. Idempotent — absent
     names simply rewrite an unchanged list.
@@ -95,7 +97,8 @@ def _delete_wave_preset_action(values: dict[str, ConfigValueType]) -> None:
 
 
 def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[ConfigEntry]:
-    """Return the wave-preset builder UI (all advanced settings).
+    """
+    Return the wave-preset builder UI (all advanced settings).
 
     Layout:
       - Section label showing how many presets are saved.

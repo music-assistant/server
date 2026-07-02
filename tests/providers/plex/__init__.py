@@ -1,1 +1,1 @@
-"""Tests for the Plex provider."""
+"""Plex provider test fixtures and helpers."""

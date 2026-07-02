@@ -104,7 +104,8 @@ async def test_parse_metadata_from_mp4tags() -> None:
 
 
 def test_parse_metadata_from_apev2tags() -> None:
-    """Test parsing of metadata from APEv2 tags (WavPack).
+    """
+    Test parsing of metadata from APEv2 tags (WavPack).
 
     Uses parse_tags_mutagen directly since the minimal WavPack fixture
     does not contain valid audio data for ffprobe to parse.
@@ -271,7 +272,8 @@ def test_split_artists_with_not_split() -> None:
 
 
 def _create_mock_vorbis_tags(tag_dict: dict[str, list[str]]) -> MagicMock:
-    """Create a mock VCommentDict with the given tags.
+    """
+    Create a mock VCommentDict with the given tags.
 
     :param tag_dict: Dictionary mapping tag names to lists of values.
     """
@@ -391,7 +393,8 @@ def test_parse_vorbis_multi_value_releasetype() -> None:
 
 
 def _create_mock_apev2_tags(tag_dict: dict[str, str]) -> MagicMock:
-    r"""Create a mock APEv2 tags object.
+    r"""
+    Create a mock APEv2 tags object.
 
     :param tag_dict: Dictionary mapping tag names to values (use \x00 for multi-value).
     """
@@ -516,7 +519,8 @@ def test_parse_id3_multi_value_musicbrainz_albumtype() -> None:
 
 
 def test_vorbis_multiple_artist_fields_semicolon_in_name() -> None:
-    """Test that multiple ARTIST fields in Vorbis with semicolons are handled correctly.
+    """
+    Test that multiple ARTIST fields in Vorbis with semicolons are handled correctly.
 
     Regression test for the "ave;new" edge case per the Vorbis spec:
     - Japanese artist "ave;new" has a semicolon in their name
@@ -583,7 +587,8 @@ def test_vorbis_multiple_artist_fields_semicolon_in_name() -> None:
 
 
 async def test_flac_multiple_artist_fields_semicolon_e2e() -> None:
-    """End-to-end test: FLAC with multiple ARTIST fields, one containing semicolon.
+    """
+    End-to-end test: FLAC with multiple ARTIST fields, one containing semicolon.
 
     Tests real file parsing to ensure the full pipeline correctly handles
     artist names with semicolons when using multiple ARTIST fields per Vorbis spec.
@@ -611,7 +616,8 @@ async def test_flac_multiple_artist_fields_semicolon_e2e() -> None:
 
 
 def test_id3_artist_tag_semicolon_single_mbid() -> None:
-    """Test that single ARTIST tag with semicolon is not split when 1 MB ID exists.
+    """
+    Test that single ARTIST tag with semicolon is not split when 1 MB ID exists.
 
     Regression test for formats without multi-value ARTISTS tag support (ID3, etc.):
     - Artist name "ave;new" contains a semicolon
@@ -648,7 +654,8 @@ def test_id3_artist_tag_semicolon_single_mbid() -> None:
 
 
 def test_artists_tag_semicolon_single_mbid() -> None:
-    """Test that ARTISTS tag with semicolon is not split when 1 MB ID exists.
+    """
+    Test that ARTISTS tag with semicolon is not split when 1 MB ID exists.
 
     Regression test for the ARTISTS (plural) tag path:
     - Artist name "ave;new" contains a semicolon
@@ -688,7 +695,8 @@ def test_artists_tag_semicolon_single_mbid() -> None:
 
 
 def test_id3_artist_tag_semicolon_multiple_mbids() -> None:
-    """Test that ARTIST tag with semicolon IS split when multiple MB IDs exist.
+    """
+    Test that ARTIST tag with semicolon IS split when multiple MB IDs exist.
 
     When multiple MusicBrainz Artist IDs are present, the semicolon should be
     treated as a separator between artists.

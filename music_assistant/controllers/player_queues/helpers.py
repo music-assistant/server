@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import functools
-import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
 
 from music_assistant_models.media_items import Playlist
 
@@ -19,7 +17,8 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
-    from music_assistant.controllers.player_queues.controller import PlayerQueuesController
+    from music_assistant import MusicAssistant
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
@@ -45,9 +44,23 @@ class CompareState(TypedDict):
     output_formats: list[str] | None
 
 
-def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R](
-    func: Callable[Concatenate[PlayerQueuesControllerT, P], Awaitable[R]],
-) -> Callable[Concatenate[PlayerQueuesControllerT, P], Coroutine[Any, Any, R]]:
+class _PlayActionHost(Protocol):
+    """
+    The minimal controller surface that :func:`handle_play_action` needs.
+
+    Lets the decorator wrap actions defined either on the controller itself or on one
+    of its mixins, since both expose this surface at runtime.
+    """
+
+    mass: MusicAssistant
+    _queue_data: dict[str, PlayerQueueData]
+
+    def signal_update(self, queue_id: str, items_changed: bool = False) -> None: ...
+
+
+def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
+    func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]],
+) -> Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R]]:
     """
     Decorator for queue playback actions.
 
@@ -59,78 +72,35 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     """  # noqa: D401
 
     @functools.wraps(func)
-    async def wrapper(self: PlayerQueuesControllerT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: PlayActionHostT, *args: P.args, **kwargs: P.kwargs) -> R:
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
-        queue = self._queues.get(queue_id)
-        if queue is None:
+        data = self._queue_data.get(queue_id)
+        if data is None:
             return await func(self, *args, **kwargs)
+        queue = data.queue
         async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
             try:
-                self._play_action_refcount[queue_id] = (
-                    self._play_action_refcount.get(queue_id, 0) + 1
-                )
+                data.play_action_refcount += 1
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 if not prev_in_progress:
                     self.signal_update(queue_id)
                 return await func(self, *args, **kwargs)
             finally:
-                refcount = self._play_action_refcount.get(queue_id, 1) - 1
-                if refcount <= 0:
-                    self._play_action_refcount.pop(queue_id, None)
+                data.play_action_refcount -= 1
+                if data.play_action_refcount <= 0:
+                    data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
                     self.signal_update(queue_id)
-                else:
-                    self._play_action_refcount[queue_id] = refcount
 
     return wrapper
 
 
-def is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
-    """Return True if radio_source is a single dynamic playlist."""
-    return (
-        len(radio_source) == 1
-        and isinstance(radio_source[0], Playlist)
-        and radio_source[0].is_dynamic
-    )
-
-
-async def smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
-    """
-    Shuffle queue items, avoiding identical tracks next to each other.
-
-    Best-effort approach to prevent the same track from appearing adjacent.
-    Does a random shuffle first, then makes a limited number of passes to
-    swap adjacent duplicates with a random item further in the list.
-
-    :param items: List of queue items to shuffle.
-    """
-    if len(items) <= 2:
-        return random.sample(items, len(items)) if len(items) == 2 else items
-
-    # Start with a random shuffle
-    shuffled = random.sample(items, len(items))
-
-    # Make a few passes to fix adjacent duplicates
-    max_passes = 3
-    for _ in range(max_passes):
-        swapped = False
-        for i in range(len(shuffled) - 1):
-            if shuffled[i].name == shuffled[i + 1].name:
-                # Found adjacent duplicate - swap with random position at least 2 away
-                swap_candidates = [j for j in range(len(shuffled)) if abs(j - i - 1) >= 2]
-                if swap_candidates:
-                    swap_pos = random.choice(swap_candidates)
-                    shuffled[i + 1], shuffled[swap_pos] = shuffled[swap_pos], shuffled[i + 1]
-                    swapped = True
-        if not swapped:
-            break
-        # Yield to event loop between passes
-        await asyncio.sleep(0)
-
-    return shuffled
+def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
+    """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
+    return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
 
 
 def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
@@ -175,3 +145,39 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+# how many bounded passes to make separating directly-adjacent same-artist items
+ARTIST_REPAIR_PASSES = 4
+# how far ahead to look for a non-clashing item to swap in (keeps moves local so any
+# existing even spread is preserved)
+ARTIST_SWAP_WINDOW = 6
+
+
+def space_by_artist(artist_sets: list[set[str]], *, preceding: set[str] | None = None) -> list[int]:
+    """
+    Return an index order that best-effort keeps same-artist entries from sitting adjacent.
+
+    :param artist_sets: The lowercased artist-name set for each item, in its current order.
+    :param preceding: Artist names of the item that will sit directly before the first entry (the
+        seam with the already-queued tail); the first entry is kept clear of it too. None ignores it.
+    """
+    count = len(artist_sets)
+    order = list(range(count))
+    sets = list(artist_sets)
+    for _ in range(ARTIST_REPAIR_PASSES):
+        changed = False
+        # index -1 represents the preceding (seam) item, so the first entry is kept clear of it too
+        for index in range(-1, count - 1):
+            current = preceding if index == -1 else sets[index]
+            if not current or not current & sets[index + 1]:
+                continue
+            for target in range(index + 2, min(index + 2 + ARTIST_SWAP_WINDOW, count)):
+                if not current & sets[target]:
+                    order[index + 1], order[target] = order[target], order[index + 1]
+                    sets[index + 1], sets[target] = sets[target], sets[index + 1]
+                    changed = True
+                    break
+        if not changed:
+            break
+    return order

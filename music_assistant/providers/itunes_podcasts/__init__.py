@@ -34,6 +34,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_PODCASTS
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
     get_podcastparser_dict,
     parse_podcast,
     parse_podcast_episode,
@@ -228,7 +229,8 @@ class ITunesPodcastsProvider(MusicProvider):
         return podcast_list
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
-        """Get library podcasts.
+        """
+        Get library podcasts.
 
         We use get_library_podcasts to sync all feeds which have been added to the MA library
         by the user via the search function. The provider itself does not offer a real library.
@@ -297,6 +299,7 @@ class ITunesPodcastsProvider(MusicProvider):
                 prov_podcast_id=prov_podcast_id,
                 episode_cnt=cnt,
                 podcast_cover=podcast_cover,
+                podcast_name=podcast.get("title"),
                 domain=self.domain,
                 instance_id=self.instance_id,
             ):
@@ -305,15 +308,34 @@ class ITunesPodcastsProvider(MusicProvider):
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
         podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
-        async for mass_episode in self.get_podcast_episodes(podcast_id):
+        podcast = await self._cache_get_podcast(podcast_id)
+        podcast_cover = podcast.get("cover_url")
+        for cnt, episode in enumerate(podcast.get("episodes", [])):
+            mass_episode = parse_podcast_episode(
+                episode=episode,
+                prov_podcast_id=podcast_id,
+                episode_cnt=cnt,
+                podcast_cover=podcast_cover,
+                podcast_name=podcast.get("title"),
+                domain=self.domain,
+                instance_id=self.instance_id,
+            )
+            if mass_episode is None:
+                continue
             _, _guid_or_stream_url = mass_episode.item_id.split(" ")
             # this is enough, as internal
             if guid_or_stream_url == _guid_or_stream_url:
+                await enrich_episode_chapters(
+                    session=self.mass.http_session,
+                    chapters_json_url=episode.get("chapters_json_url"),
+                    mass_episode=mass_episode,
+                )
                 return mass_episode
         raise MediaNotFoundError("Episode not found")
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations.
+        """
+        Get recommendations.
 
         This provider uses a list of top podcasts for the configured country.
         """

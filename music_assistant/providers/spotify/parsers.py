@@ -152,7 +152,7 @@ def parse_track(
         provider=provider.instance_id,
         name=name,
         version=version,
-        duration=track_obj["duration_ms"] / 1000,
+        duration=int(track_obj["duration_ms"] / 1000),
         provider_mappings={
             ProviderMapping(
                 item_id=track_obj["id"],

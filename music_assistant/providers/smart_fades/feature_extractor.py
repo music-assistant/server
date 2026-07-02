@@ -15,7 +15,8 @@ if TYPE_CHECKING:
 
 
 class AdvancedBeatFeatureExtractor:
-    """Streaming log-mel extractor using torchaudio for Beat This compatibility.
+    """
+    Streaming log-mel extractor using torchaudio for Beat This compatibility.
 
     Uses the same torchaudio.transforms.MelSpectrogram as beat_this.preprocessing.LogMelSpect:
     - sample_rate=22050
@@ -47,7 +48,8 @@ class AdvancedBeatFeatureExtractor:
         device: str = "cpu",
         offload: Callable[..., Awaitable[Any]] | None = None,
     ):
-        """Initialize the feature extractor.
+        """
+        Initialize the feature extractor.
 
         :param sample_rate: Audio sample rate (default 22050 Hz).
         :param n_fft: FFT window size.
@@ -101,7 +103,8 @@ class AdvancedBeatFeatureExtractor:
         self._last_output_frame = -1
 
     async def process_pcm(self, pcm: np.ndarray) -> np.ndarray:
-        """Process a PCM chunk and return log-mel features.
+        """
+        Process a PCM chunk and return log-mel features.
 
         :param pcm: Audio samples as float32 array.
         :return: Log-mel features with shape (T, n_mels).
@@ -187,7 +190,8 @@ class AdvancedBeatFeatureExtractor:
         return await asyncio.to_thread(_process_sync)
 
     async def finalize(self) -> np.ndarray:
-        """Flush delayed frames and process any remaining samples.
+        """
+        Flush delayed frames and process any remaining samples.
 
         :return: Final log-mel features.
         """

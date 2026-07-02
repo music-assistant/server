@@ -56,7 +56,8 @@ class AsyncProcess:
         name: str | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
-        """Initialize AsyncProcess.
+        """
+        Initialize AsyncProcess.
 
         :param args: Command and arguments to execute.
         :param stdin: Stdin configuration (True for PIPE, False for None, or custom).
@@ -157,7 +158,8 @@ class AsyncProcess:
                 return err.partial
 
     async def read(self, n: int) -> bytes:
-        """Read up to n bytes from the stdout stream.
+        """
+        Read up to n bytes from the stdout stream.
 
         If n is positive, this function try to read n bytes,
         and may return less or equal bytes than requested, but at least one byte.

@@ -66,7 +66,8 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
+    """
+    Return Config entries to setup this provider.
 
     :param mass: The MusicAssistant instance.
     :param instance_id: id of an existing provider instance (None if new instance setup).

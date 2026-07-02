@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import random
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
 from music_assistant_models.media_items import Playlist, Track
@@ -16,9 +15,10 @@ from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
-    is_radio_source_dynamic,
-    smart_shuffle,
+    has_dynamic_source,
+    space_by_artist,
 )
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
@@ -65,32 +65,37 @@ def _queue() -> PlayerQueue:
     return PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
 
 
-class TestIsRadioSourceDynamic:
-    """Tests for is_radio_source_dynamic."""
+class TestHasDynamicSource:
+    """Tests for has_dynamic_source."""
 
     def test_single_dynamic_playlist(self) -> None:
-        """A single dynamic playlist is a dynamic radio source."""
-        assert is_radio_source_dynamic([_playlist(is_dynamic=True)]) is True
+        """A single dynamic playlist puts the queue in dynamic mode."""
+        assert has_dynamic_source([_playlist(is_dynamic=True)]) is True
 
     def test_single_non_dynamic_playlist(self) -> None:
-        """A single non-dynamic playlist is not a dynamic radio source."""
-        assert is_radio_source_dynamic([_playlist(is_dynamic=False)]) is False
+        """A single non-dynamic playlist is not a dynamic source."""
+        assert has_dynamic_source([_playlist(is_dynamic=False)]) is False
 
     def test_empty_source(self) -> None:
-        """An empty radio source is not dynamic."""
-        assert is_radio_source_dynamic([]) is False
+        """An empty source list is not dynamic."""
+        assert has_dynamic_source([]) is False
 
     def test_multiple_dynamic_playlists(self) -> None:
-        """More than one item is never treated as a dynamic radio source."""
+        """Any dynamic playlist among the sources puts the queue in dynamic mode."""
         source: list[MediaItemType] = [
             _playlist(is_dynamic=True, name="A"),
             _playlist(is_dynamic=True, name="B"),
         ]
-        assert is_radio_source_dynamic(source) is False
+        assert has_dynamic_source(source) is True
+
+    def test_dynamic_playlist_mixed_with_finite_source(self) -> None:
+        """A dynamic playlist mixed with a finite source still counts as dynamic."""
+        source: list[MediaItemType] = [_track("Song"), _playlist(is_dynamic=True)]
+        assert has_dynamic_source(source) is True
 
     def test_non_playlist_item(self) -> None:
-        """A non-playlist media item is not a dynamic radio source."""
-        assert is_radio_source_dynamic([_track("Song")]) is False
+        """A non-playlist media item is not a dynamic source."""
+        assert has_dynamic_source([_track("Song")]) is False
 
 
 class TestGetCurrentPlaybackSpeed:
@@ -119,55 +124,10 @@ class TestGetCurrentPlaybackSpeed:
         assert get_current_playback_speed(queue) == 1.0
 
 
-class TestSmartShuffle:
-    """Tests for smart_shuffle."""
-
-    async def test_empty_list(self) -> None:
-        """Shuffling an empty list returns an empty list."""
-        assert await smart_shuffle([]) == []
-
-    async def test_single_item(self) -> None:
-        """Shuffling a single item returns that item."""
-        items = [_queue_item("A")]
-        assert await smart_shuffle(items) == items
-
-    async def test_two_items_preserved(self) -> None:
-        """Shuffling two items keeps both items."""
-        items = [_queue_item("A"), _queue_item("B")]
-        result = await smart_shuffle(list(items))
-        assert {item.queue_item_id for item in result} == {"a", "b"}
-
-    async def test_preserves_all_items(self) -> None:
-        """Shuffling never drops or duplicates items, regardless of the random seed."""
-        items = [_queue_item(f"Name{i}", item_id=f"id{i}") for i in range(12)]
-        for seed in range(10):
-            random.seed(seed)
-            result = await smart_shuffle(list(items))
-            assert sorted(item.queue_item_id for item in result) == sorted(
-                item.queue_item_id for item in items
-            )
-
-    async def test_separates_adjacent_duplicates(self) -> None:
-        """Duplicate-named items are spread apart when a valid arrangement exists."""
-        items = [
-            _queue_item("Dup", item_id="d1"),
-            _queue_item("Dup", item_id="d2"),
-            _queue_item("A", item_id="a"),
-            _queue_item("B", item_id="b"),
-            _queue_item("C", item_id="c"),
-            _queue_item("D", item_id="d"),
-        ]
-        random.seed(42)
-        result = await smart_shuffle(items)
-        names = [item.name for item in result]
-        assert all(names[i] != names[i + 1] for i in range(len(names) - 1))
-        assert sorted(item.queue_item_id for item in result) == ["a", "b", "c", "d", "d1", "d2"]
-
-
 class _FakeLock:
     """No-op re-entrant async context manager standing in for the player lock."""
 
-    async def __aenter__(self) -> _FakeLock:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc_info: object) -> bool:
@@ -194,8 +154,10 @@ class _FakeController:
 
     def __init__(self, queues: dict[str, _FakeQueue]) -> None:
         self.mass = _FakeMass()
-        self._queues = queues
-        self._play_action_refcount: dict[str, int] = {}
+        self._queue_data = {
+            queue_id: PlayerQueueData(queue=cast("PlayerQueue", queue))
+            for queue_id, queue in queues.items()
+        }
         self.signal_calls: list[str] = []
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
@@ -204,8 +166,10 @@ class _FakeController:
 
 def _flag_value(ctrl: PlayerQueuesController, queue_id: str) -> bool:
     """Return the current in-progress flag for a queue (False if unknown)."""
-    queue = ctrl._queues.get(queue_id)
-    return bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)) if queue else False
+    data = ctrl._queue_data.get(queue_id)
+    if data is None:
+        return False
+    return bool(data.queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False))
 
 
 @handle_play_action
@@ -250,7 +214,7 @@ class TestHandlePlayAction:
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         # signalled once on entry and once on exit
         assert ctrl.signal_calls == ["q1", "q1"]
-        assert ctrl._play_action_refcount == {}
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
 
     async def test_nested_actions_refcount(self) -> None:
         """Nested actions keep the flag set until the outermost one finishes."""
@@ -263,7 +227,7 @@ class TestHandlePlayAction:
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         # only the outermost entry/exit signal an update (inner sees it already in progress)
         assert ctrl.signal_calls == ["q1", "q1"]
-        assert ctrl._play_action_refcount == {}
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
 
     async def test_flag_cleared_on_exception(self) -> None:
         """The flag is cleared even when the action raises."""
@@ -272,4 +236,29 @@ class TestHandlePlayAction:
         with pytest.raises(RuntimeError, match="boom"):
             await _boom(cast("PlayerQueuesController", ctrl), "q1")
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
-        assert ctrl._play_action_refcount == {}
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+
+class TestSpaceByArtist:
+    """Tests for space_by_artist."""
+
+    def test_separates_adjacent_shared_artist(self) -> None:
+        """Adjacent entries sharing an artist are pulled apart (by intersection), dropping nothing."""
+        sets = [{"a"}, {"a", "b"}, {"b"}, {"c"}]
+        spaced = [sets[index] for index in space_by_artist(sets)]
+        assert sorted(spaced, key=sorted) == sorted(sets, key=sorted)
+        assert all(not (spaced[i] & spaced[i + 1]) for i in range(len(spaced) - 1))
+
+    def test_honours_preceding_seam(self) -> None:
+        """The first entry shares no artist with the preceding (seam) set."""
+        sets = [{"a", "b"}, {"c"}, {"d"}]
+        order = space_by_artist(sets, preceding={"a"})
+        assert not (sets[order[0]] & {"a"})
+
+    def test_identity_when_already_clear(self) -> None:
+        """With no clashes and no seam, the order is left untouched."""
+        assert space_by_artist([{"a"}, {"b"}, {"c"}]) == [0, 1, 2]
+
+    def test_empty_input(self) -> None:
+        """An empty input yields an empty order."""
+        assert space_by_artist([]) == []

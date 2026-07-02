@@ -9,7 +9,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 
 from .constants import (
     CALLBACK_REDIRECT_URL,
@@ -65,7 +65,9 @@ async def _handle_auth_actions(
         return
 
     if action == CONF_ACTION_AUTH:
-        refresh_token = await pkce_auth_flow(mass, cast("str", values["session_id"]), app_var(2))
+        refresh_token = await pkce_auth_flow(
+            mass, cast("str", values["session_id"]), app_var("spotify_client_id")
+        )
         values[CONF_REFRESH_TOKEN_GLOBAL] = refresh_token
         values[CONF_REFRESH_TOKEN_DEV] = None  # Clear dev token on new global auth
         values[CONF_CLIENT_ID] = None  # Clear client ID on new global auth
@@ -174,7 +176,7 @@ async def get_config_entries(
             key="dev_label_text",
             type=ConfigEntryType.LABEL,
             label=dev_label_text,
-            category="Developer Token",
+            category="developer_token",
             # Show only when global auth is complete
             hidden=not global_authenticated,
         ),
@@ -185,7 +187,7 @@ async def get_config_entries(
             required=False,
             default_value="",
             value=values.get(CONF_CLIENT_ID, "") if values else "",
-            category="Developer Token",
+            category="developer_token",
             # Show only when global auth is complete
             hidden=not global_authenticated or dev_authenticated,
         ),
@@ -202,7 +204,7 @@ async def get_config_entries(
             key=CONF_ACTION_AUTH_DEV,
             type=ConfigEntryType.ACTION,
             action=CONF_ACTION_AUTH_DEV,
-            category="Developer Token",
+            category="developer_token",
             # Show only when global is authenticated and dev is NOT authenticated
             # The client_id dependency is checked at action time, not visibility
             hidden=not global_authenticated or dev_authenticated,
@@ -212,7 +214,7 @@ async def get_config_entries(
             type=ConfigEntryType.ACTION,
             action=CONF_ACTION_CLEAR_AUTH_DEV,
             required=False,
-            category="Developer Token",
+            category="developer_token",
             # Show when dev token is set
             hidden=not global_authenticated or not dev_authenticated,
         ),

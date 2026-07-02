@@ -1,4 +1,5 @@
-"""18-dimensional semantic vector schema for sonic similarity search.
+"""
+18-dimensional semantic vector schema for sonic similarity search.
 
 Maps AudioAnalysisData to a fixed-size float vector for USearch ANN indexing.
 Dimensions: [0-8] required scalars, [9-12] optional ML scalars, [13-15] key
@@ -54,7 +55,8 @@ FEATURE_GROUPS = {
 
 
 def encode_key_mode(key: str, mode: str) -> tuple[float, float, float]:
-    """Encode musical key and mode as three floats for circular and binary representation.
+    """
+    Encode musical key and mode as three floats for circular and binary representation.
 
     :param key: Pitch class name (e.g. "C", "F#"). Unknown keys default to pitch class 0.
     :param mode: Tonality string — "major" encodes to 1.0, anything else to 0.0.
@@ -69,7 +71,8 @@ def encode_key_mode(key: str, mode: str) -> tuple[float, float, float]:
 
 
 def assemble_vector(analysis: AudioAnalysisData) -> list[float] | None:
-    """Assemble the VECTOR_DIMENSIONS-element feature vector for an analysis row.
+    """
+    Assemble the VECTOR_DIMENSIONS-element feature vector for an analysis row.
 
     :param analysis: Source audio analysis data.
     :returns: List of floats sized to VECTOR_DIMENSIONS, or None when any required
@@ -116,7 +119,8 @@ def normalize_features(
     corpus_means: list[float],
     corpus_stds: list[float],
 ) -> list[float]:
-    """Apply z-score then L2 normalization to a raw feature vector.
+    """
+    Apply z-score then L2 normalization to a raw feature vector.
 
     :param raw_features: Raw feature vector to normalize.
     :param corpus_means: Per-feature means from the corpus.
@@ -139,7 +143,8 @@ def normalize_features(
 def compute_corpus_stats(
     all_features: list[list[float]],
 ) -> tuple[list[float], list[float]]:
-    """Compute per-feature means and standard deviations across a corpus.
+    """
+    Compute per-feature means and standard deviations across a corpus.
 
     :param all_features: List of feature vectors (all same dimensionality).
     :returns: Tuple of (means, stds) as lists of floats.
@@ -159,7 +164,8 @@ def compute_group_distances(
     sig_a: list[float],
     sig_b: list[float],
 ) -> dict[str, float]:
-    """Compute per-group raw (unweighted) Euclidean distance between two feature vectors.
+    """
+    Compute per-group raw (unweighted) Euclidean distance between two feature vectors.
 
     :param sig_a: First feature vector.
     :param sig_b: Second feature vector.
@@ -239,7 +245,8 @@ def build_debug_breakdown(
     weights: dict[str, float],
     displayed_dist: float,
 ) -> dict[str, Any]:
-    """Build a per-track diagnostic dict (weighted_distance, metadata_bonus, group_distances).
+    """
+    Build a per-track diagnostic dict (weighted_distance, metadata_bonus, group_distances).
 
     :param seed_normalized: Normalized seed feature vector.
     :param cand_normalized: Normalized candidate feature vector.

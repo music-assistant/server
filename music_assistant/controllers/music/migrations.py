@@ -662,6 +662,49 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
+    if prev_version <= 42:
+        # add translation_key/translation_params columns to the playlist table so localizable
+        # builtin/provider playlist names (incl. parameterized ones like Spotify's per-account
+        # "Liked Songs") survive the library round-trip; existing rows backfill on the next sync.
+        for column in ("[translation_key] TEXT", "[translation_params] json"):
+            try:
+                await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN {column}")
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
+    if prev_version <= 43:
+        # add content_type column to the genres table to namespace spoken-word taxonomies
+        # (podcast/audiobook) apart from music genres. NULL = music/general; existing rows
+        # stay NULL so nothing re-keys.
+        try:
+            await database.execute(f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN [content_type] TEXT")
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
+    if prev_version <= 44:
+        # add artist_type column to artist table, and make
+        # artist_type=ARTIST_TYPE.SINGER the default, as this was the only artist type supported
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_ARTISTS} ADD COLUMN artist_type TEXT DEFAULT 'singer' NOT NULL"
+            )
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
+    if prev_version <= 45:
+        # seed the curated podcast & audiobook default genres into their namespaces so existing
+        # installs get them on upgrade (music defaults already exist and are skipped). A partial
+        # restore is idempotent; failures here are non-fatal — defaults can be restored later via
+        # the admin API rather than discarding the whole library.
+        await database.commit()
+        try:
+            await mass.music.genres.restore_default_genres(full_restore=False)
+        except Exception as err:
+            logger.warning("Could not seed default podcast/audiobook genres: %s", err)
+
     # save changes
     await database.commit()
 

@@ -1,4 +1,5 @@
-"""MA Player ↔ Yandex Smart Home device mapper.
+"""
+MA Player ↔ Yandex Smart Home device mapper.
 
 Maps Music Assistant Player state to Yandex Smart Home device descriptions,
 capability states, and action execution.
@@ -135,7 +136,8 @@ _RE_MULTI_SPACE = re.compile(r" {2,}")
 
 
 def normalize_device_name(name: str) -> str:
-    """Normalize player name for Yandex Smart Home.
+    """
+    Normalize player name for Yandex Smart Home.
 
     Rules: only Russian/English letters, digits, and spaces;
     mandatory space between letters and digits.
@@ -347,7 +349,8 @@ async def execute_capability_action(  # noqa: PLR0915
     action: CapabilityAction,
     current_volume: int = 0,
 ) -> CapabilityActionResult:
-    """Execute a Yandex capability action by calling the corresponding MA player command.
+    """
+    Execute a Yandex capability action by calling the corresponding MA player command.
 
     Returns a CapabilityActionResult with success or error status.
     """

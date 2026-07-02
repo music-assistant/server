@@ -28,7 +28,8 @@ DEFAULT_PORT = 8009
 
 @dataclass
 class ChromecastInfo:
-    """Class to hold all data about a chromecast for creating connections.
+    """
+    Class to hold all data about a chromecast for creating connections.
 
     This also has the same attributes as the mDNS fields by zeroconf.
     """
@@ -141,7 +142,8 @@ def get_multizone_info(
 def get_mac_address(
     services: set[HostServiceInfo | MDNSServiceInfo], zconf: Zeroconf, timeout: int = 10
 ) -> str | None:
-    """Get MAC address from Chromecast eureka_info API.
+    """
+    Get MAC address from Chromecast eureka_info API.
 
     :param services: Set of zeroconf service info.
     :param zconf: Zeroconf instance.

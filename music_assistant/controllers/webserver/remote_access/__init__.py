@@ -1,4 +1,5 @@
-"""Remote Access subcomponent for the Webserver Controller.
+"""
+Remote Access subcomponent for the Webserver Controller.
 
 This module manages WebRTC-based remote access to Music Assistant instances.
 It connects to a signaling server and handles incoming WebRTC connections,
@@ -87,6 +88,60 @@ class RemoteAccessManager:
         for unload_cb in self._on_unload_callbacks:
             unload_cb()
 
+    async def stop(self) -> None:
+        """Stop the remote access gateway."""
+        if self.gateway:
+            await self.gateway.stop()
+            self.gateway = None
+
+    async def get_ice_servers(self) -> list[dict[str, str]]:
+        """
+        Get ICE servers for WebRTC connections.
+
+        Returns HA Cloud TURN servers if available, otherwise returns public STUN servers.
+        This method can be called regardless of whether remote access is enabled.
+
+        :return: List of ICE server configurations.
+        """
+        # Default public STUN servers
+        default_ice_servers: list[dict[str, str]] = [
+            {"urls": "stun:stun.l.google.com:19302"},
+            {"urls": "stun:stun.cloudflare.com:3478"},
+            {"urls": "stun:stun.home-assistant.io:3478"},
+        ]
+
+        # Try to get HA Cloud ICE servers
+        _, ice_servers = await self._get_ha_cloud_status()
+        if ice_servers:
+            return ice_servers
+
+        return default_ice_servers
+
+    @property
+    def is_enabled(self) -> bool:
+        """Return whether WebRTC remote access is enabled."""
+        return self._enabled
+
+    @property
+    def is_running(self) -> bool:
+        """Return whether the gateway is running."""
+        return self.gateway is not None and self.gateway.is_running
+
+    @property
+    def is_connected(self) -> bool:
+        """Return whether the gateway is connected to the signaling server."""
+        return self.gateway is not None and self.gateway.is_connected
+
+    @property
+    def remote_id(self) -> str:
+        """Return the current Remote ID."""
+        return self._remote_id
+
+    @property
+    def certificate(self) -> RTCCertificate:
+        """Return the persistent WebRTC DTLS certificate."""
+        return self._certificate
+
     async def _schedule_start(self) -> None:
         """Schedule a debounced gateway start, cancelling any existing connection first."""
         # Cancel any pending timer
@@ -146,14 +201,9 @@ class RemoteAccessManager:
 
         await self.gateway.start()
 
-    async def stop(self) -> None:
-        """Stop the remote access gateway."""
-        if self.gateway:
-            await self.gateway.stop()
-            self.gateway = None
-
     async def _on_providers_updated(self, event: MassEvent) -> None:
-        """Handle providers updated event to detect HA Cloud status changes.
+        """
+        Handle providers updated event to detect HA Cloud status changes.
 
         :param event: The providers updated event.
         """
@@ -169,7 +219,8 @@ class RemoteAccessManager:
             await self._schedule_start()
 
     async def _get_ha_cloud_status(self) -> tuple[bool, list[dict[str, str]] | None]:
-        """Get Home Assistant Cloud status and ICE servers.
+        """
+        Get Home Assistant Cloud status and ICE servers.
 
         :return: Tuple of (ha_cloud_available, ice_servers).
         """
@@ -202,53 +253,6 @@ class RemoteAccessManager:
             self.logger.exception("Error getting HA Cloud status: %s", err)
         return False, None
 
-    async def get_ice_servers(self) -> list[dict[str, str]]:
-        """Get ICE servers for WebRTC connections.
-
-        Returns HA Cloud TURN servers if available, otherwise returns public STUN servers.
-        This method can be called regardless of whether remote access is enabled.
-
-        :return: List of ICE server configurations.
-        """
-        # Default public STUN servers
-        default_ice_servers: list[dict[str, str]] = [
-            {"urls": "stun:stun.l.google.com:19302"},
-            {"urls": "stun:stun.cloudflare.com:3478"},
-            {"urls": "stun:stun.home-assistant.io:3478"},
-        ]
-
-        # Try to get HA Cloud ICE servers
-        _, ice_servers = await self._get_ha_cloud_status()
-        if ice_servers:
-            return ice_servers
-
-        return default_ice_servers
-
-    @property
-    def is_enabled(self) -> bool:
-        """Return whether WebRTC remote access is enabled."""
-        return self._enabled
-
-    @property
-    def is_running(self) -> bool:
-        """Return whether the gateway is running."""
-        return self.gateway is not None and self.gateway.is_running
-
-    @property
-    def is_connected(self) -> bool:
-        """Return whether the gateway is connected to the signaling server."""
-        return self.gateway is not None and self.gateway.is_connected
-
-    @property
-    def remote_id(self) -> str:
-        """Return the current Remote ID."""
-        return self._remote_id
-
-    @property
-    def certificate(self) -> RTCCertificate:
-        """Return the persistent WebRTC DTLS certificate."""
-        return self._certificate
-
     def _register_api_commands(self) -> None:
         """Register API commands for remote access."""
 
@@ -264,7 +268,8 @@ class RemoteAccessManager:
             )
 
         async def configure_remote_access(enabled: bool) -> RemoteAccessInfo:
-            """Configure remote access settings.
+            """
+            Configure remote access settings.
 
             :param enabled: Enable or disable remote access.
             """

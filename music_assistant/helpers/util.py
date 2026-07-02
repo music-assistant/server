@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import html
 import importlib
 import logging
 import os
 import platform
 import re
 import shutil
+import signal
 import socket
 import sys
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -28,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, T
 from urllib.parse import urlparse
 
 import ifaddr
+from markdownify import markdownify
 from music_assistant_models.enums import AlbumType, IdentifierType
 from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
@@ -61,7 +65,8 @@ CALLBACK_TYPE = Callable[[], None]
 
 
 async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
-    """Log a deprecation warning if the CPU lacks x86-64-v2 support.
+    """
+    Log a deprecation warning if the CPU lacks x86-64-v2 support.
 
     :param logger: Logger instance to write the warning to.
     """
@@ -264,7 +269,7 @@ def is_arm() -> bool:
     return platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
 
 
-def verify_system_meets_requirements(
+async def verify_system_meets_requirements(
     *,
     feature_name: str,
     min_memory_gb: float = 0.0,
@@ -278,7 +283,7 @@ def verify_system_meets_requirements(
     :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
     :param min_cpu_cores: Minimum CPU core count (0 disables the check).
     :param require_ml_inference: When True, also verify the CPU can run on-device
-        torch inference (AVX2 on x86). Checked last, as it imports torch.
+        torch inference. Checked last, as it spawns a probe subprocess.
     :raises UnsupportedSystemError: If the system does not meet the requirements.
     """
     if shortfall := _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores):
@@ -289,7 +294,7 @@ def verify_system_meets_requirements(
             translation_args=[feature_name, *translation_args],
         )
     if require_ml_inference:
-        verify_cpu_supports_ml_inference()
+        await verify_cpu_supports_ml_inference()
 
 
 def system_meets_requirements(
@@ -362,19 +367,38 @@ def _resource_shortfall(
     return None
 
 
-def verify_cpu_supports_ml_inference() -> None:
-    """
-    Verify the CPU can run on-device ML (torch) inference.
+# How long to wait for the out-of-process inference probe before treating it as
+# inconclusive. The probe only imports torch and runs a few tiny tensors, but a cold,
+# heavily loaded VM can be slow to start the interpreter, so keep this generous.
+_ML_INFERENCE_PROBE_TIMEOUT = 60.0
+# POSIX signals that mean the CPU could not execute the inference (the probe exits with the
+# negated signal number). Any of these disables the feature; other exits fail open.
+_ML_INFERENCE_FAULT_SIGNALS = frozenset(
+    {signal.SIGILL, signal.SIGSEGV, signal.SIGABRT, signal.SIGFPE}
+)
 
-    :raises UnsupportedSystemError: If this is an x86 CPU without AVX2 support, which
-        torch's FBGEMM quantized backend requires.
+
+async def verify_cpu_supports_ml_inference() -> None:
+    """
+    Verify the CPU can actually execute on-device ML (torch) inference.
+
+    Runs a representative inference in a throwaway subprocess, so a CPU that reports a
+    capability it cannot actually execute (common on virtual machines without host CPU
+    passthrough) crashes the probe instead of the server. Inconclusive probe results fail
+    open, so a probe malfunction never blocks a capable host.
+
+    :raises UnsupportedSystemError: If the CPU lacks AVX2, or reports it but cannot execute
+        the required instructions.
     """
     if platform.machine().lower() not in ("x86_64", "amd64", "i386", "i686", "x86"):
         # non-x86 (ARM) machines run quantized inference via QNNPACK instead of FBGEMM
         return
-    import torch  # noqa: PLC0415
+    from music_assistant.helpers import _ml_inference_probe  # noqa: PLC0415
 
-    if torch.backends.cpu.get_cpu_capability() in ("DEFAULT", "NO AVX"):
+    returncode = await _run_ml_inference_probe()
+    if returncode == _ml_inference_probe.PROBE_CAPABLE:
+        return
+    if returncode == _ml_inference_probe.PROBE_NO_AVX2:
         raise UnsupportedSystemError(
             "On-device audio analysis requires a CPU with AVX2 support "
             "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
@@ -382,6 +406,54 @@ def verify_cpu_supports_ml_inference() -> None:
             "CPU type to 'host' may expose AVX2 to the guest.",
             translation_key="unsupported_system_avx2",
         )
+    if returncode is not None and returncode < 0 and -returncode in _ML_INFERENCE_FAULT_SIGNALS:
+        raise UnsupportedSystemError(
+            "On-device audio analysis cannot run on this CPU: it reports AVX2 support but "
+            "fails to execute the required instructions. This is common on virtual machines "
+            "without host CPU passthrough -- if you are running in a VM (e.g. Proxmox or "
+            "TrueNAS), set the CPU type to 'host'.",
+            translation_key="unsupported_system_ml_inference_failed",
+        )
+    # Inconclusive: the probe could not be spawned, timed out, was OOM-killed, or exited for
+    # an unexpected reason. Assume the host is capable rather than block a working setup.
+    LOGGER.warning(
+        "On-device ML inference capability probe was inconclusive (exit code %s); "
+        "assuming this CPU is capable",
+        returncode,
+    )
+
+
+async def _run_ml_inference_probe() -> int | None:
+    """
+    Run the inference probe subprocess and return its exit code.
+
+    Returns None when the probe could not be started or did not finish in time; otherwise
+    the process return code (negative if a signal killed it).
+    """
+    from music_assistant.helpers import _ml_inference_probe  # noqa: PLC0415
+
+    try:
+        # Run with -m, not by file path: a path run puts the probe's own directory on
+        # sys.path, which would shadow the stdlib (e.g. helpers/logging.py over logging).
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            _ml_inference_probe.__name__,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as err:
+        LOGGER.warning("Could not start the ML inference capability probe: %s", err)
+        return None
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_ML_INFERENCE_PROBE_TIMEOUT)
+    except TimeoutError:
+        proc.kill()
+        with suppress(ProcessLookupError):
+            await proc.wait()
+        LOGGER.warning("The ML inference capability probe timed out")
+        return None
+    return proc.returncode
 
 
 keyword_pattern = re.compile("title=|artist=")
@@ -392,8 +464,36 @@ ad_pattern = re.compile(r"((ad|advertisement)_)|^AD\s\d+$|ADBREAK", flags=re.IGN
 title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", flags=re.IGNORECASE)
 # German format used by some stations: "Track" von Artist
 german_von_pattern = re.compile(r'^"(?P<title>[^"]+)"\s+von\s+(?P<artist>.+)$', flags=re.IGNORECASE)
+# English format used by some stations: "Track" by Artist from "Album" (album optional).
+# Title and album are quote-delimited, so the non-greedy artist plus the anchored,
+# quoted album group keep "by"/"from" inside the artist name from being mis-split.
+english_by_pattern = re.compile(
+    r'^"(?P<title>[^"]+)"\s+by\s+(?P<artist>.+?)(?:\s+from\s+"(?P<album>[^"]*)")?$',
+    flags=re.IGNORECASE,
+)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
+
+# HTML tags worth preserving as markdown; any other tag is stripped (text kept)
+MARKDOWN_SAFE_TAGS = [
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "i",
+    "li",
+    "ol",
+    "p",
+    "strong",
+    "ul",
+]
 
 VERSION_PARTS = (
     # list of common version strings
@@ -518,7 +618,8 @@ def try_parse_duration(duration_str: str) -> float:
 
 
 def normalize_unicode(value: str | None) -> str | None:
-    """Normalize Unicode strings to NFC form for consistent handling.
+    """
+    Normalize Unicode strings to NFC form for consistent handling.
 
     This ensures that Unicode characters like "é" are stored as single
     codepoints rather than "e" + combining accent mark, which prevents
@@ -693,11 +794,50 @@ def strip_multi_space(line: str) -> str:
     return multi_space_pattern.sub(" ", line)
 
 
+def html_to_markdown(line: str) -> str:
+    """Convert the safe subset of HTML in a string to markdown, stripping other tags."""
+    # unescape first so entity-encoded markup (e.g. "&lt;p&gt;") is handled too
+    return markdownify(
+        html.unescape(line),
+        convert=MARKDOWN_SAFE_TAGS,
+        escape_asterisks=False,
+        escape_underscores=False,
+        escape_misc=False,
+    ).strip()
+
+
 def multi_strip(line: str) -> str:
     """Strip assorted junk from line."""
     return strip_multi_space(
         swap_title_artist_order(strip_end_junk(strip_dotcom(strip_url(strip_ads(line)))))
     ).rstrip()
+
+
+def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
+    """
+    Parse stream titles that name the track in natural language with a quoted title.
+
+    Recognises '"Track" by Artist from "Album"' (album optional) and the German
+    '"Track" von Artist'.
+
+    :param line: Raw (uncleaned) stream title.
+    :returns: Tuple of (title, artist, album), or None when the line is not in one of
+        these formats. ``album`` is None when the station omits it.
+    """
+    stripped = line.strip()
+    if match := english_by_pattern.match(stripped):
+        title = multi_strip(match.group("title"))
+        artist = multi_strip(match.group("artist")).strip('"')
+        album_raw = match.group("album")
+        album = multi_strip(album_raw).strip('"') if album_raw else None
+        if title and artist:
+            return title, artist, album or None
+    if match := german_von_pattern.match(stripped):
+        title = multi_strip(match.group("title"))
+        artist = multi_strip(match.group("artist")).strip('"')
+        if title and artist:
+            return title, artist, None
+    return None
 
 
 def clean_stream_title(line: str) -> str:
@@ -706,11 +846,9 @@ def clean_stream_title(line: str) -> str:
     artist: str = ""
 
     if not keyword_pattern.search(line):
-        if german_match := german_von_pattern.match(line.strip()):
-            title = multi_strip(german_match.group("title"))
-            artist = multi_strip(german_match.group("artist")).strip('"')
-            if title and artist:
-                return f"{artist} - {title}"
+        if parsed := parse_quoted_stream_title(line):
+            track_name, artist_name, _ = parsed
+            return f"{artist_name} - {track_name}"
         return multi_strip(line)
 
     if match := title_pattern.search(line):
@@ -824,11 +962,40 @@ async def is_port_in_use(port: int) -> bool:
     return await asyncio.to_thread(_is_port_in_use)
 
 
+# In-process reservations for ports handed out by select_free_port. Provider
+# instances (and reloads) frequently call select_free_port at nearly the same
+# moment and only bind the returned port asynchronously afterwards, so a port
+# that was just handed out is not yet detectable as "in use". Keeping a
+# short-lived reservation per returned port stops concurrent/successive callers
+# from picking the same one. Reservations expire automatically after the grace
+# period so the range is never permanently exhausted across reloads.
+_PORT_RESERVATION_TTL = 60.0
+_reserved_ports: dict[int, float] = {}
+_select_free_port_lock = asyncio.Lock()
+
+
 async def select_free_port(range_start: int, range_end: int) -> int:
-    """Automatically find available port within range."""
-    for port in range(range_start, range_end):
-        if not await is_port_in_use(port):
-            return port
+    """
+    Find and reserve a free port within the given range.
+
+    The returned port is reserved so concurrent or successive callers are not
+    handed the same port.
+
+    :param range_start: First port (inclusive) of the range to search.
+    :param range_end: Port to stop before (exclusive) when searching the range.
+    """
+    async with _select_free_port_lock:
+        now = time.monotonic()
+        # drop expired reservations so their ports become reusable again
+        for reserved_port, deadline in list(_reserved_ports.items()):
+            if deadline <= now:
+                del _reserved_ports[reserved_port]
+        for port in range(range_start, range_end):
+            if port in _reserved_ports:
+                continue
+            if not await is_port_in_use(port):
+                _reserved_ports[port] = now + _PORT_RESERVATION_TTL
+                return port
     msg = "No free port available"
     raise OSError(msg)
 
@@ -848,6 +1015,56 @@ async def get_ip_from_host(dns_name: str) -> str | None:
         return None
 
     return await asyncio.to_thread(_resolve)
+
+
+async def get_source_ip_for_target(
+    target_ip: str,
+    *,
+    bind_ip: str | None = None,
+    publish_ip: str | None = None,
+) -> str:
+    """
+    Resolve a local, bindable source IP that routes to ``target_ip``.
+
+    For providers that must bind a socket to, or advertise a callback URL
+    reachable by, one specific device. ``publish_ip`` (the server's advertised
+    address) is not necessarily a locally bindable interface address — e.g. a
+    container behind a published IP, or a multi-homed host — so binding to it
+    directly can fail with ``EADDRNOTAVAIL``.
+
+    Resolution order:
+      1. an explicitly configured, concrete (non-wildcard) ``bind_ip``;
+      2. a routing-table lookup to ``target_ip`` (the interface that would
+         actually egress to it);
+      3. ``publish_ip`` as a concrete fallback;
+      4. ``bind_ip`` (even if a wildcard) as a last resort.
+    """
+    if bind_ip and bind_ip not in ("0.0.0.0", "::"):
+        return bind_ip
+
+    def _routing_lookup() -> str:
+        try:
+            is_ipv6_target = ip_address(target_ip).version == 6
+        except ValueError:
+            is_ipv6_target = False
+        route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
+        route_target: tuple[str, int] | tuple[str, int, int, int] = (
+            (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
+        )
+        with socket.socket(route_family, socket.SOCK_DGRAM) as _sock:
+            try:
+                _sock.settimeout(1.0)
+                _sock.connect(route_target)
+                routed_ip = str(_sock.getsockname()[0])
+                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
+                    return routed_ip
+            except OSError:
+                pass
+        return ""
+
+    if routed := await asyncio.to_thread(_routing_lookup):
+        return routed
+    return str(publish_ip or "") or str(bind_ip or "")
 
 
 async def get_ip_pton(ip_string: str) -> bytes:
@@ -1108,7 +1325,8 @@ def get_primary_ip_address_from_zeroconf(
     discovery_info: AsyncServiceInfo,
     prefer_ipv6: bool = False,
 ) -> str | None:
-    """Get primary IP address from zeroconf discovery info.
+    """
+    Get primary IP address from zeroconf discovery info.
 
     :param discovery_info: The zeroconf service info to extract the address from.
     :param prefer_ipv6: If True, prefer IPv6 addresses over IPv4.
@@ -1133,7 +1351,8 @@ def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> int | None:
 def get_zeroconf_args(
     use_all_interfaces: bool = False,
 ) -> dict[str, Any]:
-    """Determine optimal zeroconf IPVersion and interfaces from system adapters.
+    """
+    Determine optimal zeroconf IPVersion and interfaces from system adapters.
 
     Inspects available network adapters to determine the correct IP version
     and interface configuration, similar to Home Assistant's approach.
@@ -1570,7 +1789,8 @@ _P = ParamSpec("_P")
 def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
-    """Call async function using a per-instance Lock.
+    """
+    Call async function using a per-instance Lock.
 
     Each instance gets its own lock so that e.g. SyncGroupPlayer A
     does not block SyncGroupPlayer B when both call set_members().

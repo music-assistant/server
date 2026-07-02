@@ -20,7 +20,8 @@ class LibraryHelper(DataClassDictMixin):
 
 @dataclass(kw_only=True)
 class LibrariesHelper(DataClassDictMixin):
-    """Helper class to store ABSLibrary name, id and the uuids of its media items.
+    """
+    Helper class to store ABSLibrary name, id and the uuids of its media items.
 
     Dictionary is lib_id:LibraryHelper or lib_id:set[playlist_ids].
     """
@@ -47,7 +48,8 @@ class _ProgressHelper:
 
 
 class ProgressGuard:
-    """Class used to avoid ping pong between abs and mass.
+    """
+    Class used to avoid ping pong between abs and mass.
 
     We continuously update the progress from mass to abs with the provider's on_played function.
     We also register callbacks for progress reports from abs to mass. This is not only triggered
@@ -93,7 +95,8 @@ class ProgressGuard:
         self._progresses.append(progress)
 
     def guard_ok_abs(self, abs_progress: MediaProgress) -> bool:
-        """Check, if we may update against an abs media progress.
+        """
+        Check, if we may update against an abs media progress.
 
         The abs media progress has a property last_update_ms, which also reflects non
         mass external updates. Here, we compare this property against a potential
@@ -102,7 +105,8 @@ class ProgressGuard:
         return self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id)
 
     def guard_ok_mass(self, item_id: str, episode_id: str | None = None) -> bool:
-        """Check, if we may update against a mass internal item.
+        """
+        Check, if we may update against a mass internal item.
 
         Here, we use the current time and compare it against the stored time.
         """
