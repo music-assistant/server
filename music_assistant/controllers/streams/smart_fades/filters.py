@@ -238,6 +238,64 @@ class FrequencySweepFilter(Filter):
         return steps
 
 
+class ShelfFilter(Filter):
+    """Shelving EQ whose gain follows a scheduled ramp (asendcmd-driven)."""
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        shelf_type: str,
+        frequency: int,
+        gain_steps: list[tuple[float, float]],
+        stream_type: str,
+    ):
+        """
+        Initialize shelf filter.
+
+        :param shelf_type: 'lowshelf' or 'highshelf'.
+        :param frequency: Shelf corner frequency in Hz.
+        :param gain_steps: Schedule of (time_seconds, gain_db); the first step at
+            t=0 sets the initial gain.
+        :param stream_type: 'fadeout' or 'fadein' - which stream to process.
+        """
+        self.shelf_type = shelf_type
+        self.frequency = frequency
+        self.gain_steps = gain_steps
+        self.stream_type = stream_type
+        band = "low" if shelf_type == "lowshelf" else "high"
+        if stream_type == "fadeout":
+            self.output_fadeout_label = f"fadeout_{band}shelf"
+            self.output_fadein_label = f"fadein_pt_{band}_out"
+        else:
+            self.output_fadeout_label = f"fadeout_pt_{band}_in"
+            self.output_fadein_label = f"fadein_{band}shelf"
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Generate the shelf chain on this filter's stream and passthrough on the other."""
+        if self.stream_type == "fadeout":
+            input_label, output_label = input_fadeout_label, self.output_fadeout_label
+            pass_in, pass_out = input_fadein_label, self.output_fadein_label
+        else:
+            input_label, output_label = input_fadein_label, self.output_fadein_label
+            pass_in, pass_out = input_fadeout_label, self.output_fadeout_label
+        band = "low" if self.shelf_type == "lowshelf" else "high"
+        instance = f"{self.shelf_type}@{self.stream_type}_{band}"
+        cmd = "; ".join(f"{t:.3f} {instance} g {g:.2f}" for t, g in self.gain_steps)
+        initial = self.gain_steps[0][1]
+        return [
+            f"{pass_in}anull[{pass_out}]",  # codespell:ignore anull
+            f"{input_label}asendcmd=c='{cmd}',"
+            f"{instance}=g={initial:.2f}:f={self.frequency}:width_type=q:width=0.707"
+            f"[{output_label}]",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of ShelfFilter."""
+        gains = f"{self.gain_steps[0][1]:.0f}->{self.gain_steps[-1][1]:.0f}dB"
+        return f"Shelf({self.shelf_type}@{self.frequency}Hz {self.stream_type} {gains})"
+
+
 class CrossfadeFilter(Filter):
     """Filter that applies the final crossfade between fadeout and fadein streams."""
 

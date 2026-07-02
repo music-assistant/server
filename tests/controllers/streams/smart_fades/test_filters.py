@@ -17,6 +17,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
     FadeOutTrimFilter,
     FrequencySweepFilter,
+    ShelfFilter,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -223,3 +224,46 @@ def test_crossfade_requires_exactly_one_length() -> None:
         CrossfadeFilter(logger=LOGGER)
     with pytest.raises(ValueError, match="exactly one"):
         CrossfadeFilter(logger=LOGGER, crossfade_duration=5.0, crossfade_samples=220500)
+
+
+class TestShelfFilter:
+    """asendcmd-driven shelving EQ on one stream, passthrough on the other."""
+
+    def test_fadeout_lowshelf_strings(self) -> None:
+        """A fadeout lowshelf emits an asendcmd gain schedule and a fadein passthrough."""
+        f = ShelfFilter(
+            LOGGER,
+            "lowshelf",
+            100,
+            [(0.0, 0.0), (30.0, -13.0), (31.0, -26.0)],
+            "fadeout",
+        )
+        strings = f.apply("[1]", "[0]")
+        assert len(strings) == 2
+        # passthrough for the untouched stream
+        assert any("anull" in s and "[1]" in s for s in strings)  # codespell:ignore anull
+        chain = next(s for s in strings if "[0]" in s)
+        assert "asendcmd=" in chain
+        assert "lowshelf@fadeout_low" in chain
+        assert "g=0.00" in chain  # initial gain from the first step
+        assert "f=100" in chain
+        assert "30.000 lowshelf@fadeout_low g -13.00" in chain
+
+    def test_fadein_highshelf_processes_other_stream(self) -> None:
+        """A fadein highshelf processes the incoming stream and passes the outgoing through."""
+        f = ShelfFilter(LOGGER, "highshelf", 13000, [(0.0, -20.0), (5.0, 0.0)], "fadein")
+        strings = f.apply("[1]", "[0]")
+        chain = next(s for s in strings if "[1]" in s)
+        assert "highshelf@fadein_high" in chain
+        assert "g=-20.00" in chain
+        passthrough = next(s for s in strings if "[0]" in s)
+        assert "anull" in passthrough  # codespell:ignore anull
+
+    def test_labels_unique_per_band_and_stream(self) -> None:
+        """Output labels differ per band and stream so four instances can coexist."""
+        a = ShelfFilter(LOGGER, "lowshelf", 100, [(0.0, -26.0)], "fadein")
+        b = ShelfFilter(LOGGER, "highshelf", 13000, [(0.0, -20.0)], "fadein")
+        assert a.output_fadein_label != b.output_fadein_label
+        assert a.output_fadeout_label != b.output_fadeout_label
+        c = ShelfFilter(LOGGER, "lowshelf", 100, [(0.0, -26.0)], "fadeout")
+        assert a.output_fadein_label != c.output_fadein_label
