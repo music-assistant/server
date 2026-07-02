@@ -133,6 +133,19 @@ class TestSmartCrossFadePlanner:
         trim = plan.fadein_trim_start or 0.0
         assert plan.eq_plan.swap_at == pytest.approx(8.0 - trim, abs=0.1)
 
+    def test_swap_window_fits_inside_the_overlap(self) -> None:
+        """A late swap point never pushes the low ramps past the crossfade end."""
+        inc = _analysis(120.0, duration=240.0)
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        t = np.linspace(0, 240.0, 1800)
+        bins[t < 20.0] = 0.05
+        inc.rms_energy = bins
+        plan = _plan(_analysis(120.0, duration=240.0), inc)
+        # B's bass must be fully restored before the rendered mix ends
+        assert plan.eq_plan.low_in.steps[-1][0] <= plan.crossfade_duration + 1e-6
+        # A's bass kill must complete before A's audible end
+        assert plan.eq_plan.low_out.steps[-1][0] <= plan.fade_out_window + 1e-6
+
     def test_bass_swap_is_proportional_and_centered(self) -> None:
         """The low exchange spans half the overlap (clamped) centered on the swap."""
         plan = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))

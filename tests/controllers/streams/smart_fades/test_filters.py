@@ -16,7 +16,6 @@ from music_assistant.controllers.streams.smart_fades.filters import (
 LOGGER = logging.getLogger(__name__)
 
 
-# matches "<timestamp> <filter>@<instance> f <frequency>" entries inside asendcmd
 def test_fadeout_trim_trims_fadeout_and_passes_fadein_through() -> None:
     """The fadeout stream is end-trimmed; the fadein stream is untouched."""
     fadeout_trim = FadeOutTrimFilter(logger=LOGGER, fadeout_end_pos=35.0, trimmed_seconds=10.0)

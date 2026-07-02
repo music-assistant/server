@@ -2,7 +2,7 @@
 Smart Fades - data models.
 
 A ``TransitionPlan`` is the renderer-agnostic description of a transition: it
-captures every decision (where to cut, how long to blend, tempo ramp, EQ sweeps)
+captures every decision (where to cut, how long to blend, tempo ramp, shelf EQ)
 without owning a single audio byte or FFmpeg filter.  A ``TransitionPlanner``
 produces it from stored ``AudioAnalysisData``; a renderer turns it into the
 ``Filter`` chain.  Keeping the plan free of bytes is what lets alternative

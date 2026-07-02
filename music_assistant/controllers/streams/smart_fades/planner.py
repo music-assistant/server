@@ -553,6 +553,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
             self.bass_swap_max_bars * bar_in,
             crossfade_duration,
         )
+        # pull a late swap point back so the centered window still fits the overlap
+        swap_at = min(swap_at, crossfade_duration - swap_len / 2)
         ease = 0.25 * crossfade_duration
 
         # the ramp completes before the crossfade, so rendered-to-A-input mapping is linear
@@ -576,7 +578,10 @@ class SmartCrossFadePlanner(TransitionPlanner):
         high_out = ShelfSchedule(
             ShelfType.HIGH,
             self.high_shelf_freq,
-            [(0.0, 0.0), *db_ramp(start_out + swap_len_input, ease, 0.0, self.high_ease_db)],
+            [
+                (0.0, 0.0),
+                *db_ramp(start_out + swap_len_input, ease * ratio, 0.0, self.high_ease_db),
+            ],
         )
         high_in = ShelfSchedule(
             ShelfType.HIGH,
