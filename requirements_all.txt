@@ -14,7 +14,7 @@ aiojellyfin==0.14.1
 aiomusiccast==0.15.0
 aiortc>=1.6.0
 aiosendspin[server]==6.0.5
-aioslimproto==3.1.8
+aioslimproto==3.1.9
 aiosonos==0.1.12
 aiosqlite==0.22.1
 aiovban==1.1.0
