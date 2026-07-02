@@ -28,7 +28,12 @@ from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.config.queues import PlayerQueueConfigMixin
-from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
+from music_assistant.helpers.json import (
+    JSON_DECODE_EXCEPTIONS,
+    async_json_dumps,
+    async_json_loads,
+    json_loads,
+)
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -234,14 +239,17 @@ class ConfigController(
             _file.flush()
             # fsync so a power failure can not leave a zero-length file behind (#5716)
             os.fsync(_file.fileno())
-        with contextlib.suppress(FileNotFoundError):
-            # never rotate an empty (crash-corrupted) file over a possibly good backup
-            if filename.stat().st_size > 0:
-                filename.replace(f"{self.filename}.backup")
+        with contextlib.suppress(FileNotFoundError, *JSON_DECODE_EXCEPTIONS):
+            # only rotate a parseable file to the backup, so a corrupt
+            # (crash leftover) file can never clobber a possibly good backup
+            json_loads(filename.read_bytes())
+            filename.replace(f"{self.filename}.backup")
         filename_temp.replace(filename)
-        # fsync the directory as well so the renames themselves survive a power failure
-        dir_fd = os.open(os.path.dirname(self.filename), os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        # best effort: fsync the directory as well so the renames themselves
+        # survive a power failure (not supported on all platforms/filesystems)
+        with contextlib.suppress(OSError):
+            dir_fd = os.open(os.path.dirname(self.filename), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)

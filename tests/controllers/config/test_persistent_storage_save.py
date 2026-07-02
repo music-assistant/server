@@ -85,3 +85,31 @@ async def test_empty_settings_file_does_not_clobber_backup(tmp_path: Path) -> No
 
     assert json.loads(Path(controller.filename).read_text()) == {"recovered": True}
     assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"recovered": True}
+
+
+async def test_corrupt_settings_file_does_not_clobber_backup(tmp_path: Path) -> None:
+    """A non-empty but corrupt settings file (torn write) must never replace a good backup."""
+    controller = _make_controller(tmp_path)
+    Path(controller.filename).write_text('{"truncated": tr')
+    Path(f"{controller.filename}.backup").write_text(json.dumps({"recovered": True}))
+
+    await controller._load()
+    assert controller._data == {"recovered": True}
+
+    await controller._async_save()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"recovered": True}
+    assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"recovered": True}
+
+
+async def test_save_succeeds_when_directory_fsync_unsupported(tmp_path: Path) -> None:
+    """The best-effort directory fsync may not fail the save on unsupported platforms."""
+    controller = _make_controller(tmp_path)
+    controller._data = {"generation": 1}
+    with patch(
+        "music_assistant.controllers.config.controller.os.open",
+        side_effect=OSError("fsync on directory not supported"),
+    ):
+        await controller._async_save()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
