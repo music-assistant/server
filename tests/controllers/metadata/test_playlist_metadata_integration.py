@@ -223,3 +223,95 @@ async def test_update_playlist_metadata_skips_providers_without_feature(tmp_path
 
     # Should have called update_item_in_library
     enrichment.mass.music.playlists.update_item_in_library.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_update_playlist_metadata_skips_dynamic_playlists(tmp_path: Any) -> None:
+    """_update_playlist_metadata should skip dynamic playlists (endless radio stations)."""
+    enrichment = MetadataEnrichmentMixin()
+    enrichment.logger = MagicMock()
+    enrichment.mass = MagicMock()
+    enrichment._collage_images_dir = str(tmp_path / "collage")
+
+    # Mock metadata provider
+    provider = MagicMock()
+    provider.name = "playlist_metadata"
+    provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
+    provider.get_playlist_metadata = AsyncMock()
+    enrichment.providers = [provider]  # type: ignore[misc]
+
+    # Create dynamic playlist (e.g., Pandora station, Apple Music station)
+    playlist = Playlist(
+        item_id="dynamic_station_1",
+        provider="pandora",
+        name="Dynamic Station",
+        is_dynamic=True,
+        provider_mappings={
+            ProviderMapping(
+                item_id="dynamic_station_1",
+                provider_domain="pandora",
+                provider_instance="pandora_instance",
+            )
+        },
+        metadata=MediaItemMetadata(),
+    )
+
+    await enrichment._update_playlist_metadata(playlist, force_refresh=True)
+
+    # Should not have called provider.get_playlist_metadata
+    provider.get_playlist_metadata.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_playlist_metadata_allows_smart_playlists(tmp_path: Any) -> None:
+    """_update_playlist_metadata should allow smart playlists despite is_dynamic=True."""
+    enrichment = MetadataEnrichmentMixin()
+    enrichment.logger = MagicMock()
+    enrichment.mass = MagicMock()
+    enrichment._collage_images_dir = str(tmp_path / "collage")
+    enrichment.create_collage_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    # Mock metadata provider
+    provider = MagicMock()
+    provider.name = "playlist_metadata"
+    provider.supported_features = {ProviderFeature.PLAYLIST_METADATA}
+    provider.get_playlist_metadata = AsyncMock(
+        return_value=MediaItemMetadata(
+            images=UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path="/fake/thumb.jpg",
+                        provider="playlist_metadata",
+                        remotely_accessible=False,
+                    )
+                ]
+            )
+        )
+    )
+    enrichment.providers = [provider]  # type: ignore[misc]
+
+    # Create smart playlist with is_dynamic=True
+    playlist = Playlist(
+        item_id="smart_playlist_1",
+        provider="library",
+        name="Smart Playlist",
+        is_dynamic=True,  # Smart playlists are marked dynamic
+        provider_mappings={
+            ProviderMapping(
+                item_id="smart_playlist_1",
+                provider_domain="smart_playlist",
+                provider_instance="smart_playlist",
+            )
+        },
+        metadata=MediaItemMetadata(),
+    )
+
+    enrichment.mass.music.playlists.tracks = _empty_tracks_iter
+    enrichment.mass.music.playlists.update_item_in_library = AsyncMock()
+
+    await enrichment._update_playlist_metadata(playlist, force_refresh=True)
+
+    # Should have called provider.get_playlist_metadata despite is_dynamic=True
+    provider.get_playlist_metadata.assert_called_once_with(playlist)
+    assert any(img.provider == "playlist_metadata" for img in (playlist.metadata.images or []))
