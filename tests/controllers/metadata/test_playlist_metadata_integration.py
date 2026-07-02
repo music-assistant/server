@@ -246,15 +246,13 @@ async def test_update_playlist_metadata_skips_dynamic_playlists(tmp_path: Any) -
         provider="pandora",
         name="Dynamic Station",
         is_dynamic=True,
-        provider_mappings=UniqueList(
-            [
-                ProviderMapping(
-                    item_id="dynamic_station_1",
-                    provider_domain="pandora",
-                    provider_instance="pandora_instance",
-                )
-            ]
-        ),
+        provider_mappings={
+            ProviderMapping(
+                item_id="dynamic_station_1",
+                provider_domain="pandora",
+                provider_instance="pandora_instance",
+            )
+        },
         metadata=MediaItemMetadata(),
     )
 
@@ -298,16 +296,14 @@ async def test_update_playlist_metadata_allows_smart_playlists(tmp_path: Any) ->
         item_id="smart_playlist_1",
         provider="library",
         name="Smart Playlist",
-        is_dynamic=True,  # Smart playlists are marked dynamic
-        provider_mappings=UniqueList(
-            [
-                ProviderMapping(
-                    item_id="smart_playlist_1",
-                    provider_domain="smart_playlist",
-                    provider_instance="smart_playlist",
-                )
-            ]
-        ),
+        is_dynamic=True,  # This test covers the dynamic smart-playlist exception path
+        provider_mappings={
+            ProviderMapping(
+                item_id="smart_playlist_1",
+                provider_domain="smart_playlist",
+                provider_instance="smart_playlist",
+            )
+        },
         metadata=MediaItemMetadata(),
     )
 
