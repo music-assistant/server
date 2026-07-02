@@ -12,7 +12,15 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, Mock
 
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Album,
+    ItemMapping,
+    MediaItemType,
+    Podcast,
+    ProviderMapping,
+    Radio,
+    Track,
+)
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
@@ -45,6 +53,42 @@ def _track(item_id: str) -> Track:
         artists=UniqueList(
             [ItemMapping(item_id="a", provider="test", name="A", media_type=MediaType.ARTIST)]
         ),
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def _album(item_id: str) -> Album:
+    """Build an Album on the 'test' provider (a container source, kept in the wire `sources`)."""
+    return Album(
+        item_id=item_id,
+        provider="test",
+        name=f"Album {item_id}",
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def _podcast(item_id: str) -> Podcast:
+    """Build a Podcast on the 'test' provider (a container source, kept in the wire `sources`)."""
+    return Podcast(
+        item_id=item_id,
+        provider="test",
+        name=f"Podcast {item_id}",
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def _radio(item_id: str) -> Radio:
+    """Build a Radio on the 'test' provider (an individual item, omitted from the wire `sources`)."""
+    return Radio(
+        item_id=item_id,
+        provider="test",
+        name=f"Radio {item_id}",
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
         },
@@ -359,7 +403,7 @@ def test_store_sources_dedupes_wire_sources_keeps_internal_multiplicity() -> Non
     ctrl._managed_pool = Mock()
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
     ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
-    a, b = _track("a"), _track("b")
+    a, b = _album("a"), _album("b")
 
     # "a" added twice (multiplicity 2), "b" once
     ctrl.store_sources(queue, [a, b, a])
@@ -368,3 +412,21 @@ def test_store_sources_dedupes_wire_sources_keeps_internal_multiplicity() -> Non
     assert ctrl._queue_data["q1"].source_items == [a, b, a]
     # wire list clients see is deduped to the distinct sources, order preserved
     assert [mapping.uri for mapping in queue.sources] == [a.uri, b.uri]
+
+
+def test_store_sources_keeps_only_container_types_on_wire() -> None:
+    """Container sources reach the wire `sources`; individual items are omitted (kept server-side)."""
+    ctrl = _controller()
+    ctrl._managed_pool = Mock()
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    album, podcast = _album("al"), _podcast("po")
+    track, radio = _track("t"), _radio("r")
+    items: list[MediaItemType] = [album, track, podcast, radio]
+
+    ctrl.store_sources(queue, items)
+
+    # the full set (incl. the individual items) is retained server-side for pool weighting / seeds
+    assert ctrl._queue_data["q1"].source_items == items
+    # but only the container sources are shown to clients, in original order
+    assert [mapping.uri for mapping in queue.sources] == [album.uri, podcast.uri]
