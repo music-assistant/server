@@ -33,7 +33,6 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette
 from music_assistant.helpers.images import (
-    _extract_imageproxy_id,
     create_collage,
     create_thumb_hash,
     detect_image_content_format,
@@ -243,13 +242,10 @@ class ImageProxyMixin:
         repeated requests for the same image are cheap.
 
         :param image_id: The opaque imageproxy image id (the ``proxy_id`` field on a
-            ``MediaItemImage``, or the id segment of an ``/imageproxy/<id>`` URL). It
-            is resolved to the image the server registered for that id; unknown ids
-            yield None. Arbitrary URLs or paths are intentionally not accepted.
+            ``MediaItemImage``). Resolved to the image registered for that id; an
+            unknown id yields None.
         """
-        # resolving guarantees we only read an image the server registered, so a
-        # caller can never coerce this into fetching an arbitrary URL/path
-        resolved = await self.resolve_image_id(_extract_imageproxy_id(image_id) or image_id)
+        resolved = await self.resolve_image_id(image_id)
         if resolved is None:
             return None
         provider, path = resolved

@@ -40,20 +40,23 @@ async def test_get_image_palette_resolves_registered_id(
     assert calls["get_palette"] == ("cover.jpg", "spotify")
 
 
-async def test_get_image_palette_accepts_imageproxy_url(
+async def test_get_image_palette_rejects_imageproxy_url(
     metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An /imageproxy/<id> URL is accepted by extracting and resolving its id."""
-    palette = MediaItemPalette(primary=(4, 5, 6))
+    """Only a bare image id is accepted; a full /imageproxy/<id> URL yields None."""
+    fetched = False
 
     async def fake_get_palette(_mass: object, _path: str, _provider: str) -> MediaItemPalette:
-        return palette
+        nonlocal fetched
+        fetched = True
+        return MediaItemPalette(primary=(4, 5, 6))
 
     monkeypatch.setattr("music_assistant.controllers.metadata.images.get_palette", fake_get_palette)
 
     image_id = metadata_controller.compute_image_id("filesystem", "/x.jpg")
     url = f"http://mass.local/imageproxy/{image_id}?size=256"
-    assert await metadata_controller.get_image_palette(url) is palette
+    assert await metadata_controller.get_image_palette(url) is None
+    assert fetched is False
 
 
 async def test_get_image_palette_rejects_unregistered_input(
