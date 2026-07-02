@@ -12,13 +12,13 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
-    FrequencySweepFilter,
     GradualTimeStretchFilter,
+    ShelfFilter,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
     EqPlan,
     FadeOutTrim,
-    SweepSpec,
+    ShelfSchedule,
     TempoPlan,
     TransitionPlan,
 )
@@ -34,9 +34,11 @@ def _seconds(seconds: float) -> int:
 
 def _eq_plan() -> EqPlan:
     return EqPlan(
-        crossover_freq=2000,
-        fadeout=SweepSpec("lowpass", 2000, 20.0, 20.0, "fade_in", 1, "logarithmic", "fadeout"),
-        fadein=SweepSpec("highpass", 2000, 6.67, 0, "fade_out", 1, "linear", "fadein"),
+        swap_at=6.0,
+        low_out=ShelfSchedule("lowshelf", 100, [(0.0, 0.0), (36.0, -26.0)]),
+        low_in=ShelfSchedule("lowshelf", 100, [(0.0, -26.0), (7.0, 0.0)]),
+        high_out=ShelfSchedule("highshelf", 13000, [(0.0, 0.0), (38.0, -20.0)]),
+        high_in=ShelfSchedule("highshelf", 13000, [(0.0, -20.0), (5.0, 0.0)]),
     )
 
 
@@ -63,19 +65,23 @@ class TestTransitionRenderer:
         filters, _ = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
         assert [type(f) for f in filters] == [
             FadeOutTrimFilter,
+            ShelfFilter,  # A low (pre-stretch: schedules stay in musical input time)
+            ShelfFilter,  # A high
             GradualTimeStretchFilter,
             FadeInTrimFilter,
-            FrequencySweepFilter,
-            FrequencySweepFilter,
+            ShelfFilter,  # B low
+            ShelfFilter,  # B high
             CrossfadeFilter,
         ]
 
-    def test_minimal_chain_is_sweeps_then_crossfade(self) -> None:
-        """With no trims and no stretch, only the sweeps and crossfade render."""
+    def test_minimal_chain_is_shelves_then_crossfade(self) -> None:
+        """With no trims and no stretch, only the four shelves and crossfade render."""
         filters, _ = TransitionRenderer(LOGGER).render(_plan(), PCM, _seconds(45))
         assert [type(f) for f in filters] == [
-            FrequencySweepFilter,
-            FrequencySweepFilter,
+            ShelfFilter,
+            ShelfFilter,
+            ShelfFilter,
+            ShelfFilter,
             CrossfadeFilter,
         ]
 

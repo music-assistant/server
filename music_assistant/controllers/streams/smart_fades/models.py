@@ -92,26 +92,31 @@ class TempoPlan:
 
 
 @dataclass(slots=True)
-class SweepSpec:
-    """Parameters for one ``FrequencySweepFilter`` in the EQ plan."""
+class ShelfSchedule:
+    """One shelving-EQ gain schedule for a ShelfFilter."""
 
-    sweep_type: str
-    target_freq: int
-    duration: float
-    start_time: float
-    sweep_direction: str
-    poles: int
-    curve_type: str
-    stream_type: str
+    # 'lowshelf' | 'highshelf'
+    shelf_type: str
+    # corner frequency in Hz
+    frequency: int
+    # (time_seconds, gain_db) steps; the first step at t=0 sets the initial gain
+    steps: list[tuple[float, float]]
 
 
 @dataclass(slots=True)
 class EqPlan:
-    """Spectral shaping applied across the transition region."""
+    """Bass-swap EQ across the transition: who owns the low end, and when it swaps."""
 
-    crossover_freq: int
-    fadeout: SweepSpec
-    fadein: SweepSpec
+    # position of the bass swap, seconds into the (rendered) crossfade
+    swap_at: float
+    # outgoing low shelf (input time — rendered before the tempo stretch)
+    low_out: ShelfSchedule
+    # incoming low shelf (post-trim time; t=0 equals the crossfade start)
+    low_in: ShelfSchedule
+    # outgoing high shelf (input time)
+    high_out: ShelfSchedule
+    # incoming high shelf (post-trim time)
+    high_in: ShelfSchedule
 
 
 @dataclass(slots=True)

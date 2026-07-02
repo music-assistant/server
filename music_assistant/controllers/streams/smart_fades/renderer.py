@@ -19,12 +19,12 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     FadeInTrimFilter,
     FadeOutTrimFilter,
     Filter,
-    FrequencySweepFilter,
     GradualTimeStretchFilter,
+    ShelfFilter,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
-    SweepSpec,
+    ShelfSchedule,
     TransitionPlan,
 )
 
@@ -89,27 +89,27 @@ class TransitionRenderer:
                     trimmed_seconds=plan.fadeout_trim.trimmed_seconds,
                 )
             )
+        # Outgoing shelves sit BEFORE the stretch so their schedules stay in
+        # musical input time (no rendered-time remapping needed).
+        filters.append(self._shelf_filter(plan.eq_plan.low_out, "fadeout"))
+        filters.append(self._shelf_filter(plan.eq_plan.high_out, "fadeout"))
         if plan.tempo_plan:
             filters.append(GradualTimeStretchFilter(self.logger, plan.tempo_plan.steps))
         if plan.fadein_trim_start is not None:
             filters.append(
                 FadeInTrimFilter(logger=self.logger, fadein_start_pos=plan.fadein_trim_start)
             )
-        filters.append(self._sweep_filter(plan.eq_plan.fadeout))
-        filters.append(self._sweep_filter(plan.eq_plan.fadein))
+        filters.append(self._shelf_filter(plan.eq_plan.low_in, "fadein"))
+        filters.append(self._shelf_filter(plan.eq_plan.high_in, "fadein"))
         filters.append(CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples))
         return filters
 
-    def _sweep_filter(self, spec: SweepSpec) -> FrequencySweepFilter:
-        """Instantiate a ``FrequencySweepFilter`` from a sweep spec."""
-        return FrequencySweepFilter(
+    def _shelf_filter(self, schedule: ShelfSchedule, stream_type: str) -> ShelfFilter:
+        """Instantiate a ShelfFilter from a shelf schedule."""
+        return ShelfFilter(
             logger=self.logger,
-            sweep_type=spec.sweep_type,
-            target_freq=spec.target_freq,
-            duration=spec.duration,
-            start_time=spec.start_time,
-            sweep_direction=spec.sweep_direction,
-            poles=spec.poles,
-            curve_type=spec.curve_type,
-            stream_type=spec.stream_type,
+            shelf_type=schedule.shelf_type,
+            frequency=schedule.frequency,
+            gain_steps=schedule.steps,
+            stream_type=stream_type,
         )

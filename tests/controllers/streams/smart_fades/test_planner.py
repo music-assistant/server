@@ -61,8 +61,19 @@ class TestSmartCrossFadePlanner:
         plan = _plan(_analysis(120.0), _analysis(122.0))
         assert isinstance(plan, TransitionPlan)
         assert plan.crossfade_duration > 0
-        assert plan.eq_plan.fadeout.sweep_type == "lowpass"
-        assert plan.eq_plan.fadein.sweep_type == "highpass"
+        eq = plan.eq_plan
+        assert eq.low_out.shelf_type == "lowshelf"
+        assert eq.low_in.shelf_type == "lowshelf"
+        assert eq.high_out.shelf_type == "highshelf"
+        assert eq.high_in.shelf_type == "highshelf"
+        # B enters with the low end killed and ends open
+        assert eq.low_in.steps[0] == (0.0, -26.0)
+        assert eq.low_in.steps[-1][1] == pytest.approx(0.0)
+        # A starts open and ends killed
+        assert eq.low_out.steps[0][1] == pytest.approx(0.0)
+        assert eq.low_out.steps[-1][1] == pytest.approx(-26.0)
+        # the swap sits inside the overlap
+        assert 0.0 < eq.swap_at < plan.crossfade_duration
 
     def test_is_deterministic(self) -> None:
         """Planning the same inputs twice yields identical plans (pure function)."""
@@ -109,3 +120,14 @@ class TestSmartCrossFadePlanner:
         """The planned window is bounded by the available holdback."""
         plan = _plan(_analysis(120.0), _analysis(120.0), buffer=float(SMART_CROSSFADE_DURATION))
         assert plan.fade_out_window <= SMART_CROSSFADE_DURATION + 1e-6
+
+    def test_swap_lands_on_incoming_groove_entry(self) -> None:
+        """B's groove entry inside the overlap becomes the bass-swap moment."""
+        inc = _analysis(120.0, duration=240.0)
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        t = np.linspace(0, 240.0, 1800)
+        bins[t < 8.0] = 0.05
+        inc.rms_energy = bins
+        plan = _plan(_analysis(120.0, duration=240.0), inc)
+        trim = plan.fadein_trim_start or 0.0
+        assert plan.eq_plan.swap_at == pytest.approx(8.0 - trim, abs=0.1)
