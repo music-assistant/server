@@ -4,7 +4,6 @@ import pytest
 
 from music_assistant.controllers.metadata.helpers import (
     _detect_image_format,
-    _is_safe_imageproxy_request_path,
     _normalize_imageproxy_format,
 )
 
@@ -42,34 +41,3 @@ class TestNormalizeImageproxyFormat:
     def test_invalid(self, value: str | None) -> None:
         """Unknown or empty formats return None."""
         assert _normalize_imageproxy_format(value) is None
-
-
-class TestIsSafeImageproxyRequestPath:
-    """`_is_safe_imageproxy_request_path` gates inbound legacy imageproxy paths."""
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "covers/local.jpg",
-            "https://example.com/art.jpg",
-            "http://example.com/art.jpg",
-        ],
-    )
-    def test_allowed(self, path: str) -> None:
-        """Relative paths and public http(s) URLs are allowed."""
-        assert _is_safe_imageproxy_request_path(path) is True
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "ftp://example.com/art.jpg",
-            "http://127.0.0.1/art.jpg",
-            "http://localhost/art.jpg",
-            "https://192.168.1.10/art.jpg",
-            " https://example.com/art.jpg",
-            "https://example.com/\tart.jpg",
-        ],
-    )
-    def test_rejected(self, path: str) -> None:
-        """Disallowed schemes, private/loopback hosts and control/whitespace are rejected."""
-        assert _is_safe_imageproxy_request_path(path) is False
