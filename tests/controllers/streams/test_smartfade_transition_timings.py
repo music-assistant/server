@@ -956,8 +956,10 @@ class TestStretchSavings:
         fade.build(_seconds(45), _seconds(45), PCM)
         assert fade.tempo_steps, "test requires the stretch to be active"
         sweep = self._fadeout_sweep(fade)
-        timing = fade.timing_info
-        input_duration = min(max(timing.crossfade_duration * 2.5, 8.0), fade.effective_end)
+        # mirror the planner's EQ window math from the plan value: timing_info's
+        # crossfade_duration is frame-quantized and can differ by <1 sample
+        assert fade.plan is not None
+        input_duration = min(max(fade.plan.crossfade_duration * 2.5, 8.0), fade.effective_end)
         input_start = max(0.0, fade.effective_end - input_duration)
         start_shift = _savings_until(fade, input_start)
         assert start_shift > 0.0, "fixture must place the EQ start inside the stretch window"
