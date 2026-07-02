@@ -32,6 +32,7 @@ from music_assistant.controllers.player_queues.constants import (
     SMART_SHUFFLE_ENABLED_DEFAULT,
     SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
 )
+from music_assistant.controllers.player_queues.helpers import space_by_artist
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -39,12 +40,6 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.music.recency import RecencySnapshot
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
-
-# how many bounded passes to make separating directly-adjacent same-artist items
-ARTIST_REPAIR_PASSES = 4
-# how far ahead to look for a non-clashing item to swap in (keeps moves local so the
-# even spread from the interleave is preserved)
-ARTIST_SWAP_WINDOW = 6
 
 
 class SmartShuffle:
@@ -165,31 +160,16 @@ def _interleave(bucket: list[QueueItem]) -> list[QueueItem]:
     return [item for _, item in positioned]
 
 
-def _space_artists(items: list[QueueItem]) -> list[QueueItem]:
-    """Best-effort separate directly-adjacent same-artist items with bounded local swaps."""
-    count = len(items)
-    if count <= 2:
-        return items
-    result = list(items)
-    artist_sets = [_artist_name_set(item) for item in result]
-    for _ in range(ARTIST_REPAIR_PASSES):
-        changed = False
-        for index in range(count - 1):
-            current = artist_sets[index]
-            if not current or not current & artist_sets[index + 1]:
-                continue
-            for target in range(index + 2, min(index + 2 + ARTIST_SWAP_WINDOW, count)):
-                if not current & artist_sets[target]:
-                    result[index + 1], result[target] = result[target], result[index + 1]
-                    artist_sets[index + 1], artist_sets[target] = (
-                        artist_sets[target],
-                        artist_sets[index + 1],
-                    )
-                    changed = True
-                    break
-        if not changed:
-            break
-    return result
+def _space_artists(items: list[QueueItem], *, preceding: set[str] | None = None) -> list[QueueItem]:
+    """
+    Best-effort separate directly-adjacent same-artist items.
+
+    :param items: The items to space.
+    :param preceding: Artist names of the item that will sit directly before the first item (the
+        seam with the already-queued tail); the first item is kept clear of it too. None ignores it.
+    """
+    order = space_by_artist([_artist_name_set(item) for item in items], preceding=preceding)
+    return [items[index] for index in order]
 
 
 def _song_key(item: QueueItem) -> tuple[str, str]:

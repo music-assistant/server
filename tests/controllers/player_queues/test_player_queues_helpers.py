@@ -16,6 +16,7 @@ from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
     has_dynamic_source,
+    space_by_artist,
 )
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
@@ -236,3 +237,28 @@ class TestHandlePlayAction:
             await _boom(cast("PlayerQueuesController", ctrl), "q1")
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+
+class TestSpaceByArtist:
+    """Tests for space_by_artist."""
+
+    def test_separates_adjacent_shared_artist(self) -> None:
+        """Adjacent entries sharing an artist are pulled apart (by intersection), dropping nothing."""
+        sets = [{"a"}, {"a", "b"}, {"b"}, {"c"}]
+        spaced = [sets[index] for index in space_by_artist(sets)]
+        assert sorted(spaced, key=sorted) == sorted(sets, key=sorted)
+        assert all(not (spaced[i] & spaced[i + 1]) for i in range(len(spaced) - 1))
+
+    def test_honours_preceding_seam(self) -> None:
+        """The first entry shares no artist with the preceding (seam) set."""
+        sets = [{"a", "b"}, {"c"}, {"d"}]
+        order = space_by_artist(sets, preceding={"a"})
+        assert not (sets[order[0]] & {"a"})
+
+    def test_identity_when_already_clear(self) -> None:
+        """With no clashes and no seam, the order is left untouched."""
+        assert space_by_artist([{"a"}, {"b"}, {"c"}]) == [0, 1, 2]
+
+    def test_empty_input(self) -> None:
+        """An empty input yields an empty order."""
+        assert space_by_artist([]) == []
