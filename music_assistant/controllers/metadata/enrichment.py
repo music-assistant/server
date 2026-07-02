@@ -31,7 +31,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, Playlist, Podcast
-    from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
