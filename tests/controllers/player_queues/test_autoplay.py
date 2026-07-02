@@ -16,6 +16,10 @@ from music_assistant.controllers.player_queues.autoplay import (
     Autoplay,
     AutoplayMode,
 )
+from music_assistant.controllers.player_queues.constants import (
+    CONF_AUTOPLAY_MODE,
+    CONF_AUTOPLAY_PLAYLIST,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -165,8 +169,12 @@ async def test_get_library_tracks_tops_up_past_unavailable_genre_matches() -> No
 async def test_get_playlist_tracks_returns_filtered_batch() -> None:
     """The configured playlist's tracks are returned minus the excluded ones."""
     helper, queues = _helper()
-    queues.mass.config.get_effective_player_queue_config_value = MagicMock(
-        return_value="library://playlist/pl1"
+    # a per-queue playlist override (mode set to 'playlist' on the queue)
+    queues.mass.config.get_raw_player_queue_config_value = MagicMock(
+        side_effect=lambda _qid, key, default=None: {
+            CONF_AUTOPLAY_MODE: AutoplayMode.PLAYLIST.value,
+            CONF_AUTOPLAY_PLAYLIST: "library://playlist/pl1",
+        }.get(key, default)
     )
     queues.mass.music.get_item_by_uri = AsyncMock(return_value=_playlist())
     excluded = _track("t2")
@@ -180,9 +188,40 @@ async def test_get_playlist_tracks_returns_filtered_batch() -> None:
 async def test_get_playlist_tracks_without_config_returns_empty() -> None:
     """Playlist mode with no configured playlist yields nothing (and does not crash)."""
     helper, queues = _helper()
-    queues.mass.config.get_effective_player_queue_config_value = MagicMock(return_value=None)
+    queues.mass.config.get_raw_player_queue_config_value = MagicMock(
+        side_effect=lambda _qid, key, default=None: {
+            CONF_AUTOPLAY_MODE: AutoplayMode.PLAYLIST.value
+        }.get(key, default)
+    )
 
     assert await helper.get_playlist_tracks(_queue(queues), exclude=set()) == []
+
+
+async def test_get_playlist_tracks_global_mode_uses_global_playlist() -> None:
+    """A queue following the global mode uses the global playlist, not a stale per-queue one."""
+    helper, queues = _helper()
+    # queue follows the global mode, yet a stale per-queue playlist is still stored
+    queues.mass.config.get_raw_player_queue_config_value = MagicMock(
+        side_effect=lambda _qid, key, default=None: {
+            CONF_AUTOPLAY_MODE: CONF_VALUE_GLOBAL,
+            CONF_AUTOPLAY_PLAYLIST: "library://playlist/stale",
+        }.get(key, default)
+    )
+    queues.mass.config.get_raw_core_config_value = MagicMock(
+        return_value="library://playlist/global"
+    )
+    captured: dict[str, str] = {}
+
+    async def _get_item(uri: str) -> Playlist:
+        captured["uri"] = uri
+        return _playlist()
+
+    queues.mass.music.get_item_by_uri = AsyncMock(side_effect=_get_item)
+    queues.get_playlist_tracks = AsyncMock(return_value=[_track("t1")])
+
+    await helper.get_playlist_tracks(_queue(queues), exclude=set())
+
+    assert captured["uri"] == "library://playlist/global"
 
 
 # --- config entries ---
