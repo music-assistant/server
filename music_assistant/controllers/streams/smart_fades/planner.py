@@ -82,6 +82,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
     high_shelf_freq: int = 13000
     eq_kill_db: float = -26.0
     high_ease_db: float = -20.0
+    # DJ practice swaps in one bar; more bars soften the handover into a morph
+    bass_swap_bars: int = 1
 
     # Working state for one plan() run, (re)set by _prepare_decks
     outgoing: Deck
@@ -539,8 +541,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
         :param tempo_plan: Tempo ramp (maps rendered offsets to A-input offsets).
         :param fadein_trim_start: Incoming head trim, if beat alignment applied one.
         """
-        bar_out = 4 * 60.0 / self.outgoing.bpm
-        bar_in = 4 * 60.0 / self.incoming.bpm
+        bar_out = self.bass_swap_bars * 4 * 60.0 / self.outgoing.bpm
+        bar_in = self.bass_swap_bars * 4 * 60.0 / self.incoming.bpm
         swap_at = self._choose_swap_point(crossfade_duration, fadein_trim_start)
         ease = 0.25 * crossfade_duration
 
