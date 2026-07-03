@@ -1,7 +1,8 @@
 {
   "config_entries": {
     "snapcast_server_built_in_buffer_size": {
-      "label": "Snapserver buffer size"
+      "label": "Snapserver buffer size",
+      "description": "The stream buffer size (in milliseconds) of the Snapcast server. This configures the built-in server; when using an external server, set it to match the server's stream.buffer setting. Snapclients play audio this long after the server receives it, so Music Assistant uses this value to time announcement volume changes correctly."
     },
     "snapcast_server_built_in_chunk_ms": {
       "label": "Snapserver chunk size"

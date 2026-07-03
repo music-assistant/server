@@ -78,18 +78,6 @@ async def get_config_entries(
 
     return (
         ConfigEntry(
-            key=CONF_SERVER_BUFFER_SIZE,
-            type=ConfigEntryType.INTEGER,
-            range=(200, 6000),
-            default_value=1000,
-            required=False,
-            category=CONF_CATEGORY_BUILT_IN,
-            hidden=not local_snapserver_present,
-            depends_on=CONF_USE_EXTERNAL_SERVER,
-            depends_on_value_not=True,
-            help_link=CONF_HELP_LINK,
-        ),
-        ConfigEntry(
             key=CONF_SERVER_CHUNK_MS,
             type=ConfigEntryType.INTEGER,
             range=(10, 100),
@@ -163,6 +151,17 @@ async def get_config_entries(
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
             advanced=local_snapserver_present,
+        ),
+        # the buffer size configures the built-in server and, for an external
+        # server, must mirror its stream.buffer setting (it cannot be read from
+        # the API) so announcement volume changes can be timed correctly
+        ConfigEntry(
+            key=CONF_SERVER_BUFFER_SIZE,
+            type=ConfigEntryType.INTEGER,
+            range=(200, 6000),
+            default_value=1000,
+            required=False,
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_STREAM_IDLE_THRESHOLD,

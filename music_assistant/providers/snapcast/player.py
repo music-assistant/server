@@ -348,14 +348,19 @@ class SnapCastPlayer(Player):
 
         await player_group.set_stream(ma_stream.stream_id)
 
-        if self.snap_provider._use_builtin_server:
-            await asyncio.sleep(self.snap_provider._snapcast_server_buffer_size / 1000.0)
+        # let the buffered tail of the previous stream play out
+        # before raising the volume
+        await self._wait_for_client_buffer()
 
         if volume_level is not None:
             await self.volume_set(volume_level)
 
         await ma_stream.start_stream()
         await ma_stream.wait_for_stopped()
+
+        # the server received all audio but the clients still have buffer_ms
+        # of it queued; wait for that to play out before restoring anything
+        await self._wait_for_client_buffer()
 
         if self.volume_level == volume_level and orig_volume_level is not None:
             await self.volume_set(orig_volume_level)
@@ -584,3 +589,7 @@ class SnapCastPlayer(Player):
             for ma_id in self._get_player_ids_of_curr_group()
             if (ma_player := self.mass.players.get_player(ma_id))
         ]
+
+    async def _wait_for_client_buffer(self) -> None:
+        """Wait for the snapserver stream buffer to play out on the clients."""
+        await asyncio.sleep(self.snap_provider._snapcast_server_buffer_size / 1000.0)

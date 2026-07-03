@@ -74,6 +74,7 @@ class SnapCastProvider(PlayerProvider):
     _snapserver_started: asyncio.Event | None
     _snapcast_server_host: str
     _snapcast_server_control_port: int
+    _snapcast_server_buffer_size: int
     _ids_map: bidict[str, str]  # ma_id / snapclient_id
     _use_builtin_server: bool
     _stop_called: bool
@@ -114,9 +115,6 @@ class SnapCastProvider(PlayerProvider):
 
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
-            self._snapcast_server_buffer_size = cast(
-                "int", self.config.get_value(CONF_SERVER_BUFFER_SIZE)
-            )
             self._snapcast_server_chunk_ms = self.config.get_value(CONF_SERVER_CHUNK_MS)
             self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
             self._snapcast_server_send_to_muted = self.config.get_value(
@@ -130,6 +128,11 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_control_port = int(
                 str(self.config.get_value(CONF_SERVER_CONTROL_PORT))
             )
+        # for an external server this must mirror its stream.buffer setting,
+        # which cannot be read from the API (see config entry description)
+        self._snapcast_server_buffer_size = cast(
+            "int", self.config.get_value(CONF_SERVER_BUFFER_SIZE)
+        )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         self._ids_map = bidict({})
         self._last_status_refresh = 0.0
