@@ -1039,7 +1039,7 @@ async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) 
 async def test_get_playlist_copies_library_artwork(
     tmp_path: Any,
 ) -> None:
-    """get_playlist copies artwork from library item when available."""
+    """get_playlist uses artwork from images cache when available."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     manifest = MagicMock()
@@ -1051,20 +1051,14 @@ async def test_get_playlist_copies_library_artwork(
 
     plugin._rules_store["abc"] = SmartPlaylistRules(limit=10, is_dynamic=False)
 
-    # Create library item with artwork
+    # Populate images cache (simulates metadata enrichment event)
     library_artwork = MediaItemImage(
         type=ImageType.THUMB,
         path="generated_artwork.jpg",
         provider="playlist_art",
         remotely_accessible=False,
     )
-    library_item_with_artwork = MagicMock()
-    library_item_with_artwork.metadata.images = UniqueList([library_artwork])
-
-    # Mock get_library_item_by_prov_id to return library item with artwork
-    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
-        return_value=library_item_with_artwork
-    )
+    plugin._images_store["abc"] = UniqueList([library_artwork])
 
     playlist = await plugin.get_playlist("abc")
     assert playlist.metadata.images is not None
