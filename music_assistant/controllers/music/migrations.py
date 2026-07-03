@@ -725,6 +725,63 @@ async def migrate_database(  # noqa: PLR0915
         except Exception as err:
             logger.warning("Could not refresh default genre icons: %s", err)
 
+    if prev_version <= 48:
+        # databases from before the userid column still carry the original inline
+        # UNIQUE(item_id, provider, media_type) constraint, which ALTER TABLE could not
+        # remove. It collides with the per-user upsert (ON CONFLICT on 4 columns) and
+        # raises IntegrityError on every replay of an item. SQLite can only drop an
+        # inline constraint by rebuilding the table.
+        stale_unique = False
+        for index in await database.get_rows_from_query(
+            f"PRAGMA index_list({DB_TABLE_PLAYLOG})", limit=0
+        ):
+            if not index["unique"]:
+                continue
+            index_columns = {
+                column["name"]
+                for column in await database.get_rows_from_query(
+                    f"PRAGMA index_info({index['name']})", limit=0
+                )
+            }
+            if "userid" not in index_columns:
+                stale_unique = True
+                break
+        if stale_unique:
+            logger.info("Rebuilding playlog table to update its unique constraint")
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLOG} RENAME TO {DB_TABLE_PLAYLOG}_old"
+            )
+            await database.execute(
+                f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [media_type] TEXT NOT NULL,
+                    [name] TEXT NOT NULL,
+                    [image] json,
+                    [artists] json,
+                    [timestamp] INTEGER DEFAULT 0,
+                    [fully_played] BOOLEAN,
+                    [seconds_played] INTEGER,
+                    [userid] TEXT NOT NULL,
+                    [queue_id] TEXT,
+                    [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                    [playback_speed] REAL NOT NULL DEFAULT 1.0,
+                    UNIQUE(item_id, provider, media_type, userid));"""
+            )
+            # rows from before the userid column existed have no owner and cannot be
+            # kept under the NOT NULL schema
+            await database.execute(
+                f"INSERT INTO {DB_TABLE_PLAYLOG} "
+                "(id, item_id, provider, media_type, name, image, artists, timestamp, "
+                "fully_played, seconds_played, userid, queue_id, user_initiated, "
+                "playback_speed) "
+                "SELECT id, item_id, provider, media_type, name, image, artists, timestamp, "
+                "fully_played, seconds_played, userid, queue_id, user_initiated, "
+                f"playback_speed FROM {DB_TABLE_PLAYLOG}_old WHERE userid IS NOT NULL"
+            )
+            await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}_old")
+
     # save changes
     await database.commit()
 
