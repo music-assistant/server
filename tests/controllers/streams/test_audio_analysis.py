@@ -213,7 +213,7 @@ def _make_stream_mock(chunks: list[bytes]) -> object:
 
 
 @pytest.mark.asyncio
-async def test_background_streaming_happy_path() -> None:
+async def test_background_streaming_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """PCM chunks reach providers; session is cleaned up on clean EOF."""
     controller = _make_controller()
     streamdetails = _make_streamdetails(path="/music/test.flac")
@@ -224,6 +224,7 @@ async def test_background_streaming_happy_path() -> None:
 
     fake_chunks = [b"\x00\x01" * 512 for _ in range(5)]
     controller.mass.streams.audio.get_media_stream = _make_stream_mock(fake_chunks)  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(audio_analysis_mod, "BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR", 0.0)
 
     await controller._run_background_streaming_for_track(streamdetails, [p])
 
@@ -231,6 +232,31 @@ async def test_background_streaming_happy_path() -> None:
     assert p.process_pcm_chunk.await_count == len(fake_chunks)
     # _finalize_providers pops the session key before dispatching — key must be gone
     assert streamdetails.uri not in controller._active_sessions
+
+
+@pytest.mark.asyncio
+async def test_background_streaming_paces_chunk_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Background dispatch enforces the pacing floor between consecutive chunks."""
+    controller = _make_controller()
+    streamdetails = _make_streamdetails(path="/music/test.flac")
+    p = _make_aa_provider("p1", available=True)
+    p.start_analysis = AsyncMock(return_value=True)
+    p.finalize = AsyncMock(return_value=None)
+    controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+
+    fake_chunks = [b"\x00\x01" * 512 for _ in range(4)]
+    controller.mass.streams.audio.get_media_stream = _make_stream_mock(fake_chunks)  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(audio_analysis_mod, "BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR", 0.05)
+
+    started = asyncio.get_running_loop().time()
+    await controller._run_background_streaming_for_track(streamdetails, [p])
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert p.process_pcm_chunk.await_count == len(fake_chunks)
+    # First chunk dispatches immediately; each of the remaining 3 waits out the floor.
+    assert elapsed >= 3 * 0.05
 
 
 @pytest.mark.asyncio

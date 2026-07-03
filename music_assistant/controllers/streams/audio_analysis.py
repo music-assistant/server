@@ -51,6 +51,10 @@ BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
 # treated as stuck and evicted. Generous because analysis runs one offload at a time while a
 # player streams, so a chunk may wait behind other work before it computes.
 CHUNK_HANG_GUARD_SECONDS = 120.0
+# Floor on wall-seconds between consecutive background chunk dispatches (one chunk = one
+# audio-second), capping each scanned track at ~4x realtime so a background analyse doesn't
+# consume all resources. Nice and slow is preferred for nightly background scans.
+BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR = 0.250
 # OS nice value for analysis worker threads (Linux): keeps analysis below playback so the
 # scheduler favors the event loop and ffmpeg under contention.
 ANALYSIS_THREAD_NICE = 10
@@ -867,11 +871,16 @@ class AudioAnalysisController:
         self._active_sessions[session_key] = accepted
 
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
+        next_allowed = time.monotonic()
         async for chunk in audio_source:
             if session_key not in self._active_sessions:
                 # all providers evicted — bail early
                 break
+            now = time.monotonic()
+            if now < next_allowed:
+                await asyncio.sleep(next_allowed - now)
             await self._distribute_chunk(session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS)
+            next_allowed = time.monotonic() + BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
