@@ -1355,8 +1355,8 @@ async def test_exchange_join_code_rate_limited(auth_manager: AuthenticationManag
 
     :param auth_manager: AuthenticationManager instance.
     """
-    # Fire enough wrong codes to trip the progressive delay.
-    for _ in range(5):
+    # Three failures trip the progressive delay threshold.
+    for _ in range(3):
         result = await auth_manager.exchange_join_code("WRONGCODE123")
         assert result["success"] is False
 
@@ -1366,25 +1366,29 @@ async def test_exchange_join_code_rate_limited(auth_manager: AuthenticationManag
     assert "too many" in result["error"].lower()
 
 
-async def test_exchange_join_code_success_resets_rate_limit(
+async def test_exchange_join_code_success_does_not_reset_rate_limit(
     auth_manager: AuthenticationManager,
 ) -> None:
     """
-    Verify a successful join code exchange clears the failed-attempt counter.
+    Verify a successful exchange does not clear the failed-attempt counter.
+
+    The rate limit key is global, so clearing on success would let an attacker
+    holding any valid code reset the counter at will and bypass throttling.
 
     :param auth_manager: AuthenticationManager instance.
     """
-    user = await auth_manager.create_user(username="resetrluser", role=UserRole.GUEST)
+    user = await auth_manager.create_user(username="norstuser", role=UserRole.GUEST)
     code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
 
     # A couple of failures, still below the throttle threshold.
     for _ in range(2):
         assert (await auth_manager.exchange_join_code("NOPE12345678"))["success"] is False
 
-    # A successful exchange resets the counter.
+    # A valid exchange still succeeds but must not wipe the counter.
     assert (await auth_manager.exchange_join_code(code))["success"] is True
 
-    # Further failures start counting from zero, so we are not immediately throttled.
-    result = await auth_manager.exchange_join_code("NOPE12345678")
+    # The third failure trips the threshold, throttling further attempts.
+    assert (await auth_manager.exchange_join_code("NOPE12345678"))["success"] is False
+    result = await auth_manager.exchange_join_code(code)
     assert result["success"] is False
-    assert "too many" not in result["error"].lower()
+    assert "too many" in result["error"].lower()

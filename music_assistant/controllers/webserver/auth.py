@@ -1423,7 +1423,9 @@ class AuthenticationManager:
                 "error": "Invalid or expired join code",
             }
 
-        await self._join_code_rate_limiter.clear_attempts(JOIN_CODE_RATE_LIMIT_KEY)
+        # Deliberately no clear_attempts on success: the key is global, so clearing
+        # would let anyone holding a valid code reset the counter and bypass throttling.
+        # Failures expire via the limiter's tracking window instead.
 
         # Decode token to get user info
         try:
