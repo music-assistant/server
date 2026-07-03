@@ -238,8 +238,6 @@ def get_absolute_path(base_path: str, path: str) -> str:
         (e.g. via ``../`` traversal or an absolute path outside the base).
     """
     absolute_path = path if path.startswith(base_path) else os.path.join(base_path, path)
-    # The check is lexical (no symlink resolving): attackers can only supply path strings,
-    # not symlinks, and resolving would reject legitimate symlinks inside the base directory.
     if not is_safe_path(absolute_path, base_path):
         msg = f"Path is outside the configured base directory: {path}"
         raise MediaNotFoundError(msg)
