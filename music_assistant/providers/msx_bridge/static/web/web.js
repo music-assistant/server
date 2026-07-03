@@ -128,9 +128,11 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
     function resolveUrl(url) {
         if (!url) return '';
         if (isHttpUrl(url)) {
-            var a = document.createElement('a');
-            a.href = url;
-            return a.host === location.host ? url : '';
+            try {
+                return new URL(url).host === location.host ? url : '';
+            } catch (e) {
+                return '';
+            }
         }
         if (url.charAt(0) === '/') return BASE + url;
         return '';
