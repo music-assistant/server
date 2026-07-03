@@ -680,7 +680,7 @@ class AuthenticationManager:
         for token_row in token_rows:
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
-        # Delete all tokens in one go. execute() does not commit, so commit explicitly.
+        # Delete all tokens in one go
         await self.database.execute(
             "DELETE FROM auth_tokens WHERE user_id = :user_id",
             {"user_id": user.user_id},
