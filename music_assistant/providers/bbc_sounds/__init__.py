@@ -163,8 +163,6 @@ class BBCSoundsProvider(MusicProvider):
                 logger=self.logger,
                 timezone=LOCAL_TIMEZONE,
             )
-            # This seems odd, but e.g. clearing the username and password will result in a stuck session
-            await self.client.logout()
             self.logged_in = False
 
         self.show_local_stations: bool = bool(
