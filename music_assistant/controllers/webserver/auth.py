@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
@@ -81,6 +82,9 @@ class AuthenticationManager:
         self._has_users: bool = False
         self.jwt_helper: JWTHelper = None  # type: ignore[assignment]
         self._join_code_rate_limiter = LoginRateLimiter()
+        # Serializes exchange attempts so concurrent requests cannot all pass the
+        # rate limit check before any of them records a failure.
+        self._join_code_exchange_lock = asyncio.Lock()
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -1402,26 +1406,29 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        allowed, remaining_delay = await self._join_code_rate_limiter.check_rate_limit(
-            JOIN_CODE_RATE_LIMIT_KEY
-        )
-        if not allowed:
-            self.logger.warning(
-                "Join code exchange rate limit exceeded. %d seconds remaining.", remaining_delay
+        async with self._join_code_exchange_lock:
+            allowed, remaining_delay = await self._join_code_rate_limiter.check_rate_limit(
+                JOIN_CODE_RATE_LIMIT_KEY
             )
-            return {
-                "success": False,
-                "error": f"Too many failed attempts. Please try again in {remaining_delay} seconds.",
-            }
+            if not allowed:
+                self.logger.warning(
+                    "Join code exchange rate limit exceeded. %d seconds remaining.", remaining_delay
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Too many failed attempts. Please try again in {remaining_delay} seconds."
+                    ),
+                }
 
-        token = await self._exchange_join_code(code)
+            token = await self._exchange_join_code(code)
 
-        if not token:
-            await self._join_code_rate_limiter.record_failed_attempt(JOIN_CODE_RATE_LIMIT_KEY)
-            return {
-                "success": False,
-                "error": "Invalid or expired join code",
-            }
+            if not token:
+                await self._join_code_rate_limiter.record_failed_attempt(JOIN_CODE_RATE_LIMIT_KEY)
+                return {
+                    "success": False,
+                    "error": "Invalid or expired join code",
+                }
 
         # Deliberately no clear_attempts on success: the key is global, so clearing
         # would let anyone holding a valid code reset the counter and bypass throttling.

@@ -1366,6 +1366,29 @@ async def test_exchange_join_code_rate_limited(auth_manager: AuthenticationManag
     assert "too many" in result["error"].lower()
 
 
+async def test_exchange_join_code_rate_limit_concurrent_burst(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify concurrent failed exchanges cannot race past the rate limiter.
+
+    Without serialization, parallel requests all pass the rate limit check
+    before any of them records a failure, allowing brute-force bursts.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    results = await asyncio.gather(
+        *(auth_manager.exchange_join_code("WRONGCODE123") for _ in range(10))
+    )
+
+    assert all(result["success"] is False for result in results)
+    # Only the first 3 attempts may reach the actual code check; the rest must be throttled.
+    invalid_count = sum(1 for result in results if "invalid" in result["error"].lower())
+    throttled_count = sum(1 for result in results if "too many" in result["error"].lower())
+    assert invalid_count == 3
+    assert throttled_count == 7
+
+
 async def test_exchange_join_code_success_does_not_reset_rate_limit(
     auth_manager: AuthenticationManager,
 ) -> None:
