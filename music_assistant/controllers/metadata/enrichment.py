@@ -322,11 +322,6 @@ class MetadataEnrichmentMixin:
         self, playlist: Playlist, force_refresh: bool = False
     ) -> None:
         """Get/update rich metadata for a playlist."""
-        # dynamic playlists (e.g. Pandora stations, Apple Music stations) are
-        # provider-driven and endless: scanning "all" tracks for aggregate metadata
-        # doesn't make sense
-        if playlist.is_dynamic:
-            return
         # collect metadata + create collage images
         # NOTE: we only do/allow this every REFRESH_INTERVAL
         needs_refresh = (time() - (playlist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
