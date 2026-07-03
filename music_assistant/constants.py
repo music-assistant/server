@@ -87,6 +87,7 @@ MASS_LOGO: Final[str] = str(RESOURCES_DIR.joinpath("logo.png"))
 # config keys
 CONF_ONBOARD_DONE: Final[str] = "onboard_done"
 CONF_SERVER_ID: Final[str] = "server_id"
+CONF_ENCRYPTION_KEY: Final[str] = "encryption_key"
 CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"

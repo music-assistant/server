@@ -1,0 +1,108 @@
+"""
+Regression tests for the SECURE_STRING encryption key (findings 7.3.1 / 7.3.2).
+
+The Fernet key used by ``encrypt_string``/``decrypt_string`` used to be derived
+from ``server_id`` (``base64.urlsafe_b64encode(server_id.encode()[:32])``).
+That ``server_id`` is broadcast on the LAN via Zeroconf and is a low-entropy
+UUIDv4 hex string, so any device on the network could decrypt the secrets.
+
+These tests pin down the fixed behavior:
+- the active encryption key is NOT derived from ``server_id``
+- encrypt -> decrypt round-trips
+- secrets encrypted with the legacy ``server_id``-derived key still decrypt
+  (transparent migration via ``MultiFernet``)
+"""
+
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from cryptography.fernet import Fernet, InvalidToken
+
+from music_assistant.constants import CONF_ENCRYPTION_KEY, CONF_SERVER_ID, ENCRYPT_SUFFIX
+from music_assistant.controllers.config.controller import ConfigController
+
+
+def _make_controller(tmp_path: Path) -> ConfigController:
+    mass = SimpleNamespace(storage_path=str(tmp_path))
+    controller = ConfigController(mass)  # type: ignore[arg-type]
+    controller.initialized = True
+    controller.save = lambda **_kwargs: None  # type: ignore[method-assign]
+    return controller
+
+
+def _legacy_fernet(server_id: str) -> Fernet:
+    return Fernet(base64.urlsafe_b64encode(server_id.encode()[:32]))
+
+
+def test_encryption_key_not_derived_from_server_id(tmp_path: Path) -> None:
+    """The active key must not be the public, low-entropy server_id-derived key."""
+    controller = _make_controller(tmp_path)
+    server_id = uuid4().hex
+    controller.set(CONF_SERVER_ID, server_id)
+    controller._init_encryption()
+
+    stored_key = controller.get(CONF_ENCRYPTION_KEY)
+    assert stored_key
+    assert stored_key != base64.urlsafe_b64encode(server_id.encode()[:32]).decode()
+
+
+def test_encrypt_decrypt_round_trip(tmp_path: Path) -> None:
+    """A value encrypted with the new key decrypts back to the original."""
+    controller = _make_controller(tmp_path)
+    controller.set(CONF_SERVER_ID, uuid4().hex)
+    controller._init_encryption()
+
+    encrypted = controller.encrypt_string("s3cr3t-token")
+    assert encrypted.startswith(ENCRYPT_SUFFIX)
+    assert controller.decrypt_string(encrypted) == "s3cr3t-token"
+
+
+def test_legacy_encrypted_value_still_decrypts(tmp_path: Path) -> None:
+    """Secrets encrypted with the old server_id-derived key must still decrypt."""
+    controller = _make_controller(tmp_path)
+    server_id = uuid4().hex
+    controller.set(CONF_SERVER_ID, server_id)
+
+    legacy_value = ENCRYPT_SUFFIX + _legacy_fernet(server_id).encrypt(b"old-secret").decode()
+
+    controller._init_encryption()
+    assert controller.decrypt_string(legacy_value) == "old-secret"
+
+
+def test_existing_secrets_migrated_off_legacy_key(tmp_path: Path) -> None:
+    """Secrets stored with the legacy key are proactively re-encrypted on setup."""
+    controller = _make_controller(tmp_path)
+    server_id = uuid4().hex
+    controller.set(CONF_SERVER_ID, server_id)
+    legacy_value = ENCRYPT_SUFFIX + _legacy_fernet(server_id).encrypt(b"old-secret").decode()
+    controller.set("providers/foo/token", legacy_value)
+
+    controller._init_encryption()
+
+    migrated = controller.get("providers/foo/token")
+    assert migrated != legacy_value
+    # the migrated token must decrypt with the new key alone, not just the legacy one
+    new_key: str = controller.get(CONF_ENCRYPTION_KEY)
+    token = migrated[len(ENCRYPT_SUFFIX) :].encode()
+    assert Fernet(new_key.encode()).decrypt(token) == b"old-secret"
+    with pytest.raises(InvalidToken):
+        _legacy_fernet(server_id).decrypt(token)
+
+
+def test_new_encryption_not_readable_with_legacy_key(tmp_path: Path) -> None:
+    """New values must be encrypted with the new key, not the public legacy one."""
+    controller = _make_controller(tmp_path)
+    server_id = uuid4().hex
+    controller.set(CONF_SERVER_ID, server_id)
+    controller._init_encryption()
+
+    encrypted = controller.encrypt_string("new-secret")
+    token = encrypted.replace(ENCRYPT_SUFFIX, "").encode()
+
+    with pytest.raises(InvalidToken):
+        _legacy_fernet(server_id).decrypt(token)

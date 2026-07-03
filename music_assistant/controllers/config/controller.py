@@ -12,11 +12,12 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiofiles
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from music_assistant_models import config_entries
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_ENCRYPTION_KEY,
     CONF_ONBOARD_DONE,
     CONF_SERVER_ID,
     ENCRYPT_SUFFIX,
@@ -50,7 +51,7 @@ class ConfigController(
 ):
     """Controller that handles storage of persistent configuration settings."""
 
-    _fernet: Fernet | None = None
+    _fernet: MultiFernet | None = None
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize storage controller."""
@@ -65,12 +66,9 @@ class ConfigController(
         """Async initialize of controller."""
         await self._load()
         self.initialized = True
-        # create default server ID if needed (also used for encrypting passwords)
+        # create default server ID if needed
         self.set_default(CONF_SERVER_ID, uuid4().hex)
-        server_id: str = self.get(CONF_SERVER_ID)
-        assert server_id
-        fernet_key = base64.urlsafe_b64encode(server_id.encode()[:32])
-        self._fernet = Fernet(fernet_key)
+        self._init_encryption()
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
         if not self.onboard_done:
@@ -204,6 +202,57 @@ class ConfigController(
         except InvalidToken as err:
             msg = "Password decryption failed"
             raise InvalidDataError(msg) from err
+
+    def _init_encryption(self) -> None:
+        """
+        Set up encryption for SECURE_STRING values with a dedicated key, not server_id.
+
+        server_id is public (broadcast via Zeroconf), so it must not be the key; MultiFernet
+        keeps it as a decrypt-only fallback and _migrate_secrets re-encrypts onto the new key.
+        """
+        server_id: str = self.get(CONF_SERVER_ID)
+        assert server_id
+        self.set_default(CONF_ENCRYPTION_KEY, Fernet.generate_key().decode())
+        encryption_key: str = self.get(CONF_ENCRYPTION_KEY)
+        primary = Fernet(encryption_key.encode())
+        legacy_key = base64.urlsafe_b64encode(server_id.encode()[:32])
+        self._fernet = MultiFernet([primary, Fernet(legacy_key)])
+        self._migrate_secrets(primary)
+
+    def _migrate_secrets(self, primary: Fernet) -> None:
+        """
+        Proactively re-encrypt legacy server_id-encrypted secrets onto the new key.
+
+        Otherwise they stay recoverable with the public server_id until next rewritten.
+        """
+        assert self._fernet is not None
+        migrated = self._rotate_encrypted_values(self._data, primary)
+        if migrated:
+            LOGGER.info("Re-encrypted %s secret(s) onto the dedicated encryption key", migrated)
+            self.save(immediate=True)
+
+    def _rotate_encrypted_values(self, node: Any, primary: Fernet) -> int:
+        """Recursively rotate legacy-encrypted values onto the primary key, returning the count."""
+        assert self._fernet is not None
+        count = 0
+        values = node.items() if isinstance(node, dict) else enumerate(node)
+        for key, value in values:
+            if isinstance(value, (dict, list)):
+                count += self._rotate_encrypted_values(value, primary)
+            elif isinstance(value, str) and value.startswith(ENCRYPT_SUFFIX):
+                token = value[len(ENCRYPT_SUFFIX) :].encode()
+                try:
+                    # already on the primary key, nothing to migrate
+                    primary.decrypt(token)
+                    continue
+                except InvalidToken:
+                    pass
+                try:
+                    node[key] = ENCRYPT_SUFFIX + self._fernet.rotate(token).decode()
+                    count += 1
+                except InvalidToken:
+                    LOGGER.warning("Failed to migrate an encrypted config value")
+        return count
 
     async def _load(self) -> None:
         """Load data from persistent storage."""
