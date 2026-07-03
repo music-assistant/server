@@ -63,41 +63,35 @@ jobs:
 
         env:
           BRANCH: ${{ github.event.pull_request.head.ref }}
-      # IMPORTANT: Checkout the PR's head to validate file changes
-      # This is required for the git commands in security check 5
-      - name: Checkout PR branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 2
 
-      # Security check 3: Get PR details for validation
+      # NOTE: The PR is intentionally never checked out. All validation below
+      # uses the GitHub API, so no untrusted code ever reaches this privileged
+      # workflow's filesystem.
+
       - name: Get PR details
         id: pr
         run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
 
-          # Get commit author
-          COMMIT_AUTHOR=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[0].authors[0].login')
-          echo "commit_author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
-
-          echo "PR #$PR_NUMBER with commits from $COMMIT_AUTHOR"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Security check 4: Verify commit author has write access
-      - name: Verify commit author
+      # Security check 4: Verify all commit authors have write access
+      - name: Verify commit authors
         run: |
-          COMMIT_AUTHOR="${{ steps.pr.outputs.commit_author }}"
+          COMMIT_AUTHORS=$(gh pr view "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --json commits --jq '[.commits[].authors[].login] | unique | .[]')
 
-          # Check if commit author has write access to the repository
-          if gh api "/repos/${{ github.repository }}/collaborators/$COMMIT_AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-            echo "✅ Commit author has write access: $COMMIT_AUTHOR"
-          else
-            echo "❌ Commit author does not have write access: $COMMIT_AUTHOR"
+          if [[ -z "$COMMIT_AUTHORS" ]]; then
+            echo "❌ Could not determine commit authors"
             exit 1
           fi
+
+          for AUTHOR in $COMMIT_AUTHORS; do
+            if gh api "/repos/${{ github.repository }}/collaborators/$AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
+              echo "✅ Commit author has write access: $AUTHOR"
+            else
+              echo "❌ Commit author does not have write access: $AUTHOR"
+              exit 1
+            fi
+          done
+
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -105,7 +99,7 @@ jobs:
       - name: Verify only dependency files were changed
         run: |
           # Only pyproject.toml and requirements_all.txt should be modified
-          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          CHANGED_FILES=$(gh pr view "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --json files --jq '.files[].path')
 
           echo "Changed files:"
           echo "$CHANGED_FILES"
@@ -119,12 +113,14 @@ jobs:
           done
 
           echo "✅ Only expected dependency files were changed"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Security check 6: Verify changes are only version bumps
       - name: Verify changes are version bumps
         run: |
           # Check that only music-assistant-frontend or music-assistant-models version changed
-          DIFF=$(git diff HEAD~1 HEAD pyproject.toml requirements_all.txt)
+          DIFF=$(gh pr diff "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}")
 
           if ! echo "$DIFF" | grep -qE "music-assistant-(frontend|models)=="; then
             echo "❌ Changes do not appear to be version bumps"
@@ -132,12 +128,14 @@ jobs:
           fi
 
           echo "✅ Changes are version bumps"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Security check 7: Wait for package to be available on PyPI
       - name: Wait for package availability on PyPI
         run: |
-          # Extract the package name and version from the changes
-          DIFF=$(git diff HEAD~1 HEAD pyproject.toml)
+          # Extract the package name and version from the added lines of the diff
+          DIFF=$(gh pr diff "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" | grep '^+' || true)
 
           if echo "$DIFF" | grep -q "music-assistant-frontend=="; then
             PACKAGE="music-assistant-frontend"
@@ -196,24 +194,26 @@ jobs:
           echo "  - PyPI is experiencing delays"
           echo "  - The version number in the PR is incorrect"
           exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # All security checks passed - approve the PR
       - name: Auto-approve PR
         run: |
-          gh pr review "${{ steps.pr.outputs.number }}" --approve --body "✅ Automated dependency update - all security checks passed"
+          gh pr review "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --approve --body "✅ Automated dependency update - all security checks passed"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Enable auto-merge with squash
       - name: Enable auto-merge
         run: |
-          gh pr merge "${{ steps.pr.outputs.number }}" --auto --squash
+          gh pr merge "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --auto --squash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Comment on success
         if: success()
         run: |
-          gh pr comment "${{ steps.pr.outputs.number }}" --body "🤖 This PR has been automatically approved and will be merged once all checks pass."
+          gh pr comment "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --body "🤖 This PR has been automatically approved and will be merged once all checks pass."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
