@@ -27,7 +27,6 @@ from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
     EventType,
-    ImageType,
     MediaType,
     ProviderFeature,
 )
