@@ -436,6 +436,8 @@ class SmartPlaylistProvider(PluginProvider):
                     await self._flush_rules_to_disk()
                 if item.metadata.images:
                     self._images_store[prov_id] = item.metadata.images
+                else:
+                    self._images_store.pop(prov_id, None)
                 break
 
     # --- API commands ---
@@ -699,20 +701,8 @@ class SmartPlaylistProvider(PluginProvider):
         return playlist
 
     def _images_for(self, playlist_id: str) -> UniqueList[MediaItemImage]:
-        """Return cached images for the playlist, with icon.svg as fallback."""
-        if images := self._images_store.get(playlist_id):
-            return images
-        # Fallback: use provider icon if no artwork available
-        return UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path="icon.svg",
-                    provider=self.instance_id,
-                    remotely_accessible=False,
-                )
-            ]
-        )
+        """Return cached images for the playlist, or empty list if none available."""
+        return self._images_store.get(playlist_id, UniqueList([]))
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Return the smart playlist provider icon as fallback image."""
