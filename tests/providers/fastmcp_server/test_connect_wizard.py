@@ -1,4 +1,5 @@
-"""Tests for the Connect Wizard — endpoints, action handler, client templates.
+"""
+Tests for the Connect Wizard — endpoints, action handler, client templates.
 
 These tests run against the real :func:`mount_connect_wizard` flow on a
 ``FakeWebserver`` (no real MA stack required); ``mass.webserver.auth`` is
@@ -96,7 +97,8 @@ async def test_connect_html_served(wizard_client: TestClient) -> None:
 
 
 async def test_connect_page_sets_security_headers(wizard_client: TestClient) -> None:
-    """The wizard response carries Referrer-Policy, CSP, and X-Frame-Options.
+    """
+    The wizard response carries Referrer-Policy, CSP, and X-Frame-Options.
 
     Two leak vectors motivate these:
 
@@ -129,7 +131,8 @@ async def test_connect_page_sets_security_headers(wizard_client: TestClient) -> 
 async def test_scheme_guard_rejects_plaintext_non_loopback_login(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """``/connect/login`` over plaintext http to a non-loopback host is refused.
+    """
+    ``/connect/login`` over plaintext http to a non-loopback host is refused.
 
     The wizard's only credential-bearing endpoints (login/exchange/token) must
     not accept plaintext HTTP from a LAN-reachable host — the password and
@@ -179,7 +182,8 @@ async def test_scheme_guard_rejects_plaintext_non_loopback_exchange(
 
 
 def _install_fake_ingress_helper(monkeypatch: pytest.MonkeyPatch, *, is_ingress: bool) -> None:
-    """Install a stub ``is_request_from_ingress`` MA helper that returns ``is_ingress``.
+    """
+    Install a stub ``is_request_from_ingress`` MA helper that returns ``is_ingress``.
 
     HA terminates TLS at its public front door (``https://ha.example/…``)
     and forwards the request to MA over a local socket — so MA sees plain
@@ -219,7 +223,8 @@ async def test_scheme_guard_allows_plaintext_via_ha_ingress(
     wizard_mass: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HA ingress: plaintext non-loopback is OK when the request is on the trusted socket.
+    """
+    HA ingress: plaintext non-loopback is OK when the request is on the trusted socket.
 
     Reproduces the production breakage on
     ``https://ha.nevskiy.su/api/hassio_ingress/<id>/mcp/v1/connect``:
@@ -247,7 +252,8 @@ async def test_scheme_guard_still_rejects_when_ingress_helper_returns_false(
     wizard_mass: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The ingress bypass requires MA's helper to actually confirm the trusted socket.
+    """
+    The ingress bypass requires MA's helper to actually confirm the trusted socket.
 
     A direct LAN request (not via HA ingress) with the same shape — plaintext
     http, non-loopback host — must still be refused. This pins that the
@@ -565,7 +571,8 @@ async def test_login_failure_401(wizard_client: TestClient, wizard_mass: MagicMo
 async def test_login_accepts_dataclass_style_result(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """If MA migrates ``login`` to return a typed object, success still surfaces.
+    """
+    If MA migrates ``login`` to return a typed object, success still surfaces.
 
     The handler used to ``isinstance(result, dict)`` and fall through to "invalid
     credentials" for anything else — a silent break on the only credential
@@ -660,7 +667,8 @@ async def test_token_endpoint_invalid_session_401(
 async def test_token_endpoint_server_dedup_revokes_same_name(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """Prior tokens with the same client-token name for the user are revoked.
+    """
+    Prior tokens with the same client-token name for the user are revoked.
 
     Tokens with other names are left alone; ``create_token`` is still called
     once. Asserts the call against ``auth.revoke_token`` (sanctioned API),
@@ -811,7 +819,8 @@ async def test_action_handler_signals_url_with_bootstrap(
 async def test_action_handler_uses_url_fragment_for_bootstrap(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """The bootstrap rides in the URL ``#fragment``, not the query string.
+    """
+    The bootstrap rides in the URL ``#fragment``, not the query string.
 
     Query-string form would leak the bootstrap into aiohttp access logs and
     every reverse-proxy log on the path; the GET request line is logged.
@@ -856,7 +865,8 @@ async def test_action_handler_no_user_signals_plain_url(wizard_mass: MagicMock) 
 async def test_action_handler_external_base_url_prepended(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """When ``external_base_url`` is provided, the signalled URL is fully qualified.
+    """
+    When ``external_base_url`` is provided, the signalled URL is fully qualified.
 
     Covers HA add-on ingress, where the path-only URL drops the ingress prefix
     and the wizard opens at the wrong location.
@@ -911,7 +921,8 @@ async def test_action_handler_empty_external_base_url_falls_back_to_path(
 async def test_open_connect_gcs_prior_wizard_tokens(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """Prior MCP — wizard bootstrap/session tokens are revoked before the new bootstrap is minted.
+    """
+    Prior MCP — wizard bootstrap/session tokens are revoked before the new bootstrap is minted.
 
     Per-client tokens (``MCP — Cursor`` etc.) are left untouched. Asserts
     against the sanctioned ``auth.revoke_token`` API.
@@ -1057,7 +1068,8 @@ def test_sanitize_external_base_url_accepts_http_schemes(candidate: str) -> None
 
 
 def _install_fake_ma_auth_middleware(monkeypatch: pytest.MonkeyPatch, user: object) -> None:
-    """Make ``get_current_user()`` return ``user`` inside ``_dispatch_open_connect``.
+    """
+    Make ``get_current_user()`` return ``user`` inside ``_dispatch_open_connect``.
 
     The provider imports ``music_assistant.controllers.webserver.helpers.auth_middleware``
     lazily; ``music_assistant`` is an optional / dev-only dep, so we inject a
@@ -1150,7 +1162,8 @@ async def test_dispatch_falls_back_to_config_override(
 async def test_dispatch_rejects_unsafe_override_and_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An override with a non-``http(s)`` scheme is dropped → path-only fallback.
+    """
+    An override with a non-``http(s)`` scheme is dropped → path-only fallback.
 
     Guards against an admin pasting ``javascript:…`` into the config; the
     frontend would otherwise hand that straight to ``window.open``.
@@ -1222,7 +1235,8 @@ def test_cursor_template_round_trips() -> None:
 
 
 def test_claude_code_template_uses_positional_url() -> None:
-    """``claude mcp add`` takes the URL as a positional argument, not via ``--url``.
+    """
+    ``claude mcp add`` takes the URL as a positional argument, not via ``--url``.
 
     Regression for the v0.3.x wizard shipping ``claude mcp add ma --transport http
     --url <URL>`` — the CLI ignored ``--url`` and registered an unreachable server.
@@ -1240,7 +1254,8 @@ def test_claude_code_template_uses_positional_url() -> None:
 
 
 def test_openclaw_template_round_trips() -> None:
-    """The OpenClaw preset renders a valid ``openclaw mcp set`` command.
+    """
+    The OpenClaw preset renders a valid ``openclaw mcp set`` command.
 
     The embedded JSON must pin the streamable-HTTP transport and carry the
     minted token as an ``Authorization: Bearer`` header — OpenClaw's bundle-mcp
