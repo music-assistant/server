@@ -73,16 +73,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/create_playlist", self.create_playlist)
+        self.mass.register_api_command(
+            f"music/{api_base}/create_playlist", self.create_playlist, required_role="user"
+        )
         self.mass.register_api_command("music/playlists/playlist_tracks", self.tracks)
         self.mass.register_api_command(
-            "music/playlists/add_playlist_tracks", self.add_playlist_tracks
+            "music/playlists/add_playlist_tracks", self.add_playlist_tracks, required_role="user"
         )
         self.mass.register_api_command(
-            "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
+            "music/playlists/remove_playlist_tracks",
+            self.remove_playlist_tracks,
+            required_role="user",
         )
         self.mass.register_api_command("music/playlists/export_playlist", self.export_playlist)
-        self.mass.register_api_command("music/playlists/import_playlist", self.import_playlist)
+        self.mass.register_api_command(
+            "music/playlists/import_playlist", self.import_playlist, required_role="user"
+        )
 
     async def tracks(
         self,

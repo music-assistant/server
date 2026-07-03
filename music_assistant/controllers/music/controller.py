@@ -218,7 +218,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ],
         )
 
-    @api_command("music/sync")
+    @api_command("music/sync", required_role="user")
     async def start_sync(
         self,
         media_types: list[MediaType] | None = None,

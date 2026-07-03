@@ -42,7 +42,9 @@ class RadioController(MediaControllerBase[Radio]):
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/radio_versions", self.versions)
         self.mass.register_api_command(f"music/{api_base}/export_radios", self.export_radios)
-        self.mass.register_api_command(f"music/{api_base}/import_radios", self.import_radios)
+        self.mass.register_api_command(
+            f"music/{api_base}/import_radios", self.import_radios, required_role="user"
+        )
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
