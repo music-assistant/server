@@ -10,7 +10,6 @@ import pytest
 
 from music_assistant.providers.fastmcp_server.meta_tools.catalog import (
     CATALOG_REFERENCED_TOOL_NAMES,
-    PENDING_CATALOG_TOOL_NAMES,
     apply_intent_adjustments,
     detect_workflow,
     normalize_query_tokens,
@@ -271,13 +270,7 @@ async def test_catalog_referenced_tool_names_exist_in_runtime(
     try:
         tools = await runtime._mcp.list_tools(run_middleware=False)
         registered = {str(getattr(t, "name", "") or "") for t in tools}
-        required = CATALOG_REFERENCED_TOOL_NAMES - PENDING_CATALOG_TOOL_NAMES
-        missing = required - registered
+        missing = CATALOG_REFERENCED_TOOL_NAMES - registered
         assert not missing, f"catalog references unknown tools: {sorted(missing)}"
-        if not (PENDING_CATALOG_TOOL_NAMES - registered):
-            pytest.fail(
-                "All PENDING_CATALOG_TOOL_NAMES are registered — remove the pending "
-                "set from catalog.py (sibling PRs #4390 / #4391 merged)"
-            )
     finally:
         await runtime.stop()
