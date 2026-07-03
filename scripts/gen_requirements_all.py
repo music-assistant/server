@@ -10,7 +10,7 @@ import tomllib
 from pathlib import Path
 
 PACKAGE_REGEX = re.compile(r"^(?:--.+\s)?([-_\.\w\d]+).*==.+$")
-GIT_REPO_REGEX = re.compile(r"^(git\+https:\/\/[-_\.\w\d\/]+[@-_\.\w\d\/]*)$")
+GIT_REPO_REGEX = re.compile(r"^(git\+https:\/\/[-_\.\w\d\/]+[-@_\.\w\d\/]*)$")
 
 # ruff: noqa: T201
 
