@@ -2382,7 +2382,7 @@ async def test_load_images_from_library_populates_cache(tmp_path: Any) -> None:
         )
     ]
 
-    async def mock_iter_library(provider: str | None = None):
+    async def mock_iter_library(_provider: str | None = None):
         yield library_playlist_1
         yield library_playlist_2
 
