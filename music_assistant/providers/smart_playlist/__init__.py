@@ -229,7 +229,7 @@ class SmartPlaylistProvider(PluginProvider):
             "Smart Playlist provider loaded with %d stored playlists", len(self._rules_store)
         )
         # Load images from library on startup
-        self.mass.create_task(self._load_images_from_library())
+        await self._load_images_from_library()
         # Re-add playlists missing from the library (e.g. after a DB reset).
         self.mass.create_task(self._reconcile_library())
         # One-time migration: remove legacy icon.svg from smart playlists
