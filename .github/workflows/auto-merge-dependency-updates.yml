@@ -119,11 +119,26 @@ jobs:
       # Security check 6: Verify changes are only version bumps
       - name: Verify changes are version bumps
         run: |
-          # Check that only music-assistant-frontend or music-assistant-models version changed
           DIFF=$(gh pr diff "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}")
 
-          if ! echo "$DIFF" | grep -qE "music-assistant-(frontend|models)=="; then
-            echo "❌ Changes do not appear to be version bumps"
+          # Every added/removed line (excluding file headers) must be a version
+          # pin of an allowed package, in either pyproject.toml or
+          # requirements_all.txt format.
+          UNEXPECTED=$(echo "$DIFF" \
+            | grep -E '^[+-]' \
+            | grep -vE '^(\+\+\+|---)' \
+            | grep -vE '^[+-][[:space:]]*"?music-assistant-(frontend|models)==[0-9][0-9a-zA-Z.]*"?,?[[:space:]]*$' \
+            || true)
+
+          if [[ -n "$UNEXPECTED" ]]; then
+            echo "❌ Diff contains changes that are not version bumps:"
+            echo "$UNEXPECTED"
+            exit 1
+          fi
+
+          # A pin must be added, not just removed
+          if ! echo "$DIFF" | grep -qE '^\+.*music-assistant-(frontend|models)=='; then
+            echo "❌ No added version pin found"
             exit 1
           fi
 
