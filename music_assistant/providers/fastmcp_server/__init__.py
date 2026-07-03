@@ -53,8 +53,7 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
+    """Return Config entries to setup this provider.
 
     When ``action == "open_connect"`` is dispatched, mint a bootstrap token
     bound to the calling user (when available) and signal MA's frontend to

@@ -1,5 +1,4 @@
-"""
-Tests for the ``players`` sub-server tools.
+"""Tests for the ``players`` sub-server tools.
 
 End-to-end through a FastMCP ``Client`` so the parameter signature and
 filtering behaviour exposed to MCP clients are pinned, not just the
@@ -49,8 +48,7 @@ def _player(
 
 
 def _make_all_players_mock(roster: list[SimpleNamespace]) -> Any:
-    """
-    Side effect mirroring MA's ``all_players(return_unavailable, return_disabled)`` filter.
+    """Side effect mirroring MA's ``all_players(return_unavailable, return_disabled)`` filter.
 
     Lets the tests pin the contract — "we forward the flag to MA" — without
     coupling to a re-implementation in Python.
@@ -74,8 +72,7 @@ def _make_all_players_mock(roster: list[SimpleNamespace]) -> Any:
 
 @pytest.fixture
 def mounted_players(mock_mass: Any) -> Iterator[FastMCP]:
-    """
-    Build a root FastMCP with only the players sub-server mounted.
+    """Build a root FastMCP with only the players sub-server mounted.
 
     Yields rather than returns so future FastMCP lifecycle methods (e.g.
     a ``close()`` / ``shutdown()`` once upstream adds one) can be wired
@@ -97,8 +94,7 @@ def mounted_players(mock_mass: Any) -> Iterator[FastMCP]:
 async def test_list_players_hides_unavailable_by_default(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """
-    Default ``list_players`` call asks MA to omit unavailable and disabled players.
+    """Default ``list_players`` call asks MA to omit unavailable and disabled players.
 
     Matches the spec: a model asked to pick a speaker should not see
     devices MA can no longer reach or that the admin has disabled.
@@ -122,8 +118,7 @@ async def test_list_players_hides_unavailable_by_default(
 async def test_list_players_include_unavailable_returns_all(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """
-    With ``include_unavailable=True`` every player comes through.
+    """With ``include_unavailable=True`` every player comes through.
 
     The unavailable one is still tagged ``state="unavailable"`` so the
     caller can act on it.
@@ -145,8 +140,7 @@ async def test_list_players_include_unavailable_returns_all(
 async def test_list_players_include_disabled_returns_disabled(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """
-    With ``include_disabled=True`` admin-disabled players surface as ``state="disabled"``.
+    """With ``include_disabled=True`` admin-disabled players surface as ``state="disabled"``.
 
     Without the flag MA filters them out before they reach the brief,
     so the ``enabled`` field on the response is always ``True``.
@@ -168,8 +162,7 @@ async def test_list_players_include_disabled_returns_disabled(
 async def test_list_players_synced_player_reports_synced_state(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """
-    A player belonging to an active sync group reports ``state="synced"``.
+    """A player belonging to an active sync group reports ``state="synced"``.
 
     The cached ``playback_state`` on a sync follower stays ``idle``
     because the device doesn't have its own queue — the group plays
@@ -195,8 +188,7 @@ async def test_list_players_synced_player_reports_synced_state(
 async def test_list_players_synced_reads_from_state_object(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """
-    ``state.active_group`` (canonical) wins over the raw dataclass attr.
+    """``state.active_group`` (canonical) wins over the raw dataclass attr.
 
     Mirrors the live MA shape — ``Player.state.active_group`` is set
     by ``__final_active_group`` while the raw ``Player.active_group``
@@ -235,8 +227,7 @@ async def test_list_players_synced_reads_from_state_object(
 async def test_list_players_syncgroup_reports_group_volume(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """
-    A SyncGroupPlayer surfaces its ``group_volume`` round-tripped through MCP.
+    """A SyncGroupPlayer surfaces its ``group_volume`` round-tripped through MCP.
 
     Per-player ``volume_level`` is ``None`` on a sync group; the
     canonical volume signal lives on ``state.group_volume``. The brief
