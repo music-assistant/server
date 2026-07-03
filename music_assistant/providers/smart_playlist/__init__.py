@@ -372,11 +372,10 @@ class SmartPlaylistProvider(PluginProvider):
     async def _migrate_legacy_icon(self) -> None:
         """Remove legacy icon.svg from smart playlists (added by versions prior to PR #4447)."""
         try:
-            library_playlists = await self.mass.music.playlists.library_items(
-                provider=self.instance_id
-            )
             migrated_count = 0
-            for playlist in library_playlists:
+            async for playlist in self.mass.music.playlists.iter_library_items(
+                provider=self.instance_id
+            ):
                 if not playlist.metadata.images:
                     continue
 
@@ -389,7 +388,7 @@ class SmartPlaylistProvider(PluginProvider):
                 if len(old_images) != len(playlist.metadata.images):
                     playlist.metadata.images = UniqueList(old_images)
                     await self.mass.music.playlists.update_item_in_library(
-                        playlist.item_id, playlist
+                        playlist.item_id, playlist, overwrite=True
                     )
                     migrated_count += 1
                     self.logger.debug(
