@@ -44,7 +44,8 @@ async def test_get_entries_lists_editable(mounted_config: Any, mock_config_targe
 
 
 def test_entry_dump_accepts_labelless_entry() -> None:
-    """A ConfigEntry whose ``label`` is None must dump without choking.
+    """
+    A ConfigEntry whose ``label`` is None must dump without choking.
 
     Upstream ``music_assistant_models`` widened ``ConfigEntry.label`` to
     ``str | None``; ``_entry_dump`` passes the label straight through, so the
@@ -68,7 +69,8 @@ def test_entry_dump_accepts_labelless_entry() -> None:
 
 
 def test_entry_dump_resolves_localized_label_and_description() -> None:
-    """`_entry_dump` surfaces the localized label/description, not raw None.
+    """
+    `_entry_dump` surfaces the localized label/description, not raw None.
 
     Server-category entries set label/description to None and rely on the
     strings.json translations resolved at serialization, so the dump must read
@@ -136,7 +138,8 @@ async def test_get_entries_masks_secret_current_value(
     mounted_config: Any,
     mock_config_targets: Any,  # noqa: ARG001
 ) -> None:
-    """config_get_entries must mask SECURE_STRING current_value.
+    """
+    config_get_entries must mask SECURE_STRING current_value.
 
     Regression for PR #99 review finding B.
     """

@@ -1,4 +1,5 @@
-"""Mount the Connect Wizard endpoints onto MA's webserver.
+"""
+Mount the Connect Wizard endpoints onto MA's webserver.
 
 Five routes are registered under ``<mount_path>/connect``; the returned
 callable removes all of them when invoked (called from
@@ -34,7 +35,8 @@ async def mount_connect_wizard(
     extra_origins_csv: str = "",
     trust_forwarded_proto: bool = False,
 ) -> Callable[[], None]:
-    """Register the wizard routes and return a callable that unregisters them.
+    """
+    Register the wizard routes and return a callable that unregisters them.
 
     :param mass: MusicAssistant instance.
     :param mount_path: HTTP path prefix where the MCP server is mounted
