@@ -15,7 +15,12 @@ from music_assistant_models.errors import InsufficientPermissions, InvalidDataEr
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
-from music_assistant.controllers.webserver.auth import AuthenticationManager
+from music_assistant.controllers.webserver.auth import (
+    TOKEN_ABSOLUTE_MAX_EXPIRATION,
+    TOKEN_LONG_LIVED_EXPIRATION,
+    TOKEN_SHORT_LIVED_EXPIRATION,
+    AuthenticationManager,
+)
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
@@ -745,6 +750,70 @@ async def test_long_lived_token_no_auto_renewal(auth_manager: AuthenticationMana
 
     # Expiration should remain the same for long-lived tokens
     assert updated_expires_at == initial_expires_at
+
+
+async def test_long_lived_token_default_is_one_year() -> None:
+    """Test that the long-lived token default lifetime is 365 days."""
+    assert TOKEN_LONG_LIVED_EXPIRATION == 365
+
+
+async def test_token_absolute_max_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a short-lived token past its absolute max lifetime cannot be renewed.
+
+    The sliding window keeps a session alive on use, but a token created longer than
+    the absolute maximum ago must be rejected regardless of the sliding expiration.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="absmaxuser", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "Abs Max Test", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+
+    # Created past the absolute max but with a future sliding expires_at, so only the cap can reject it.
+    created_at = utc() - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)
+    future_expires = utc() + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_row["token_id"]},
+        {"created_at": created_at.isoformat(), "expires_at": future_expires.isoformat()},
+    )
+
+    # Token must be rejected and the row deleted.
+    authenticated_user = await auth_manager.authenticate_with_token(token)
+    assert authenticated_user is None
+
+    deleted_row = await auth_manager.database.get_row(
+        "auth_tokens", {"token_id": token_row["token_id"]}
+    )
+    assert deleted_row is None
+
+
+async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that revoke_tokens_for_user commits so the tokens no longer authenticate.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="guestrevoke", role=UserRole.GUEST)
+    token = await auth_manager.create_token(user, "Guest Token", is_long_lived=False)
+
+    # Token works before revocation
+    assert await auth_manager.authenticate_with_token(token) is not None
+
+    revoked = await auth_manager.revoke_tokens_for_user(user)
+    assert revoked == 1
+
+    # Reopen the raw connection to roll back any uncommitted tx: an uncommitted DELETE would resurrect the row.
+    await auth_manager.database._db.close()
+    await auth_manager.database.setup()
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    assert await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash}) is None
+    assert await auth_manager.authenticate_with_token(token) is None
 
 
 async def test_username_case_insensitive_creation(auth_manager: AuthenticationManager) -> None:

@@ -53,7 +53,9 @@ DB_SCHEMA_VERSION = 5
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
-TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
+TOKEN_LONG_LIVED_EXPIRATION = 365  # Long-lived tokens (1 year, no auto-renewal)
+# Max days a sliding short-lived session may live from creation before re-auth.
+TOKEN_ABSOLUTE_MAX_EXPIRATION = 90
 
 # Join code constants (short codes for QR/link-based login)
 JOIN_CODE_LENGTH = 6
@@ -162,6 +164,10 @@ class AuthenticationManager:
             updates = {"last_used_at": now.isoformat()}
 
             if not is_long_lived:
+                created_at = datetime.fromisoformat(token_row["created_at"])
+                if now > created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION):
+                    await self.database.delete("auth_tokens", {"token_id": token_id})
+                    return None
                 # Short-lived token: extend expiration on each use (sliding window)
                 new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
                 updates["expires_at"] = new_expires_at.isoformat()
@@ -204,6 +210,10 @@ class AuthenticationManager:
         legacy_updates: dict[str, str] = {"last_used_at": now.isoformat()}
 
         if not is_long_lived and token_row["expires_at"]:
+            created_at = datetime.fromisoformat(token_row["created_at"])
+            if now > created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION):
+                await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+                return None
             # Short-lived token: extend expiration on each use (sliding window)
             new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
             legacy_updates["expires_at"] = new_expires_at.isoformat()
@@ -585,8 +595,9 @@ class AuthenticationManager:
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., device name).
         :param is_long_lived: Whether this is a long-lived token (default: False).
-            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
-            Long-lived tokens (True): No auto-renewal, expire after 10 years.
+            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity,
+            capped at an absolute maximum lifetime from creation (see TOKEN_ABSOLUTE_MAX_EXPIRATION).
+            Long-lived tokens (True): No auto-renewal, expire after 1 year.
         :return: JWT token string.
         """
         # Generate unique token ID
@@ -595,7 +606,7 @@ class AuthenticationManager:
         # Calculate expiration based on token type
         created_at = utc()
         if is_long_lived:
-            # Long-lived tokens expire after 10 years (no auto-renewal)
+            # Long-lived tokens expire after 1 year (no auto-renewal)
             expires_at = created_at + timedelta(days=TOKEN_LONG_LIVED_EXPIRATION)
         else:
             # Short-lived tokens expire after 30 days (with auto-renewal on use)
@@ -673,11 +684,12 @@ class AuthenticationManager:
         for token_row in token_rows:
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
-        # Delete all tokens in one go
+        # Delete all tokens in one go. execute() does not commit, so commit explicitly.
         await self.database.execute(
             "DELETE FROM auth_tokens WHERE user_id = :user_id",
             {"user_id": user.user_id},
         )
+        await self.database.commit()
 
         self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
         return len(token_rows)
@@ -977,7 +989,7 @@ class AuthenticationManager:
         Create a new long-lived access token for current user or another user (admin only).
 
         Long-lived tokens are intended for external integrations and API access.
-        They expire after 10 years and do NOT auto-renew on use.
+        They expire after 1 year and do NOT auto-renew on use.
 
         Short-lived tokens (for regular user sessions) are only created during login
         and auto-renew on each use (sliding 30-day expiration window).
