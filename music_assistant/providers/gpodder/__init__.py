@@ -39,6 +39,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
     get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
@@ -434,6 +435,7 @@ class GPodder(MusicProvider):
                 prov_podcast_id=prov_podcast_id,
                 episode_cnt=cnt,
                 podcast_cover=podcast_cover,
+                podcast_name=podcast.get("title"),
                 domain=self.domain,
                 instance_id=self.instance_id,
             )
@@ -486,6 +488,7 @@ class GPodder(MusicProvider):
             _, _guid_or_stream_url = mass_episode.item_id.split(" ")
             # this is enough, as internal
             if guid_or_stream_url == _guid_or_stream_url:
+                await self._enrich_episode_chapters(podcast_id, guid_or_stream_url, mass_episode)
                 return mass_episode
         raise MediaNotFoundError("Did not find episode.")
 
@@ -578,6 +581,32 @@ class GPodder(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _enrich_episode_chapters(
+        self, prov_podcast_id: str, guid_or_stream_url: str, mass_episode: PodcastEpisode
+    ) -> None:
+        """
+        Attach external ``podcast:chapters`` JSON to a resolved single episode, if any.
+
+        :param prov_podcast_id: Provider podcast id the episode belongs to.
+        :param guid_or_stream_url: Episode identifier used to locate the raw parsed episode.
+        :param mass_episode: The episode to enrich in place; left untouched on any failure.
+        """
+        if mass_episode.metadata.chapters:
+            return
+        podcast = await self._cache_get_podcast(prov_podcast_id)
+        for episode in podcast.get("episodes", []):
+            try:
+                stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+            except ValueError:
+                continue
+            if guid_or_stream_url in (guid, stream_url):
+                await enrich_episode_chapters(
+                    session=self.mass.http_session,
+                    chapters_json_url=episode.get("chapters_json_url"),
+                    mass_episode=mass_episode,
+                )
+                return
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         podcast = await self._cache_get_podcast(podcast_id)

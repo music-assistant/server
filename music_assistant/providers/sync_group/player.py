@@ -478,6 +478,17 @@ class SyncGroupPlayer(Player):
         leader_removed = False
         for member_id in player_ids_to_remove or []:
             if member_id not in self._attr_group_members:
+                # Fallback for a member that was grouped to the sync leader
+                # outside of MA (e.g. via the Sonos app): it isn't part of our
+                # tracked member list but does show up in group_members via the
+                # leader's live state. Forward its removal to the sync leader
+                # instead of silently skipping it.
+                if (
+                    self.sync_leader
+                    and member_id != self.sync_leader.player_id
+                    and member_id in self.sync_leader.state.group_members
+                ):
+                    final_players_to_remove.append(member_id)
                 continue
             if member_id in self._attr_static_group_members:
                 # static members can not be removed from the group

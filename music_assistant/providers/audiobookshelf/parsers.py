@@ -165,6 +165,7 @@ def parse_podcast_episode(
     *,
     episode: AbsPodcastEpisode | AbsPodcastEpisodeExpanded,
     prov_podcast_id: str,
+    prov_podcast_name: str | None,
     fallback_episode_cnt: int | None = None,
     instance_id: str,
     domain: str,
@@ -185,6 +186,7 @@ def parse_podcast_episode(
     A PodcastEpisode has only limited information, and is currently only used
     within the recommendations.
     """
+    # ruff: noqa: PLR0913 (too many arguments)
     episode_id = f"{prov_podcast_id} {episode.id_}"
 
     if isinstance(episode, AbsPodcastEpisodeExpanded):
@@ -215,8 +217,9 @@ def parse_podcast_episode(
     release_date: datetime | None = None
     if episode.published_at is not None:
         position = -episode.published_at
-        # abs published_at is ms epoch
-        release_date = from_utc_timestamp(episode.published_at / 1000)
+        # abs published_at is ms epoch; leave the date unset if it is out of range
+        with suppress(ValueError, OverflowError, OSError):
+            release_date = from_utc_timestamp(episode.published_at / 1000)
     else:
         position = 0
         if fallback_episode_cnt is not None:
@@ -230,7 +233,7 @@ def parse_podcast_episode(
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,
-            name=episode.title,
+            name=prov_podcast_name or episode.title,
             media_type=MediaType.PODCAST,
         ),
         provider_mappings=provider_mappings,
@@ -253,6 +256,17 @@ def parse_podcast_episode(
     if media_progress is not None and media_progress.current_time is not None:
         mass_episode.resume_position_ms = int(media_progress.current_time * 1000)
         mass_episode.fully_played = media_progress.is_finished
+
+    if episode.chapters:
+        mass_episode.metadata.chapters = [
+            MediaItemChapter(
+                position=position,
+                name=chapter.title,
+                start=chapter.start,
+                end=chapter.end,
+            )
+            for position, chapter in enumerate(episode.chapters, 1)
+        ]
 
     return mass_episode
 

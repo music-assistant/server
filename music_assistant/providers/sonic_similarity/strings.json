@@ -18,7 +18,7 @@
     },
     "similar_tracks_preset": {
       "label": "Similar Tracks preset",
-      "description": "Similarity weight preset applied to the Similar Tracks action (Traits engine only). 'balanced' is uniform; 'vibe' weights mood + timbre; 'party' weights rhythm + regularity; 'genre_era' stays close to the seed's genre and decade; 'discover' favours novelty (low genre/era weighting).",
+      "description": "Similarity weight preset applied to the Similar Tracks action (Traits engine only). 'balanced' weights each trait by how much it drives sonic similarity; 'vibe' weights mood + timbre; 'party' weights rhythm + regularity; 'genre_era' stays close to the seed's genre and decade; 'discover' favours novelty (low genre/era weighting).",
       "options": {
         "balanced": "Balanced",
         "vibe": "Vibe (mood + timbre)",
@@ -45,7 +45,7 @@
     },
     "discover_preset": {
       "label": "Discover row preset",
-      "description": "Similarity weight preset used to rank candidates for the row (Traits engine only). 'discover' favours novelty (low genre/era weighting); 'balanced' is uniform; 'vibe' weights mood + timbre; 'party' weights rhythm + regularity; 'genre_era' stays close to the seed's genre and decade.",
+      "description": "Similarity weight preset used to rank candidates for the row (Traits engine only). 'discover' favours novelty (low genre/era weighting); 'balanced' weights each trait by how much it drives sonic similarity; 'vibe' weights mood + timbre; 'party' weights rhythm + regularity; 'genre_era' stays close to the seed's genre and decade.",
       "options": {
         "discover": "Discover (novelty-leaning)",
         "balanced": "Balanced",

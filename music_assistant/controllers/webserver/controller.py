@@ -250,10 +250,8 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
-        # legacy /imageproxy?provider=&path= form — deprecated; the canonical
-        # /imageproxy/<image_id> form is registered as a dynamic route on the
-        # webserver by MetaDataController.post_setup()
-        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_legacy_imageproxy))
+        # the canonical /imageproxy/<image_id> form is registered as a dynamic
+        # route on the webserver by MetaDataController.post_setup()
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
@@ -749,6 +747,15 @@ class WebserverController(CoreController):
 
             # If return_url provided, append code parameter and return as redirect_to
             if return_url:
+                # SECURITY FIX (GHSA-j369-4c4w-7qmq): only forward the token to trusted
+                # destinations. is_allowed_redirect_url returns (True, "external") for any
+                # unknown external URL, so checking is_valid alone would still leak the JWT.
+                # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
+                # the token immediately with no consent step, so "external" must be rejected.
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category != "trusted":
+                    return web.Response(status=400, text="Invalid return_url")
+
                 # Insert code parameter before any hash fragment
                 code_param = f"code={quote(token, safe='')}"
                 if "#" in return_url:

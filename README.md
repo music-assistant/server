@@ -20,17 +20,28 @@ ____________
 
 ## Running the server
 
-Music Assistant can be operated as a complete standalone product but it is actually tailored to use side by side with Home Assistant, it is meant with automation in mind, hence our recommended installation method is to run the server as a Home assistant Add-on.
+Music Assistant can be operated as a complete standalone product but it is actually tailored to use side by side with Home Assistant, it is meant with automation in mind, hence our recommended installation method is to run the server as a Home Assistant app.
 
 
-### Installation Instructions
+### Supported installation methods
 
-See here https://music-assistant.io/installation/
+The only officially supported ways to run the Music Assistant server are:
+
+- **Home Assistant app** (recommended) — see https://music-assistant.io/installation/
+- **Docker container** — `ghcr.io/music-assistant/server`
+
+Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (6.1+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
 
 [repository-badge]: https://img.shields.io/badge/Add%20repository%20to%20my-Home%20Assistant-41BDF5?logo=home-assistant&style=for-the-badge
 [repository-url]: https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon
 
-Note that although Music Assistant's main code is written in python, it has multiple dependencies on external/OS components such as ffmpeg and custom binaries and it is therefore not possible to run it as standalone pypi package. The only available installation method to run the Music Assistant server is by running the Docker container or the Home Assistant add-on.
+### Running from source (development)
+
+For local development you provide the system dependencies yourself — **Python 3.14+** and **ffmpeg 6.1+** are required.
+
+- `scripts/setup.sh` — create the virtualenv and install dependencies and pre-commit hooks
+- `python -m music_assistant --log-level debug` — run the server locally (listens on http://localhost:8095)
+- `pytest` runs the tests; `pre-commit run --all-files` runs the linters
 
 ---
 

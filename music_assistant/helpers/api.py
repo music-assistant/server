@@ -366,7 +366,10 @@ class APICommandHandler:
 
 
 def api_command(
-    command: str, authenticated: bool = True, required_role: str | None = None
+    command: str,
+    authenticated: bool = True,
+    required_role: str | None = None,
+    alias: bool = False,
 ) -> Callable[[_F], _F]:
     """
     Decorate a function as API route/command.
@@ -374,12 +377,15 @@ def api_command(
     :param command: The command name/path.
     :param authenticated: Whether authentication is required (default: True).
     :param required_role: Required user role ("admin" or "user"), None means any authenticated user.
+    :param alias: Whether this is a backward-compatible alias (default: False).
+        Aliases remain functional but are hidden from the API documentation.
     """
 
     def decorate(func: _F) -> _F:
         func.api_cmd = command  # type: ignore[attr-defined]
         func.api_authenticated = authenticated  # type: ignore[attr-defined]
         func.api_required_role = required_role  # type: ignore[attr-defined]
+        func.api_alias = alias  # type: ignore[attr-defined]
         return func
 
     return decorate

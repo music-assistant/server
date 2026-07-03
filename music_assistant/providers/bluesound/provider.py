@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
 
 from zeroconf import ServiceStateChange
 
@@ -33,7 +33,7 @@ class BluesoundDiscoveryInfo(TypedDict):
 class BluesoundPlayerProvider(PlayerProvider):
     """Bluos compatible player provider, providing support for bluesound speakers."""
 
-    player_map: dict[tuple[str, int], str] = {}
+    player_map: ClassVar[dict[tuple[str, int], str]] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

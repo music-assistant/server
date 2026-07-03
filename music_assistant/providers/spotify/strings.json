@@ -32,6 +32,14 @@
     }
   },
   "media": {
+    "folder": {
+      "new_releases": {
+        "name": "New Releases"
+      },
+      "genres_and_moods": {
+        "name": "Genres & Moods"
+      }
+    },
     "playlist": {
       "liked_songs": {
         "name": "Liked Songs {0}"
@@ -45,6 +53,9 @@
   },
   "config_categories": {
     "developer_token": "Developer Token"
+  },
+  "errors": {
+    "refresh_token_invalid": "Your Spotify session has expired or been revoked. Please re-authenticate to continue using Spotify."
   },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."

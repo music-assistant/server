@@ -18,10 +18,10 @@ from uuid import uuid4
 from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
 )
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -73,7 +73,7 @@ async def test_default_resolves_library_only_artist(mass: MusicAssistant) -> Non
     track_a = await _add_track(mass, "Dancing Queen", [artist])
     track_b = await _add_track(mass, "Mamma Mia", [artist])
 
-    result = await mass.player_queues.get_artist_tracks(artist)
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
     assert {t.name for t in result} == {track_a.name, track_b.name}
 
@@ -84,7 +84,7 @@ async def test_prefer_library_returns_library_tracks(mass: MusicAssistant) -> No
     track = await _add_track(mass, "Waterloo", [artist])
     _select(mass, "prefer_library")
 
-    result = await mass.player_queues.get_artist_tracks(artist)
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
     assert {t.name for t in result} == {track.name}
 
@@ -95,7 +95,7 @@ async def test_legacy_all_album_tracks_maps_to_all_tracks(mass: MusicAssistant) 
     track = await _add_track(mass, "SOS", [artist])
     _select(mass, "all_album_tracks")
 
-    result = await mass.player_queues.get_artist_tracks(artist)
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
     assert {t.name for t in result} == {track.name}
 
@@ -106,7 +106,7 @@ async def test_legacy_library_album_tracks_maps_to_library_tracks(mass: MusicAss
     track = await _add_track(mass, "Fernando", [artist])
     _select(mass, "library_album_tracks")
 
-    result = await mass.player_queues.get_artist_tracks(artist)
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
     assert {t.name for t in result} == {track.name}
 
@@ -117,7 +117,7 @@ async def test_top_tracks_excludes_library_tracks(mass: MusicAssistant) -> None:
     await _add_track(mass, "Honey Honey", [artist])
     _select(mass, "top_tracks")
 
-    result = await mass.player_queues.get_artist_tracks(artist)
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
     assert "Honey Honey" not in {t.name for t in result}
 
@@ -143,7 +143,7 @@ def _artist_obj(mappings: set[ProviderMapping] | None = None) -> Artist:
 
 
 def _fake_queues(selection: str) -> MagicMock:
-    """Create a mock standing in for the controller, with the artist option preselected."""
+    """Create a mock standing in for the media resolver, with the artist option preselected."""
     fake = MagicMock()
     fake.mass.config.get_raw_core_config_value = MagicMock(return_value=selection)
     return fake
@@ -159,9 +159,7 @@ async def test_all_tracks_unions_and_dedups_sources() -> None:
         return_value=[_track_obj("Shared"), _track_obj("ProvOnly")]
     )
 
-    result = await PlayerQueuesController.get_artist_tracks(
-        cast("PlayerQueuesController", fake), _artist_obj()
-    )
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
 
     assert sorted(t.name for t in result) == ["LibOnly", "ProvOnly", "Shared"]
 
@@ -172,9 +170,7 @@ async def test_all_tracks_keeps_distinct_versions() -> None:
     fake._library_artist_tracks = AsyncMock(return_value=[_track_obj("Song", "")])
     fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("Song", "Remix")])
 
-    result = await PlayerQueuesController.get_artist_tracks(
-        cast("PlayerQueuesController", fake), _artist_obj()
-    )
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
 
     assert sorted(t.version for t in result) == ["", "Remix"]
 
@@ -185,9 +181,7 @@ async def test_all_tracks_survives_a_failing_source() -> None:
     fake._library_artist_tracks = AsyncMock(return_value=[_track_obj("Local")])
     fake._provider_artist_tracks = AsyncMock(side_effect=RuntimeError("provider down"))
 
-    result = await PlayerQueuesController.get_artist_tracks(
-        cast("PlayerQueuesController", fake), _artist_obj()
-    )
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
 
     assert {t.name for t in result} == {"Local"}
     fake.logger.warning.assert_called_once()
@@ -199,9 +193,7 @@ async def test_prefer_library_falls_back_to_top_tracks() -> None:
     fake._library_artist_tracks = AsyncMock(return_value=[])
     fake.mass.music.artists.top_tracks = AsyncMock(return_value=[_track_obj("Top")])
 
-    result = await PlayerQueuesController.get_artist_tracks(
-        cast("PlayerQueuesController", fake), _artist_obj()
-    )
+    result = await MediaResolver.get_artist_tracks(cast("MediaResolver", fake), _artist_obj())
 
     assert {t.name for t in result} == {"Top"}
 
@@ -213,9 +205,7 @@ async def test_provider_artist_tracks_respects_unique_providers() -> None:
     fake.mass.music.get_unique_providers = MagicMock(return_value=["p1"])  # p2 filtered out
     fake.mass.music.artists.tracks = AsyncMock(return_value=[_track_obj("Dancing Queen")])
 
-    result = await PlayerQueuesController._provider_artist_tracks(
-        cast("PlayerQueuesController", fake), artist
-    )
+    result = await MediaResolver._provider_artist_tracks(cast("MediaResolver", fake), artist)
 
     assert [t.name for t in result] == ["Dancing Queen"]
     # only the unique provider is queried (the duplicate streaming domain is skipped)

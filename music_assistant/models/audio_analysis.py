@@ -10,12 +10,31 @@ music_assistant_models.audio_analysis instead.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from datetime import datetime
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 from mashumaro import DataClassDictMixin
 from mashumaro.config import BaseConfig
+
+
+class AudioAnalysisError(Exception):
+    """Raised by an Audio Analysis provider to fail the current analysis."""
+
+    def __init__(self, reason: str, retry_at: datetime | None = None) -> None:
+        """
+        Initialize the error.
+
+        :param reason: Human-readable failure reason.
+        :param retry_at: Timezone-aware datetime when a retry is allowed; None (default)
+            means do not retry.
+        """
+        if retry_at is not None and retry_at.tzinfo is None:
+            raise ValueError("retry_at must be timezone-aware")
+        super().__init__(reason)
+        self.reason = reason
+        self.retry_at = retry_at
 
 
 @dataclass(kw_only=True)
@@ -96,7 +115,7 @@ class AudioAnalysisData(DataClassDictMixin):
     extra_data: dict[str, Any] | None = None
 
     class Config(BaseConfig):  # noqa: D106
-        serialization_strategy = {
+        serialization_strategy = {  # noqa: RUF012  # mashumaro Config attr; ClassVar conflicts with BaseConfig
             np.ndarray: {
                 "serialize": lambda x: x.tolist(),
                 "deserialize": lambda x: np.asarray(x, dtype=np.float32),

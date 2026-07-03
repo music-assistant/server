@@ -20,7 +20,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.tags import write_identifier_tags
@@ -234,7 +234,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         user_key = self.config.get_value(CONF_API_KEY)
         if isinstance(user_key, str) and user_key:
             return user_key
-        return str(app_var(14))
+        return str(app_var("acoustid_api_key"))
 
     async def _start_analysis(
         self,

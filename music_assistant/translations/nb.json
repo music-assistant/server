@@ -60,7 +60,7 @@
   "common.config_entries.username.label": "Brukernavn",
   "common.config_entries.volume_normalization.description": "Aktiver volumnormalisering basert på EBU-R128-standarden uten å påvirke dynamisk rekkevidde",
   "common.config_entries.volume_normalization.label": "Aktiver volumnormalisering (EBU-R128-basert)",
-  "common.config_entries.volume_normalization_target.description": "Juster gjennomsnittlig (oppfattet) lydstyrke til dette målnivået, standard er -17 LUFS **ADVARSEL:** Hvis du setter nivået for høyt, kan det føre til klipping!",
+  "common.config_entries.volume_normalization_target.description": "Juster gjennomsnittlig (oppfattet) lydstyrke til dette målnivået, standard er -14 LUFS **ADVARSEL:** Hvis du setter nivået for høyt, kan det føre til klipping!",
   "common.config_entries.volume_normalization_target.label": "Målnivå for volumnormalisering",
   "common.media.albums.name": "Album",
   "common.media.artists.name": "Artister",

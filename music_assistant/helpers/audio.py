@@ -23,7 +23,6 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
-    CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
     MASS_LOGGER_NAME,
@@ -35,7 +34,7 @@ from .ffmpeg import get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig, PlayerQueueConfig
+    from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -714,11 +713,18 @@ def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
 
 def get_normalization_mode(
     core_config: CoreConfig,
-    queue_config: PlayerQueueConfig,
+    volume_normalization_enabled: bool,
     streamdetails: StreamDetails,
 ) -> VolumeNormalizationMode:
-    """Get the volume normalization mode for a given queue and stream."""
-    if not queue_config.get_value(CONF_VOLUME_NORMALIZATION):
+    """
+    Get the volume normalization mode for a given queue and stream.
+
+    :param core_config: The streams core config (holds the radio/tracks normalization preferences).
+    :param volume_normalization_enabled: Whether normalization is enabled for the queue, already
+        resolved from the per-queue setting and its global (queue controller) fallback.
+    :param streamdetails: The stream to evaluate.
+    """
+    if not volume_normalization_enabled:
         # disabled for this queue
         return VolumeNormalizationMode.DISABLED
     if streamdetails.media_type == MediaType.AUDIO_SOURCE:

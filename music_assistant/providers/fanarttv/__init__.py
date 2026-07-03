@@ -11,7 +11,7 @@ from music_assistant_models.enums import ConfigEntryType, ExternalID, ImageType,
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -186,10 +186,10 @@ class FanartTvMetadataProvider(MetadataProvider):
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
         headers = {
-            "api-key": app_var(4),
+            "api-key": app_var("fanarttv_api_key"),
         }
         if client_key := self.config.get_value(CONF_CLIENT_KEY):
-            headers["client_key"] = client_key
+            headers["client_key"] = str(client_key)
         async with (
             self.throttler,
             self.mass.http_session_no_ssl.get(

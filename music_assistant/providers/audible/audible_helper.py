@@ -721,7 +721,8 @@ class AudibleHelper:
         book.metadata.languages = UniqueList([audiobook_data.get("language") or ""])
         if release_date := audiobook_data.get("release_date"):
             with suppress(ValueError):
-                datetime.strptime(release_date, "%Y-%m-%d").astimezone(UTC)
+                parsed_date = datetime.strptime(release_date, "%Y-%m-%d").astimezone(UTC)
+                book.metadata.release_date = parsed_date
 
         # Set review if available
         reviews = audiobook_data.get("editorial_reviews", [])

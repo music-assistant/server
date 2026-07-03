@@ -62,8 +62,8 @@ and the targets for playback, and coordinates with several sibling controllers:
   calls back into the queue controller to prepare the next item's audio buffer.
 - **Config Controller (`mass.config`)** — supplies this controller's own core config values
   (default enqueue options and selection modes), read back at enqueue time.
-- **Cache Controller (`mass.cache`)** — persists and restores `PlayerQueue` state and queue items
-  per player across restarts.
+- **Cache Controller (`mass.cache`)** — persists and restores each queue's `PlayerQueueData` (its
+  wire `PlayerQueue` snapshot plus the server-only state) and queue items per player across restarts.
 - **Webserver / Auth (`mass.webserver.auth`)** — resolves the current/queue user for permission
   checks and for user-scoped operations (resume positions, recently-played), and carries the
   current user into background work.
@@ -74,19 +74,21 @@ and the targets for playback, and coordinates with several sibling controllers:
 
 | Type | Role |
 | --- | --- |
-| `PlayerQueuesController` | The controller: owns all live `PlayerQueue` objects and their items, exposes the API commands, and bridges player events to queue state. Subclass of `CoreController`. |
-| `PlayerQueue` | Per-player queue model holding the playback state and the flags that drive behaviour — playback state, shuffle/repeat, don't-stop-the-music, flow mode, dynamic/radio source, the current item and index, and elapsed time. Serializable to and from the cache. |
+| `PlayerQueuesController` | The controller: owns all live `PlayerQueueData` records, exposes the API commands, and bridges player events to queue state. Subclass of `CoreController`. |
+| `PlayerQueue` (models) | The **wire snapshot** of a queue — a simplified, client-facing view that is shared with API clients over the websocket. Carries the client-relevant playback state and behaviour flags: playback state, shuffle/repeat/crossfade/autoplay, flow mode, the `sources` (as `ItemMapping`s), the current item and index, and elapsed time. It holds no server-only state and is not itself cache-serialized. |
+| `PlayerQueueData` (server) | The **complete, server-held state** of a queue (`state.py`). Wraps the wire `PlayerQueue` and adds the state that never leaves the server: the ordered `QueueItem` list, the full media items behind the dynamic `sources`, the enqueued parent items, the owning user, the transient stream-session fields, and runtime-only bookkeeping. Owns the cache (de)serialization for the pair. One per `queue_id`. |
 | `QueueItem` | A single playable entry: the media-item reference, its resolved stream details, an ordering index, and per-item `extra_attributes` (e.g. playback speed). Serializable to and from the cache. |
 | `Player` / `PlayerMedia` | `Player` is the device whose real-time state the queue is reconciled against (state, active source, corrected elapsed time, type). `PlayerMedia` is the resolved playback payload (uri, images, ...) handed to the player for a queue item. |
 | `MediaItemType` family | The source media abstractions (track, album, artist, playlist, podcast, podcast episode, audiobook, genre, browse folder, item mapping) that the controller expands/resolves into concrete tracks and `QueueItem`s before enqueueing. |
 
-The live queue (its `PlayerQueue` and its ordered `QueueItem` list) is currently held in
-controller-owned side dictionaries keyed by `queue_id`, with both serialized to and from the cache.
+The distinction between the two queue types is central: `PlayerQueue` is the lightweight snapshot on
+the wire, while `PlayerQueueData` is the full server-side record (one per `queue_id`) that owns it —
+analogous to how the Player Controller pairs runtime state with the wire `Player` model.
 
 ## Invariants
 
 - **`queue_id == player_id`.** A `PlayerQueue`'s id is always the id of the player that owns it
-  (a leaf player, a group player, or a sync leader). Every per-queue dictionary on the controller
+  (a leaf player, a group player, or a sync leader). Every per-queue record on the controller
   and the cache entries are keyed by this shared id, so provider and transport commands keyed on
   `queue_id` target the correct player.
 - **One queue object per player; reconciliation gated by type.** A `PlayerQueue` object is created
@@ -103,16 +105,27 @@ controller-owned side dictionaries keyed by `queue_id`, with both serialized to 
 
 ## State and Persistence
 
-All live state lives in memory on the controller instance, as per-queue dictionaries keyed by
-`queue_id`: the `PlayerQueue` objects, their ordered `QueueItem` lists, previous-state snapshots,
-an in-progress play-action refcount, and a last-counted-play marker, plus a set of currently
-transitioning players.
+All live state lives in memory on the controller instance in one `PlayerQueueData` record per queue,
+keyed by `queue_id` (`state.py`). Each record wraps the wire `PlayerQueue` and holds the rest of the
+server-side state around it: the ordered `QueueItem` list, the full media items behind the dynamic
+`sources`, the enqueued parent items and the owning user, plus the runtime-only fields — a
+previous-state snapshot, a transitioning flag, an in-progress play-action refcount, a
+last-counted-play marker, the flow-buffer-completed session, and the current stream session's id,
+flow play-log and next-enqueued item id.
 
-Durable state is persisted to the cache controller under two categories — queue state and queue
-items — keyed by `queue_id`, with this controller's domain as the provider. On player registration
-the controller restores them from the cache, recomputes derived flags such as the dynamic-source
-flag, and resets the play-action-in-progress flag in case the server was killed mid-action. On
-permanent player removal both cache entries are deleted.
+`PlayerQueueData` owns the pair's (de)serialization; the wire `PlayerQueue` carries no cache logic of
+its own. Durable state is persisted to the cache controller under two categories — queue state (a
+versioned envelope: the `PlayerQueue` snapshot plus the enqueued/source media and the owning user)
+and queue items — keyed by `queue_id`, with this controller's domain as the provider. Writes are
+debounced and marked persistent, and each category is written only when its content actually changed:
+the items list only when the items change, and the state only when its persist-worthy content changes
+(volatile playback-progress fields such as elapsed time are ignored), so neither is re-serialized on
+every state tick. Restore is resilient — the queue's settings survive even if some media items no
+longer deserialize, and an incompatible cache-format version is discarded rather than misread. On
+player registration `PlayerQueueData.from_cache` restores both, recomputes the dynamic-source flag,
+and resets the play-action-in-progress flag in case the server was killed mid-action (the runtime-only
+fields reset to their defaults). On permanent player removal the whole record and both cache entries
+are dropped.
 
 ## Concurrency Model
 
@@ -121,7 +134,7 @@ lock, obtained from the Player Controller. That lock is re-entrant, so nested ac
 queue do not deadlock. While an action is in progress an "action in progress" flag is surfaced on
 the queue and reported to subscribers.
 
-A separate transitioning-players set guards the window during track changes, so concurrent
+A per-queue transitioning flag guards the window during track changes, so concurrent
 player-update callbacks are skipped while a queue is mid-transition. Background and delayed work —
 preloading the next item, buffer preparation, radio fill, resume-on-idle, delayed clear/resume — is
 dispatched as tasks or timers rather than run inline, and the relevant tasks/timers are cancelled on
@@ -157,14 +170,29 @@ Data flow: current index → next-item computation → stream-detail resolution 
 
 ## Radio and Dynamic Continuation
 
-When a queue is a radio source or has don't-stop-the-music enabled, the controller keeps it topped
-up as it nears its end by fetching additional dynamic/similar/recently-played tracks from the Music
-Controller (user-scoped where relevant) and appending them as new `QueueItem`s. Dynamic playlists
-are detected at the queue level, and freshly added items can be shuffled to avoid placing identical
-tracks next to each other.
+When a queue has one or more dynamic sources (its `sources`) or autoplay enabled, the controller
+keeps it topped up as it nears its end by fetching additional tracks and appending them as new
+`QueueItem`s. Freshly added items can be shuffled to avoid placing identical tracks next to each
+other.
 
-Data flow: radio-source / dynamic / don't-stop-the-music flags → Music Controller dynamic-track
-fetch → appended `QueueItem`s.
+Two distinct refill paths share the same "running low" trigger:
+
+- A queue with **dynamic sources** is kept as a small bounded **managed pool** (`managed_pool.py`).
+  Each source contributes candidates by its fill mode — a dynamic playlist (a radio playlist or a
+  provider station) yields its own self-managing batch (`DYNAMIC`), while a finite item mixed into
+  the pool rotates its own unplayed tracks (`TRACKS`). Each top-up apportions slots across the
+  sources by weight, recency-gates every candidate, prefers the least-recently-played and nudges
+  recently-heard artists back, then best-effort spaces the assembled batch so adjacent tracks avoid
+  sharing an artist (seam-aware against the current tail). A "radio" is just a dynamic playlist from
+  the `radio_playlist` provider.
+- **Autoplay** refills using the per-queue configured mode, owned by `autoplay.py`: similar tracks
+  (seeded from the enqueued items), an infinite library mix (genre-biased, least-played), a chosen
+  playlist, or an automatic mode that tries similar first and falls back to the library mix. The
+  mode is read from the per-queue config; the playlist for playlist-mode is a per-queue config value.
+
+Data flow: dynamic `sources` → managed pool (per-source fetch + weighted, recency-gated allocation)
+→ appended `QueueItem`s; autoplay flag → `Autoplay` (mode-based selection) → appended
+`QueueItem`s.
 
 ## Track Resolution
 
@@ -193,25 +221,49 @@ resume-position lookups → seek/resume.
 ```
 player_queues/
 ├── __init__.py     # package entry point; documents purpose + loose coupling; re-exports PlayerQueuesController
-├── controller.py   # PlayerQueuesController(CoreController): in-memory state, config entries, API
-│                   #   commands, player event hooks, and the enqueue/transport/reconciliation/
-│                   #   buffering/radio/resolution/play-counting logic — the large core of the package
+├── controller.py   # PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
+│                   #   the public face — in-memory state, config entries, the API commands and inter-
+│                   #   controller event hooks, the core load/items/signal-update/persistence primitives
+│                   #   and transport commands; the mixins below carry the loading/tracking/feeding
+│                   #   logic, the stateful helper services the rest
+├── base.py         # _PlayerQueuesBase(CoreController): the shared base the three logic mixins extend;
+│                   #   declares the per-queue state, the helper services and the core-op signatures
+│                   #   so each mixin type-checks on its own
 ├── constants.py    # config keys + default values for enqueue options and artist/album selection
-│                   #   modes, plus the two cache category identifiers (queue state, queue items)
+│                   #   modes, the autoplay/crossfade config keys, plus the two cache category
+│                   #   identifiers (queue state, queue items)
+├── autoplay.py     # Autoplay + AutoplayMode: resolves the per-queue autoplay mode and
+│                   #   produces the next batch of tracks for the library-/playlist-based modes
+├── smart_shuffle.py # SmartShuffle: recency-aware, well-spaced ordering of the upcoming items
+├── managed_pool.py # ManagedPool: bounded dynamic-source pool, topped up + recency-gated, with
+│                   #   finite sources materialized to play through once
+├── media_resolver.py # MediaResolver: resolves source media items (artist/album/genre/playlist/
+│                   #   audiobook/podcast/browse folder) into the concrete tracks to enqueue
+├── queue_loader.py # QueueLoaderMixin: applies the enqueue option, loads single items, resume-from-
+│                   #   playlog, next-index, and the dynamic/autoplay queue refills
+├── playback_tracker.py # PlaybackTrackerMixin: reconciles queue state from player updates, end-of-
+│                   #   queue, playback-progress reporting + user-initiated/album-credit play-counting
+├── stream_feeder.py # StreamFeederMixin: enqueues the next item on the player, preloads/prepares its
+│                   #   audio buffer, and cleans up stale buffers
+├── state.py        # PlayerQueueData: the complete server-side per-queue record (the wire PlayerQueue
+│                   #   snapshot + items, source/enqueued media, user, stream-session + runtime fields)
+│                   #   and the cache (de)serialization the wire model no longer carries
 ├── helpers.py      # stateless utility layer: the previous-state snapshot type, the playback-lock /
-│                   #   in-progress-flag decorator, and pure helpers (shuffle, sort, dynamic-source
-│                   #   detection, current playback speed). Imports controller.py only under
-│                   #   TYPE_CHECKING to avoid a cycle
+│                   #   in-progress-flag decorator, and pure helpers (sort, dynamic-source detection,
+│                   #   current playback speed). Never imports the controller; the play-action
+│                   #   decorator types it via a local Protocol (_PlayActionHost) to avoid a cycle
 ├── strings.json    # localization manifest: translatable name + description of the core module
 └── README.md       # this document
 ```
 
 The package shape follows from `controller.py`'s size: the supporting constants and the stateless
-helper layer are split into their own modules, and `helpers.py` imports `controller.py` only under
-`TYPE_CHECKING` to break what would otherwise be a controller↔helpers import cycle. Like the other
-package-style core controllers (cache, players, streams, discovery, webserver), it co-locates a
-`strings.json` manifest carrying the module's translatable display name and description, whereas
-single-module core controllers (config, metadata, music) ship without one.
+helper layer are split into their own modules. The stateful helper services import `controller.py`
+only under `TYPE_CHECKING` (for annotations), while `helpers.py` avoids importing it at all — its
+play-action decorator types the controller through a local `_PlayActionHost` Protocol — so there is no
+controller↔helper import cycle. Like the other package-style core controllers (cache, players,
+streams, discovery, webserver), it co-locates a `strings.json` manifest carrying the module's
+translatable display name and description, whereas single-module core controllers (config, metadata,
+music) ship without one.
 
 ## Configuration
 
@@ -227,13 +279,31 @@ mechanism) that configure default enqueue behaviour, in two groups:
 These values are read back at enqueue time to decide how a given media item is turned into queue
 items. The config keys and their default values live in `constants.py`.
 
+Separately, the controller exposes **per-queue** config entries (via `get_queue_config_entries`,
+surfaced by the Config Controller) grouped into categories: *autoplay* (the refill mode and, for
+playlist mode, the playlist) and *crossfade* (mode and duration), plus volume normalization. Each
+group is introduced by a label entry. These are read back per queue when refilling or streaming.
+
 ## Future Direction
 
-The package frames the `PlayerQueue` as the player's active source under loose coupling, but the
-current design keeps the queue's state and its ordered item list in controller-owned side
-dictionaries (keyed by `queue_id`) rather than fully inside the `PlayerQueue` model, with the model
-serialized to and from the cache. The planned direction is to consolidate the queue — its items and
-its live state — into the `PlayerQueue` model as the single source of truth, so the controller
-manipulates the model directly instead of parallel dictionaries, mirroring the relationship between
-the Player Controller and the `Player` model. That would let large parts of `controller.py` (state
-reconciliation, next-item/buffer handling, track resolution) move onto the queue model itself.
+The per-queue state that used to live in a pile of parallel `queue_id`-keyed dictionaries on the
+controller is now consolidated into one `PlayerQueueData` record per queue (`state.py`), which also
+owns its cache (de)serialization — so the controller works with a single record per queue instead of
+a dictionary per field. The `PlayerQueue` model remains the wire-facing object; `PlayerQueueData` is
+its server-side companion (analogous to how the Player Controller pairs runtime state with the
+`Player` model).
+
+`controller.py` is now the public face: it keeps the API commands, the inter-controller event hooks,
+and the core state/load/signal-update/persistence primitives. The heavy concern logic is split two
+ways. The stateless loading, playback-tracking and stream-feeding logic lives on mixins —
+`QueueLoaderMixin` (enqueue/fill), `PlaybackTrackerMixin` (player→queue reconciliation + play-counting)
+and `StreamFeederMixin` (next-item/buffer feed) — over a shared `_PlayerQueuesBase`, so it operates on
+the controller's own per-queue state directly. The stateful helpers — `MediaResolver` (media→tracks),
+`Autoplay`, `SmartShuffle` and `ManagedPool` — stay composition objects, each constructed with the
+controller and reaching back through it (`self.queues.…`). The controller owns no heavy concern logic
+of its own.
+
+Server-only state has now been fully consolidated onto `PlayerQueueData`: the fields that never go
+over the wire (the enqueued items, the owning user and the transient stream-session fields) were
+moved off `PlayerQueue`, leaving it a pure client-facing snapshot while `PlayerQueueData` holds the
+complete server state and owns the cache format.

@@ -121,6 +121,7 @@ class AlbumsController(MediaControllerBase[Album]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         album_types: list[AlbumType] | None = None,
         **kwargs: Any,
     ) -> list[Album]:
@@ -180,6 +181,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            played_only=played_only,
             in_library_only=True,
         )
 
@@ -420,19 +422,6 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         album = self.album_from_item_mapping(item)
         return await self.add_item_to_library(album)
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Album,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Album to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        return await self.tracks(item.item_id, item.provider, in_library_only=False)
 
     async def match_provider(
         self, db_album: Album, provider: MusicProvider, strict: bool = True

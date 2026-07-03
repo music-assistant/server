@@ -145,14 +145,8 @@ WORKFLOW_TOOL_NAMES: frozenset[str] = frozenset(
 CATALOG_REFERENCED_TOOL_NAMES: frozenset[str] = INTENT_TUNED_TOOL_NAMES | WORKFLOW_TOOL_NAMES
 
 # Sibling PRs not yet on dev — drift test skips these until merged, then nags
-# to drop this set: #4390 (playback_pause/resume), #4391 (players_ungroup_player).
-PENDING_CATALOG_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "playback_pause",
-        "playback_resume",
-        "players_ungroup_player",
-    }
-)
+# to drop this set. Empty after #4390 / #4391 merged.
+PENDING_CATALOG_TOOL_NAMES: frozenset[str] = frozenset()
 
 
 def tokenize_query(text: str) -> list[str]:

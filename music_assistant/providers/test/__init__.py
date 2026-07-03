@@ -75,6 +75,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
+    ProviderFeature.SIMILAR_TRACKS,
 }
 
 
@@ -196,6 +197,28 @@ class TestProvider(MusicProvider):
             track_number=int(track_idx),
         )
 
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Return a deterministic set of similar tracks (the catalogue neighbours of the seed)."""
+        num_artists = self.config.get_value(CONF_KEY_NUM_ARTISTS) or 5
+        num_albums = self.config.get_value(CONF_KEY_NUM_ALBUMS) or 5
+        num_tracks = self.config.get_value(CONF_KEY_NUM_TRACKS) or 20
+        assert isinstance(num_artists, int)
+        assert isinstance(num_albums, int)
+        assert isinstance(num_tracks, int)
+        total = num_artists * num_albums * num_tracks
+        artist_idx, album_idx, track_idx = (int(part) for part in prov_track_id.split("_", 3))
+        seed_ordinal = (artist_idx * num_albums + album_idx) * num_tracks + track_idx
+        # walk the catalogue starting just after the seed so the result is stable and seed-excluded
+        similar: list[Track] = []
+        for step in range(1, total):
+            if len(similar) >= limit:
+                break
+            ordinal = (seed_ordinal + step) % total
+            artist, remainder = divmod(ordinal, num_albums * num_tracks)
+            album, track = divmod(remainder, num_tracks)
+            similar.append(await self.get_track(f"{artist}_{album}_{track}"))
+        return similar
+
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         genre = random.Random(prov_artist_id).choice(DEFAULT_GENRES)
@@ -234,6 +257,16 @@ class TestProvider(MusicProvider):
             },
             metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB]), genres={genre}),
         )
+
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Get all tracks for the given album id."""
+        num_tracks = self.config.get_value(CONF_KEY_NUM_TRACKS) or 20
+        assert isinstance(num_tracks, int)
+        artist_idx, album_idx = prov_album_id.split("_", 2)
+        return [
+            await self.get_track(f"{artist_idx}_{album_idx}_{track_idx}")
+            for track_idx in range(num_tracks)
+        ]
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
