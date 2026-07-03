@@ -6,7 +6,7 @@ import logging
 import pathlib
 import threading
 from collections.abc import AsyncGenerator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 
 import pytest
@@ -17,6 +17,7 @@ from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
     TOKEN_ABSOLUTE_MAX_EXPIRATION,
+    TOKEN_GUEST_EXPIRATION,
     TOKEN_LONG_LIVED_EXPIRATION,
     TOKEN_SHORT_LIVED_EXPIRATION,
     AuthenticationManager,
@@ -814,6 +815,61 @@ async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManag
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     assert await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash}) is None
     assert await auth_manager.authenticate_with_token(token) is None
+
+
+async def test_short_lived_jwt_exp_carries_absolute_max(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a short-lived JWT's exp claim equals the absolute max lifetime.
+
+    The database expires_at enforces the sliding idle window; an exp claim shorter
+    than the absolute max would cut off active sessions before renewal can happen.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="jwtexpuser", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "JWT Exp Test", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    created_at = datetime.fromisoformat(token_row["created_at"])
+
+    payload = auth_manager.jwt_helper.decode_token(token, verify_exp=False)
+    expected = created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)
+    assert payload["exp"] == int(expected.timestamp())
+
+    # The database keeps the shorter sliding window as source of truth
+    expires_at = datetime.fromisoformat(token_row["expires_at"])
+    assert expires_at - created_at == timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+
+
+async def test_guest_token_fixed_short_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that guest tokens get a short fixed lifetime and never renew on use.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="guestexpiry", role=UserRole.GUEST)
+    token = await auth_manager.create_token(user, "Guest Session", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    created_at = datetime.fromisoformat(token_row["created_at"])
+    expires_at = datetime.fromisoformat(token_row["expires_at"])
+    assert expires_at - created_at == timedelta(days=TOKEN_GUEST_EXPIRATION)
+
+    # The JWT exp claim must match the fixed window, not the absolute max
+    payload = auth_manager.jwt_helper.decode_token(token, verify_exp=False)
+    assert payload["exp"] == int(expires_at.timestamp())
+
+    # Authenticating must not extend the expiration (no sliding window for guests)
+    assert await auth_manager.authenticate_with_token(token) is not None
+    updated_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert updated_row is not None
+    assert updated_row["expires_at"] == token_row["expires_at"]
 
 
 async def test_username_case_insensitive_creation(auth_manager: AuthenticationManager) -> None:
