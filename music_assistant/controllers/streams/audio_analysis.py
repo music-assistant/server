@@ -53,11 +53,8 @@ BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
 # player streams, so a chunk may wait behind other work before it computes.
 CHUNK_HANG_GUARD_SECONDS = 120.0
 # Floor on wall-seconds between consecutive background chunk dispatches (one chunk = one
-# audio-second), capping each scanned track at ~4x realtime. The offload governor (niced
-# pool, half-the-cores semaphore, solo lock) only bounds Python offloads; providers that do
-# their work in ffmpeg subprocesses (loudness ebur128) are otherwise unthrottled, and an
-# unpaced scan runs source-decode plus analysis ffmpeg flat-out per track, pegging small
-# hosts for the whole run. Pacing the dispatch backpressures both processes via their pipes.
+# audio-second), capping each scanned track at ~4x realtime so a background analyse doesn't
+# consume all resources. Nice and slow is preferred for nightly background scans.
 BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR = 0.250
 # OS nice value for analysis worker threads (Linux): keeps analysis below playback so the
 # scheduler favors the event loop and ffmpeg under contention.
