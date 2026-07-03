@@ -286,7 +286,12 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             }
         }
         if (artCenter) {
-            artCenter.src = imgUrl;
+            if (imgUrl) {
+                artCenter.src = imgUrl;
+                artCenter.style.display = '';
+            } else {
+                artCenter.style.display = 'none';
+            }
         }
         if (titleEl) titleEl.textContent = track.title || '';
         if (artistEl) artistEl.textContent = track.artist || '';
@@ -444,10 +449,11 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
             // Build img container via DOM to safely assign src without innerHTML injection
             var imgContainer = document.createElement('div');
-            if (item.image) {
+            var cardImgUrl = safeImageUrl(item.image);
+            if (cardImgUrl) {
                 imgContainer.className = 'card-img';
                 var img = document.createElement('img');
-                img.src = safeImageUrl(item.image);
+                img.src = cardImgUrl;
                 img.alt = '';
                 img.loading = 'lazy';
                 imgContainer.appendChild(img);
@@ -481,9 +487,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             var sub = esc(item.titleFooter || item.label || '');
 
             // Build art element via DOM to safely assign src without innerHTML injection
-            if (item.image) {
+            var trackArtUrl = safeImageUrl(item.image);
+            if (trackArtUrl) {
                 var img = document.createElement('img');
-                img.src = safeImageUrl(item.image);
+                img.src = trackArtUrl;
                 img.alt = '';
                 img.className = 'track-art';
                 img.loading = 'lazy';
@@ -1046,9 +1053,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                 '</div>' +
                 '<div class="kiosk-queue-dur">' + durStr + '</div>';
 
-            if (item.image) {
+            var kioskArtUrl = safeImageUrl(item.image);
+            if (kioskArtUrl) {
                 var img = document.createElement('img');
-                img.src = safeImageUrl(item.image);
+                img.src = kioskArtUrl;
                 img.alt = '';
                 img.className = 'kiosk-queue-art';
                 img.loading = 'lazy';
@@ -1126,9 +1134,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
             // Build img element via DOM to safely assign src without innerHTML injection
             var artEl;
-            if (item.image) {
+            var artUrl = safeImageUrl(item.image);
+            if (artUrl) {
                 artEl = document.createElement('img');
-                artEl.src = safeImageUrl(item.image);
+                artEl.src = artUrl;
                 artEl.alt = '';
                 artEl.className = 'queue-item-art';
                 artEl.loading = 'lazy';
