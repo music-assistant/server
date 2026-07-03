@@ -13,6 +13,7 @@ from pathlib import Path
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.security import is_safe_path
 
 logger = logging.getLogger(__name__)
 
@@ -237,17 +238,9 @@ def get_absolute_path(base_path: str, path: str) -> str:
         (e.g. via ``../`` traversal or an absolute path outside the base).
     """
     absolute_path = path if path.startswith(base_path) else os.path.join(base_path, path)
-    # Purely lexical containment check: no filesystem IO, as this runs on the event loop.
-    # Attackers can only supply path strings, not symlinks, so resolving links is not needed
-    # (and would reject legitimate admin-created symlinks inside the base directory).
-    norm_base = os.path.normpath(base_path)
-    norm_path = os.path.normpath(absolute_path)
-    try:
-        escapes_base = os.path.commonpath((norm_base, norm_path)) != norm_base
-    except ValueError:
-        # commonpath raises for paths on different (Windows) drives
-        escapes_base = True
-    if escapes_base:
+    # The check is lexical (no symlink resolving): attackers can only supply path strings,
+    # not symlinks, and resolving would reject legitimate symlinks inside the base directory.
+    if not is_safe_path(absolute_path, base_path):
         msg = f"Path is outside the configured base directory: {path}"
         raise MediaNotFoundError(msg)
     return absolute_path
