@@ -273,9 +273,7 @@
                 if (data.success && data.access_token) {
                     // Redirect with the token
                     let redirectUrl = '/';
-                    // Only allow same-origin relative paths (e.g. "/path"), not external URLs.
-                    // Parse with the URL API: prefix tricks like "//evil.com" or "/\evil.com"
-                    // resolve to a different origin and are rejected.
+                    // Accept only same-origin paths; the URL API rejects prefix tricks like "//evil.com" or "/\evil.com".
                     if (typeof returnUrl === 'string') {
                         try {
                             const parsed = new URL(returnUrl, window.location.origin);
