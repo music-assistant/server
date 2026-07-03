@@ -76,12 +76,31 @@ jobs:
       # Security check 4: Verify all commit authors have write access
       - name: Verify commit authors
         run: |
-          COMMIT_AUTHORS=$(gh pr view "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --json commits --jq '[.commits[].authors[].login] | unique | .[]')
-
-          if [[ -z "$COMMIT_AUTHORS" ]]; then
-            echo "❌ Could not determine commit authors"
+          # A dependency bump PR only ever needs a handful of commits
+          COMMIT_COUNT="${{ github.event.pull_request.commits }}"
+          if [ "$COMMIT_COUNT" -gt 20 ]; then
+            echo "❌ PR has $COMMIT_COUNT commits, too many for a dependency update"
             exit 1
           fi
+
+          COMMITS=$(gh api "/repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.number }}/commits" --paginate --jq '.[]' | jq -s '.')
+
+          # Guard against API truncation: we must have seen every commit
+          FETCHED_COUNT=$(echo "$COMMITS" | jq 'length')
+          if [ "$FETCHED_COUNT" -ne "$COMMIT_COUNT" ]; then
+            echo "❌ Fetched $FETCHED_COUNT commits but the PR reports $COMMIT_COUNT"
+            exit 1
+          fi
+
+          # Commits whose author email is not linked to a GitHub account have
+          # no login to verify, so they must be rejected
+          UNATTRIBUTED=$(echo "$COMMITS" | jq '[.[] | select(.author.login == null)] | length')
+          if [ "$UNATTRIBUTED" -gt 0 ]; then
+            echo "❌ $UNATTRIBUTED commit(s) have no linked GitHub author"
+            exit 1
+          fi
+
+          COMMIT_AUTHORS=$(echo "$COMMITS" | jq -r '[.[].author.login] | unique | .[]')
 
           for AUTHOR in $COMMIT_AUTHORS; do
             if gh api "/repos/${{ github.repository }}/collaborators/$AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
@@ -99,7 +118,12 @@ jobs:
       - name: Verify only dependency files were changed
         run: |
           # Only pyproject.toml and requirements_all.txt should be modified
-          CHANGED_FILES=$(gh pr view "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --json files --jq '.files[].path')
+          CHANGED_FILES=$(gh api "/repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.number }}/files" --paginate --jq '.[].filename')
+
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo "❌ Could not determine changed files"
+            exit 1
+          fi
 
           echo "Changed files:"
           echo "$CHANGED_FILES"
