@@ -237,10 +237,17 @@ def get_absolute_path(base_path: str, path: str) -> str:
         (e.g. via ``../`` traversal or an absolute path outside the base).
     """
     absolute_path = path if path.startswith(base_path) else os.path.join(base_path, path)
-    # Resolve symlinks/.. and confirm the result stays within base_path (traversal guard).
-    real_base = os.path.realpath(base_path)
-    real_path = os.path.realpath(absolute_path)
-    if os.path.commonpath((real_base, real_path)) != real_base:
+    # Purely lexical containment check: no filesystem IO, as this runs on the event loop.
+    # Attackers can only supply path strings, not symlinks, so resolving links is not needed
+    # (and would reject legitimate admin-created symlinks inside the base directory).
+    norm_base = os.path.normpath(base_path)
+    norm_path = os.path.normpath(absolute_path)
+    try:
+        escapes_base = os.path.commonpath((norm_base, norm_path)) != norm_base
+    except ValueError:
+        # commonpath raises for paths on different (Windows) drives
+        escapes_base = True
+    if escapes_base:
         msg = f"Path is outside the configured base directory: {path}"
         raise MediaNotFoundError(msg)
     return absolute_path

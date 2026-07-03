@@ -85,3 +85,10 @@ async def test_resolve_allows_in_base(music_tree: Path) -> None:
     provider = _make_provider(str(music_tree))
     file_item = await provider.resolve("track.mp3")
     assert file_item.absolute_path == os.path.join(str(music_tree), "track.mp3")
+
+
+def test_get_absolute_path_allows_symlink_inside_base(music_tree: Path) -> None:
+    """A symlink inside the base still resolves (check is lexical, symlinks are admin-created)."""
+    link = music_tree / "linked.mp3"
+    link.symlink_to(music_tree.parent / "secret.mp3")
+    assert helpers.get_absolute_path(str(music_tree), "linked.mp3") == str(link)
