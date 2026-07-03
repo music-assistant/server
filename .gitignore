@@ -32,3 +32,6 @@ docs/superpowers
 .devenv*
 devenv.local.nix
 devenv.local.yaml
+
+# VS Code
+.vscode/launch.json
