@@ -230,6 +230,7 @@ class SmartPlaylistProvider(PluginProvider):
         # Re-add playlists missing from the library (e.g. after a DB reset).
         self.mass.create_task(self._reconcile_library())
         # One-time migration: remove legacy icon.svg from smart playlists
+        # TODO: remove after 2.10 release
         self.mass.create_task(self._migrate_legacy_icon())
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -371,14 +372,11 @@ class SmartPlaylistProvider(PluginProvider):
     async def _migrate_legacy_icon(self) -> None:
         """Remove legacy icon.svg from smart playlists (added by versions prior to PR #4447)."""
         try:
-            library_playlists = await self.mass.music.playlists.library_items()
+            library_playlists = await self.mass.music.playlists.library_items(
+                provider=self.instance_id
+            )
             migrated_count = 0
             for playlist in library_playlists:
-                if not any(
-                    m.provider_instance == self.instance_id for m in playlist.provider_mappings
-                ):
-                    continue
-
                 if not playlist.metadata.images:
                     continue
 
