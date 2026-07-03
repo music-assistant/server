@@ -254,9 +254,9 @@ class SnapcastMAStream:
             self._stop_timer_started_at = None
             if self._stop_timer:
                 self._stop_timer.cancel()
-        elif self._stop_timer_started_at is None:
+        elif self._stop_timer_started_at is None and not self._stop_requested:
             self._stop_timer_started_at = self._mass.loop.time()
-            self._stop_timer = self._mass.loop.call_later(60.0, self.request_stop_stream)
+            self._stop_timer = self._mass.loop.call_later(3.0, self.request_stop_stream)
 
     async def wait_for_stopped(self, timeout_sec: float | None = None) -> None:
         """

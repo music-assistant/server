@@ -11,9 +11,10 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio_analysis import (
+    REALTIME_ANALYSIS_MAX_SESSIONS,
     AudioAnalysisController,
 )
-from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer, AudioBufferDiscarded
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
     AudioAnalysisProvider,
@@ -46,11 +47,10 @@ def _create_mock_provider(
 
 
 async def _send_chunks(audio_buffer: AudioBuffer, num_chunks: int) -> None:
-    """Deliver chunks and EOF directly via the registered callback."""
-    cb = audio_buffer._chunk_callbacks[0]
-    for i in range(num_chunks):
-        await cb(i, ONE_SECOND_CHUNK, False)
-    await cb(num_chunks, b"", True)
+    """Fill the buffer with PCM chunks then signal EOF; the analysis worker reads from it."""
+    for _ in range(num_chunks):
+        await audio_buffer._put(ONE_SECOND_CHUNK)
+    await audio_buffer._set_eof()
 
 
 @pytest.fixture
@@ -82,6 +82,12 @@ async def _await_tasks(mock_mass: MagicMock) -> None:
     while awaited < len(mock_mass._created_tasks):
         pending = mock_mass._created_tasks[awaited:]
         awaited = len(mock_mass._created_tasks)
+        for task in pending:
+            # The idle-model monitor is a long-lived loop, not a one-shot; cancel it rather
+            # than block here waiting for it to finish.
+            coro = task.get_coro()
+            if coro is not None and "_monitor_idle_models" in getattr(coro, "__qualname__", ""):
+                task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
 
 
@@ -130,7 +136,7 @@ async def test_start_analysis_no_providers(
     """No providers available means no callbacks registered and no sessions."""
     mock_mass.get_providers.return_value = []
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    assert len(audio_buffer._chunk_callbacks) == 0
+    assert len(audio_buffer._cancel_callbacks) == 0
     assert len(controller._active_sessions) == 0
 
 
@@ -146,8 +152,8 @@ async def test_start_analysis_duplicate_session(
 
     buf2 = AudioBuffer(TEST_PCM_FORMAT)
     await controller.start_analysis(buf2, mock_stream_details)
-    # No extra callbacks on the second buffer
-    assert len(buf2._chunk_callbacks) == 0
+    # No callbacks registered on the second buffer
+    assert len(buf2._cancel_callbacks) == 0
     # Still only one session
     assert len(controller._active_sessions) == 1
 
@@ -163,7 +169,7 @@ async def test_start_analysis_all_providers_fail(
     mock_provider.start_analysis.side_effect = RuntimeError("init failed")
     await controller.start_analysis(audio_buffer, mock_stream_details)
     assert len(controller._active_sessions) == 0
-    assert len(audio_buffer._chunk_callbacks) == 0
+    assert len(audio_buffer._cancel_callbacks) == 0
 
 
 # -- Happy path --
@@ -255,9 +261,8 @@ async def test_cancel_on_buffer_clear(
 ) -> None:
     """Clearing the buffer triggers provider.cancel."""
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    cb = audio_buffer._chunk_callbacks[0]
-    await cb(0, ONE_SECOND_CHUNK, False)
-    await cb(1, ONE_SECOND_CHUNK, False)
+    await audio_buffer._put(ONE_SECOND_CHUNK)
+    await audio_buffer._put(ONE_SECOND_CHUNK)
     await audio_buffer.clear()
     await _await_tasks(mock_mass)
     session_key = "test_prov://track/test_123"
@@ -273,8 +278,7 @@ async def test_session_cleaned_up_after_cancel(
 ) -> None:
     """Internal dicts are empty after cancel."""
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    cb = audio_buffer._chunk_callbacks[0]
-    await cb(0, ONE_SECOND_CHUNK, False)
+    await audio_buffer._put(ONE_SECOND_CHUNK)
     await audio_buffer.clear()
     await _await_tasks(mock_mass)
     assert len(controller._active_sessions) == 0
@@ -298,25 +302,161 @@ async def test_worker_cancelled_on_buffer_clear(
     assert worker.cancelled() or worker.done()
 
 
+@pytest.mark.asyncio
+async def test_realtime_sessions_capped_evicting_oldest(
+    controller: AudioAnalysisController,
+    mock_provider: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """Starting past the cap evicts the oldest realtime session and cancels its providers."""
+    keys: list[str] = []
+    for i in range(REALTIME_ANALYSIS_MAX_SESSIONS + 1):
+        sd = MagicMock()
+        sd.uri = f"test://track/{i}"
+        sd.provider = "test"
+        sd.item_id = f"t{i}"
+        sd.media_type = MediaType.TRACK
+        sd.queue_id = "queue-1"  # same queue, so the per-queue cap applies
+        keys.append(sd.uri)
+        await controller.start_analysis(AudioBuffer(TEST_PCM_FORMAT), sd)
+
+    # Only the cap's worth survive; the oldest was evicted, the newest kept.
+    assert len(controller._workers) == REALTIME_ANALYSIS_MAX_SESSIONS
+    assert keys[0] not in controller._workers
+    assert keys[0] not in controller._active_sessions
+    assert keys[-1] in controller._workers
+    mock_provider.cancel.assert_any_call(keys[0])
+
+    # Drain the pending reader/cancel tasks so nothing leaks past the test.
+    for task in mock_mass._created_tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*mock_mass._created_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_realtime_session_cap_is_per_queue(
+    controller: AudioAnalysisController,
+    mock_provider: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """Concurrent queues are capped independently; one queue's burst can't evict another's."""
+
+    async def _start(uri: str, queue_id: str) -> None:
+        sd = MagicMock()
+        sd.uri = uri
+        sd.provider = "test"
+        sd.item_id = uri
+        sd.media_type = MediaType.TRACK
+        sd.queue_id = queue_id
+        await controller.start_analysis(AudioBuffer(TEST_PCM_FORMAT), sd)
+
+    # Fill two queues to the cap each (interleaved).
+    for i in range(REALTIME_ANALYSIS_MAX_SESSIONS):
+        await _start(f"a://{i}", "queueA")
+        await _start(f"b://{i}", "queueB")
+
+    # Both queues are fully populated and nothing was evicted across queues.
+    assert len(controller._workers) == 2 * REALTIME_ANALYSIS_MAX_SESSIONS
+    mock_provider.cancel.assert_not_called()
+
+    # One more in queueA evicts queueA's oldest only; queueB is untouched.
+    await _start("a://new", "queueA")
+    assert "a://0" not in controller._workers
+    assert "b://0" in controller._workers
+    mock_provider.cancel.assert_called_once_with("a://0")
+
+    for task in mock_mass._created_tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*mock_mass._created_tasks, return_exceptions=True)
+
+
+def _unloadable_provider() -> MagicMock:
+    prov = MagicMock(spec=AudioAnalysisProvider)
+    prov.has_unloadable_models = True
+    prov.available = True
+    prov.unload_idle_models = AsyncMock()
+    return prov
+
+
+@pytest.mark.asyncio
+async def test_idle_monitor_unloads_models_when_idle(
+    controller: AudioAnalysisController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no active sessions past the idle timeout, unloadable providers are unloaded."""
+    prov = _unloadable_provider()
+    monkeypatch.setattr(controller.__class__, "providers", property(lambda _self: [prov]))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_CHECK_INTERVAL_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_UNLOAD_SECONDS", 0.0
+    )
+
+    controller._mark_analysis_activity()  # starts the monitor
+    assert controller._idle_unload_task is not None
+    await asyncio.wait_for(controller._idle_unload_task, timeout=2.0)
+
+    prov.unload_idle_models.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_idle_monitor_keeps_models_while_sessions_active(
+    controller: AudioAnalysisController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Models are not unloaded while an analysis session is still active."""
+    prov = _unloadable_provider()
+    monkeypatch.setattr(controller.__class__, "providers", property(lambda _self: [prov]))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_CHECK_INTERVAL_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_UNLOAD_SECONDS", 0.0
+    )
+
+    controller._active_sessions["sess"] = {"prov"}
+    controller._mark_analysis_activity()
+    await asyncio.sleep(0.05)  # several monitor ticks
+
+    prov.unload_idle_models.assert_not_called()
+
+    assert controller._idle_unload_task is not None
+    controller._idle_unload_task.cancel()
+    await asyncio.gather(controller._idle_unload_task, return_exceptions=True)
+
+
 # -- Edge cases --
 
 
 @pytest.mark.asyncio
-async def test_finalized_guard_prevents_double_finalize(
+async def test_worker_drops_session_when_falling_behind(
     controller: AudioAnalysisController,
-    audio_buffer: AudioBuffer,
     mock_stream_details: MagicMock,
     mock_provider: MagicMock,
     mock_mass: MagicMock,
 ) -> None:
-    """Invoking the chunk callback with is_last_chunk=True twice only finalizes once."""
-    await controller.start_analysis(audio_buffer, mock_stream_details)
-    assert len(audio_buffer._chunk_callbacks) == 1
-    cb = audio_buffer._chunk_callbacks[0]
-    await cb(0, b"", True)
-    await cb(1, b"", True)
+    """If a chunk has been evicted before analysis reads it, the session is dropped, not finalized."""
+    # A buffer that yields one chunk, then reports the next as already evicted.
+    fake_buffer = MagicMock()
+    fake_buffer.pcm_format = TEST_PCM_FORMAT
+    fake_buffer.first_buffered_chunk = 0
+    fake_buffer.read_chunk_for_analysis = AsyncMock(
+        side_effect=[ONE_SECOND_CHUNK, AudioBufferDiscarded]
+    )
+
+    await controller.start_analysis(fake_buffer, mock_stream_details)
     await _await_tasks(mock_mass)
-    mock_provider.finalize.assert_called_once()
+
+    session_key = "test_prov://track/test_123"
+    # The one available chunk was processed; falling behind drops the session (cancel, no finalize).
+    mock_provider.process_pcm_chunk.assert_called_once()
+    mock_provider.cancel.assert_called_once_with(session_key)
+    mock_provider.finalize.assert_not_called()
+    assert session_key not in controller._active_sessions
+    assert session_key not in controller._workers
 
 
 @pytest.mark.asyncio
@@ -403,7 +543,7 @@ async def test_slow_provider_removed_after_timeout(
     mock_mass.get_provider = MagicMock(side_effect=_get_prov)
 
     with unittest.mock.patch(
-        "music_assistant.controllers.streams.audio_analysis.REAL_TIME_PACE_INTERVAL_SECONDS_CEILING",
+        "music_assistant.controllers.streams.audio_analysis.CHUNK_HANG_GUARD_SECONDS",
         0.1,
     ):
         await controller.start_analysis(audio_buffer, mock_stream_details)
@@ -456,6 +596,7 @@ async def test_provider_start_analysis_uses_media_type_for_version_gating() -> N
     provider._start_analysis = AsyncMock(return_value=True)
     provider.domain = "test_domain"
     provider.analysis_version = 1
+    provider.max_analysis_duration = None
 
     streamdetails = MagicMock()
     streamdetails.item_id = "shared_id"

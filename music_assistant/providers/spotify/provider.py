@@ -47,7 +47,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from orjson import JSONDecodeError
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
@@ -828,14 +828,14 @@ class SpotifyProvider(MusicProvider):
         try:
             auth_info = await get_spotify_token(
                 self.mass.http_session,
-                app_var(2),  # Always use MA's global client ID
+                app_var("spotify_client_id"),  # Always use MA's global client ID
                 cast("str", refresh_token),
                 "global",
             )
             self.logger.debug("Successfully refreshed global access token")
         except LoginFailed as err:
-            if "revoked" in str(err):
-                # clear refresh token if it's invalid
+            if "revoked" in str(err) or "invalid_grant" in str(err):
+                # clear refresh token if it's revoked or expired
                 self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
                 if self.available:
                     self.unload_with_error(str(err))
@@ -895,8 +895,8 @@ class SpotifyProvider(MusicProvider):
             )
             self.logger.debug("Successfully refreshed developer access token")
         except LoginFailed as err:
-            if "revoked" in str(err):
-                # clear refresh token if it's invalid
+            if "revoked" in str(err) or "invalid_grant" in str(err):
+                # clear refresh token if it's revoked or expired
                 self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
                 self._update_config_value(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session

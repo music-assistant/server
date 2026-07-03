@@ -10,6 +10,11 @@
         "fast": "Fast (1 window)",
         "balanced": "Balanced (3 windows, 2.4x CPU)",
         "thorough": "Thorough (8 windows, 6.6x CPU)"
+      },
+      "option_descriptions": {
+        "fast": "One window per track — lowest CPU. Fine for a quick first pass over a large library.",
+        "balanced": "Three windows — the recommended default; good accuracy at moderate CPU cost.",
+        "thorough": "Eight windows — highest accuracy at the highest CPU cost."
       }
     }
   },

@@ -28,6 +28,10 @@
       "label": "Connect Wizard external URL (fallback)",
       "description": "Optional explicit base URL the Connect Wizard should open at (e.g. `https://ha.example.com/<addon-slug>` for Home Assistant add-on ingress). Used only when the wizard cannot auto-detect the external URL from the active client connection — set it if your reverse proxy strips the `X-Forwarded-Host` / `X-Ingress-Path` headers."
     },
+    "trust_forwarded_proto": {
+      "label": "Trust reverse-proxy forwarded scheme",
+      "description": "Treat the Connect Wizard request as HTTPS when a trusted reverse proxy reports `X-Forwarded-Proto: https` (or `X-Forwarded-Scheme: https`), even though the proxy-to-MA hop is plain HTTP. Enable this only when MA sits behind a reverse proxy (nginx, Nginx Proxy Manager, Traefik, Caddy, ...) that terminates TLS and is configured to set this header and strip any client-supplied copy. Without it, the wizard refuses to mint credentials over the proxy because it sees plaintext HTTP from a non-loopback host. Leave OFF if MA is directly reachable — any LAN client could otherwise spoof the header."
+    },
     "debug_event_buffer_capacity": {
       "label": "Debug: event buffer capacity",
       "description": "Maximum number of recent events kept in memory when `Debug: read recent MA events` is enabled. Older events are dropped FIFO. Has no effect when events are off."

@@ -12,12 +12,6 @@ _IMAGEPROXY_CONTENT_TYPES: dict[str, str] = {
     "svg": "image/svg+xml",
 }
 
-# Schemes accepted from a client on the legacy /imageproxy?path= endpoint.
-# Allowlist (not blacklist) so a leading-whitespace or unknown-scheme value
-# cannot sneak through. Provider-supplied paths resolved internally via
-# `resolve_image` are not subject to this — only inbound client paths are.
-_ALLOWED_IMAGEPROXY_REQUEST_SCHEMES: frozenset[str] = frozenset({"", "http", "https"})
-
 LOCALES = {
     "af_ZA": "African",
     "ar_AE": "Arabic (United Arab Emirates)",
@@ -108,8 +102,3 @@ _IMAGE_ID_CACHE_TTL = 86400 * 365  # 1 year, refreshed on each write
 _ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
 
 _IMAGEPROXY_PATH_PREFIX = "/imageproxy/"
-
-# Deprecation logging for the legacy /imageproxy query-string endpoint.
-_LEGACY_DEPRECATION_LOG_INTERVAL = 60  # seconds between log lines per IP
-
-_LEGACY_DEPRECATION_PRUNE_AFTER = 300  # drop tracking entries idle this long

@@ -519,6 +519,7 @@ for more details.
                     parse_podcast_episode(
                         episode=item.episode,
                         prov_podcast_id=item.library_item.id_,
+                        prov_podcast_name=item.library_item.media.metadata.title,
                         fallback_episode_cnt=None,
                         instance_id=self.instance_id,
                         domain=self.domain,
@@ -711,6 +712,7 @@ for more details.
             mass_episode = parse_podcast_episode(
                 episode=abs_episode,
                 prov_podcast_id=prov_podcast_id,
+                prov_podcast_name=abs_podcast.media.metadata.title,
                 fallback_episode_cnt=episode_cnt,
                 instance_id=self.instance_id,
                 domain=self.domain,
@@ -741,6 +743,7 @@ for more details.
                 return parse_podcast_episode(
                     episode=abs_episode,
                     prov_podcast_id=prov_podcast_id,
+                    prov_podcast_name=abs_podcast.media.metadata.title,
                     fallback_episode_cnt=episode_cnt,
                     instance_id=self.instance_id,
                     domain=self.domain,
@@ -1127,13 +1130,16 @@ for more details.
                                 continue
                             _cover_path = None
                             _cover_version = None
+                            _podcast_title = None
                             if isinstance(entity, ShelfLibraryItemMinifiedPodcast):
                                 _cover_path = entity.media.cover_path
                                 _cover_version = entity.updated_at
+                                _podcast_title = entity.media.metadata.title
                             # we only have a PodcastEpisode here, with limited information
                             item = parse_podcast_episode(
                                 episode=entity.recent_episode,
                                 prov_podcast_id=podcast_id,
+                                prov_podcast_name=_podcast_title,
                                 instance_id=self.instance_id,
                                 domain=self.domain,
                                 token=self._client.token,

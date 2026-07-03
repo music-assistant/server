@@ -1,0 +1,45 @@
+{
+  "config_entries": {
+    "app_key": {
+      "label": "Bose SoundTouch app key",
+      "description": "Optional. A Bose SoundTouch developer app key enables sending announcements to the speaker as an overlay that ducks the current music and resumes it afterwards. Leave empty to disable native announcements (they then play through the linked playback protocol instead)."
+    },
+    "preset_header": {
+      "label": "Preset {0}"
+    },
+    "preset_media_type": {
+      "label": "Preset {0} media type",
+      "description": "Type of media used for this preset's search and playback.",
+      "options": {
+        "artist": "Artist",
+        "album": "Album",
+        "track": "Track",
+        "playlist": "Playlist",
+        "radio": "Radio",
+        "audiobook": "Audiobook",
+        "podcast": "Podcast",
+        "genre": "Genre"
+      }
+    },
+    "preset_search": {
+      "label": "Preset {0} search",
+      "description": "Type a search term, then press Search."
+    },
+    "preset_search_action": {
+      "label": "Search preset {0}"
+    },
+    "preset_result_selection": {
+      "label": "Preset {0} result selection"
+    },
+    "preset_select_action": {
+      "label": "Select preset {0}"
+    },
+    "preset_media": {
+      "label": "Preset {0} to play",
+      "description": "URI copied from the selected result or manually entered."
+    }
+  },
+  "manifest": {
+    "description": "Control Bose SoundTouch speakers and map their physical preset buttons to Music Assistant content."
+  }
+}
