@@ -82,8 +82,7 @@ class AuthenticationManager:
         self._has_users: bool = False
         self.jwt_helper: JWTHelper = None  # type: ignore[assignment]
         self._join_code_rate_limiter = LoginRateLimiter()
-        # Serializes exchange attempts so concurrent requests cannot all pass the
-        # rate limit check before any of them records a failure.
+        # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
 
     async def setup(self) -> None:
@@ -1430,9 +1429,7 @@ class AuthenticationManager:
                     "error": "Invalid or expired join code",
                 }
 
-        # Deliberately no clear_attempts on success: the key is global, so clearing
-        # would let anyone holding a valid code reset the counter and bypass throttling.
-        # Failures expire via the limiter's tracking window instead.
+        # No clear_attempts on success: any valid-code holder could reset the global counter
 
         # Decode token to get user info
         try:
