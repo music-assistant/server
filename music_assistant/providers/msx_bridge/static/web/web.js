@@ -119,11 +119,30 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         return url + (url.indexOf('?') >= 0 ? '&' : '?') + param;
     }
 
+    function isHttpUrl(url) {
+        return url.indexOf('http://') === 0 || url.indexOf('https://') === 0;
+    }
+
+    // Resolve a content/audio URL. The bridge only ever hands out URLs pointing
+    // at itself, so anything targeting another host is rejected here.
     function resolveUrl(url) {
         if (!url) return '';
-        if (url.indexOf('http://') === 0 || url.indexOf('https://') === 0) return url;
+        if (isHttpUrl(url)) {
+            var a = document.createElement('a');
+            a.href = url;
+            return a.host === location.host ? url : '';
+        }
         if (url.charAt(0) === '/') return BASE + url;
-        return url;
+        return '';
+    }
+
+    // Image URLs may legitimately point at remote CDNs (album art), so any
+    // http(s) URL is allowed here — but never other schemes like javascript:.
+    function safeImageUrl(url) {
+        if (!url) return '';
+        if (isHttpUrl(url)) return url;
+        if (url.charAt(0) === '/') return BASE + url;
+        return '';
     }
 
     function parseMsx(text) {
@@ -255,16 +274,17 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         var artistEl = document.getElementById('kiosk-artist');
         var durEl = document.getElementById('kiosk-dur');
 
+        var imgUrl = safeImageUrl(track.image);
         if (bgImg) {
-            if (track.image) {
-                bgImg.src = track.image;
+            if (imgUrl) {
+                bgImg.src = imgUrl;
                 bgImg.style.opacity = '1';
             } else {
                 bgImg.style.opacity = '0';
             }
         }
         if (artCenter) {
-            artCenter.src = track.image || '';
+            artCenter.src = imgUrl;
         }
         if (titleEl) titleEl.textContent = track.title || '';
         if (artistEl) artistEl.textContent = track.artist || '';
@@ -425,7 +445,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             if (item.image) {
                 imgContainer.className = 'card-img';
                 var img = document.createElement('img');
-                img.src = item.image;
+                img.src = safeImageUrl(item.image);
                 img.alt = '';
                 img.loading = 'lazy';
                 imgContainer.appendChild(img);
@@ -461,7 +481,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             // Build art element via DOM to safely assign src without innerHTML injection
             if (item.image) {
                 var img = document.createElement('img');
-                img.src = item.image;
+                img.src = safeImageUrl(item.image);
                 img.alt = '';
                 img.className = 'track-art';
                 img.loading = 'lazy';
@@ -576,7 +596,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         document.getElementById('bar-title').textContent = track.title;
         document.getElementById('bar-artist').textContent = track.artist;
         var art = document.getElementById('player-art');
-        if (track.image) { art.src = track.image; art.style.display = ''; }
+        var imgUrl = safeImageUrl(track.image);
+        if (imgUrl) { art.src = imgUrl; art.style.display = ''; }
         else { art.style.display = 'none'; }
         document.getElementById('bar-dur').textContent = track.duration ? fmtDur(track.duration) : '';
         syncPlayBtn();
@@ -584,8 +605,9 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     function updateFullPlayer(track) {
         var art = document.getElementById('full-art');
+        var imgUrl = safeImageUrl(track.image);
         if (art) {
-            if (track.image) { art.src = track.image; art.style.display = ''; }
+            if (imgUrl) { art.src = imgUrl; art.style.display = ''; }
             else { art.style.display = 'none'; }
         }
         var titleEl = document.getElementById('full-title');
@@ -1024,7 +1046,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
             if (item.image) {
                 var img = document.createElement('img');
-                img.src = item.image;
+                img.src = safeImageUrl(item.image);
                 img.alt = '';
                 img.className = 'kiosk-queue-art';
                 img.loading = 'lazy';
@@ -1104,7 +1126,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             var artEl;
             if (item.image) {
                 artEl = document.createElement('img');
-                artEl.src = item.image;
+                artEl.src = safeImageUrl(item.image);
                 artEl.alt = '';
                 artEl.className = 'queue-item-art';
                 artEl.loading = 'lazy';
