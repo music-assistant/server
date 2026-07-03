@@ -10,6 +10,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from music_assistant_models.errors import MediaNotFoundError
+
 from music_assistant.helpers.compare import compare_strings
 
 logger = logging.getLogger(__name__)
@@ -228,10 +230,20 @@ def get_relative_path(base_path: str, path: str) -> str:
 
 
 def get_absolute_path(base_path: str, path: str) -> str:
-    """Return the absolute path string for a path."""
-    if path.startswith(base_path):
-        return path
-    return os.path.join(base_path, path)
+    """
+    Return the absolute path for a path, constrained to base_path.
+
+    :raises MediaNotFoundError: If the resolved path escapes base_path
+        (e.g. via ``../`` traversal or an absolute path outside the base).
+    """
+    absolute_path = path if path.startswith(base_path) else os.path.join(base_path, path)
+    # Resolve symlinks/.. and confirm the result stays within base_path (traversal guard).
+    real_base = os.path.realpath(base_path)
+    real_path = os.path.realpath(absolute_path)
+    if os.path.commonpath((real_base, real_path)) != real_base:
+        msg = f"Path is outside the configured base directory: {path}"
+        raise MediaNotFoundError(msg)
+    return absolute_path
 
 
 def recursive_iter(
