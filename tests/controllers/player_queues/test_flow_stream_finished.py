@@ -26,10 +26,14 @@ def _fake_controller(queue: MagicMock) -> MagicMock:
         coro.close()
 
     fake = MagicMock()
-    fake._queue_data = {queue.queue_id: PlayerQueueData(queue=cast("PlayerQueue", queue))}
+    data = PlayerQueueData(queue=cast("PlayerQueue", queue))
+    # session_id is server-side state on the record now, not on the wire queue
+    data.session_id = queue.session_id
+    fake._queue_data = {queue.queue_id: data}
     fake.get = MagicMock(
-        side_effect=lambda qid: data.queue if (data := fake._queue_data.get(qid)) else None
+        side_effect=lambda qid: d.queue if (d := fake._queue_data.get(qid)) else None
     )
+    fake.queue_data_or_none = MagicMock(side_effect=lambda qid: fake._queue_data.get(qid))
     fake.mass.create_task = MagicMock(side_effect=_close_coro)
     return fake
 
@@ -66,7 +70,7 @@ def test_flow_stream_finished_invalidated_by_new_session() -> None:
     PlayerQueuesController.queue_buffer_completed(cast("PlayerQueuesController", fake), "q")
 
     # a new playback session starts (play_index assigns a fresh session_id)
-    queue.session_id = "sess-2"
+    fake._queue_data["q"].session_id = "sess-2"
 
     assert _finished(fake, "q") is False
 

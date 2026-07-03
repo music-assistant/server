@@ -58,8 +58,6 @@ from dataclasses import fields, is_dataclass
 
 LOGGER = logging.getLogger(__name__)
 
-HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
-
 T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
 
@@ -937,6 +935,24 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     return await asyncio.to_thread(call)
 
 
+def interface_name_for_ip(ip: str) -> str | None:
+    """
+    Return the name of the network interface that holds the given IP, or None.
+
+    Used to map a bind/publish IP to its interface name for components that select
+    their mDNS/zeroconf advertisement interface by name (e.g. shairport-sync and
+    go-librespot), so the advertisement stays on the intended network.
+
+    :param ip: The IPv4/IPv6 address to look up.
+    """
+    for adapter in ifaddr.get_adapters():
+        for ip_config in adapter.ips:
+            addr = ip_config.ip if isinstance(ip_config.ip, str) else ip_config.ip[0]
+            if addr == ip:
+                return adapter.name
+    return None
+
+
 async def get_primary_ip_address() -> str | None:
     """Return the primary IP address of the system."""
 
@@ -1183,7 +1199,7 @@ def empty_queue[T](q: asyncio.Queue[T]) -> None:
 async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     LOGGER.debug("Installing python package %s", package)
-    args = ["uv", "pip", "install", "--no-cache", "--find-links", HA_WHEELS, package]
+    args = ["uv", "pip", "install", "--no-cache", package]
     return_code, output = await check_output(*args)
     if return_code != 0:
         msg = f"Failed to install package {package}\n{output.decode()}"

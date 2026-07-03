@@ -16,7 +16,12 @@ that is topped up as it plays down. Each source has a *fill mode*:
 Each top-up apportions slots across the sources by weight (per-base quota by default, so adding a
 source more than once weights it up) and gates every candidate against the shared ``RecencyEngine``
 so a recently-heard track isn't pulled back in. A dynamic batch is offered least-recently-played
-first; a finite source keeps its own (materialized) order so it plays through coherently.
+first and de-prioritizes tracks whose artist is within the artist-recency window (a soft nudge, not
+a hard exclusion, so a single-artist station still plays); a finite source keeps its own
+(materialized) order so it plays through coherently. Once the batch is assembled it is passed
+through a seam-aware artist-spacing pass that best-effort keeps directly-adjacent tracks from
+sharing an artist, and the first added track is kept clear of the currently-queued tail's last
+artist.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_SOURCE_CAP,
     MANAGED_POOL_TARGET,
 )
+from music_assistant.controllers.player_queues.helpers import space_by_artist
 from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
@@ -116,9 +122,10 @@ class ManagedPool:
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
-        queue = self.queues.queue_data(queue_id).queue
-        windows = self.queues.recency_windows(queue_id)
-        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+        queue_data = self.queues.queue_data(queue_id)
+        queue = queue_data.queue
+        windows = self.queues.recency_windows()
+        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
         # publish a best-effort recency filter so dynamic-playlist generation can pre-skip recently
         # played tracks while over-generating; allocate_refill still applies the authoritative gate
         with track_filter(lambda track: not snapshot.track_recent(track, windows.song_seconds)):
@@ -139,8 +146,20 @@ class ManagedPool:
             if is_initial
             else max(MANAGED_POOL_TARGET - self._unplayed(queue), 0)
         )
+        # the batch is appended after the current tail, so keep its first track clear of the last
+        # queued item's artist (the seam the listener actually hears)
+        preceding = (
+            _track_artist_set(items[-1].media_item)
+            if items and isinstance(items[-1].media_item, Track)
+            else set()
+        )
         chosen = allocate_refill(
-            sources, slots=slots, pool_keys=pool_keys, snapshot=snapshot, windows=windows
+            sources,
+            slots=slots,
+            pool_keys=pool_keys,
+            snapshot=snapshot,
+            windows=windows,
+            preceding_artists=preceding,
         )
         # advance each finite source's deque: drop what was just dispatched, rotate recency-denied
         # tracks to the back, page in more if it is draining, and retire it once fully played
@@ -323,7 +342,11 @@ class ManagedPool:
 
     def _unplayed(self, queue: PlayerQueue) -> int:
         """Return how many not-yet-played items remain in the queue."""
-        items = data.items if (data := self.queues.queue_data_or_none(queue.queue_id)) else []
+        items = (
+            queue_data.items
+            if (queue_data := self.queues.queue_data_or_none(queue.queue_id))
+            else []
+        )
         if queue.current_index is None:
             return len(items)
         return max(len(items) - (queue.current_index + 1), 0)
@@ -337,14 +360,17 @@ def allocate_refill(
     snapshot: RecencySnapshot,
     windows: RecencyWindows,
     weight_model: PoolWeightModel = POOL_WEIGHT_MODEL,
+    preceding_artists: set[str] | None = None,
 ) -> list[Track]:
     """
     Pick the next batch of tracks for the managed pool, weighted per source and recency-gated.
 
     Slots are apportioned across sources by weight; each source's candidates are hard-gated against
     the recency snapshot (a within-window track is excluded entirely). A dynamic batch is ordered
-    least-recently-played first; a finite (TRACKS) source keeps its own materialized order. If gating
-    leaves nothing, an ungated least-recently-played fallback is returned so playback never stalls.
+    least-recently-played first and de-prioritizes recently-heard artists; a finite (TRACKS) source
+    keeps its own materialized order. If gating leaves nothing, an ungated least-recently-played
+    fallback is returned so playback never stalls. The assembled batch is finally spaced so no two
+    adjacent tracks share an artist.
 
     :param sources: The queue's dynamic sources, each with its already-fetched candidate tracks.
     :param slots: How many tracks to add (0 or fewer returns nothing).
@@ -352,6 +378,8 @@ def allocate_refill(
     :param snapshot: The play-history snapshot to gate/score against.
     :param windows: The configured recency windows.
     :param weight_model: How to weight sources against each other.
+    :param preceding_artists: Artist names of the track that will sit directly before the batch (the
+        seam with the current tail); the first added track is kept clear of it.
     """
     if slots <= 0 or not sources:
         return []
@@ -384,7 +412,8 @@ def allocate_refill(
         chosen_set.add(track)
         taken[best_index] += 1
         pointers[best_index] += 1
-    return chosen or _ungated_fallback(sources, slots, pool_keys, snapshot)
+    batch = chosen or _ungated_fallback(sources, slots, pool_keys, snapshot)
+    return _space_tracks(batch, preceding_artists)
 
 
 def gate_tracks(
@@ -421,7 +450,8 @@ def _eligible(
     Return a source's candidates minus pool/recency-blocked ones.
 
     A finite (TRACKS) source keeps its materialized deque order so it plays through coherently; a
-    dynamic batch is ordered least-recently-played first.
+    dynamic batch is ordered fresh-artist first (recently-heard artists nudged back), then
+    least-recently-played.
     """
     # a deliberately-duplicated source uses the short repeat-gap, a singleton the long song window
     window = windows.duplicate_gap_seconds if source.multiplicity > 1 else windows.song_seconds
@@ -431,17 +461,25 @@ def _eligible(
             for track in source.candidates
             if track not in pool_keys and not snapshot.track_recent(track, window)
         ]
-    scored: list[tuple[int, int, Track]] = []
+    scored: list[tuple[int, int, int, Track]] = []
     for track in source.candidates:
         if track in pool_keys:
             continue
         last_played = snapshot.last_played(track)
         if window and last_played is not None and last_played >= snapshot.now - window:
             continue  # hard recency gate: a within-window track is excluded entirely
-        # never-played (None) sorts ahead of played; then oldest play first
-        scored.append((0 if last_played is None else 1, last_played or 0, track))
-    scored.sort(key=lambda entry: (entry[0], entry[1]))
-    return [track for _, _, track in scored]
+        # a within-artist-window track sorts behind fresh-artist ones (soft, so a single-artist
+        # station still plays); then never-played (None) ahead of played; then oldest play first
+        artist_recent = any(
+            snapshot.artist_recent(artist.name, windows.artist_seconds)
+            for artist in track.artists
+            if artist.name
+        )
+        scored.append(
+            (1 if artist_recent else 0, 0 if last_played is None else 1, last_played or 0, track)
+        )
+    scored.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+    return [entry[3] for entry in scored]
 
 
 def _weight(source: DynamicSource, weight_model: PoolWeightModel) -> int:
@@ -470,6 +508,23 @@ def _ungated_fallback(
         )
     )
     return pool[:slots]
+
+
+def _space_tracks(tracks: list[Track], preceding: set[str] | None) -> list[Track]:
+    """
+    Reorder the batch to best-effort keep directly-adjacent tracks from sharing an artist.
+
+    :param tracks: The assembled batch to space.
+    :param preceding: Artist names of the track that will sit directly before the batch (the seam
+        with the current tail); the first track is kept clear of it too.
+    """
+    order = space_by_artist([_track_artist_set(track) for track in tracks], preceding=preceding)
+    return [tracks[index] for index in order]
+
+
+def _track_artist_set(track: Track) -> set[str]:
+    """Return the lowercased set of artist names for a track."""
+    return {artist.name.lower() for artist in track.artists if artist.name}
 
 
 def _uri(media_item: MediaItemType) -> str | None:

@@ -39,6 +39,29 @@ def _track(item_id: str) -> Track:
     )
 
 
+def _artist_track(item_id: str, artist: str) -> Track:
+    """Build a Track on the 'test' provider with the given single named artist."""
+    return Track(
+        item_id=item_id,
+        provider="test",
+        name=f"Track {item_id}",
+        duration=60,
+        artists=UniqueList(
+            [
+                ItemMapping(
+                    item_id=artist.lower(),
+                    provider="test",
+                    name=artist,
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        ),
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
 def _source(
     candidate_ids: list[str],
     *,
@@ -54,11 +77,34 @@ def _source(
     )
 
 
-def _snapshot(played: dict[str, int] | None = None) -> RecencySnapshot:
-    """Build a snapshot marking the given track ids as played at the given timestamps."""
-    return RecencySnapshot(
-        now=NOW, song_ts={("test", item_id): ts for item_id, ts in (played or {}).items()}
+def _artist_source(
+    pairs: list[tuple[str, str]],
+    *,
+    multiplicity: int = 1,
+    fill_mode: DynamicFillMode = DynamicFillMode.TRACKS,
+) -> DynamicSource:
+    """Build a DynamicSource from (track_id, artist) pairs."""
+    return DynamicSource(
+        media_item=_track("seed"),
+        multiplicity=multiplicity,
+        fill_mode=fill_mode,
+        candidates=[_artist_track(item_id, artist) for item_id, artist in pairs],
     )
+
+
+def _snapshot(
+    played: dict[str, int] | None = None, *, artists_played: dict[str, int] | None = None
+) -> RecencySnapshot:
+    """Build a snapshot marking the given track ids (and artist names) as played."""
+    return RecencySnapshot(
+        now=NOW,
+        song_ts={("test", item_id): ts for item_id, ts in (played or {}).items()},
+        artist_ts={name.lower(): ts for name, ts in (artists_played or {}).items()},
+    )
+
+
+def _artists(tracks: list[Track]) -> list[str]:
+    return [track.artists[0].name for track in tracks]
 
 
 def _ids(tracks: list[Track]) -> list[str]:
@@ -246,3 +292,52 @@ def test_gate_tracks_fallback_when_all_recent() -> None:
     tracks = [_track("a"), _track("b")]
     snapshot = _snapshot({"a": NOW - HOUR, "b": NOW - 2 * HOUR})
     assert _ids(gate_tracks(tracks, snapshot, windows)) == ["a", "b"]
+
+
+def test_spaces_adjacent_same_artist() -> None:
+    """The assembled batch never places two same-artist tracks directly adjacent."""
+    windows = RecencyWindows(song_seconds=0)  # gate off; test ordering only
+    source = _artist_source(
+        [("a1", "A"), ("a2", "A"), ("a3", "A"), ("b1", "B"), ("c1", "C")],
+    )
+    result = allocate_refill(
+        [source], slots=5, pool_keys=set(), snapshot=_snapshot(), windows=windows
+    )
+    artists = _artists(result)
+    assert len(result) == 5  # spacing reorders, never drops
+    assert all(artists[i] != artists[i + 1] for i in range(len(artists) - 1))
+
+
+def test_seam_avoids_preceding_artist() -> None:
+    """The first added track is kept clear of the artist that plays right before the batch."""
+    windows = RecencyWindows(song_seconds=0)
+    source = _artist_source([("a1", "A"), ("b1", "B"), ("c1", "C")])
+    result = allocate_refill(
+        [source],
+        slots=3,
+        pool_keys=set(),
+        snapshot=_snapshot(),
+        windows=windows,
+        preceding_artists={"a"},
+    )
+    assert len(result) == 3
+    assert result[0].artists[0].name != "A"
+
+
+def test_artist_recency_deprioritized() -> None:
+    """A dynamic candidate whose artist is within the artist window sorts behind fresh ones."""
+    windows = RecencyWindows(song_seconds=0, artist_seconds=1800)
+    source = _artist_source([("r1", "Recent"), ("f1", "Fresh")], fill_mode=DynamicFillMode.DYNAMIC)
+    snapshot = _snapshot(artists_played={"Recent": NOW - 600})
+    result = allocate_refill([source], slots=2, pool_keys=set(), snapshot=snapshot, windows=windows)
+    # the fresh-artist track leads even though it appears later in the candidate list
+    assert _artists(result) == ["Fresh", "Recent"]
+
+
+def test_artist_recency_not_hard_excluded() -> None:
+    """A within-window artist is only nudged back, never dropped (single-artist stations still play)."""
+    windows = RecencyWindows(song_seconds=0, artist_seconds=1800)
+    source = _artist_source([("a1", "A"), ("a2", "A")], fill_mode=DynamicFillMode.DYNAMIC)
+    snapshot = _snapshot(artists_played={"A": NOW - 600})
+    result = allocate_refill([source], slots=5, pool_keys=set(), snapshot=snapshot, windows=windows)
+    assert len(result) == 2  # both kept despite the artist being recently heard

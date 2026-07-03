@@ -19,7 +19,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
 if TYPE_CHECKING:
-    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
 def test_directly_enqueued_track_is_user_initiated() -> None:
@@ -36,13 +36,13 @@ def test_directly_enqueued_track_is_user_initiated() -> None:
         item_id="t2", provider="library", name="T2", provider_mappings=set(), album=album
     )
     # the user explicitly played a single track and (separately) an album
-    queue = cast("PlayerQueue", Mock(enqueued_media_items=[explicit_track, album]))
+    data = cast("PlayerQueueData", Mock(enqueued_media_items=[explicit_track, album]))
 
     tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     # the directly-enqueued track was explicitly chosen
-    assert tracker._is_user_initiated_play(queue, explicit_track) is True
+    assert tracker._is_user_initiated_play(data, explicit_track) is True
     # a track that only played as part of the enqueued album was not
-    assert tracker._is_user_initiated_play(queue, album_track) is False
+    assert tracker._is_user_initiated_play(data, album_track) is False
 
 
 async def test_mark_album_played_is_user_initiated() -> None:
@@ -62,9 +62,9 @@ async def test_mark_album_played_is_user_initiated() -> None:
         album_type=AlbumType.ALBUM,
     )
     track = Track(item_id="t1", provider="library", name="T", provider_mappings=set())
-    queue = cast("PlayerQueue", Mock(queue_id="q1", userid="u1"))
+    data = cast("PlayerQueueData", Mock(userid="u1", queue=Mock(queue_id="q1")))
 
-    await tracker._mark_album_played(album, track, queue)
+    await tracker._mark_album_played(album, track, data)
 
     assert mark.call_args.kwargs["user_initiated"] is True
 

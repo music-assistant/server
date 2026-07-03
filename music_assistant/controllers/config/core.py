@@ -13,11 +13,13 @@ from music_assistant_models.config_entries import (
 
 from music_assistant.constants import (
     CONF_CORE,
+    CONF_PLAYER_QUEUES,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
 )
 from music_assistant.controllers.config.constants import _ConfigValueT
 from music_assistant.controllers.config.helpers import _with_translation_owner
+from music_assistant.controllers.player_queues.constants import CONF_AUTOPLAY_PLAYLIST
 from music_assistant.helpers.api import api_command
 
 if TYPE_CHECKING:
@@ -62,7 +64,11 @@ class CoreConfigMixin:
             raw_conf = {}
         if "domain" not in raw_conf:
             raw_conf = {**raw_conf, "domain": domain}
-        config_entries = await self.get_core_config_entries(domain)
+        # build the schema straight from the controller (no dynamic UI options): CoreConfig.parse
+        # stamps the translation owner itself, and this path must stay cheap because it runs on the
+        # config-value fall-through (get_core_config_value), a hot path on enqueue.
+        controller: CoreController = getattr(self.mass, domain)
+        config_entries = list(await controller.get_config_entries() + DEFAULT_CORE_CONFIG_ENTRIES)
         return cast("CoreConfig", CoreConfig.parse(config_entries, raw_conf))
 
     @overload
@@ -149,6 +155,13 @@ class CoreConfigMixin:
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
+        if domain == CONF_PLAYER_QUEUES:
+            # populate the global autoplay playlist dropdown for the UI here (not in get_core_config),
+            # so the config value/parse path stays free of a library lookup
+            playlist_options = await self.mass.config._library_playlist_options()
+            for entry in all_entries:
+                if entry.key == CONF_AUTOPLAY_PLAYLIST:
+                    entry.options = playlist_options
         return _with_translation_owner(all_entries, f"core.{domain}", action, values)
 
     @api_command("config/core/save", required_role="admin")

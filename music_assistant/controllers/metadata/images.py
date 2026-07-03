@@ -3,7 +3,7 @@ Image handling for the Metadata Controller.
 
 Provides the ImageProxyMixin, mixed into the MetaDataController, which resolves
 media images to (proxied) URLs, renders and caches thumbnails, serves the
-``/imageproxy`` HTTP endpoints, extracts colour palettes and builds playlist
+``/imageproxy`` HTTP endpoint, extracts colour palettes and builds playlist
 collage images.
 """
 
@@ -12,9 +12,7 @@ from __future__ import annotations
 import os
 import random
 import threading
-import urllib.parse
 from base64 import b64encode
-from time import time
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
@@ -33,7 +31,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.colors import get_palette, get_palette_for_url
+from music_assistant.helpers.colors import get_palette
 from music_assistant.helpers.images import (
     create_collage,
     create_thumb_hash,
@@ -49,13 +47,10 @@ from .constants import (
     _IMAGE_ID_LRU_MAX,
     _IMAGEPROXY_CONTENT_TYPES,
     _IMAGEPROXY_PATH_PREFIX,
-    _LEGACY_DEPRECATION_LOG_INTERVAL,
-    _LEGACY_DEPRECATION_PRUNE_AFTER,
     CACHE_CATEGORY_IMAGE_IDS,
 )
 from .helpers import (
     _detect_image_format,
-    _is_safe_imageproxy_request_path,
     _normalize_imageproxy_format,
 )
 
@@ -84,7 +79,6 @@ class ImageProxyMixin:
         _collage_images_dir: str
         _image_id_lru: OrderedDict[str, tuple[str, str]]
         _image_id_lock: threading.Lock
-        _legacy_imageproxy_warn_at: dict[str, float]
 
     def compute_image_id(self, provider: str, path: str) -> str:
         """
@@ -239,21 +233,24 @@ class ImageProxyMixin:
         return image.path
 
     @api_command("metadata/get_image_palette")
-    async def get_image_palette(self, image: MediaItemImage | str) -> MediaItemPalette | None:
+    async def get_image_palette(self, image_id: str) -> MediaItemPalette | None:
         """
-        Get the color palette extracted from an image.
+        Get the color palette extracted from a (proxied) image.
 
         The palette follows the Sendspin color@v1 spec (primary, accent, on_dark,
         on_light, background_dark and background_light). Results are cached, so
         repeated requests for the same image are cheap.
 
-        :param image: A MediaItemImage to read colors from, or an image URL (either a
-            direct URL or an imageproxy URL as produced by `get_image_url`).
+        :param image_id: The opaque imageproxy image id (the ``proxy_id`` field on a
+            ``MediaItemImage``). Resolved to the image registered for that id; an
+            unknown id yields None.
         """
-        if not isinstance(image, MediaItemImage):
-            return await get_palette_for_url(self.mass, image)
+        resolved = await self.resolve_image_id(image_id)
+        if resolved is None:
+            return None
+        provider, path = resolved
         try:
-            return await get_palette(self.mass, image.path, image.provider)
+            return await get_palette(self.mass, path, provider)
         except MediaNotFoundError, OSError:
             return None
 
@@ -310,50 +307,6 @@ class ImageProxyMixin:
         image_format = _normalize_imageproxy_format(
             request.query.get("fmt")
         ) or _detect_image_format(path)
-        return await self._serve_thumbnail(path, provider, size, image_format)
-
-    async def handle_legacy_imageproxy(self, request: web.Request) -> web.Response:
-        """
-        Serve an image for a legacy `/imageproxy?provider=&path=&size=&fmt=` request.
-
-        DEPRECATED: this form requires the client to carry the full provider id
-        and (often URL-shaped) path on the query string, which produces
-        unwieldy double-encoded URLs and an open surface for arbitrary path
-        injection. New clients must use the `proxy_id` field on
-        `MediaItemImage` and hit `handle_imageproxy` instead. Each remote IP
-        gets a throttled deprecation `warning` log per minute.
-        """
-        self._maybe_log_legacy_imageproxy(request)
-        try:
-            path = request.query["path"]
-        except KeyError:
-            return web.Response(status=400)
-        provider = request.query.get("provider", "builtin")
-        if provider in ("url", "file", "http"):
-            # legacy aliases kept for backwards compatibility with old clients
-            provider = "builtin"
-        try:
-            size = int(request.query.get("size", "0"))
-        except ValueError:
-            return web.Response(status=400)
-        if size not in _ALLOWED_IMAGEPROXY_SIZES:
-            return web.Response(status=400)
-        image_format = _normalize_imageproxy_format(
-            request.query.get("fmt")
-        ) or _detect_image_format(path)
-        # path was double-encoded by old get_image_url(); decode iteratively
-        # until stable so we cope with any extra wrapping clients may have done
-        for _ in range(3):
-            if "%" not in path:
-                break
-            decoded = urllib.parse.unquote_plus(path)
-            if decoded == path:
-                break
-            path = decoded
-        if not _is_safe_imageproxy_request_path(path):
-            return web.Response(status=400)
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            return web.Response(status=404)
         return await self._serve_thumbnail(path, provider, size, image_format)
 
     async def create_collage_image(
@@ -476,30 +429,6 @@ class ImageProxyMixin:
             body=image_data,
             headers=response_headers,
             content_type=_IMAGEPROXY_CONTENT_TYPES[content_format],
-        )
-
-    def _maybe_log_legacy_imageproxy(self, request: web.Request) -> None:
-        """Emit a throttled deprecation warning for the legacy /imageproxy form."""
-        remote = request.remote or "unknown"
-        now = time()
-        if len(self._legacy_imageproxy_warn_at) > 100:
-            self._legacy_imageproxy_warn_at = {
-                ip: ts
-                for ip, ts in self._legacy_imageproxy_warn_at.items()
-                if now - ts < _LEGACY_DEPRECATION_PRUNE_AFTER
-            }
-        if (
-            now - self._legacy_imageproxy_warn_at.get(remote, 0.0)
-            < _LEGACY_DEPRECATION_LOG_INTERVAL
-        ):
-            return
-        self._legacy_imageproxy_warn_at[remote] = now
-        self.logger.warning(
-            "Deprecated /imageproxy?provider=&path= request from %s (UA: %s); "
-            "clients should read the proxy_id field on MediaItemImage and use "
-            "the canonical /imageproxy/<proxy_id> endpoint instead",
-            remote,
-            request.headers.get("User-Agent", "?"),
         )
 
     async def _persist_image_id(self, image_id: str, provider: str, path: str) -> None:

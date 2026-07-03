@@ -90,8 +90,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
             # no next item, nothing to do...
             return
 
-        queue = self._queue_data[queue_id].queue
-        session_id = queue.session_id
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        session_id = queue_data.session_id
         if queue.flow_mode:
             # ignore this for flow mode
             return
@@ -99,7 +100,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
             if (
                 not queue.active
-                or queue.session_id != session_id
+                or queue_data.session_id != session_id
                 or queue.state != PlaybackState.PLAYING
             ):
                 # queue is not active anymore or session_id does not match, so we bail out
@@ -108,8 +109,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item),
             )
-            if queue.next_item_id_enqueued != next_item.queue_item_id:
-                queue.next_item_id_enqueued = next_item.queue_item_id
+            if queue_data.next_item_id_enqueued != next_item.queue_item_id:
+                queue_data.next_item_id_enqueued = next_item.queue_item_id
                 self.logger.debug(
                     "Enqueued next track %s on queue %s",
                     next_item.name,
@@ -188,7 +189,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         if current_index < 2:
             return  # Nothing to clean up yet
 
-        queue_items = data.items if (data := self._queue_data.get(queue_id)) else []
+        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
         cleanup_threshold = current_index - 2
         buffers_cleared = 0
 
@@ -227,7 +228,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         """
         self.mass.streams.audio.clear_crossfade_data(queue_id)
 
-        queue_items = data.items if (data := self._queue_data.get(queue_id)) else []
+        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
         buffers_cleared = 0
 
         for item in queue_items:

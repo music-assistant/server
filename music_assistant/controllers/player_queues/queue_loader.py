@@ -344,11 +344,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             "Filling dynamic tracks for queue %s",
             queue_id,
         )
-        queue = self._queue_data[queue_id].queue
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         # restore the queue owner's user context so provider filters are respected during this
         # background refill (dynamic-playlist generation honours the current user)
         playback_user = (
-            await self.mass.webserver.auth.get_user(queue.userid) if queue.userid else None
+            await self.mass.webserver.auth.get_user(queue_data.userid)
+            if queue_data.userid
+            else None
         )
         set_current_user(playback_user)
         # Top up from the queue's dynamic sources (dynamic playlists and any mixed-in finite items),
@@ -376,6 +379,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue = self.get(queue_id)
         if queue is None or not queue.autoplay_enabled:
             return
+        queue_data = self._queue_data[queue_id]
         mode = self._autoplay.resolve_mode(queue_id)
         self.logger.debug(
             "Filling autoplay tracks (mode: %s) for queue %s", mode.value, queue.display_name
@@ -383,7 +387,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Restore the queue owner's user context so provider filters and library access
         # are respected during this background refill, mirroring _fill_dynamic_tracks.
         playback_user = (
-            await self.mass.webserver.auth.get_user(queue.userid) if queue.userid else None
+            await self.mass.webserver.auth.get_user(queue_data.userid)
+            if queue_data.userid
+            else None
         )
         set_current_user(playback_user)
         existing_tracks = {
@@ -398,7 +404,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 tracks = await self._autoplay.get_library_tracks(queue, existing_tracks)
             elif mode == AutoplayMode.SIMILAR:
                 tracks = await self._get_similar_tracks(
-                    queue_id, seed_items=queue.enqueued_media_items
+                    queue_id, seed_items=queue_data.enqueued_media_items
                 )
             else:
                 # AUTO: try similar tracks first, fall back to the library mix. The similar
@@ -407,7 +413,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 tracks = []
                 with suppress(MusicAssistantError):
                     tracks = await self._get_similar_tracks(
-                        queue_id, seed_items=queue.enqueued_media_items
+                        queue_id, seed_items=queue_data.enqueued_media_items
                     )
                 if not tracks:
                     tracks = await self._autoplay.get_library_tracks(queue, existing_tracks)
@@ -418,8 +424,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         # route the autoplay batch through the recency engine so a recently-heard track isn't
         # immediately re-added (ungated fallback keeps autoplay going if everything is recent)
-        windows = self._smart_shuffle.windows(queue_id)
-        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+        windows = self._smart_shuffle.windows()
+        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
         tracks = gate_tracks(
             [track for track in tracks if isinstance(track, Track)], snapshot, windows
         )
@@ -447,12 +453,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         :return: True if playback was started, False otherwise.
         """
         # Try different filter combinations in order of specificity
+        queue_data = self._queue_data[queue.queue_id]
         filter_attempts: list[tuple[str | None, str | None, str]] = []
-        if queue.userid:
-            filter_attempts.append((queue.userid, queue.queue_id, "userid + queue_id match"))
+        if queue_data.userid:
+            filter_attempts.append((queue_data.userid, queue.queue_id, "userid + queue_id match"))
         filter_attempts.append((None, queue.queue_id, "queue_id match"))
-        if queue.userid:
-            filter_attempts.append((queue.userid, None, "userid match"))
+        if queue_data.userid:
+            filter_attempts.append((queue_data.userid, None, "userid match"))
         filter_attempts.append((None, None, "any recent item"))
 
         for userid, queue_id, match_type in filter_attempts:
@@ -498,6 +505,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         BYPASS_THROTTLER.set(True)
         if not (queue := self.get(queue_id)):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        queue_data = self._queue_data[queue_id]
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get_player(queue_id, True)
         assert queue_player is not None  # for type checking
@@ -507,7 +515,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         # save the user requesting the playback (clear it for anonymous playback)
         playback_user = get_current_user()
-        queue.userid = playback_user.user_id if playback_user else None
+        queue_data.userid = playback_user.user_id if playback_user else None
         if playback_user:
             self.logger.debug(
                 "User %s requested playback.", playback_user.display_name or playback_user.username
@@ -538,7 +546,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             self.clear(queue_id, skip_stop=True)
         # Clear the 'enqueued media item' list when a new queue is requested
         if option not in (QueueOption.ADD, QueueOption.NEXT):
-            queue.enqueued_media_items.clear()
+            queue_data.enqueued_media_items.clear()
 
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
@@ -589,9 +597,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     MediaType.PLAYLIST,
                     MediaType.ARTIST,
                 ):
-                    queue.enqueued_media_items.append(media_item)
-                    if len(queue.enqueued_media_items) > 10:
-                        queue.enqueued_media_items.pop(0)
+                    queue_data.enqueued_media_items.append(media_item)
+                    if len(queue_data.enqueued_media_items) > 10:
+                        queue_data.enqueued_media_items.pop(0)
                     if isinstance(media_item, Playlist) and media_item.is_dynamic:
                         # a dynamic playlist/station is always a self-managing dynamic source
                         source_items.append(media_item)
@@ -621,7 +629,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # all sources, so there is no need to fetch a batch here.
                     self.mass.create_task(
                         self.mass.music.mark_item_played(
-                            media_item, userid=queue.userid, queue_id=queue_id, user_initiated=True
+                            media_item,
+                            userid=queue_data.userid,
+                            queue_id=queue_id,
+                            user_initiated=True,
                         )
                     )
                 elif already_dynamic:
@@ -650,7 +661,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     media_items += await self._media_resolver._resolve_media_items(
                         media_item,
                         start_item_uri,
-                        userid=queue.userid,
+                        userid=queue_data.userid,
                         queue_id=queue_id,
                         sort_by=sort_by,
                     )
@@ -705,8 +716,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             on the rebuilt pool; ADD/NEXT/REPLACE_NEXT stage it without starting playback (behind the
             current/buffered track, or from the front of an idle/empty queue).
         """
-        data = self._queue_data[queue_id]
-        queue = data.queue
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
         queue.shuffle_enabled = True
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
@@ -721,8 +732,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         start_playing = option in (QueueOption.PLAY, QueueOption.REPLACE)
         # drop the finite upcoming tail up front so the pool is sized and deduped against the kept
         # head only (the tail we are discarding must not exclude its own tracks from the new pool)
-        data.items = data.items[:insert_at]
-        queue.items = len(data.items)
+        queue_data.items = queue_data.items[:insert_at]
+        queue.items = len(queue_data.items)
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
         queue_items = [
             QueueItem.from_media_item(queue_id, track) for track in pool_tracks if track.available
@@ -752,7 +763,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         :param seed_items: Explicit seed items to base the tracks on. Defaults to the queue's
             sources; autoplay passes the enqueued media items instead.
         """
-        queue = self._queue_data[queue_id].queue
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         queue_track_items: list[Track] = [
             q.media_item
             for q in self._queue_data[queue_id].items
@@ -773,8 +785,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Get user's preferred provider instances for steering provider selection
         preferred_provider_instances: list[str] | None = None
         if (
-            queue.userid
-            and (playback_user := await self.mass.webserver.auth.get_user(queue.userid))
+            queue_data.userid
+            and (playback_user := await self.mass.webserver.auth.get_user(queue_data.userid))
             and playback_user.provider_filter
         ):
             preferred_provider_instances = playback_user.provider_filter

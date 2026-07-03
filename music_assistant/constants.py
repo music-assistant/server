@@ -162,6 +162,13 @@ CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
 CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
 
+# Tri-state option VALUES for per-queue settings that can follow the global (queue controller)
+# default. "global" resolves to the queue-controller value (like the log_level "GLOBAL" pattern);
+# "enabled"/"disabled" force the setting on/off for that queue. (Distinct from the CONF_ENABLED key.)
+CONF_VALUE_GLOBAL: Final[str] = "global"
+CONF_VALUE_ENABLED: Final[str] = "enabled"
+CONF_VALUE_DISABLED: Final[str] = "disabled"
+
 
 def _default_background_scan_concurrency() -> int:
     # Slow and steady by default: at most 2 tracks at once even on big machines. Users who
@@ -387,14 +394,6 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     requires_reload=True,
 )
 
-CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
-    key=CONF_VOLUME_NORMALIZATION,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=True,
-    category="audio",
-    requires_reload=True,
-)
-
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
@@ -418,6 +417,8 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
 # Note: the crossfade_mode select entry (standard/smart) is built dynamically in the config
 # controller because its options and default depend on smart fades availability.
 
+# Crossfade duration is a global-only (queue controller) setting; it is read fresh per stream, so a
+# change applies on the next track (no reload needed — a reload of the queues core is disruptive).
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     key=CONF_CROSSFADE_DURATION,
     type=ConfigEntryType.INTEGER,
@@ -426,7 +427,6 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     category="crossfade",
     depends_on=CONF_CROSSFADE_MODE,
     depends_on_value=CrossfadeMode.STANDARD_CROSSFADE.value,
-    requires_reload=True,
 )
 
 
@@ -886,7 +886,6 @@ ATTR_AVAILABLE: Final[str] = "available"
 ATTR_POWERED: Final[str] = "powered"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
-ATTR_ACTIVE_PLAYLIST: Final[str] = "active_playlist"
 ATTR_SUPPORTED_FEATURES: Final[str] = "supported_features"
 ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"

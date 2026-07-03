@@ -76,22 +76,22 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
-        data = self._queue_data.get(queue_id)
-        if data is None:
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None:
             return await func(self, *args, **kwargs)
-        queue = data.queue
+        queue = queue_data.queue
         async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
             try:
-                data.play_action_refcount += 1
+                queue_data.play_action_refcount += 1
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 if not prev_in_progress:
                     self.signal_update(queue_id)
                 return await func(self, *args, **kwargs)
             finally:
-                data.play_action_refcount -= 1
-                if data.play_action_refcount <= 0:
-                    data.play_action_refcount = 0
+                queue_data.play_action_refcount -= 1
+                if queue_data.play_action_refcount <= 0:
+                    queue_data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
                     self.signal_update(queue_id)
 
@@ -145,3 +145,39 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+# how many bounded passes to make separating directly-adjacent same-artist items
+ARTIST_REPAIR_PASSES = 4
+# how far ahead to look for a non-clashing item to swap in (keeps moves local so any
+# existing even spread is preserved)
+ARTIST_SWAP_WINDOW = 6
+
+
+def space_by_artist(artist_sets: list[set[str]], *, preceding: set[str] | None = None) -> list[int]:
+    """
+    Return an index order that best-effort keeps same-artist entries from sitting adjacent.
+
+    :param artist_sets: The lowercased artist-name set for each item, in its current order.
+    :param preceding: Artist names of the item that will sit directly before the first entry (the
+        seam with the already-queued tail); the first entry is kept clear of it too. None ignores it.
+    """
+    count = len(artist_sets)
+    order = list(range(count))
+    sets = list(artist_sets)
+    for _ in range(ARTIST_REPAIR_PASSES):
+        changed = False
+        # index -1 represents the preceding (seam) item, so the first entry is kept clear of it too
+        for index in range(-1, count - 1):
+            current = preceding if index == -1 else sets[index]
+            if not current or not current & sets[index + 1]:
+                continue
+            for target in range(index + 2, min(index + 2 + ARTIST_SWAP_WINDOW, count)):
+                if not current & sets[target]:
+                    order[index + 1], order[target] = order[target], order[index + 1]
+                    sets[index + 1], sets[target] = sets[target], sets[index + 1]
+                    changed = True
+                    break
+        if not changed:
+            break
+    return order
