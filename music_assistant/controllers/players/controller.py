@@ -1786,10 +1786,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # a lightweight event.
         clean_changed_keys = set(changed_values.keys()) - {
             "current_media.elapsed_time",
+            "current_media.elapsed_time_last_updated",
             "elapsed_time_last_updated",
         }
-        if len(clean_changed_keys) == 0 and not force_update:
-            # nothing changed
+        if (
+            len(clean_changed_keys) == 0
+            and not force_update
+            # suppress regular playback ticks, pass through significant
+            # jumps of the corrected position (seek/buffer correction)
+            and not self._current_media_time_jumped(changed_values)
+        ):
             return
 
         if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
@@ -1804,6 +1810,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 # stays in sync. Skipping the forward on small ticks avoids a per-second
                 # cascade through group → children → group.
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
+                # re-anchor current_media onto the corrected queue time
+                self.trigger_player_update(player.player_id)
                 if not skip_forward or force_update:
                     self._forward_state_update(player, changed_values)
             return
@@ -3540,6 +3548,27 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player_id: Player ID to build the task ID for.
         """
         return f"player_sleep_timer_{player_id}"
+
+    @staticmethod
+    def _current_media_time_jumped(changed_values: dict[str, tuple[Any, Any]]) -> bool:
+        """
+        Return whether the current media's corrected position jumped significantly.
+
+        :param changed_values: The changed state values from a player state update.
+        """
+        if "current_media.elapsed_time" not in changed_values:
+            # anchor-only change
+            return False
+        prev_cm_time, new_cm_time = changed_values["current_media.elapsed_time"]
+        if prev_cm_time is None or new_cm_time is None:
+            return False
+        now = time.time()
+        prev_cm_updated, new_cm_updated = changed_values.get(
+            "current_media.elapsed_time_last_updated", (now, now)
+        )
+        prev_corrected = float(prev_cm_time) + (now - float(prev_cm_updated or now))
+        new_corrected = float(new_cm_time) + (now - float(new_cm_updated or now))
+        return abs(prev_corrected - new_corrected) > 1.0
 
     # Private command handlers (no permission checks)
 
