@@ -15,6 +15,7 @@ from types import NoneType, UnionType
 from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from mashumaro.exceptions import MissingField
+from music_assistant_models.auth import UserRole
 from music_assistant_models.media_items.media_item import MediaItem
 
 from music_assistant.helpers.util import try_parse_bool
@@ -22,6 +23,26 @@ from music_assistant.helpers.util import try_parse_bool
 LOGGER = logging.getLogger(__name__)
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+
+# Role privilege levels; higher satisfies a lower required_role.
+ROLE_LEVELS: dict[UserRole, int] = {
+    UserRole.GUEST: 0,
+    UserRole.USER: 1,
+    UserRole.ADMIN: 2,
+}
+
+
+def has_required_role(user_role: UserRole, required_role: str | None) -> bool:
+    """
+    Check whether a user's role satisfies a command's required role.
+
+    :param user_role: The role of the authenticated user.
+    :param required_role: The command's required role ("admin", "user") or None for any role.
+    """
+    if required_role is None:
+        return True
+    return ROLE_LEVELS.get(user_role, 0) >= ROLE_LEVELS.get(UserRole(required_role), 0)
+
 
 # Cache for resolved type alias strings to avoid repeated imports
 _TYPE_ALIAS_CACHE: dict[str, Any] = {}

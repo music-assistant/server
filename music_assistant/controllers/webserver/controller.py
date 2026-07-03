@@ -43,7 +43,7 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments
+from music_assistant.helpers.api import has_required_role, parse_arguments
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
@@ -547,10 +547,10 @@ class WebserverController(CoreController):
 
             # Set user in context and check role
             set_current_user(user)
-            if handler.required_role == "admin" and user.role != UserRole.ADMIN:
+            if not has_required_role(user.role, handler.required_role):
                 return web.Response(
                     status=403,
-                    text="Admin access required",
+                    text="Insufficient permissions",
                 )
 
         try:

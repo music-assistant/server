@@ -18,7 +18,7 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.auth import AuthProviderType, User
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -32,7 +32,7 @@ from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.api import APICommandHandler, has_required_role, parse_arguments
 
 from .helpers.auth_middleware import (
     is_request_from_ingress,
@@ -225,17 +225,16 @@ class WebsocketClientHandler:
             set_sendspin_player_id(self._sendspin_player_id)
 
             # Check role if required
-            if handler.required_role == "admin":
-                if self._authenticated_user.role != UserRole.ADMIN:
-                    await self._send_message(
-                        ErrorResultMessage(
-                            msg.message_id,
-                            InsufficientPermissions.error_code,
-                            "Admin access required",
-                            translation_key="insufficient_permissions",
-                        )
+            if not has_required_role(self._authenticated_user.role, handler.required_role):
+                await self._send_message(
+                    ErrorResultMessage(
+                        msg.message_id,
+                        InsufficientPermissions.error_code,
+                        "Insufficient permissions",
+                        translation_key="insufficient_permissions",
                     )
-                    return
+                )
+                return
 
         # schedule task to handle the command
         self.mass.create_task(self._run_handler(handler, msg))

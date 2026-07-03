@@ -859,7 +859,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
 
-    @api_command("music/favorites/add_item")
+    @api_command("music/favorites/add_item", required_role="user")
     async def add_item_to_favorites(
         self,
         item: str | MediaItemType | ItemMapping,
@@ -911,7 +911,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
 
-    @api_command("music/favorites/remove_item")
+    @api_command("music/favorites/remove_item", required_role="user")
     async def remove_item_from_favorites(
         self,
         media_type: MediaType,
@@ -935,7 +935,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
 
-    @api_command("music/library/remove_item")
+    @api_command("music/library/remove_item", required_role="user")
     async def remove_item_from_library(
         self, media_type: MediaType, library_item_id: str | int, recursive: bool = True
     ) -> None:
@@ -962,7 +962,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # remove from library
         await ctrl.remove_item_from_library(library_item_id, recursive)
 
-    @api_command("music/library/add_item")
+    @api_command("music/library/add_item", required_role="user")
     async def add_item_to_library(
         self, item: str | MediaItemType | ItemMapping, overwrite_existing: bool = False
     ) -> MediaItemType:
@@ -1844,7 +1844,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 mappings_added = True
         return mappings_added
 
-    @api_command("music/add_provider_mapping")
+    @api_command("music/add_provider_mapping", required_role="user")
     async def add_provider_mapping(
         self, media_type: MediaType, db_id: str, mapping: ProviderMapping
     ) -> None:
@@ -1852,7 +1852,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
-    @api_command("music/remove_provider_mapping")
+    @api_command("music/remove_provider_mapping", required_role="user")
     async def remove_provider_mapping(
         self, media_type: MediaType, db_id: str, mapping: ProviderMapping
     ) -> None:
@@ -1860,7 +1860,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.remove_provider_mapping(db_id, mapping.provider_instance, mapping.item_id)
 
-    @api_command("music/match_providers")
+    @api_command("music/match_providers", required_role="user")
     async def match_providers(self, media_type: MediaType, db_id: str) -> None:
         """Search for mappings on all providers for the given library item."""
         ctrl = self.get_controller(media_type)
