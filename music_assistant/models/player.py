@@ -91,9 +91,45 @@ MEDIA_IDENTITY_KEYS = frozenset(
         "current_media.queue_item_id",
         "current_media.image_url",
         "current_media.duration",
-        "current_media.elapsed_time",
-        "current_media.palette",
     }
+)
+
+# Cached properties (propcache keys in Player._cache) grouped by what invalidates them:
+# - config-derived: only invalidated by set_config
+# - topology-derived: invalidated when group/link topology (may have) changed,
+#   i.e. on an externally triggered update or when an own topology input changed
+# - everything else (state-derived, including cached properties defined by player
+#   implementations) is invalidated on every update_state call
+_CONFIG_CACHED_PROPS = frozenset({"icon", "hide_in_ui", "expose_to_ha"})
+_TOPOLOGY_CACHED_PROPS = frozenset(
+    {
+        "power_control",
+        "volume_control",
+        "mute_control",
+        "is_native_player",
+        "output_protocols",
+        "flow_mode",
+        "__final_synced_to",
+        "__final_active_group",
+        "__final_group_members",
+        "__final_can_group_with",
+    }
+)
+_RETAINED_CACHED_PROPS = _CONFIG_CACHED_PROPS | _TOPOLOGY_CACHED_PROPS
+
+# input-snapshot keys that feed the topology-derived cached properties
+_TOPOLOGY_INPUT_KEYS = (
+    "type",
+    "available",
+    "supported_features",
+    "group_members",
+    "static_group_members",
+    "can_group_with",
+    "is_active_session",
+    "synced_to",
+    "linked_protocols",
+    "protocol_parent_id",
+    "active_output_protocol",
 )
 
 
@@ -1604,18 +1640,38 @@ class Player(ABC):
         :param signal_event: If True, signal the state update event to the PlayerController.
         """
         self.mass.verify_event_loop_thread("player.update_state")
+        # Invalidate the state-derived cached properties up front so both the
+        # input probe and a recalculation read fresh values. Config- and
+        # topology-derived cached properties are retained: config ones are
+        # invalidated by set_config, topology ones below when (possibly)
+        # affected. Cached properties defined by player implementations
+        # (unknown keys) count as state-derived.
+        for key in list(self._cache):
+            if key not in _RETAINED_CACHED_PROPS:
+                del self._cache[key]
         new_snapshot = self.__collect_input_snapshot()
+        prev_snapshot = self.__input_snapshot
         if (
             not force_update
             and not self.__state_dirty
-            and self.__input_snapshot is not None
-            and new_snapshot == self.__input_snapshot
+            and prev_snapshot is not None
+            and new_snapshot == prev_snapshot
             and not self.__own_position_anchor_moved()
         ):
             # None of the player's own inputs changed since the last calculation:
             # nothing to do. Changes the player derives from other sources
             # (players/queues/config) always come with a mark_state_dirty call.
             return
+        # topology-derived cached values must recompute when the update was
+        # triggered externally (cross-player state changed) or when an own
+        # input feeding them changed
+        if (
+            self.__state_dirty
+            or prev_snapshot is None
+            or any(new_snapshot[key] != prev_snapshot.get(key) for key in _TOPOLOGY_INPUT_KEYS)
+        ):
+            for key in _TOPOLOGY_CACHED_PROPS:
+                self._cache.pop(key, None)
         self.__state_dirty = False
         self.__input_snapshot = new_snapshot
         current_media = self.current_media
@@ -1626,8 +1682,6 @@ class Player(ABC):
             else None,
             self.playback_state == PlaybackState.PLAYING,
         )
-        # clear the dict for the cached properties
-        self._cache.clear()
         # calculate the new state
         changed_values = self.__calculate_player_state()
         if not MEDIA_IDENTITY_KEYS.isdisjoint(changed_values.keys()):
@@ -1721,7 +1775,9 @@ class Player(ABC):
         """
         # TODO: validate that caller is the PlayerController ?
         self._config = config
-        # config feeds several state values, so force a recalculation
+        # config feeds several (cached) state values, so invalidate all cached
+        # properties (including the config-derived ones) and force a recalculation
+        self._cache.clear()
         self.mark_state_dirty()
 
     @final
