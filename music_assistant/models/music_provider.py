@@ -835,13 +835,7 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.artists.add_item_to_library(prov_item)
-                    elif not self._check_provider_mappings(library_item, prov_item, True):
-                        # existing library item but provider mapping doesn't match
-                        library_item = await self.mass.music.artists.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                        # update date_added if it changed
+                    elif self._library_item_needs_update(library_item, prov_item):
                         library_item = await self.mass.music.artists.update_item_in_library(
                             library_item.item_id, prov_item
                         )
@@ -899,13 +893,7 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.albums.add_item_to_library(prov_item)
-                    elif not self._check_provider_mappings(library_item, prov_item, True):
-                        # existing library item but provider mapping doesn't match
-                        library_item = await self.mass.music.albums.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                        # update date_added if it changed
+                    elif self._library_item_needs_update(library_item, prov_item):
                         library_item = await self.mass.music.albums.update_item_in_library(
                             library_item.item_id, prov_item
                         )
@@ -1041,13 +1029,7 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.audiobooks.add_item_to_library(
                             prov_item
                         )
-                    elif not self._check_provider_mappings(library_item, prov_item, True):
-                        # existing library item but provider mapping doesn't match
-                        library_item = await self.mass.music.audiobooks.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                        # update date_added if it changed
+                    elif self._library_item_needs_update(library_item, prov_item):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             library_item.item_id, prov_item
                         )
@@ -1145,18 +1127,11 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.playlists.add_item_to_library(
                             prov_item
                         )
-                    elif not self._check_provider_mappings(library_item, prov_item, True):
-                        # existing library item but provider mapping doesn't match
-                        library_item = await self.mass.music.playlists.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                        # update date_added if it changed
-                        library_item = await self.mass.music.playlists.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.supported_mediatypes != library_item.supported_mediatypes:
-                        # update if supported mediatypes changed
+                    elif (
+                        self._library_item_needs_update(library_item, prov_item)
+                        # or the supported mediatypes changed
+                        or prov_item.supported_mediatypes != library_item.supported_mediatypes
+                    ):
                         library_item = await self.mass.music.playlists.update_item_in_library(
                             library_item.item_id, prov_item
                         )
@@ -1276,18 +1251,10 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.tracks.add_item_to_library(prov_item)
-                    elif not self._check_provider_mappings(library_item, prov_item, True):
-                        # existing library item but provider mapping doesn't match
-                        library_item = await self.mass.music.tracks.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                        # update date_added if it changed
-                        library_item = await self.mass.music.tracks.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.album and not library_item.album:
-                        # Backfill missing album_tracks link for existing tracks.
+                    elif self._library_item_needs_update(library_item, prov_item) or (
+                        # or backfill a missing album(_tracks) link for existing tracks
+                        prov_item.album and not library_item.album
+                    ):
                         library_item = await self.mass.music.tracks.update_item_in_library(
                             library_item.item_id, prov_item
                         )
@@ -1335,13 +1302,7 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.podcasts.add_item_to_library(prov_item)
-                    elif not self._check_provider_mappings(library_item, prov_item, True):
-                        # existing library item but provider mapping doesn't match
-                        library_item = await self.mass.music.podcasts.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                        # update date_added if it changed
+                    elif self._library_item_needs_update(library_item, prov_item):
                         library_item = await self.mass.music.podcasts.update_item_in_library(
                             library_item.item_id, prov_item
                         )
@@ -1395,13 +1356,7 @@ class MusicProvider(Provider):
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                    elif not self._check_provider_mappings(library_item, prov_item, True):
-                        # existing library item but provider mapping doesn't match
-                        library_item = await self.mass.music.radio.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                        # update date_added if it changed
+                    elif self._library_item_needs_update(library_item, prov_item):
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )
@@ -1471,6 +1426,16 @@ class MusicProvider(Provider):
         if media_type == MediaType.PODCAST:
             return self.get_library_podcasts()
         raise NotImplementedError
+
+    def _library_item_needs_update(
+        self, library_item: MediaItemType, prov_item: MediaItemType
+    ) -> bool:
+        """Return True if the library item needs an update from the given provider item."""
+        if not self._check_provider_mappings(library_item, prov_item, True):
+            # provider mapping doesn't match the library item
+            return True
+        # the item's date_added changed on the provider
+        return bool(prov_item.date_added and library_item.date_added != prov_item.date_added)
 
     def _check_provider_mappings(
         self, library_item: MediaItemType, provider_item: MediaItemType, in_library: bool
