@@ -2203,13 +2203,15 @@ class TestCanGroupWith:
         sonos_player._cache.clear()
         wiim_player._cache.clear()
 
-        # Update state after modifying attributes and registering with controller
+        # Refresh state after modifying attributes and registering with controller
+        # (refresh_state: registration changed cross-player state without the
+        # production fan-out running, as events are suppressed in this test)
         # IMPORTANT: Update protocol players FIRST, then parent players
-        sonos_airplay.update_state(signal_event=False)
-        airplay_other.update_state(signal_event=False)
-        sonos_player.update_state(signal_event=False)
-        sonos_player_b.update_state(signal_event=False)
-        wiim_player.update_state(signal_event=False)
+        sonos_airplay.refresh_state(signal_event=False)
+        airplay_other.refresh_state(signal_event=False)
+        sonos_player.refresh_state(signal_event=False)
+        sonos_player_b.refresh_state(signal_event=False)
+        wiim_player.refresh_state(signal_event=False)
 
         # Get can_group_with while AirPlay is active
         groupable = sonos_player.state.can_group_with
