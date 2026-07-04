@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from music_assistant_models.enums import ContentType
 
@@ -45,6 +46,39 @@ def calculate_overall_bpm(beats: np.ndarray, n_segments: int = 5) -> float:
         return float(np.mean(seg_arr))
 
     return float(np.mean(consistent))
+
+
+def aggregate_series_to_bins(
+    values: npt.NDArray[np.float32],
+    n_bins: int,
+    *,
+    power: bool = False,
+) -> npt.NDArray[np.float32]:
+    """
+    Resample a frame series to a fixed bin count by averaging over each bin's span.
+
+    Every bin is the exact fractional-overlap mean of the frames it covers
+    (mean of squares then square root when ``power`` is True, appropriate for
+    RMS/energy series).  Unlike point sampling this acts as a boxcar low-pass,
+    so periodic frame-rate detail (e.g. beat-level energy ripple) cannot alias
+    into the bin grid.
+
+    :param values: Input frame series (uniform frame spacing).
+    :param n_bins: Number of output bins.
+    :param power: Average squared values and return the root (RMS-correct).
+    """
+    x = values.astype(np.float64)
+    if power:
+        x = x * x
+    # integral image: interpolating the cumulative sum at fractional bin edges
+    # gives exact partial-frame overlap weighting in O(n)
+    cum = np.concatenate(([0.0], np.cumsum(x)))
+    edges = np.linspace(0.0, len(values), n_bins + 1)
+    cum_at_edges = np.interp(edges, np.arange(len(values) + 1, dtype=np.float64), cum)
+    binned = np.diff(cum_at_edges) / np.diff(edges)
+    if power:
+        binned = np.sqrt(binned)
+    return binned.astype(np.float32)
 
 
 def decode_pcm_chunk_to_mono(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarray:

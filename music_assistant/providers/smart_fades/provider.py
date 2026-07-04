@@ -24,7 +24,7 @@ from music_assistant.models.audio_analysis_provider import (
 
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
-from .helpers import calculate_overall_bpm, decode_pcm_chunk_to_mono
+from .helpers import aggregate_series_to_bins, calculate_overall_bpm, decode_pcm_chunk_to_mono
 from .resources.skey_model import KEY_MAP as SKEY_KEY_MAP
 from .resources.skey_model import load_skey_components
 
@@ -243,25 +243,23 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         bpm = calculate_overall_bpm(beats)
 
-        # Interpolate energy and centroid to 1800 fixed bins
+        # Aggregate energy and centroid to 1800 fixed bins (mean power per bin:
+        # point sampling would alias beat-rate ripple on longer tracks)
         rms_energy = None
+        energy_peak = 0.0
         if data.energy_chunks:
             energy_all = np.concatenate(data.energy_chunks)
             if len(energy_all) >= 2:
-                src_x = np.linspace(0, 1, len(energy_all))
-                dst_x = np.linspace(0, 1, 1800)
-                rms_energy = np.interp(dst_x, src_x, energy_all).astype(np.float32)
-                peak = rms_energy.max()
-                if peak > 0:
-                    rms_energy = rms_energy / peak
+                rms_energy = aggregate_series_to_bins(energy_all, 1800, power=True)
+                energy_peak = float(rms_energy.max())
+                if energy_peak > 0:
+                    rms_energy = rms_energy / energy_peak
 
         spectral_centroid = None
         if data.centroid_chunks:
             centroid_all = np.concatenate(data.centroid_chunks)
             if len(centroid_all) >= 2:
-                src_x = np.linspace(0, 1, len(centroid_all))
-                dst_x = np.linspace(0, 1, 1800)
-                spectral_centroid = np.interp(dst_x, src_x, centroid_all).astype(np.float32)
+                spectral_centroid = aggregate_series_to_bins(centroid_all, 1800)
                 # Zero out centroid where energy is negligible (noise dominates)
                 if rms_energy is not None:
                     spectral_centroid[rms_energy < 0.01] = 0.0
