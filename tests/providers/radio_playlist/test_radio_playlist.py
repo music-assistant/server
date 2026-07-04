@@ -46,6 +46,9 @@ def _make_provider(
     mass.player_queues.get_tracks_for_playback = AsyncMock(
         side_effect=lambda item: base_tracks_by_seed.get(item.item_id, [])
     )
+    # The provider checks mass.providers to decide whether AudioMuse-AI is
+    # enabled; with no providers it uses the default (shuffled) assembly path.
+    mass.providers = []
     prov.mass = cast("MusicAssistant", mass)
     return prov
 
