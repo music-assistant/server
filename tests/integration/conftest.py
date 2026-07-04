@@ -19,11 +19,19 @@ from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 import pytest
 from zeroconf.asyncio import AsyncZeroconf
 
+from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
 
 NUM_DEMO_PLAYERS = 3
+
+# builtin providers that must not be auto-setup in the hermetic boot: local_audio
+# bridges the host machine's sound devices (built-in speakers, bluetooth, ...) as
+# sendspin players, which would leak real hardware into the player registry
+SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
+
+_orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
 
 
 async def wait_for(predicate: Callable[[], bool], timeout: float = 25.0) -> bool:
@@ -72,6 +80,15 @@ async def play_test_track(mass: MusicAssistant, queue_id: str, track_id: str = "
     await mass.player_queues.play_media(queue_id, track)
 
 
+async def _create_builtin_provider_config_hermetic(
+    self: ProviderConfigMixin, provider_domain: str
+) -> None:
+    """Create builtin provider configs, skipping providers that discover host hardware."""
+    if provider_domain in SUPPRESSED_BUILTIN_PROVIDERS:
+        return
+    await _orig_create_builtin_provider_config(self, provider_domain)
+
+
 def _create_mock_zeroconf() -> MagicMock:
     """Create a mock AsyncZeroconf that prevents real mDNS network I/O."""
     mock_zc = MagicMock(spec=AsyncZeroconf)
@@ -91,9 +108,10 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """
     Boot a hermetic MusicAssistant with only the fake `test` + demo player providers.
 
-    No real network discovery happens: mDNS (zeroconf) and SSDP are mocked and the
-    default device providers (dlna/sonos/...) are suppressed. The `test` music provider
-    and three grouped-capable demo players are configured and ready.
+    No real network discovery happens: mDNS (zeroconf) and SSDP are mocked, the
+    default device providers (dlna/sonos/...) are suppressed and so is local_audio,
+    which would otherwise register the host's sound devices as players. The `test`
+    music provider and three grouped-capable demo players are configured and ready.
     """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
@@ -124,6 +142,13 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             new=AsyncMock(),
         ),
         patch("music_assistant.mass.DEFAULT_PROVIDERS", ()),
+        # hermetic: local_audio is a builtin provider that would bridge the host
+        # machine's sound devices (e.g. bluetooth headsets) as extra players
+        patch.object(
+            ProviderConfigMixin,
+            "create_builtin_provider_config",
+            _create_builtin_provider_config_hermetic,
+        ),
     ):
         await mass_instance.start()
         # configure the fake music + player providers
