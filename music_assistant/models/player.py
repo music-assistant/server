@@ -1878,6 +1878,7 @@ class Player(ABC):
                     title=f"{media_item.name} ({version})" if version else media_item.name,
                     artist=getattr(media_item, "artist_str", None),
                     album=album.name if album else podcast.name if podcast else description,
+                    album_artist=getattr(album, "artist_str", None),
                     image_url=image_url,
                     palette=self._resolved_palette(image_url),
                     duration=media_item.duration,
