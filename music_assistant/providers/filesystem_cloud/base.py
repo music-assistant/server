@@ -279,7 +279,8 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         try:
             cloud_resp = await self._api_download_response(file_id, headers)
         except (ProviderUnavailableError, LoginFailed) as err:
-            raise web.HTTPBadGateway(text=str(err)) from err
+            self.logger.warning("Cloud provider unavailable while streaming %s: %s", path, err)
+            raise web.HTTPBadGateway(text="Upstream provider unavailable") from err
 
         response = web.StreamResponse(status=cloud_resp.status)
         # copy content-type / length / range headers back to the player
