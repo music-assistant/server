@@ -270,7 +270,8 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         try:
             file_id = await self._resolve_id(path)
         except MediaNotFoundError as err:
-            raise web.HTTPNotFound(text=str(err)) from err
+            self.logger.debug("Cloud stream path not found: %s (%s)", path, err)
+            raise web.HTTPNotFound(text="File not found") from err
         # forward Range header so players can seek
         headers = {}
         if rng := request.headers.get("Range"):
