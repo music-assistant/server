@@ -9,7 +9,7 @@ import numpy.typing as npt
 import torch
 from music_assistant_models.enums import ContentType
 
-from music_assistant.models.audio_analysis import BAND_RMS_BANDS
+from music_assistant.controllers.streams.smart_fades.models import BAND_RMS_BANDS
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat

@@ -18,15 +18,6 @@ import numpy.typing as npt
 from mashumaro import DataClassDictMixin
 from mashumaro.config import BaseConfig
 
-# Band edges (Hz) of the smart_fades ``extra_data["band_rms"]`` envelopes; None = up to Nyquist.
-# Stored rows keep whatever bands their analysis_version wrote — read historical rows by shape.
-BAND_RMS_BANDS: dict[str, tuple[float, float | None]] = {
-    "low": (20.0, 120.0),
-    "low_mid": (120.0, 400.0),
-    "mid": (400.0, 4000.0),
-    "high": (4000.0, None),
-}
-
 
 class AudioAnalysisError(Exception):
     """Raised by an Audio Analysis provider to fail the current analysis."""
