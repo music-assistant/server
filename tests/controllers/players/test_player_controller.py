@@ -1162,6 +1162,25 @@ class TestCurrentMediaTimeUpdates:
         cast("MagicMock", controller._forward_state_update).assert_called_once()
         assert player.state.elapsed_time == 61
 
+    def test_simultaneous_player_and_media_jump_emits_immediately(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A jump reaching player and current_media in one pass corrects the queue and emits."""
+        _controller, player = self._make_player(mock_mass)
+        assert player._attr_current_media is not None
+        now = time.time()
+
+        player._attr_elapsed_time = 61
+        player._attr_elapsed_time_last_updated = now
+        player._attr_current_media.elapsed_time = 61
+        player._attr_current_media.elapsed_time_last_updated = now
+        player.update_state()
+
+        # the queue is re-based AND the full update is emitted right away
+        # (no follow-up pass needed - current_media already holds the fresh position)
+        mock_mass.player_queues.on_player_elapsed_time_corrected.assert_called_once_with(player)
+        assert self._player_updated_signalled(mock_mass)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1635,8 +1635,9 @@ class Player(ABC):
         This method should be called to update the player's state
         and signal any changes to the PlayerController.
 
-        :param force_update: If True, a state update event will be
-        pushed even if the state has not actually changed.
+        :param force_update: If True, always recalculate the state, even when no
+        (known) own input changed. An update event still only fires when the
+        recalculated state actually differs.
         :param signal_event: If True, signal the state update event to the PlayerController.
         """
         self.mass.verify_event_loop_thread("player.update_state")

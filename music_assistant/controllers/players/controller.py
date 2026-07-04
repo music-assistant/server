@@ -1797,16 +1797,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         non_anchor_keys = changed_values.keys() - POSITION_ANCHOR_KEYS
         if len(non_anchor_keys) == 0 and not force_update:
             if changed_values.position_jumped:
-                # The player's corrected position jumped (seek or buffer correction):
-                # re-base the queue's timing and fan out to related players so derived
-                # elapsed_time on parents/groups stays in sync. The queue correction
-                # re-anchors current_media on the follow-up update.
+                # the player's corrected position jumped (seek or buffer correction):
+                # re-base the queue's timing on the fresh position
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
-                self.trigger_player_update(player_id)
-                if not skip_forward or force_update:
-                    self._forward_state_update(player, changed_values)
-                return
-            if not changed_values.media_position_jumped:
+                if not changed_values.media_position_jumped:
+                    # current_media still holds the pre-correction anchor: re-anchor
+                    # it from the corrected queue time on a follow-up update and fan
+                    # out to related players so derived elapsed_time on parents/groups
+                    # stays in sync
+                    self.trigger_player_update(player_id)
+                    if not skip_forward or force_update:
+                        self._forward_state_update(player, changed_values)
+                    return
+                # current_media adopted the jumped position in the same pass (e.g. an
+                # AudioSource reporting the upstream position): emit right away below
+            elif not changed_values.media_position_jumped:
                 # anchor adoption without a significant corrected-position change
                 return
             # current_media's corrected position jumped (e.g. a seek reached the
