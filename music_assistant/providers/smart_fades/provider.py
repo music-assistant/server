@@ -24,7 +24,12 @@ from music_assistant.models.audio_analysis_provider import (
 
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
-from .helpers import aggregate_series_to_bins, calculate_overall_bpm, decode_pcm_chunk_to_mono
+from .helpers import (
+    aggregate_series_to_bins,
+    calculate_overall_bpm,
+    compute_band_rms_frames,
+    decode_pcm_chunk_to_mono,
+)
 from .resources.skey_model import KEY_MAP as SKEY_KEY_MAP
 from .resources.skey_model import load_skey_components
 
@@ -56,6 +61,7 @@ class SmartFadesData:
     beats_feature_blocks: list[np.ndarray] = field(default_factory=list)
     energy_chunks: list[np.ndarray] = field(default_factory=list)
     centroid_chunks: list[np.ndarray] = field(default_factory=list)
+    band_chunks: dict[str, list[np.ndarray]] = field(default_factory=dict)
     musical_key_feature_blocks: list[torch.Tensor] = field(default_factory=list)
 
 
@@ -264,6 +270,18 @@ class SmartFadesProvider(AudioAnalysisProvider):
                 if rms_energy is not None:
                     spectral_centroid[rms_energy < 0.01] = 0.0
 
+        extra_data = None
+        if energy_peak > 0 and data.band_chunks:
+            extra_data = {
+                "band_rms": {
+                    name: (
+                        aggregate_series_to_bins(np.concatenate(chunks), 1800, power=True)
+                        / energy_peak
+                    ).tolist()
+                    for name, chunks in data.band_chunks.items()
+                }
+            }
+
         analysis = AudioAnalysisData(
             bpm=bpm,
             beats=beats,
@@ -273,6 +291,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             spectral_centroid=spectral_centroid,
             key=key,
             mode=mode,
+            extra_data=extra_data,
         )
 
         self.logger.debug(
@@ -329,6 +348,10 @@ class SmartFadesProvider(AudioAnalysisProvider):
                 rms_list.append(np.array([np.sqrt(np.mean(tail**2))]))
             if rms_list:
                 data.energy_chunks.append(np.concatenate(rms_list).astype(np.float32))
+
+            band_frames = compute_band_rms_frames(pcm_22k, sr, window_samples)
+            for name, frames in band_frames.items():
+                data.band_chunks.setdefault(name, []).append(frames)
 
         # Spectral centroid: keep per-frame (hop_length=512, ~43 frames/s)
         # Skip short tail buffers: STFT reflect-pad requires len > n_fft // 2.

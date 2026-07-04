@@ -9,6 +9,8 @@ import numpy.typing as npt
 import torch
 from music_assistant_models.enums import ContentType
 
+from music_assistant.models.audio_analysis import BAND_RMS_BANDS
+
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
@@ -79,6 +81,40 @@ def aggregate_series_to_bins(
     if power:
         binned = np.sqrt(binned)
     return binned.astype(np.float32)
+
+
+def compute_band_rms_frames(
+    pcm: npt.NDArray[np.float32],
+    sample_rate: int,
+    window_samples: int,
+) -> dict[str, npt.NDArray[np.float32]]:
+    """
+    Compute per-band RMS frames over fixed windows of a mono PCM block.
+
+    Returns one RMS value per window (including a trailing partial window) per
+    band in ``BAND_RMS_BANDS``, at the same frame cadence as the full-band RMS
+    frames, so both series can be aggregated to the same bin grid.
+
+    :param pcm: Mono float32 PCM samples.
+    :param sample_rate: Sample rate of ``pcm`` in Hz.
+    :param window_samples: Frame length in samples (e.g. 100 ms worth).
+    """
+    out: dict[str, list[float]] = {name: [] for name in BAND_RMS_BANDS}
+    n_full = len(pcm) // window_samples
+    windows: list[npt.NDArray[np.float32]] = []
+    if n_full > 0:
+        windows.extend(pcm[: n_full * window_samples].reshape(n_full, window_samples))
+    if len(pcm) - n_full * window_samples > 0:
+        windows.append(pcm[n_full * window_samples :])
+    for window in windows:
+        spectrum = np.fft.rfft(window.astype(np.float64))
+        freqs = np.fft.rfftfreq(len(window), 1.0 / sample_rate)
+        # Parseval: mean-square of the window = 2 * sum(|X|^2) / N^2 (single-sided)
+        power = 2.0 * np.abs(spectrum) ** 2 / len(window) ** 2
+        for name, (lo, hi) in BAND_RMS_BANDS.items():
+            mask = (freqs >= lo) & (freqs < hi if hi is not None else np.ones_like(freqs, bool))
+            out[name].append(float(np.sqrt(power[mask].sum())))
+    return {name: np.array(vals, dtype=np.float32) for name, vals in out.items()}
 
 
 def decode_pcm_chunk_to_mono(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarray:

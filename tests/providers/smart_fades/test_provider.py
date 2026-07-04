@@ -246,6 +246,17 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125
 
+    # v2: per-band RMS envelopes in extra_data, normalized by the full-band peak
+    assert analysis.extra_data is not None
+    band_rms = analysis.extra_data["band_rms"]
+    assert set(band_rms) == {"low", "low_mid", "mid", "high"}
+    for band in band_rms.values():
+        assert len(band) == 1800
+        assert all(v >= 0.0 for v in band)
+    # music with drums has real low-band content; bands are lists (JSON-safe)
+    assert isinstance(band_rms["low"], list)
+    assert max(band_rms["low"]) > 0.05
+
 
 async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider) -> None:
     """Test that _finalize returns an AudioAnalysisData on success."""
