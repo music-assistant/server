@@ -272,6 +272,29 @@ async def test_deferred_commit_scope_only_defers_own_task(
     assert len(await db_with_table.get_rows("items")) == 2
 
 
+async def test_deferred_commit_concurrent_scopes_do_not_interfere(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that concurrent tasks (e.g. parallel syncs) each batch their own writes."""
+    commits = _count_commits(db_with_table)
+    barrier = asyncio.Barrier(2)
+
+    async def sync_task(name: str) -> None:
+        async with db_with_table.deferred_commit():
+            await db_with_table.insert("items", {"name": f"{name}-1"})
+            # force both scopes to be open at the same time
+            await barrier.wait()
+            await db_with_table.insert("items", {"name": f"{name}-2"})
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(sync_task("a"))
+        tg.create_task(sync_task("b"))
+
+    # all writes from both tasks landed, with one commit per scope exit
+    assert len(await db_with_table.get_rows("items")) == 4
+    assert len(commits) == 2
+
+
 async def test_update_returns_none(db_with_table: DatabaseConnection) -> None:
     """Test that update() no longer fetches and returns the updated row."""
     row_id = await db_with_table.insert("items", {"name": "old"})
