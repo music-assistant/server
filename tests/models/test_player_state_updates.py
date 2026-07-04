@@ -104,6 +104,26 @@ class TestUpdateStateChangeDetection:
         state_cls.assert_called_once()
 
 
+class TestMediaUpdatedCallback:
+    """The (debounced) media-updated callback fires on media identity changes."""
+
+    def test_palette_resolution_fires_media_updated(
+        self, mock_mass: MagicMock, player: MockPlayer
+    ) -> None:
+        """A late palette resolution re-fires the media-updated callback."""
+        player.set_current_media(uri="http://test/stream", title="Test", image_url="http://img")
+        player.update_state(signal_event=False)
+        mock_mass.call_later.reset_mock()
+
+        player.set_resolved_palette("http://img", MagicMock())
+        player.update_state(force_update=True, signal_event=False)
+
+        assert any(
+            call.kwargs.get("task_id") == f"player_media_updated_{player.player_id}"
+            for call in mock_mass.call_later.call_args_list
+        )
+
+
 class TestCacheInvalidationClasses:
     """Config-derived cached properties survive state updates, all others refresh."""
 

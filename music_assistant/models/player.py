@@ -80,7 +80,9 @@ def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
 # position change (seek/buffer correction) instead of regular playback progression
 POSITION_JUMP_THRESHOLD = 1.0
 
-# changes to any of these state keys fire the (debounced) _on_player_media_updated callback
+# Changes to any of these state keys fire the (debounced) _on_player_media_updated
+# callback. The palette is included because it resolves asynchronously (shortly
+# after a track change) and players push it to their device from the callback.
 MEDIA_IDENTITY_KEYS = frozenset(
     {
         "current_media",
@@ -90,6 +92,7 @@ MEDIA_IDENTITY_KEYS = frozenset(
         "current_media.queue_item_id",
         "current_media.image_url",
         "current_media.duration",
+        "current_media.palette",
     }
 )
 
@@ -2049,7 +2052,7 @@ class Player(ABC):
             or self.__final_synced_to
             or (self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id)
         )
-        position, timestamp, jumped = _reconcile_position_anchor(
+        _, _, jumped = _reconcile_position_anchor(
             prev_media.elapsed_time,
             prev_media.elapsed_time_last_updated,
             new_media.elapsed_time,
@@ -2060,8 +2063,8 @@ class Player(ABC):
         )
         if not mirrors_parent and not jumped:
             # steady playback: keep the previous anchor so nothing changed
-            new_media.elapsed_time = cast("int | None", position)
-            new_media.elapsed_time_last_updated = timestamp
+            new_media.elapsed_time = prev_media.elapsed_time
+            new_media.elapsed_time_last_updated = prev_media.elapsed_time_last_updated
         return jumped
 
     @cached_property
