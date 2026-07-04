@@ -110,45 +110,33 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BASE_URL,
             type=ConfigEntryType.STRING,
-            label="AudioMuse-AI server URL",
-            description="Root URL of your AudioMuse-AI server, e.g. http://192.168.1.10:8000",
             required=True,
         ),
         ConfigEntry(
             key=CONF_API_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="API token",
-            description="Optional API token, sent as a Bearer header. Leave empty if auth is off.",
             required=False,
         ),
         ConfigEntry(
             key=CONF_MEDIA_PROVIDER,
             type=ConfigEntryType.STRING,
-            label="Media provider to map against",
-            description=(
-                "The Music Assistant provider that points at the same media server "
-                "AudioMuse-AI analyzed. Track ids are matched through this provider."
-            ),
             options=provider_options,
             required=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_TEXT_SEARCH,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable free-text search",
-            description="Expose AudioMuse-AI's CLAP + lyrics search as a search provider.",
             default_value=False,
         ),
         ConfigEntry(
             key=CONF_ENABLE_DISCOVER_ROW,
             type=ConfigEntryType.BOOLEAN,
-            label="Show 'Inspired by recently played' row",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_LABEL_STATUS,
             type=ConfigEntryType.LABEL,
             label=await _status_label(mass, instance_id),
-            category="Status",
+            category="status",
         ),
     )
