@@ -77,6 +77,59 @@ def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
     return max(0.0, elapsed_time) if elapsed_time is not None else None
 
 
+# corrected-position jumps larger than this (in seconds) are treated as a discrete
+# position change (seek/buffer correction) instead of regular playback progression
+POSITION_JUMP_THRESHOLD = 1.0
+
+
+def _reconcile_position_anchor(
+    prev_position: float | None,
+    prev_timestamp: float | None,
+    new_position: float | None,
+    new_timestamp: float | None,
+    prev_playing: bool,
+    new_playing: bool,
+    force_adopt: bool = False,
+) -> tuple[float | None, float | None, bool]:
+    """
+    Reconcile a playback position anchor (position + timestamp pair) with its predecessor.
+
+    The anchor is a value that only changes on discrete events: regular playback
+    progression extrapolates to (nearly) the same corrected position as the previous
+    anchor and therefore keeps the previous anchor, so steady playback yields no
+    state change at all. The anchor is only adopted when the corrected position
+    jumped more than POSITION_JUMP_THRESHOLD (seek/buffer correction) or when
+    force_adopt is set (playback state transition).
+
+    :param prev_position: Position of the previous anchor.
+    :param prev_timestamp: Timestamp of the previous anchor.
+    :param new_position: Position of the candidate anchor.
+    :param new_timestamp: Timestamp of the candidate anchor.
+    :param prev_playing: Whether the player was playing at the previous anchor.
+    :param new_playing: Whether the player is playing at the candidate anchor.
+    :param force_adopt: Always adopt the candidate anchor (still reports jumps).
+
+    Returns a (position, timestamp, jumped) tuple where jumped indicates a
+    corrected-position discontinuity larger than the threshold.
+    """
+    if (
+        not isinstance(prev_position, int | float)
+        or not isinstance(prev_timestamp, int | float)
+        or not isinstance(new_position, int | float)
+        or not isinstance(new_timestamp, int | float)
+    ):
+        # incomplete (or non-numeric) anchor data: adopt the candidate as-is
+        return new_position, new_timestamp, False
+    now = time.time()
+    # a position anchor only advances (extrapolates) while playing
+    prev_corrected = prev_position + (now - prev_timestamp) if prev_playing else prev_position
+    new_corrected = new_position + (now - new_timestamp) if new_playing else new_position
+    jumped = abs(prev_corrected - new_corrected) > POSITION_JUMP_THRESHOLD
+    if force_adopt or jumped:
+        return new_position, new_timestamp, jumped
+    return prev_position, prev_timestamp, False
+
+
 class Player(ABC):
     """
     Base representation of a Player within the Music Assistant Server.
@@ -1335,7 +1388,7 @@ class Player(ABC):
         self._cache.clear()
         # calculate the new state
         prev_media_checksum = self._get_player_media_checksum()
-        changed_values = self.__calculate_player_state()
+        changed_values, position_jumped, media_position_jumped = self.__calculate_player_state()
         if prev_media_checksum != self._get_player_media_checksum():
             # current media changed, call the media updated callback
             # debounce the callback to avoid multiple calls when multiple
@@ -1346,7 +1399,6 @@ class Player(ABC):
         # ignore some values that are not relevant for the state
         changed_values.pop("extra_attributes.seq_no", None)
         changed_values.pop("extra_attributes.last_poll", None)
-        changed_values.pop("current_media.elapsed_time_last_updated", None)
         # persist the default name if it changed
         if self.name and self.config.default_name != self.name:
             self.mass.config.set_player_default_name(self.player_id, self.name)
@@ -1359,7 +1411,12 @@ class Player(ABC):
 
         # signal the state update to the PlayerController
         if signal_event:
-            self.mass.players.signal_player_state_update(self, changed_values)
+            self.mass.players.signal_player_state_update(
+                self,
+                changed_values,
+                position_jumped=position_jumped,
+                media_position_jumped=media_position_jumped,
+            )
 
     @final
     def set_current_media(  # noqa: PLR0913
@@ -1548,7 +1605,7 @@ class Player(ABC):
     @final
     def __calculate_player_state(
         self,
-    ) -> dict[str, tuple[Any, Any]]:
+    ) -> tuple[dict[str, tuple[Any, Any]], bool, bool]:
         """
         Calculate the (current) and FINAL PlayerState.
 
@@ -1556,10 +1613,26 @@ class Player(ABC):
         and we compare the current state with the previous state to determine
         if we need to signal a state change to API consumers.
 
-        Returns a dict with the state attributes that have changed.
+        Returns a tuple of (changed state attributes, position jumped,
+        current_media position jumped).
         """
         playback_state, elapsed_time, elapsed_time_last_updated = self.__final_playback_state
         prev_state = deepcopy(self._state)
+        prev_playing = prev_state.playback_state == PlaybackState.PLAYING
+        new_playing = playback_state == PlaybackState.PLAYING
+        # Playback position is anchor-based: (elapsed_time, elapsed_time_last_updated)
+        # only changes on discrete events (play/pause/seek/buffer correction), so
+        # steady playback produces no state change and consumers extrapolate the
+        # realtime position from the anchor (corrected_elapsed_time).
+        elapsed_time, elapsed_time_last_updated, position_jumped = _reconcile_position_anchor(
+            prev_state.elapsed_time,
+            prev_state.elapsed_time_last_updated,
+            elapsed_time,
+            elapsed_time_last_updated,
+            prev_playing,
+            new_playing,
+            force_adopt=playback_state != prev_state.playback_state,
+        )
         self._state = PlayerState(
             player_id=self.player_id,
             provider=self.provider_id,
@@ -1600,6 +1673,9 @@ class Player(ABC):
             needs_setup=self.needs_setup,
             sleep_timer_expires_at=self.sleep_timer_expires_at,
         )
+        media_position_jumped = self.__reconcile_current_media_anchor(
+            prev_state, prev_playing, new_playing
+        )
 
         # track stop called state
         if (
@@ -1619,11 +1695,57 @@ class Player(ABC):
             self.mass.call_later(
                 5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
-        return get_changed_dataclass_values(
+        changed_values = get_changed_dataclass_values(
             prev_state,
             self._state,
             recursive=True,
         )
+        return changed_values, position_jumped, media_position_jumped
+
+    @final
+    def __reconcile_current_media_anchor(
+        self, prev_state: PlayerState, prev_playing: bool, new_playing: bool
+    ) -> bool:
+        """
+        Reconcile the position anchor on the freshly calculated current_media.
+
+        Keeps the previous anchor while it extrapolates to the same corrected
+        position (steady playback), so regular ticks don't change the state.
+
+        Returns True when the corrected current_media position jumped (seek or
+        buffer correction reached the current media).
+        """
+        prev_media = prev_state.current_media
+        new_media = self._state.current_media
+        if new_media is None or prev_media is None:
+            return False
+        if (new_media.queue_item_id or new_media.uri) != (
+            prev_media.queue_item_id or prev_media.uri
+        ):
+            # different item loaded - adopt the new anchor as-is
+            return False
+        # Players that mirror another player's media (grouped/synced members,
+        # protocol children) share the owner's PlayerMedia object, which the owner
+        # already reconciled - only report the jump, never mutate the shared object.
+        mirrors_parent = bool(
+            self.__final_active_group
+            or self.__final_synced_to
+            or (self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id)
+        )
+        position, timestamp, jumped = _reconcile_position_anchor(
+            prev_media.elapsed_time,
+            prev_media.elapsed_time_last_updated,
+            new_media.elapsed_time,
+            new_media.elapsed_time_last_updated,
+            prev_playing,
+            new_playing,
+            force_adopt=mirrors_parent,
+        )
+        if not mirrors_parent and not jumped:
+            # steady playback: keep the previous anchor so nothing changed
+            new_media.elapsed_time = cast("int | None", position)
+            new_media.elapsed_time_last_updated = timestamp
+        return jumped
 
     @cached_property
     @final

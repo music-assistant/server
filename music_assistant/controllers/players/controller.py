@@ -61,7 +61,6 @@ from music_assistant.constants import (
     ATTR_ACTIVE_SOURCE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_AVAILABLE,
-    ATTR_ELAPSED_TIME,
     ATTR_ENABLED,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
@@ -132,6 +131,15 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 CACHE_CATEGORY_PLAYER_POWER = 1
+
+# state keys that carry the playback-position anchor; these only change on
+# discrete position events (play/pause/seek/track change/buffer correction)
+POSITION_ANCHOR_KEYS = {
+    "elapsed_time",
+    "elapsed_time_last_updated",
+    "current_media.elapsed_time",
+    "current_media.elapsed_time_last_updated",
+}
 
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
@@ -1766,6 +1774,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         changed_values: dict[str, tuple[Any, Any]],
         force_update: bool = False,
         skip_forward: bool = False,
+        position_jumped: bool = False,
+        media_position_jumped: bool = False,
     ) -> None:
         """
         Signal a player state update.
@@ -1781,32 +1791,26 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not player.state.enabled and ATTR_ENABLED not in changed_values:
             return
 
-        # to prevent spamming the eventbus on small changes (e.g. elapsed time),
-        # we check if there are only changes in the elapsed time and send
-        # a lightweight event.
-        clean_changed_keys = set(changed_values.keys()) - {
-            "current_media.elapsed_time",
-            "elapsed_time_last_updated",
-        }
-        if len(clean_changed_keys) == 0 and not force_update:
-            # nothing changed
-            return
-
-        if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
-            now = time.time()
-            prev_elapsed, new_elapsed = changed_values[ATTR_ELAPSED_TIME]
-            prev_updated, new_updated = changed_values.get("elapsed_time_last_updated", (now, now))
-            prev_corrected = (prev_elapsed or 0) + (now - (prev_updated or now))
-            new_corrected = (new_elapsed or 0) + (now - (new_updated or now))
-            if abs(prev_corrected - new_corrected) > 1.0:
-                # Significant elapsed_time drift / seek / jump - notify the queue and
-                # fan out to related players so derived elapsed_time on parents/groups
-                # stays in sync. Skipping the forward on small ticks avoids a per-second
-                # cascade through group → children → group.
+        # Playback-position anchors only change on discrete events (play/pause/seek/
+        # track change/buffer correction), so a change set holding only anchor keys
+        # represents a position correction rather than a regular state change.
+        non_anchor_keys = set(changed_values.keys()) - POSITION_ANCHOR_KEYS
+        if len(non_anchor_keys) == 0 and not force_update:
+            if position_jumped:
+                # The player's corrected position jumped (seek or buffer correction):
+                # re-base the queue's timing and fan out to related players so derived
+                # elapsed_time on parents/groups stays in sync. The queue correction
+                # re-anchors current_media on the follow-up update.
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
+                self.trigger_player_update(player_id)
                 if not skip_forward or force_update:
                     self._forward_state_update(player, changed_values)
-            return
+                return
+            if not media_position_jumped:
+                # anchor adoption without a significant corrected-position change
+                return
+            # current_media's corrected position jumped (e.g. a seek reached the
+            # queue): emit the full player update so consumers see the fresh position
 
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.log(

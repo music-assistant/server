@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1055,6 +1057,104 @@ class TestVolumeScalingOnRedirect:
             await controller._handle_cmd_volume_set("user_player", 100)
 
         control.volume_set.assert_awaited_once_with(50)
+
+
+class TestCurrentMediaTimeUpdates:
+    """Playback-position anchor semantics of timing-only state updates."""
+
+    def _make_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer]:
+        """Build a controller with a single playing player with a known position anchor."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        # no queue registered: current_media resolves from the player's native media
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        player.set_initialized()
+        now = time.time()
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_elapsed_time = 17
+        player._attr_elapsed_time_last_updated = now
+        player.set_current_media(uri="http://test/stream", title="Test")
+        assert player._attr_current_media is not None
+        player._attr_current_media.elapsed_time = 17
+        player._attr_current_media.elapsed_time_last_updated = now
+        player.update_state(signal_event=False)
+        # isolate from the unrelated state-forwarding machinery
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        mock_mass.signal_event.reset_mock()
+        mock_mass.player_queues.on_player_elapsed_time_corrected.reset_mock()
+        return controller, player
+
+    def _player_updated_signalled(self, mock_mass: MagicMock) -> bool:
+        """Return whether a PLAYER_UPDATED event was signalled."""
+        return any(
+            call.args and call.args[0] == EventType.PLAYER_UPDATED
+            for call in mock_mass.signal_event.call_args_list
+        )
+
+    def test_regular_tick_is_suppressed(self, mock_mass: MagicMock) -> None:
+        """A regular playback tick (position and anchor advance together) emits nothing."""
+        _controller, player = self._make_player(mock_mass)
+        assert player._attr_current_media is not None
+        assert player._attr_elapsed_time_last_updated is not None
+
+        player._attr_elapsed_time = 18
+        player._attr_elapsed_time_last_updated += 1
+        player._attr_current_media.elapsed_time = 18
+        assert player._attr_current_media.elapsed_time_last_updated is not None
+        player._attr_current_media.elapsed_time_last_updated += 1
+        player.update_state()
+
+        assert not self._player_updated_signalled(mock_mass)
+        mock_mass.player_queues.on_player_elapsed_time_corrected.assert_not_called()
+        # the previous anchor was preserved: steady playback changes nothing
+        assert player.state.elapsed_time == 17
+
+    def test_anchor_only_change_is_suppressed(self, mock_mass: MagicMock) -> None:
+        """An anchor-only change (no significant corrected position change) emits nothing."""
+        _controller, player = self._make_player(mock_mass)
+        assert player._attr_current_media is not None
+        assert player._attr_elapsed_time_last_updated is not None
+
+        player._attr_elapsed_time_last_updated += 0.5
+        assert player._attr_current_media.elapsed_time_last_updated is not None
+        player._attr_current_media.elapsed_time_last_updated += 0.5
+        player.update_state()
+
+        assert not self._player_updated_signalled(mock_mass)
+        mock_mass.player_queues.on_player_elapsed_time_corrected.assert_not_called()
+
+    def test_corrected_position_jump_emits_player_updated(self, mock_mass: MagicMock) -> None:
+        """A corrected-position jump of the current media (e.g. seek) emits a player update."""
+        _controller, player = self._make_player(mock_mass)
+        assert player._attr_current_media is not None
+
+        player._attr_current_media.elapsed_time = 61
+        player._attr_current_media.elapsed_time_last_updated = time.time()
+        player.update_state()
+
+        assert self._player_updated_signalled(mock_mass)
+        # the adopted anchor is visible to consumers
+        assert player.state.current_media is not None
+        assert player.state.current_media.elapsed_time == 61
+
+    def test_player_position_jump_corrects_queue(self, mock_mass: MagicMock) -> None:
+        """A player-level corrected-position jump re-bases the queue timing."""
+        controller, player = self._make_player(mock_mass)
+
+        player._attr_elapsed_time = 61
+        player._attr_elapsed_time_last_updated = time.time()
+        player.update_state()
+
+        # the queue is corrected and a follow-up player update is scheduled
+        # (which re-anchors current_media onto the corrected queue time),
+        # but no full player update is emitted for the jump itself
+        mock_mass.player_queues.on_player_elapsed_time_corrected.assert_called_once_with(player)
+        assert not self._player_updated_signalled(mock_mass)
+        cast("MagicMock", controller._forward_state_update).assert_called_once()
+        assert player.state.elapsed_time == 61
 
 
 if __name__ == "__main__":
