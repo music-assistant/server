@@ -7,5 +7,5 @@
   "requirements": ["python-google-drive-api==0.1.0"],
   "codeowners": ["@ozgav"],
   "multi_instance": true,
-  "stage": "experimental"
+  "stage": "beta"
 }
