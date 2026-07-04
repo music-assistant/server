@@ -1177,7 +1177,7 @@ class TestCurrentMediaTimeUpdates:
         player.update_state()
 
         # the queue is re-based AND the full update is emitted right away
-        # (no follow-up pass needed - current_media already holds the fresh position)
+        # (current_media already holds the fresh position in the same pass)
         mock_mass.player_queues.on_player_elapsed_time_corrected.assert_called_once_with(player)
         assert self._player_updated_signalled(mock_mass)
 

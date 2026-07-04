@@ -132,11 +132,9 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_PLAYER_POWER = 1
 
-# state keys that carry the playback-position anchor; these only change on
-# discrete position events (play/pause/seek/track change/buffer correction)
+# state keys that carry the current_media playback-position anchor; these only
+# change on discrete position events (play/pause/seek/track change/buffer correction)
 POSITION_ANCHOR_KEYS = {
-    "elapsed_time",
-    "elapsed_time_last_updated",
     "current_media.elapsed_time",
     "current_media.elapsed_time_last_updated",
 }
@@ -1770,6 +1768,23 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # volume limit enforcement
         return ((device_volume - min_volume) * 100) // volume_range
 
+    def on_player_position_jumped(self, player: Player) -> None:
+        """
+        Handle a discrete jump of a player's corrected playback position.
+
+        Called by a Player when its corrected position moved significantly
+        outside regular playback progression (seek or buffer correction). This
+        is not an event by itself: it re-bases the active queue's timing on the
+        fresh position and nudges related players so derived positions stay in
+        sync; current_media then re-anchors from the corrected queue time on
+        the follow-up update, which emits the actual update event.
+        """
+        if self.mass.closing:
+            return
+        self.mass.player_queues.on_player_elapsed_time_corrected(player)
+        self.trigger_player_update(player.player_id)
+        self._forward_state_update(player, PlayerStateChangeSet())
+
     def signal_player_state_update(
         self,
         player: Player,
@@ -1791,31 +1806,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not player.state.enabled and ATTR_ENABLED not in changed_values:
             return
 
-        # Playback-position anchors only change on discrete events (play/pause/seek/
-        # track change/buffer correction), so a change set holding only anchor keys
-        # represents a position correction rather than a regular state change.
+        # The current_media position anchor only changes on discrete events
+        # (play/pause/seek/track change/buffer correction), so a change set holding
+        # only anchor keys represents a position correction rather than a regular
+        # state change.
         non_anchor_keys = changed_values.keys() - POSITION_ANCHOR_KEYS
         if len(non_anchor_keys) == 0 and not force_update:
-            if changed_values.position_jumped:
-                # the player's corrected position jumped (seek or buffer correction):
-                # re-base the queue's timing on the fresh position
-                self.mass.player_queues.on_player_elapsed_time_corrected(player)
-                if not changed_values.media_position_jumped:
-                    # current_media still holds the pre-correction anchor: re-anchor
-                    # it from the corrected queue time on a follow-up update and fan
-                    # out to related players so derived elapsed_time on parents/groups
-                    # stays in sync
-                    self.trigger_player_update(player_id)
-                    if not skip_forward or force_update:
-                        self._forward_state_update(player, changed_values)
-                    return
-                # current_media adopted the jumped position in the same pass (e.g. an
-                # AudioSource reporting the upstream position): emit right away below
-            elif not changed_values.media_position_jumped:
+            if not changed_values.media_position_jumped:
                 # anchor adoption without a significant corrected-position change
                 return
-            # current_media's corrected position jumped (e.g. a seek reached the
-            # queue): emit the full player update so consumers see the fresh position
+            # current_media's corrected position jumped (seek or buffer correction
+            # reached the current media): emit the full player update below so
+            # consumers see the fresh position
 
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.log(

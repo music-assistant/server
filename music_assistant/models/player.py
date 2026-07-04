@@ -217,11 +217,8 @@ class PlayerStateChangeSet:
     """
 
     values: dict[str, tuple[Any, Any]] = field(default_factory=dict)
-    # position_jumped: the player's corrected playback position jumped
-    # more than POSITION_JUMP_THRESHOLD (seek or buffer correction)
-    position_jumped: bool = False
     # media_position_jumped: current_media's corrected position jumped
-    # more than POSITION_JUMP_THRESHOLD
+    # more than POSITION_JUMP_THRESHOLD (seek or buffer correction)
     media_position_jumped: bool = False
 
     def __contains__(self, key: str) -> bool:
@@ -294,8 +291,9 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "name": state.name,
         "available": state.available,
         "playback_state": state.playback_state,
-        "elapsed_time": state.elapsed_time,
-        "elapsed_time_last_updated": state.elapsed_time_last_updated,
+        # NOTE: the player's own elapsed_time/elapsed_time_last_updated are
+        # deliberately absent: current_media holds the final calculated position
+        # and is the only position that is event-relevant
         "powered": state.powered,
         "volume_level": state.volume_level,
         "volume_muted": state.volume_muted,
@@ -1684,7 +1682,7 @@ class Player(ABC):
             self.playback_state == PlaybackState.PLAYING,
         )
         # calculate the new state
-        changed_values = self.__calculate_player_state()
+        changed_values, position_jumped = self.__calculate_player_state()
         if not MEDIA_IDENTITY_KEYS.isdisjoint(changed_values.keys()):
             # current media changed, call the media updated callback
             # debounce the callback to avoid multiple calls when multiple
@@ -1698,6 +1696,11 @@ class Player(ABC):
         # persist the player type if it changed
         if self.type != self._config.player_type:
             self.mass.config.set_player_type(self.player_id, self.type)
+        if position_jumped and signal_event:
+            # the corrected playback position jumped (seek or buffer correction):
+            # this is not an event by itself (only current_media is event-relevant)
+            # but the queue timing must re-base on the fresh position right away
+            self.mass.players.on_player_position_jumped(self)
         # return early if nothing changed (unless force_update is True)
         if len(changed_values) == 0 and not force_update:
             return
@@ -1985,7 +1988,7 @@ class Player(ABC):
     @final
     def __calculate_player_state(
         self,
-    ) -> PlayerStateChangeSet:
+    ) -> tuple[PlayerStateChangeSet, bool]:
         """
         Calculate the (current) and FINAL PlayerState.
 
@@ -1993,25 +1996,27 @@ class Player(ABC):
         and we compare the current state with the previous state to determine
         if we need to signal a state change to API consumers.
 
-        Returns the changed state values as a PlayerStateChangeSet.
+        Returns a tuple of (changed state values, player position jumped).
+        The player's own elapsed_time/elapsed_time_last_updated are not part of
+        the changed values: they refresh on every calculation but only
+        current_media - which holds the final calculated position - is
+        event-relevant. The jump flag drives the internal queue re-base.
         """
         playback_state, elapsed_time, elapsed_time_last_updated = self.__final_playback_state
         prev_state = self._state
         prev_fingerprint = self.__state_fingerprint or _state_fingerprint(prev_state)
         prev_playing = prev_state.playback_state == PlaybackState.PLAYING
         new_playing = playback_state == PlaybackState.PLAYING
-        # Playback position is anchor-based: (elapsed_time, elapsed_time_last_updated)
-        # only changes on discrete events (play/pause/seek/buffer correction), so
-        # steady playback produces no state change and consumers extrapolate the
-        # realtime position from the anchor (corrected_elapsed_time).
-        elapsed_time, elapsed_time_last_updated, position_jumped = _reconcile_position_anchor(
+        # detect a discrete jump of the corrected position (seek/buffer correction);
+        # the fresh anchor is always adopted into the state
+        _, _, position_jumped = _reconcile_position_anchor(
             prev_state.elapsed_time,
             prev_state.elapsed_time_last_updated,
             elapsed_time,
             elapsed_time_last_updated,
             prev_playing,
             new_playing,
-            force_adopt=playback_state != prev_state.playback_state,
+            force_adopt=True,
         )
         self._state = PlayerState(
             player_id=self.player_id,
@@ -2092,11 +2097,11 @@ class Player(ABC):
         if "options" in changed_values:
             # the PLAYER_OPTIONS_UPDATED event carries the actual (old, new) options
             changed_values["options"] = (prev_state.options, self._state.options)
-        return PlayerStateChangeSet(
+        changeset = PlayerStateChangeSet(
             values=changed_values,
-            position_jumped=position_jumped,
             media_position_jumped=media_position_jumped,
         )
+        return changeset, position_jumped
 
     @final
     def __reconcile_current_media_anchor(
