@@ -1,0 +1,11 @@
+{
+  "domain": "filesystem_google_drive",
+  "name": "Google Drive",
+  "description": "Stream music, audiobooks and podcasts stored in Google Drive",
+  "documentation": "https://music-assistant.io/music-providers/google-drive/",
+  "type": "music",
+  "requirements": ["python-google-drive-api==0.1.0"],
+  "codeowners": ["@ozgav"],
+  "multi_instance": true,
+  "stage": "experimental"
+}

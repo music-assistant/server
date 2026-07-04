@@ -330,6 +330,8 @@
       "description": "Start the stream server on this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), which is the default. \nThis is an advanced setting that should normally not be adjusted in regular setups."
     },
     "content_type": {
+      "label": "Content type",
+      "description": "The type of content stored in this location",
       "options": {
         "audiobooks": "Audiobooks",
         "music": "Music",
