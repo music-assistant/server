@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import ABC
-from collections.abc import Callable, KeysView
+from collections.abc import Callable, Iterable, KeysView
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, final
 
@@ -150,7 +150,7 @@ def _reconcile_position_anchor(
     anchor and therefore keeps the previous anchor, so steady playback yields no
     state change at all. The anchor is only adopted when the corrected position
     jumped more than POSITION_JUMP_THRESHOLD (seek/buffer correction) or when
-    force_adopt is set (playback state transition).
+    force_adopt is set.
 
     :param prev_position: Position of the previous anchor.
     :param prev_timestamp: Timestamp of the previous anchor.
@@ -253,6 +253,38 @@ def _freeze(value: Any) -> Any:
     return value
 
 
+def _source_list_snapshot(sources: Iterable[PlayerSource]) -> tuple[tuple[Any, ...], ...]:
+    """Return an immutable snapshot of the given player sources."""
+    return tuple(
+        (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
+        for s in sources
+    )
+
+
+def _sound_mode_list_snapshot(
+    sound_modes: Iterable[PlayerSoundMode],
+) -> tuple[tuple[Any, ...], ...]:
+    """Return an immutable snapshot of the given player sound modes."""
+    return tuple((m.id, m.name, m.passive, m.translation_key) for m in sound_modes)
+
+
+def _options_snapshot(options: Iterable[PlayerOption]) -> tuple[tuple[Any, ...], ...]:
+    """Return an immutable snapshot of the given player options."""
+    return tuple(
+        (
+            option.key,
+            option.name,
+            option.value,
+            option.read_only,
+            option.min_value,
+            option.max_value,
+            option.step,
+            tuple((entry.key, entry.name, entry.value) for entry in option.options or ()),
+        )
+        for option in options
+    )
+
+
 def _media_fingerprint(fingerprint: dict[str, Any], prefix: str, media: PlayerMedia) -> None:
     """Add the leaf values of a PlayerMedia to a state fingerprint."""
     fingerprint[f"{prefix}.uri"] = media.uri
@@ -317,12 +349,9 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "needs_setup": state.needs_setup,
         "sleep_timer_expires_at": state.sleep_timer_expires_at,
         "supported_features": frozenset(state.supported_features),
-        "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
-        "options": tuple((o.key, o.value, o.read_only) for o in state.options),
-        "source_list": tuple(
-            (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
-            for s in state.source_list
-        ),
+        "sound_mode_list": _sound_mode_list_snapshot(state.sound_mode_list),
+        "options": _options_snapshot(state.options),
+        "source_list": _source_list_snapshot(state.source_list),
         "output_protocols": tuple(
             (o.output_protocol_id, o.name, o.protocol_domain, o.is_native, o.priority, o.available)
             for o in state.output_protocols
@@ -1925,12 +1954,9 @@ class Player(ABC):
                 device_info.manufacturer_id,
                 tuple(sorted(device_info.identifiers.items())),
             ),
-            "source_list": tuple(
-                (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
-                for s in self.source_list
-            ),
-            "sound_mode_list": tuple((m.id, m.name, m.passive) for m in self._attr_sound_mode_list),
-            "options": tuple((o.key, o.value, o.read_only) for o in self._attr_options),
+            "source_list": _source_list_snapshot(self.source_list),
+            "sound_mode_list": _sound_mode_list_snapshot(self._attr_sound_mode_list),
+            "options": _options_snapshot(self._attr_options),
             "current_media": (
                 (
                     current_media.uri,

@@ -134,10 +134,12 @@ CACHE_CATEGORY_PLAYER_POWER = 1
 
 # state keys that carry the current_media playback-position anchor; these only
 # change on discrete position events (play/pause/seek/track change/buffer correction)
-POSITION_ANCHOR_KEYS = {
-    "current_media.elapsed_time",
-    "current_media.elapsed_time_last_updated",
-}
+POSITION_ANCHOR_KEYS = frozenset(
+    {
+        "current_media.elapsed_time",
+        "current_media.elapsed_time_last_updated",
+    }
+)
 
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
