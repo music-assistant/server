@@ -264,7 +264,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         Because this runs per request, the token is always valid - so even a
         multi-hour audiobook can't outlive it.
         """
-        path = request.query.get("path")
+        path = self._normalize_path(request.query.get("path") or "")
         if not path:
             raise web.HTTPBadRequest(text="Missing path")
         try:
