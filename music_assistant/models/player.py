@@ -15,8 +15,7 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import ABC
-from collections.abc import Callable, Iterable, KeysView
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast, final
 
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
@@ -94,43 +93,10 @@ MEDIA_IDENTITY_KEYS = frozenset(
     }
 )
 
-# Cached properties (propcache keys in Player._cache) grouped by what invalidates them:
-# - config-derived: only invalidated by set_config
-# - topology-derived: invalidated when group/link topology (may have) changed,
-#   i.e. on an externally triggered update or when an own topology input changed
-# - everything else (state-derived, including cached properties defined by player
-#   implementations) is invalidated on every update_state call
+# config-derived cached properties (propcache keys in Player._cache); these are
+# only invalidated by set_config, all other cached properties (including those
+# defined by player implementations) are invalidated on every update_state call
 _CONFIG_CACHED_PROPS = frozenset({"icon", "hide_in_ui", "expose_to_ha"})
-_TOPOLOGY_CACHED_PROPS = frozenset(
-    {
-        "power_control",
-        "volume_control",
-        "mute_control",
-        "is_native_player",
-        "output_protocols",
-        "flow_mode",
-        "__final_synced_to",
-        "__final_active_group",
-        "__final_group_members",
-        "__final_can_group_with",
-    }
-)
-_RETAINED_CACHED_PROPS = _CONFIG_CACHED_PROPS | _TOPOLOGY_CACHED_PROPS
-
-# input-snapshot keys that feed the topology-derived cached properties
-_TOPOLOGY_INPUT_KEYS = (
-    "type",
-    "available",
-    "supported_features",
-    "group_members",
-    "static_group_members",
-    "can_group_with",
-    "is_active_session",
-    "synced_to",
-    "linked_protocols",
-    "protocol_parent_id",
-    "active_output_protocol",
-)
 
 
 def _reconcile_position_anchor(
@@ -206,42 +172,6 @@ def _anchor_moved(
     return jumped
 
 
-@dataclass(slots=True)
-class PlayerStateChangeSet:
-    """
-    Description of what changed in a player's (final) PlayerState.
-
-    Keys follow the PlayerState field names, with dotted keys for nested values
-    (e.g. "current_media.image_url"). Values are (old, new) pairs of the changed
-    leaf values.
-    """
-
-    values: dict[str, tuple[Any, Any]] = field(default_factory=dict)
-    # media_position_jumped: current_media's corrected position jumped
-    # more than POSITION_JUMP_THRESHOLD (seek or buffer correction)
-    media_position_jumped: bool = False
-
-    def __contains__(self, key: str) -> bool:
-        """Return if the given state key changed."""
-        return key in self.values
-
-    def __getitem__(self, key: str) -> tuple[Any, Any]:
-        """Return the (old, new) pair for the given changed state key."""
-        return self.values[key]
-
-    def __len__(self) -> int:
-        """Return the number of changed state keys."""
-        return len(self.values)
-
-    def get(self, key: str, default: tuple[Any, Any] | None = None) -> tuple[Any, Any] | None:
-        """Return the (old, new) pair for the given state key (or default if unchanged)."""
-        return self.values.get(key, default)
-
-    def keys(self) -> KeysView[str]:
-        """Return the changed state keys."""
-        return self.values.keys()
-
-
 def _freeze(value: Any) -> Any:
     """Return an immutable snapshot of a (serializable) attribute value."""
     if isinstance(value, dict):
@@ -251,38 +181,6 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return tuple(_freeze(item) for item in value)
     return value
-
-
-def _source_list_snapshot(sources: Iterable[PlayerSource]) -> tuple[tuple[Any, ...], ...]:
-    """Return an immutable snapshot of the given player sources."""
-    return tuple(
-        (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
-        for s in sources
-    )
-
-
-def _sound_mode_list_snapshot(
-    sound_modes: Iterable[PlayerSoundMode],
-) -> tuple[tuple[Any, ...], ...]:
-    """Return an immutable snapshot of the given player sound modes."""
-    return tuple((m.id, m.name, m.passive, m.translation_key) for m in sound_modes)
-
-
-def _options_snapshot(options: Iterable[PlayerOption]) -> tuple[tuple[Any, ...], ...]:
-    """Return an immutable snapshot of the given player options."""
-    return tuple(
-        (
-            option.key,
-            option.name,
-            option.value,
-            option.read_only,
-            option.min_value,
-            option.max_value,
-            option.step,
-            tuple((entry.key, entry.name, entry.value) for entry in option.options or ()),
-        )
-        for option in options
-    )
 
 
 def _media_fingerprint(fingerprint: dict[str, Any], prefix: str, media: PlayerMedia) -> None:
@@ -349,9 +247,12 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "needs_setup": state.needs_setup,
         "sleep_timer_expires_at": state.sleep_timer_expires_at,
         "supported_features": frozenset(state.supported_features),
-        "sound_mode_list": _sound_mode_list_snapshot(state.sound_mode_list),
-        "options": _options_snapshot(state.options),
-        "source_list": _source_list_snapshot(state.source_list),
+        "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
+        "options": tuple((o.key, o.value, o.read_only) for o in state.options),
+        "source_list": tuple(
+            (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
+            for s in state.source_list
+        ),
         "output_protocols": tuple(
             (o.output_protocol_id, o.name, o.protocol_domain, o.is_native, o.priority, o.available)
             for o in state.output_protocols
@@ -1015,7 +916,7 @@ class Player(ABC):
             await self.set_members(player_ids_to_remove=self.group_members)
 
     def on_protocol_player_updated(
-        self, protocol_player: Player, changed_values: PlayerStateChangeSet
+        self, protocol_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Handle callback when one of the linked protocol players of the player is updated."""
         # optional callback
@@ -1023,7 +924,7 @@ class Player(ABC):
         self.mass.players.trigger_player_update(self.player_id)
 
     def on_protocol_parent_updated(
-        self, protocol_parent: Player, changed_values: PlayerStateChangeSet
+        self, protocol_parent: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Handle callback when the parent protocol player of the player is updated."""
         # optional callback
@@ -1031,21 +932,23 @@ class Player(ABC):
         self.mass.players.trigger_player_update(self.player_id)
 
     def on_group_member_updated(
-        self, member_player: Player, changed_values: PlayerStateChangeSet
+        self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Handle callback when a group member of the group player is updated."""
         # optional callback
         # default implementation will simply trigger an update for the state of the player
         self.mass.players.trigger_player_update(self.player_id)
 
-    def on_group_updated(self, group_player: Player, changed_values: PlayerStateChangeSet) -> None:
+    def on_group_updated(
+        self, group_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
         """Handle callback when a group player is updated this player is a member of."""
         # optional callback
         # default implementation will simply trigger an update for the state of the player
         self.mass.players.trigger_player_update(self.player_id)
 
     def on_sync_parent_updated(
-        self, sync_parent: Player, changed_values: PlayerStateChangeSet
+        self, sync_parent: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Handle callback when the sync parent of this player is updated."""
         # optional callback
@@ -1668,38 +1571,24 @@ class Player(ABC):
         :param signal_event: If True, signal the state update event to the PlayerController.
         """
         self.mass.verify_event_loop_thread("player.update_state")
-        # Invalidate the state-derived cached properties up front so both the
-        # input probe and a recalculation read fresh values. Config- and
-        # topology-derived cached properties are retained: config ones are
-        # invalidated by set_config, topology ones below when (possibly)
-        # affected. Cached properties defined by player implementations
-        # (unknown keys) count as state-derived.
+        # Invalidate the cached properties up front so both the input probe and
+        # a recalculation read fresh values; only the config-derived cached
+        # properties are retained (set_config invalidates those).
         for key in list(self._cache):
-            if key not in _RETAINED_CACHED_PROPS:
+            if key not in _CONFIG_CACHED_PROPS:
                 del self._cache[key]
         new_snapshot = self.__collect_input_snapshot()
-        prev_snapshot = self.__input_snapshot
         if (
             not force_update
             and not self.__state_dirty
-            and prev_snapshot is not None
-            and new_snapshot == prev_snapshot
+            and self.__input_snapshot is not None
+            and new_snapshot == self.__input_snapshot
             and not self.__own_position_anchor_moved()
         ):
             # None of the player's own inputs changed since the last calculation:
             # nothing to do. Changes the player derives from other sources
             # (players/queues/config) always come with a mark_state_dirty call.
             return
-        # topology-derived cached values must recompute when the update was
-        # triggered externally (cross-player state changed) or when an own
-        # input feeding them changed
-        if (
-            self.__state_dirty
-            or prev_snapshot is None
-            or any(new_snapshot[key] != prev_snapshot.get(key) for key in _TOPOLOGY_INPUT_KEYS)
-        ):
-            for key in _TOPOLOGY_CACHED_PROPS:
-                self._cache.pop(key, None)
         self.__state_dirty = False
         self.__input_snapshot = new_snapshot
         current_media = self.current_media
@@ -1711,7 +1600,7 @@ class Player(ABC):
             self.playback_state == PlaybackState.PLAYING,
         )
         # calculate the new state
-        changed_values, position_jumped = self.__calculate_player_state()
+        changed_values, position_jumped, media_position_jumped = self.__calculate_player_state()
         if not MEDIA_IDENTITY_KEYS.isdisjoint(changed_values.keys()):
             # current media changed, call the media updated callback
             # debounce the callback to avoid multiple calls when multiple
@@ -1736,7 +1625,9 @@ class Player(ABC):
 
         # signal the state update to the PlayerController
         if signal_event:
-            self.mass.players.signal_player_state_update(self, changed_values)
+            self.mass.players.signal_player_state_update(
+                self, changed_values, media_position_jumped=media_position_jumped
+            )
 
     @final
     def set_current_media(  # noqa: PLR0913
@@ -1954,9 +1845,12 @@ class Player(ABC):
                 device_info.manufacturer_id,
                 tuple(sorted(device_info.identifiers.items())),
             ),
-            "source_list": _source_list_snapshot(self.source_list),
-            "sound_mode_list": _sound_mode_list_snapshot(self._attr_sound_mode_list),
-            "options": _options_snapshot(self._attr_options),
+            "source_list": tuple(
+                (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
+                for s in self.source_list
+            ),
+            "sound_mode_list": tuple((m.id, m.name, m.passive) for m in self._attr_sound_mode_list),
+            "options": tuple((o.key, o.value, o.read_only) for o in self._attr_options),
             "current_media": (
                 (
                     current_media.uri,
@@ -2014,7 +1908,7 @@ class Player(ABC):
     @final
     def __calculate_player_state(
         self,
-    ) -> tuple[PlayerStateChangeSet, bool]:
+    ) -> tuple[dict[str, tuple[Any, Any]], bool, bool]:
         """
         Calculate the (current) and FINAL PlayerState.
 
@@ -2022,11 +1916,11 @@ class Player(ABC):
         and we compare the current state with the previous state to determine
         if we need to signal a state change to API consumers.
 
-        Returns a tuple of (changed state values, player position jumped).
-        The player's own elapsed_time/elapsed_time_last_updated are not part of
-        the changed values: they refresh on every calculation but only
-        current_media - which holds the final calculated position - is
-        event-relevant. The jump flag drives the internal queue re-base.
+        Returns a tuple of (changed state values, player position jumped,
+        current_media position jumped). The player's own elapsed_time values
+        are not part of the changed values: they refresh on every calculation
+        but only current_media - which holds the final calculated position -
+        is event-relevant. The jump flags drive the position correction logic.
         """
         playback_state, elapsed_time, elapsed_time_last_updated = self.__final_playback_state
         prev_state = self._state
@@ -2123,11 +2017,7 @@ class Player(ABC):
         if "options" in changed_values:
             # the PLAYER_OPTIONS_UPDATED event carries the actual (old, new) options
             changed_values["options"] = (prev_state.options, self._state.options)
-        changeset = PlayerStateChangeSet(
-            values=changed_values,
-            media_position_jumped=media_position_jumped,
-        )
-        return changeset, position_jumped
+        return changed_values, position_jumped, media_position_jumped
 
     @final
     def __reconcile_current_media_anchor(
@@ -2905,5 +2795,4 @@ __all__ = [
     "PlayerMedia",
     "PlayerSource",
     "PlayerState",
-    "PlayerStateChangeSet",
 ]

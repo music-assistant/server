@@ -109,7 +109,7 @@ from music_assistant.helpers.util import (
     validate_announcement_chime_url,
 )
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.player import Player, PlayerMedia, PlayerState, PlayerStateChangeSet
+from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
 
@@ -174,7 +174,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Serialize delayed evaluations to prevent race conditions
         self._delayed_evaluation_lock = asyncio.Lock()
         # Subscribers for player state updates (called with player + changed_values)
-        self._state_update_subscribers: list[Callable[[Player, PlayerStateChangeSet], None]] = []
+        self._state_update_subscribers: list[
+            Callable[[Player, dict[str, tuple[Any, Any]]], None]
+        ] = []
 
     @contextlib.asynccontextmanager
     async def get_player_lock(
@@ -1785,14 +1787,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
         self.mass.player_queues.on_player_elapsed_time_corrected(player)
         self.trigger_player_update(player.player_id)
-        self._forward_state_update(player, PlayerStateChangeSet())
+        self._forward_state_update(player, {})
 
     def signal_player_state_update(
         self,
         player: Player,
-        changed_values: PlayerStateChangeSet,
+        changed_values: dict[str, tuple[Any, Any]],
         force_update: bool = False,
         skip_forward: bool = False,
+        media_position_jumped: bool = False,
     ) -> None:
         """
         Signal a player state update.
@@ -1814,7 +1817,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # state change.
         non_anchor_keys = changed_values.keys() - POSITION_ANCHOR_KEYS
         if len(non_anchor_keys) == 0 and not force_update:
-            if not changed_values.media_position_jumped:
+            if not media_position_jumped:
                 # anchor adoption without a significant corrected-position change
                 return
             # current_media's corrected position jumped (seek or buffer correction
@@ -2145,7 +2148,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     def subscribe_player_state_update(
         self,
-        callback: Callable[[Player, PlayerStateChangeSet], None],
+        callback: Callable[[Player, dict[str, tuple[Any, Any]]], None],
     ) -> Callable[[], None]:
         """
         Subscribe to player state update notifications.
@@ -2199,7 +2202,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         update_event = asyncio.Event()
 
-        def _on_state_update(player: Player, changed_values: PlayerStateChangeSet) -> None:
+        def _on_state_update(player: Player, changed_values: dict[str, tuple[Any, Any]]) -> None:
             if player.player_id != player_id:
                 return
             if attribute_name is None:
@@ -2529,7 +2532,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # Device volume is outside allowed range, correct it
             self.mass.create_task(player.volume_set(clamped))
 
-    def _forward_state_update(self, player: Player, changed_values: PlayerStateChangeSet) -> None:
+    def _forward_state_update(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
         """Forward a player state update to related players (groups, sync parent, protocols)."""
         # TODO: make this fan-out change-aware (skip relatives that derive nothing from
         # the changed fields) once reverse indexes for synced_to/active_group exist.
@@ -2577,7 +2582,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             leader.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
 
     def _dispatch_state_update_subscribers(
-        self, player: Player, changed_values: PlayerStateChangeSet
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Notify all internal subscribers of a player state update."""
         for subscriber in list(self._state_update_subscribers):
@@ -2609,7 +2614,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await asyncio.sleep(minimal_time - elapsed)
 
     def _handle_membership_cleanup_on_state_change(
-        self, player: Player, changed_values: PlayerStateChangeSet
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Detach a player from its (sync)groups when a state change requires it."""
         # A player that became unavailable or disabled can no longer be commanded,
@@ -2987,14 +2992,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         0.5,
                         self.mass.player_queues.on_player_update,
                         player,
-                        PlayerStateChangeSet(
-                            values={
-                                "corrected_elapsed_time": (
-                                    None,
-                                    player.state.corrected_elapsed_time,
-                                )
-                            }
-                        ),
+                        {"corrected_elapsed_time": (None, player.state.corrected_elapsed_time)},
                         task_id=f"queue_on_player_update_{player.player_id}",
                     )
                 # Poll player;

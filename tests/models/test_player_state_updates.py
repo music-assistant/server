@@ -105,7 +105,7 @@ class TestUpdateStateChangeDetection:
 
 
 class TestCacheInvalidationClasses:
-    """Cached properties are invalidated per class: config, topology and state."""
+    """Config-derived cached properties survive state updates, all others refresh."""
 
     def test_config_cached_props_survive_state_updates(self, player: MockPlayer) -> None:
         """Config-derived cached properties are not recomputed on state updates."""
@@ -120,30 +120,6 @@ class TestCacheInvalidationClasses:
         assert "icon" in player._cache
         player.set_config(player.config)
         assert len(player._cache) == 0
-
-    def test_topology_cached_props_survive_state_updates(self, player: MockPlayer) -> None:
-        """Topology-derived cached properties survive plain state updates."""
-        marker = player._cache["__final_group_members"]
-        player._attr_volume_level = 61
-        player.update_state(signal_event=False)
-        assert player._cache.get("__final_group_members") is marker
-
-    def test_topology_cached_props_recompute_on_external_trigger(self, player: MockPlayer) -> None:
-        """An externally triggered update (mark_state_dirty) recomputes topology values."""
-        marker = player._cache["__final_group_members"]
-        player.mark_state_dirty()
-        player.update_state(signal_event=False)
-        assert "__final_group_members" in player._cache
-        assert player._cache["__final_group_members"] is not marker
-
-    def test_topology_cached_props_recompute_on_topology_input_change(
-        self, player: MockPlayer
-    ) -> None:
-        """Changing an own topology input (group_members) recomputes topology values."""
-        marker = player._cache["__final_group_members"]
-        player._attr_group_members = [player.player_id, "other_player"]
-        player.update_state(signal_event=False)
-        assert player._cache["__final_group_members"] is not marker
 
     def test_player_implementation_cached_props_cleared_each_update(
         self, player: MockPlayer

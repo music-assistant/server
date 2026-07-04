@@ -24,7 +24,6 @@ from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedE
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players import PlayerController
-from music_assistant.models.player import PlayerStateChangeSet
 from tests.common import MockPlayer, MockProvider
 
 
@@ -253,9 +252,7 @@ class TestStateForwarding:
             patch.object(child, "on_sync_parent_updated") as on_sync_parent_updated,
             patch.object(child, "on_group_updated") as on_group_updated,
         ):
-            changed_values = PlayerStateChangeSet(
-                values={"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
-            )
+            changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
             controller._forward_state_update(leader, changed_values)
 
         on_sync_parent_updated.assert_called_once_with(leader, changed_values)
@@ -282,9 +279,7 @@ class TestStateForwarding:
             patch.object(child, "on_group_updated") as on_group_updated,
             patch.object(child, "on_sync_parent_updated") as on_sync_parent_updated,
         ):
-            changed_values = PlayerStateChangeSet(
-                values={"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
-            )
+            changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
             controller._forward_state_update(group_player, changed_values)
 
         on_group_updated.assert_called_once_with(
@@ -616,9 +611,7 @@ class TestExternalPowerOffUnsync:
         controller, player = self._make_synced_player(mock_mass)
         assert player.state.synced_to == "leader"
 
-        controller.signal_player_state_update(
-            player, PlayerStateChangeSet(values={"powered": (True, False)})
-        )
+        controller.signal_player_state_update(player, {"powered": (True, False)})
 
         controller.cmd_ungroup.assert_called_once_with("p1")  # type: ignore[attr-defined]
 
@@ -626,9 +619,7 @@ class TestExternalPowerOffUnsync:
         """An off->on power transition leaves the player synced."""
         controller, player = self._make_synced_player(mock_mass)
 
-        controller.signal_player_state_update(
-            player, PlayerStateChangeSet(values={"powered": (False, True)})
-        )
+        controller.signal_player_state_update(player, {"powered": (False, True)})
 
         controller.cmd_ungroup.assert_not_called()  # type: ignore[attr-defined]
 
@@ -636,9 +627,7 @@ class TestExternalPowerOffUnsync:
         """A None->off transition (player without power control) is ignored."""
         controller, player = self._make_synced_player(mock_mass)
 
-        controller.signal_player_state_update(
-            player, PlayerStateChangeSet(values={"powered": (None, False)})
-        )
+        controller.signal_player_state_update(player, {"powered": (None, False)})
 
         controller.cmd_ungroup.assert_not_called()  # type: ignore[attr-defined]
 
@@ -655,9 +644,7 @@ class TestExternalPowerOffUnsync:
         controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
         controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
 
-        controller.signal_player_state_update(
-            player, PlayerStateChangeSet(values={"powered": (True, False)})
-        )
+        controller.signal_player_state_update(player, {"powered": (True, False)})
 
         controller.cmd_ungroup.assert_not_called()
 

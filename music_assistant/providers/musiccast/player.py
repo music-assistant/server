@@ -38,7 +38,7 @@ from music_assistant_models.player import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import Player, PlayerStateChangeSet
+from music_assistant.models.player import Player
 from music_assistant.providers.musiccast.avt_helpers import (
     avt_get_media_info,
     avt_next,
@@ -543,7 +543,7 @@ class MusicCastPlayer(Player):
             and self.upnp_update_helper.controlled_by_mass
             and self.upnp_update_helper.current_uri != _prev_current_uri
         ):
-            self.mass.player_queues.on_player_update(self, PlayerStateChangeSet())
+            self.mass.player_queues.on_player_update(self, {})
 
         self._maybe_advance_on_track_end()
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import shortuuid
 from music_assistant_models.enums import (
@@ -80,7 +80,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.models.player import Player, PlayerMedia, PlayerStateChangeSet
+from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1063,13 +1063,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         self._queue_data[queue_id] = queue_data
         # always call update to calculate state etc
-        self.on_player_update(player, PlayerStateChangeSet())
+        self.on_player_update(player, {})
         self.mass.signal_event(EventType.QUEUE_ADDED, object_id=queue_id, data=queue_data.queue)
 
     def on_player_update(
         self,
         player: Player,
-        changed_values: PlayerStateChangeSet,
+        changed_values: dict[str, tuple[Any, Any]],
     ) -> None:
         """
         Call when a PlayerQueue needs to be updated (e.g. when player updates).
