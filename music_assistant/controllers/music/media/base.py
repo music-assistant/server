@@ -71,9 +71,9 @@ JSON_KEYS = (
     "audiobook_artists",
 )
 
-# When set (task-local), per-item MEDIA_ITEM_UPDATED events are suppressed.
-# Used by bulk operations such as provider cleanup, where emitting an event for every
-# touched item would flood subscribers; consumers refresh in bulk afterwards instead.
+# When set (task-local), per-item MEDIA_ITEM_ADDED/UPDATED events and the on_item_updated
+# provider write-back are suppressed, so bulk operations (provider sync, provider cleanup)
+# don't flood subscribers with one event per touched item.
 SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
     "SUPPRESS_MEDIA_ITEM_UPDATES", default=False
 )
@@ -187,11 +187,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 new_item = True
         # return final library_item
         library_item = await self.get_library_item(library_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_ADDED if new_item else EventType.MEDIA_ITEM_UPDATED,
-            library_item.uri,
-            library_item,
-        )
+        if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_ADDED if new_item else EventType.MEDIA_ITEM_UPDATED,
+                library_item.uri,
+                library_item,
+            )
         return library_item
 
     @final
@@ -203,6 +204,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         await self._update_library_item(item_id, update, overwrite=overwrite)
         # return the updated object
         library_item = await self.get_library_item(item_id)
+        if SUPPRESS_MEDIA_ITEM_UPDATES.get():
+            # during a sync the update originates from the provider itself,
+            # so skip both the event and the write-back to that provider
+            return library_item
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED,
             library_item.uri,
