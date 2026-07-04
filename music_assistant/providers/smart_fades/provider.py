@@ -399,7 +399,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         return parts[0], parts[1].lower()
 
     def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
-        """Run Beat This model inference to detect beat and downbeat timings."""
+        """Run Beat This model inference to detect beat/downbeat timings and the meter."""
         assert self._beat_this_model is not None
         assert self._beat_this_post_processor is not None
 
