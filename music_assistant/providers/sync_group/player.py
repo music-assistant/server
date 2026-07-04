@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
@@ -19,7 +19,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
 )
 from music_assistant.controllers.players.constants import PlayerLockPurpose
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerStateChangeSet
 
 from .constants import (
     CONF_ALLOWED_MEMBERS,
@@ -560,7 +560,7 @@ class SyncGroupPlayer(Player):
         self.mass.players.trigger_player_update(self.player_id)
 
     def on_group_member_updated(
-        self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]
+        self, member_player: Player, changed_values: PlayerStateChangeSet
     ) -> None:
         """Handle callback when a group member of the group player is updated."""
         self._update_attributes()
