@@ -108,12 +108,15 @@ class MAGoogleDriveAuth(AbstractAuth):
             "refresh_token": self._refresh_token,
             "grant_type": "refresh_token",
         }
-        async with self.mass.http_session.post(OAUTH_TOKEN_URL, data=data) as resp:
-            if resp.status in (400, 401):
-                # invalid_grant and friends: the refresh token was revoked or expired
-                raise LoginFailed(f"Google token refresh failed: {await resp.text()}")
-            resp.raise_for_status()
-            payload = await resp.json()
+        try:
+            async with self.mass.http_session.post(OAUTH_TOKEN_URL, data=data) as resp:
+                if resp.status in (400, 401):
+                    # invalid_grant and friends: the refresh token was revoked or expired
+                    raise LoginFailed(f"Google token refresh failed: {await resp.text()}")
+                resp.raise_for_status()
+                payload = await resp.json()
+        except ClientError as err:
+            raise LoginFailed(f"Google token refresh failed: {err}") from err
         self._access_token = str(payload["access_token"])
         self._expires_at = time.time() + float(payload.get("expires_in", 3600))
         return self._access_token
