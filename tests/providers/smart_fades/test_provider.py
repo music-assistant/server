@@ -348,3 +348,8 @@ async def test_setup_raises_when_requirements_not_met(
         pytest.raises(SetupFailedError),
     ):
         await smart_fades.setup(mass_mock, manifest_mock, config_mock)
+
+
+async def test_analysis_version_is_2(provider: SmartFadesProvider) -> None:
+    """v2 = anti-aliased bins + band_rms extra_data + beats_per_bar."""
+    assert provider.analysis_version == 2

@@ -69,6 +69,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
     """Smart fades audio analysis provider using Beat This for beat tracking."""
 
     max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
+    # v2: anti-aliased 1800-bin envelopes, band_rms extra_data, beats_per_bar
+    analysis_version = 2
     has_unloadable_models = True
 
     def __init__(
