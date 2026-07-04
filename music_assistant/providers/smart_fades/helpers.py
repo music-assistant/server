@@ -72,8 +72,7 @@ def aggregate_series_to_bins(
     x = values.astype(np.float64)
     if power:
         x = x * x
-    # integral image: interpolating the cumulative sum at fractional bin edges
-    # gives exact partial-frame overlap weighting in O(n)
+    # interpolating the cumulative sum at fractional bin edges = exact boxcar average in O(n)
     cum = np.concatenate(([0.0], np.cumsum(x)))
     edges = np.linspace(0.0, len(values), n_bins + 1)
     cum_at_edges = np.interp(edges, np.arange(len(values) + 1, dtype=np.float64), cum)

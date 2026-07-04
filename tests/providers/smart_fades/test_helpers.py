@@ -18,9 +18,7 @@ class TestAggregateSeriesToBins:
 
     def test_beat_ripple_does_not_alias(self) -> None:
         """A beat-rate amplitude ripple averages out instead of aliasing into bins."""
-        # 40k frames of RMS oscillating 0.3..0.7: the ripple period (~7 frames) is
-        # much shorter than a bin (~22 frames), so the boxcar must average it out;
-        # point sampling would land bins anywhere in 0.3..0.7 (up to 0.2 off the mean)
+        # ripple period (~7 frames) << bin (~22 frames): the boxcar must flatten it
         frames = (0.5 + 0.2 * np.sin(np.arange(40_000) * 0.9)).astype(np.float32)
         bins = aggregate_series_to_bins(frames, 1800, power=True)
         assert len(bins) == 1800

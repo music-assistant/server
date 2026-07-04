@@ -61,7 +61,7 @@ class SmartFadesData:
     beats_feature_blocks: list[np.ndarray] = field(default_factory=list)
     energy_chunks: list[np.ndarray] = field(default_factory=list)
     centroid_chunks: list[np.ndarray] = field(default_factory=list)
-    band_chunks: dict[str, list[np.ndarray]] = field(default_factory=dict)
+    frequency_band_chunks: dict[str, list[np.ndarray]] = field(default_factory=dict)
     musical_key_feature_blocks: list[torch.Tensor] = field(default_factory=list)
 
 
@@ -251,8 +251,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         bpm = calculate_overall_bpm(beats)
 
-        # Aggregate energy and centroid to 1800 fixed bins (mean power per bin:
-        # point sampling would alias beat-rate ripple on longer tracks)
+        # mean power per bin: point sampling aliases beat-rate ripple into the bins
         rms_energy = None
         energy_peak = 0.0
         if data.energy_chunks:
@@ -273,14 +272,14 @@ class SmartFadesProvider(AudioAnalysisProvider):
                     spectral_centroid[rms_energy < 0.01] = 0.0
 
         extra_data = None
-        if energy_peak > 0 and data.band_chunks:
+        if energy_peak > 0 and data.frequency_band_chunks:
             extra_data = {
                 "band_rms": {
                     name: (
                         aggregate_series_to_bins(np.concatenate(chunks), 1800, power=True)
                         / energy_peak
                     ).tolist()
-                    for name, chunks in data.band_chunks.items()
+                    for name, chunks in data.frequency_band_chunks.items()
                 }
             }
 
@@ -354,7 +353,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
             band_frames = compute_band_rms_frames(pcm_22k, sr, window_samples)
             for name, frames in band_frames.items():
-                data.band_chunks.setdefault(name, []).append(frames)
+                data.frequency_band_chunks.setdefault(name, []).append(frames)
 
         # Spectral centroid: keep per-frame (hop_length=512, ~43 frames/s)
         # Skip short tail buffers: STFT reflect-pad requires len > n_fft // 2.
