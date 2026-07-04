@@ -49,41 +49,6 @@ class AudioMuseClient:
         self._timeout = ClientTimeout(total=REQUEST_TIMEOUT)
         self.logger = logger
 
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        json_body: dict[str, Any] | None = None,
-    ) -> Any:
-        """
-        Perform one request, returning parsed JSON or raising AudioMuseError.
-
-        :param method: HTTP method.
-        :param path: Path appended to the configured base URL.
-        :param params: Optional query string parameters.
-        :param json_body: Optional JSON request body.
-        """
-        url = f"{self._base_url}{path}"
-        try:
-            async with self._session.request(
-                method,
-                url,
-                params=params,
-                json=json_body,
-                headers=self._headers,
-                timeout=self._timeout,
-            ) as resp:
-                if resp.status != 200:
-                    body = (await resp.text())[:200]
-                    msg = f"AudioMuse-AI {method} {path} returned {resp.status}: {body}"
-                    raise AudioMuseError(msg)
-                return await resp.json()
-        except ClientError as err:
-            msg = f"AudioMuse-AI {method} {path} failed: {err}"
-            raise AudioMuseError(msg) from err
-
     async def health(self) -> bool:
         """Return True when the server answers its health probe with status ok."""
         try:
@@ -135,3 +100,38 @@ class AudioMuseClient:
         except AudioMuseError:
             return {}
         return data if isinstance(data, dict) else {}
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> Any:
+        """
+        Perform one request, returning parsed JSON or raising AudioMuseError.
+
+        :param method: HTTP method.
+        :param path: Path appended to the configured base URL.
+        :param params: Optional query string parameters.
+        :param json_body: Optional JSON request body.
+        """
+        url = f"{self._base_url}{path}"
+        try:
+            async with self._session.request(
+                method,
+                url,
+                params=params,
+                json=json_body,
+                headers=self._headers,
+                timeout=self._timeout,
+            ) as resp:
+                if resp.status != 200:
+                    body = (await resp.text())[:200]
+                    msg = f"AudioMuse-AI {method} {path} returned {resp.status}: {body}"
+                    raise AudioMuseError(msg)
+                return await resp.json()
+        except ClientError as err:
+            msg = f"AudioMuse-AI {method} {path} failed: {err}"
+            raise AudioMuseError(msg) from err

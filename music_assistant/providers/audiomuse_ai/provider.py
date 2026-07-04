@@ -103,38 +103,6 @@ class AudioMuseAiPlugin(PluginProvider):
         await super().unload(is_removed)
 
     # ------------------------------------------------------------------
-    # Identity mapping (MA track <-> AudioMuse-AI media-server item id)
-    # ------------------------------------------------------------------
-
-    def _seed_item_id(self, track: Track) -> str | None:
-        """
-        Return the media-server item id for `track` on the configured provider.
-
-        AudioMuse-AI keys tracks on the same media-server id Music Assistant
-        stores in the matching provider mapping, so a direct lookup suffices.
-        """
-        for mapping in track.provider_mappings or ():
-            if mapping.provider_instance == self._media_provider:
-                return mapping.item_id
-        return None
-
-    async def _resolve_tracks(self, item_ids: list[str]) -> list[Track]:
-        """
-        Resolve AudioMuse-AI item ids back to Tracks on the configured provider.
-
-        Lookup misses are dropped, preserving input order for the survivors.
-        """
-
-        async def _one(item_id: str) -> Track | None:
-            try:
-                return await self.mass.music.tracks.get(item_id, self._media_provider)
-            except MusicAssistantError:
-                return None
-
-        resolved = await asyncio.gather(*[_one(i) for i in item_ids])
-        return [t for t in resolved if t is not None]
-
-    # ------------------------------------------------------------------
     # Cross-provider SIMILAR_TRACKS hook
     # ------------------------------------------------------------------
 
@@ -257,6 +225,38 @@ class AudioMuseAiPlugin(PluginProvider):
         item_ids = await self._text_search_item_ids(search_query, limit)
         tracks = await self._resolve_tracks(item_ids)
         return SearchResults(tracks=tracks)
+
+    # ------------------------------------------------------------------
+    # Identity mapping (MA track <-> AudioMuse-AI media-server item id)
+    # ------------------------------------------------------------------
+
+    def _seed_item_id(self, track: Track) -> str | None:
+        """
+        Return the media-server item id for `track` on the configured provider.
+
+        AudioMuse-AI keys tracks on the same media-server id Music Assistant
+        stores in the matching provider mapping, so a direct lookup suffices.
+        """
+        for mapping in track.provider_mappings or ():
+            if mapping.provider_instance == self._media_provider:
+                return mapping.item_id
+        return None
+
+    async def _resolve_tracks(self, item_ids: list[str]) -> list[Track]:
+        """
+        Resolve AudioMuse-AI item ids back to Tracks on the configured provider.
+
+        Lookup misses are dropped, preserving input order for the survivors.
+        """
+
+        async def _one(item_id: str) -> Track | None:
+            try:
+                return await self.mass.music.tracks.get(item_id, self._media_provider)
+            except MusicAssistantError:
+                return None
+
+        resolved = await asyncio.gather(*[_one(i) for i in item_ids])
+        return [t for t in resolved if t is not None]
 
     async def _text_search_item_ids(self, query: str, limit: int) -> list[str]:
         """Run CLAP + lyrics search, interleave results, dedupe; return item ids."""
