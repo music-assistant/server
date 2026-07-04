@@ -178,6 +178,9 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125, f"Expected BPM ~120, got {analysis.bpm:.1f}"
 
+    # the 120 BPM fixture is common time
+    assert analysis.beats_per_bar == 4
+
 
 async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock: Mock) -> None:
     """Test that extended analysis fields (energy, centroid, key) are populated."""
@@ -324,7 +327,7 @@ async def test_finalize_raises_when_not_enough_beats(provider: SmartFadesProvide
         patch.object(
             provider,
             "_infer_beat_timings",
-            return_value=(np.array([0.5]), np.array([])),
+            return_value=(np.array([0.5]), np.array([]), 4),
         ),
         pytest.raises(AudioAnalysisError, match="beat"),
     ):

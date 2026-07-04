@@ -242,7 +242,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
 
         # Run beat and key inference sequentially to keep peak CPU bounded.
-        beats, downbeats = await self._run_offloaded(self._infer_beat_timings, feats)
+        beats, downbeats, beats_per_bar = await self._run_offloaded(self._infer_beat_timings, feats)
         if len(beats) < 2:
             raise AudioAnalysisError("no rhythmic beat detected")
         key, mode = await self._run_offloaded(self._infer_musical_key, all_vqt)
@@ -292,6 +292,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             key=key,
             mode=mode,
             extra_data=extra_data,
+            beats_per_bar=beats_per_bar or None,
         )
 
         self.logger.debug(
@@ -395,7 +396,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         )
         return parts[0], parts[1].lower()
 
-    def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
         """Run Beat This model inference to detect beat and downbeat timings."""
         assert self._beat_this_model is not None
         assert self._beat_this_post_processor is not None
@@ -421,7 +422,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             ]
         )
 
-        dbn_out = self._beat_this_post_processor(combined_act)
+        dbn_out, beats_per_bar = self._beat_this_post_processor(combined_act)
         post_elapsed = (time.perf_counter() - post_start) * 1000
 
         beats = dbn_out[:, 0]
@@ -436,4 +437,4 @@ class SmartFadesProvider(AudioAnalysisProvider):
             len(downbeats),
         )
 
-        return beats, downbeats
+        return beats, downbeats, beats_per_bar
