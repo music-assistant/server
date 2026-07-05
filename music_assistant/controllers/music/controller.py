@@ -1621,7 +1621,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return self.podcasts
         if media_type == MediaType.GENRE:
             return self.genres
-        raise NotImplementedError
+        raise NotImplementedError(
+            f"No media controller available for media type: {media_type.value}"
+        )
 
     def get_provider_instances(
         self, domain: str, return_unavailable: bool = False
