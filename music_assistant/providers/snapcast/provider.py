@@ -208,7 +208,17 @@ class SnapCastProvider(PlayerProvider):
         if self._use_builtin_server:
             self._snapserver_started = asyncio.Event()
             self._snapserver_runner = self.mass.create_task(self._builtin_server_runner())
-            await asyncio.wait_for(self._snapserver_started.wait(), 10)
+            try:
+                # during startup the executor and event loop can be contended
+                # by other providers loading, which delays the start signal
+                # by several seconds
+                await asyncio.wait_for(self._snapserver_started.wait(), 30)
+            except TimeoutError as err:
+                # cancel the runner so the spawned snapserver process
+                # does not linger and occupy the ports on the next attempt
+                await self._stop_builtin_server()
+                msg = "Builtin Snapserver did not start within 30 seconds"
+                raise SetupFailedError(msg) from err
 
     async def _stop_builtin_server(self) -> None:
         """Stop the built-in Snapserver."""
