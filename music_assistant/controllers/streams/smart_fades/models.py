@@ -105,12 +105,14 @@ class TempoPlan:
 
 @dataclass(slots=True)
 class ShelfSchedule:
-    """One shelving-EQ gain schedule for a ShelfFilter."""
+    """One EQ gain schedule for a ShelfFilter (LOW/HIGH) or PeakFilter (PEAK)."""
 
     shelf_type: ShelfType
     frequency: int
     # (time_seconds, gain_db); the step at t=0 sets the initial gain
     steps: list[tuple[float, float]]
+    # PEAK bandwidth in octaves; unused for LOW/HIGH shelves
+    width_oct: float = 0.707
 
 
 @dataclass(slots=True)
@@ -119,11 +121,15 @@ class EqPlan:
 
     # seconds into the rendered crossfade
     swap_at: float
-    # A-side schedules are in input time (pre-stretch), B-side in post-trim time
-    low_out: ShelfSchedule
-    low_in: ShelfSchedule
-    high_out: ShelfSchedule
-    high_in: ShelfSchedule
+    # A-side schedules are in input time (pre-stretch), B-side in post-trim time;
+    # None means the schedule is bypassed (a shelf shallower than the bypass floor)
+    low_out: ShelfSchedule | None
+    low_in: ShelfSchedule | None
+    high_out: ShelfSchedule | None
+    high_in: ShelfSchedule | None
+    # measured mid-band (vocal) handover; None on either side means it is bypassed
+    mid_out: ShelfSchedule | None = None
+    mid_in: ShelfSchedule | None = None
 
 
 @dataclass(slots=True)
