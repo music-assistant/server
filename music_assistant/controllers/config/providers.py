@@ -413,6 +413,12 @@ class ProviderConfigMixin:
             self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
             return
         self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value)
+        # also update the provider's in-place config copy (if loaded) so
+        # object-local value reads stay in sync with raw writes
+        if (provider := self.mass.get_provider(provider_instance)) and (
+            entry := provider.config.values.get(key)
+        ):
+            entry.value = value
 
     @api_command("config/providers/reload", required_role="admin")
     async def _reload_provider(self, instance_id: str) -> None:
