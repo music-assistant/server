@@ -38,6 +38,35 @@ def _analysis(bpm: float, duration: float) -> AudioAnalysisData:
     )
 
 
+def _with_bands(
+    analysis: AudioAnalysisData, low: float, low_mid: float, mid: float, high: float
+) -> AudioAnalysisData:
+    """Attach flat ``band_rms`` envelopes at the given amplitudes."""
+    analysis.extra_data = {
+        "band_rms": {
+            "low": np.full(1800, low, dtype=np.float32).tolist(),
+            "low_mid": np.full(1800, low_mid, dtype=np.float32).tolist(),
+            "mid": np.full(1800, mid, dtype=np.float32).tolist(),
+            "high": np.full(1800, high, dtype=np.float32).tolist(),
+        }
+    }
+    return analysis
+
+
+def _analysis_with_mid_bands(bpm: float, duration: float) -> AudioAnalysisData:
+    """Analysis with a mid-heavy, bass-light ``band_rms`` profile that clears the mid gate."""
+    # bass-light so the low swap stays out of the way; mid-heavy and constant
+    # so duty_mid saturates to 1.0 and F_mid clears the 0.18-0.30 gate corridor
+    return _with_bands(_analysis(bpm, duration), 0.05, 0.3, 0.7, 0.3)
+
+
+def _analysis_with_instrumental_bands(bpm: float, duration: float) -> AudioAnalysisData:
+    """Analysis with a bass-light, mid-light profile: every measured EQ gate bypasses."""
+    # f_low ~0.014 and f_mid ~0.13 sit below their gate corridors, so both the
+    # low and mid swap bypass while anchors/entry stay on the full-band paths
+    return _with_bands(_analysis(bpm, duration), 0.1, 0.55, 0.3, 0.55)
+
+
 def _band_rms(x: np.ndarray, lo: float, hi: float) -> float:
     """RMS of one frequency band of the (interleaved stereo) signal's left channel."""
     mono = x[0::2]
@@ -47,17 +76,90 @@ def _band_rms(x: np.ndarray, lo: float, hi: float) -> float:
     return float(np.sqrt(np.mean(spec[mask] ** 2)))
 
 
-@pytest.mark.asyncio
-async def test_bass_swaps_between_tracks() -> None:
-    """Early mix output carries A's bass (60Hz); late output carries B's (90Hz)."""
-    fade = SmartCrossFade(logging.getLogger(), _analysis(120.0, 240.0), _analysis(120.0, 240.0))
-    fade_out = (_tone(60.0, 45.0) + _tone(3000.0, 45.0)).tobytes()  # A: 60Hz bass
-    fade_in = (_tone(90.0, 45.0) + _tone(5000.0, 45.0)).tobytes()  # B: 90Hz bass
+async def _render(
+    out_analysis: AudioAnalysisData,
+    in_analysis: AudioAnalysisData,
+    fade_out: bytes,
+    fade_in: bytes,
+) -> tuple[np.ndarray, SmartCrossFade]:
+    """Build and apply a SmartCrossFade, returning the rendered mix and the fade."""
+    fade = SmartCrossFade(logging.getLogger(), out_analysis, in_analysis)
     fade.build(len(fade_out), len(fade_in), PCM)
     chunks = [chunk async for chunk in fade.apply(fade_out, fade_in, PCM)]
-    mix = np.frombuffer(b"".join(chunks), dtype=np.float32)
+    return np.frombuffer(b"".join(chunks), dtype=np.float32), fade
+
+
+def _thirds(mix: np.ndarray) -> list[np.ndarray]:
+    """Split an interleaved mix into three frame-aligned thirds."""
     third = len(mix) // 3 // 2 * 2
-    head, tail = mix[:third], mix[-third:]
-    # A's bass dominates early; B's bass dominates late (the swap happened)
-    assert _band_rms(head, 55, 65) > 3 * _band_rms(head, 85, 95)
-    assert _band_rms(tail, 85, 95) > 3 * _band_rms(tail, 55, 65)
+    return [mix[i * third : (i + 1) * third] for i in range(3)]
+
+
+@pytest.mark.asyncio
+async def test_bass_swaps_between_tracks() -> None:
+    """The low shelves attenuate A's bass and duck B's entrance vs an EQ-bypassed render."""
+    fade_out = (_tone(60.0, 45.0) + _tone(3000.0, 45.0)).tobytes()  # A: 60Hz bass
+    fade_in = (_tone(90.0, 45.0) + _tone(5000.0, 45.0)).tobytes()  # B: 90Hz bass
+    # differential render: identical PCM, one plan with the shipped full-depth
+    # kill (no band data) and one whose measured gates bypass all low shelves --
+    # any energy difference is then attributable to the low EQ, not acrossfade
+    killed_mix, killed = await _render(
+        _analysis(120.0, 240.0), _analysis(120.0, 240.0), fade_out, fade_in
+    )
+    open_mix, open_ = await _render(
+        _analysis_with_instrumental_bands(120.0, 240.0),
+        _analysis_with_instrumental_bands(120.0, 240.0),
+        fade_out,
+        fade_in,
+    )
+    assert killed.plan is not None
+    assert killed.plan.eq_plan.low_out is not None
+    assert open_.plan is not None
+    assert open_.plan.eq_plan.low_out is None
+    assert open_.plan.eq_plan.low_in is None
+    # identical geometry: the band data must only change EQ, never the timing
+    assert len(killed_mix) == len(open_mix)
+    killed_thirds, open_thirds = _thirds(killed_mix), _thirds(open_mix)
+    # A's bass is killed where the swap completes (late); B enters bass-ducked
+    # (early); -26dB kill leaves well under 30% of the bypassed render's energy
+    assert _band_rms(killed_thirds[2], 55, 65) < 0.3 * _band_rms(open_thirds[2], 55, 65)
+    assert _band_rms(killed_thirds[0], 85, 95) < 0.3 * _band_rms(open_thirds[0], 85, 95)
+    # sanity on the killed render alone: A's bass dominates early, B's late
+    assert _band_rms(killed_thirds[0], 55, 65) > 3 * _band_rms(killed_thirds[0], 85, 95)
+    assert _band_rms(killed_thirds[2], 85, 95) > 3 * _band_rms(killed_thirds[2], 55, 65)
+
+
+@pytest.mark.asyncio
+async def test_mid_swaps_between_tracks() -> None:
+    """The mid peaks trade A's 1kHz for B's 2kHz vs an EQ-bypassed render of the same PCM."""
+    fade_out = _tone(1000.0, 45.0).tobytes()  # A: 1kHz "vocal"
+    fade_in = _tone(2000.0, 45.0).tobytes()  # B: 2kHz "vocal"
+    # differential render: identical PCM, one plan whose band data engages the
+    # mid gate and one whose band data bypasses every measured EQ gate -- the
+    # 1k/2k energy difference is then attributable to the mid EQ alone
+    gated_mix, gated = await _render(
+        _analysis_with_mid_bands(120.0, 240.0),
+        _analysis_with_mid_bands(120.0, 240.0),
+        fade_out,
+        fade_in,
+    )
+    open_mix, open_ = await _render(
+        _analysis_with_instrumental_bands(120.0, 240.0),
+        _analysis_with_instrumental_bands(120.0, 240.0),
+        fade_out,
+        fade_in,
+    )
+    assert gated.plan is not None
+    assert gated.plan.eq_plan.mid_out is not None
+    assert gated.plan.eq_plan.mid_in is not None
+    assert open_.plan is not None
+    assert open_.plan.eq_plan.mid_out is None
+    assert open_.plan.eq_plan.mid_in is None
+    # identical geometry: the band data must only change EQ, never the timing
+    assert len(gated_mix) == len(open_mix)
+    gated_thirds, open_thirds = _thirds(gated_mix), _thirds(open_mix)
+    # the -8dB depth is modest, so assert a measurable drop (not dominance):
+    # A's 1kHz is attenuated where the swap completes (late); B's 2kHz enters
+    # ducked (early); both measured against the EQ-bypassed render
+    assert _band_rms(gated_thirds[2], 950, 1050) < 0.7 * _band_rms(open_thirds[2], 950, 1050)
+    assert _band_rms(gated_thirds[0], 1950, 2050) < 0.7 * _band_rms(open_thirds[0], 1950, 2050)
