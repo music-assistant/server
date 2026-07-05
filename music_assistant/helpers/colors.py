@@ -1,4 +1,5 @@
-"""Color palette extraction from artwork.
+"""
+Color palette extraction from artwork.
 
 Derives a 6-field MediaItemPalette per the Sendspin color@v1 spec from an
 image: a `modern_colorthief` MMCQ quantizer produces image candidates, then `primary`,
@@ -21,7 +22,6 @@ from music_assistant_models.media_items import MediaItemPalette
 
 from music_assistant.helpers.images import (
     _extract_imageproxy_id,
-    _extract_imageproxy_params,
     create_thumb_hash,
     get_image_data,
 )
@@ -90,7 +90,8 @@ def _adjust_until_contrast(
     refs: tuple[_RGB, ...],
     min_contrast: float = _MIN_CONTRAST,
 ) -> _RGB | None:
-    """Mix color toward mix_toward until contrast >= min_contrast vs all refs.
+    """
+    Mix color toward mix_toward until contrast >= min_contrast vs all refs.
 
     :param color: Starting color.
     :param mix_toward: Direction to blend (e.g. black to darken, white to lighten).
@@ -202,13 +203,14 @@ def _derive_palette(candidates: list[_RGB]) -> MediaItemPalette:
 
 
 def extract_palette(image_bytes: bytes) -> MediaItemPalette:
-    """Extract a MediaItemPalette from raw image bytes.
+    """
+    Extract a MediaItemPalette from raw image bytes.
 
     :param image_bytes: Raw image data (PNG, JPEG, etc.).
     """
     try:
         candidates = _extract_candidates(image_bytes)
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return MediaItemPalette()
     return _derive_palette(candidates)
 
@@ -270,17 +272,15 @@ async def get_palette_for_url(
     """Resolve an imageproxy URL to (path, provider) and return its palette."""
     if not image_url:
         return None
-    # New /imageproxy/<id> form: async-resolve the id back to (provider, path).
+    # /imageproxy/<id> form: async-resolve the id back to (provider, path).
     if image_id := _extract_imageproxy_id(image_url):
         resolved = await mass.metadata.resolve_image_id(image_id)
         if resolved is None:
             return None
         provider, path = resolved
-    elif extracted := _extract_imageproxy_params(image_url):
-        path, provider = extracted
     else:
         path, provider = image_url, "builtin"
     try:
         return await get_palette(mass, path, provider)
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         return None

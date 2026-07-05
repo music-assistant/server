@@ -2,6 +2,7 @@
 
 import logging
 import pathlib
+from typing import TYPE_CHECKING
 
 import aiofiles
 import pytest
@@ -21,7 +22,6 @@ from libopensonic.media import (
 # InternetRadioStation is NOT re-exported from libopensonic.media top-level in
 # py-opensonic==10.0.0 (unlike its siblings above); import from the submodule.
 from libopensonic.media.media_types import InternetRadioStation
-from syrupy.assertion import SnapshotAssertion
 
 from music_assistant.providers.opensubsonic.parsers import (
     parse_album,
@@ -33,6 +33,9 @@ from music_assistant.providers.opensubsonic.parsers import (
     parse_structured_lyrics,
     parse_track,
 )
+
+if TYPE_CHECKING:
+    from syrupy.assertion import SnapshotAssertion
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.artist.json"))

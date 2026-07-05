@@ -13,7 +13,7 @@ dependencies = [
   "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.14.0",
+  "aiohttp==3.14.1",
   "aiohttp-fast-zlib==0.3.0",
   "aiohttp-socks==0.11.0",
   "aiofiles==24.1.0",
@@ -22,13 +22,13 @@ dependencies = [
   "certifi==2025.11.12",
   "colorlog==6.10.1",
   "modern_colorthief==0.2.1",
-  "cryptography==46.0.7",
+  "cryptography==49.0.0",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-models==1.1.131",
-  "music-assistant-frontend==2.17.188",
+  "music-assistant-models==1.1.151",
+  "music-assistant-frontend==2.17.207",
   "mutagen==1.47.0",
   "orjson==3.11.6",
   "pillow==12.2.0",
@@ -37,12 +37,13 @@ dependencies = [
   "python-slugify==8.0.4",
   "unidecode==1.4.0",
   "xmltodict==1.0.4",
+  "markdownify==1.2.3",
   "shortuuid==1.0.13",
-  "zeroconf==0.149.12",
+  "zeroconf==0.149.16",
   "uv>=0.8.0",
   "librosa==0.11.0",
-  "numpy==2.3.5",  # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
-  "torch==2.11.0",
+  "numpy==2.3.5", # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
+  "torch==2.12.1",
   "torchaudio==2.11.0",
   "gql[all]==4.0.0",
   "aiortc>=1.6.0",
@@ -75,8 +76,10 @@ mass = "music_assistant.__main__:main"
 # explicit is misspelled in the iTunes API
 # "additionals" is a fixed field name from the Nicovideo API fixtures
 # "connexion" is a French word in the MusicMe login URL path
+# "claus" is Santa Claus, in the christmas_music genre description
+# "childrens" is the normalized form of the "Children's" audiobook genre (apostrophe stripped)
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,"
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
@@ -92,20 +95,14 @@ platforms = ["any"]
 zip-safe = false
 
 [tool.setuptools.package-data]
-music_assistant = ["py.typed"]
+music_assistant = ["py.typed", "helpers/app_secrets.json"]
 
 [tool.ruff]
 fix = true
 show-fixes = true
 
 line-length = 100
-# IMPORTANT: target-version is intentionally pinned ONE MINOR BEHIND the runtime
-# (.python-version = 3.14, target-version = py313) so that lint/format don't
-# introduce 3.14-only syntax (e.g. PEP 758 except-without-parens) while we still
-# need clean cherry-pick backports to `stable` (which runs Python 3.13).
-# BUMP TO "py314" BEFORE THE 2.9 RELEASE — once `stable` follows dev to 3.14,
-# this restriction can be lifted.
-target-version = "py313"
+target-version = "py314"
 
 [tool.ruff.lint.pydocstyle]
 # Use Sphinx-style docstrings with :param: syntax
@@ -121,9 +118,7 @@ max-statements = 50
 
 [tool.mypy]
 platform = "linux"
-# Kept at 3.13 to match [tool.ruff] target-version — see the note there.
-# BUMP TO "3.14" BEFORE THE 2.9 RELEASE.
-python_version = "3.13"
+python_version = "3.14"
 
 # set this to normal when we have fixed all exclusions
 follow_imports = "silent"
@@ -150,7 +145,6 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
 ]
 extra_checks = false
@@ -176,8 +170,8 @@ warn_unused_ignores = true
 # methods, attributes declared as None and only set dynamically). Treat it as an
 # untyped dependency rather than trusting its type info.
 [[tool.mypy.overrides]]
-module = ["plexapi", "plexapi.*"]
 follow_imports = "skip"
+module = ["plexapi", "plexapi.*"]
 
 [tool.ruff.format]
 # Force Linux/macOS line endings
@@ -197,7 +191,6 @@ ignore = [
   "ANN003", # Just annoying, not really useful
   "ANN401", # Opinioated warning on disallowing dynamically typed expressions
   "D203", # Conflicts with other rules
-  "D213", # Conflicts with other rules
   "D417", # False positives in some occasions
   "EM101", # Just annoying, not really useful
   "EM102", # Just annoying, not really useful
@@ -221,8 +214,7 @@ ignore = [
   "ASYNC240", # Not relevant, we use asyncio not trio/anyio
   "UP047", # Not yet ready to migrate to type parameters
   "PLW0108", # Just annoying, not really useful
-  "FURB110", # Just annoying, not really useful
-  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
+  "FURB110", # Just annoying, not really useful  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
   "FBT002",
@@ -240,7 +232,6 @@ ignore = [
   "PTH118",
   "PTH120",
   "PTH123",
-  "PYI034",
   "G004",
   "S104",
   "S105",
@@ -259,17 +250,17 @@ ignore = [
   "ERA001",
   "PTH206",
   "C901",
-  "RUF012",
   "S304",
-  "RUF006",
   "TRY300",
   "S608",
-  "S307",
   "B007",
   "ANN204",
 ]
 
 select = ["ALL"]
+# Enforce the multi-line docstring summary on the second line (the pep257 convention disables both
+# D212 and D213; we re-enable D213 so our "summary starts on the next line" style is checked).
+extend-select = ["D213"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false
@@ -282,14 +273,19 @@ known-first-party = ["music_assistant"]
 max-complexity = 25
 
 [[tool.uv.index]]
+explicit = true
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
-explicit = true
+
+[tool.uv]
+# Build urllib3-future (pulled in via niquests) from source so URLLIB3_NO_OVERRIDE=1 set during
+# installs takes effect, stopping it from hijacking the stock urllib3 namespace server-wide.
+no-binary-package = ["urllib3-future"]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchaudio = { index = "pytorch-cpu" }
+torch = {index = "pytorch-cpu"}
+torchaudio = {index = "pytorch-cpu"}
 
 [build-system]
-requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+requires = ["setuptools>=61"]

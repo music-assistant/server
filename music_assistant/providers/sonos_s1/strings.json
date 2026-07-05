@@ -11,5 +11,9 @@
   },
   "manifest": {
     "description": "Play music, manage groups, and control Series 1 SONOS speakers throughout your home. Select this provider if you have SONOS devices on the S1 operating system (with the S1 Controller app)"
+  },
+  "errors": {
+    "play_media_synced": "Player {0} can not accept the play command, it is synced to another player.",
+    "enqueue_synced": "Player {0} can not accept the enqueue command, it is synced to another player."
   }
 }

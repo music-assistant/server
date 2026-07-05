@@ -50,7 +50,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
 )
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import (
     ThrottlerManager,
@@ -167,7 +167,8 @@ class QobuzProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
@@ -298,7 +299,12 @@ class QobuzProvider(MusicProvider):
         )
         if not playlist_obj or not playlist_obj.get("id"):
             msg = f"Failed to create playlist: {name}"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(
+                msg,
+                translation_key="create_playlist_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
         return self._parse_playlist(playlist_obj)
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
@@ -515,6 +521,23 @@ class QobuzProvider(MusicProvider):
             allow_seek=True,
         )
 
+    async def on_streamed(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """Handle callback when an item completed streaming."""
+        if self._user_auth_info is None:
+            msg = "User auth info not available"
+            raise LoginFailed(msg)
+        user_id = self._user_auth_info["user"]["id"]
+        async with self.throttler.bypass():
+            await self._get_data(
+                "track/reportStreamingEnd",
+                user_id=user_id,
+                track_id=str(streamdetails.item_id),
+                duration=try_parse_int(streamdetails.seconds_streamed),
+            )
+
     async def _report_playback_started(self, streamdata: dict[str, Any]) -> None:
         """Report playback start to qobuz."""
         # TODO: need to figure out if the streamed track is purchased by user
@@ -544,23 +567,6 @@ class QobuzProvider(MusicProvider):
         ]
         async with self.throttler.bypass():
             await self._post_data("track/reportStreamingStart", data=events)
-
-    async def on_streamed(
-        self,
-        streamdetails: StreamDetails,
-    ) -> None:
-        """Handle callback when an item completed streaming."""
-        if self._user_auth_info is None:
-            msg = "User auth info not available"
-            raise LoginFailed(msg)
-        user_id = self._user_auth_info["user"]["id"]
-        async with self.throttler.bypass():
-            await self._get_data(
-                "track/reportStreamingEnd",
-                user_id=user_id,
-                track_id=str(streamdetails.item_id),
-                duration=try_parse_int(streamdetails.seconds_streamed),
-            )
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse qobuz artist object to generic layout."""
@@ -861,7 +867,7 @@ class QobuzProvider(MusicProvider):
         """Get data from api."""
         self.logger.debug("Handling GET request to %s", endpoint)
         url = f"https://www.qobuz.com/api.json/0.2/{endpoint}"
-        headers = {"X-App-Id": app_var(0)}
+        headers = {"X-App-Id": app_var("qobuz_app_id")}
         locale = self.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
         headers["Accept-Language"] = f"{locale}, {language};q=0.9, *;q=0.5"
@@ -878,11 +884,13 @@ class QobuzProvider(MusicProvider):
             for key in keys:
                 signing_data += f"{key}{kwargs[key]}"
             request_ts = str(time.time())
-            request_sig = signing_data + request_ts + app_var(1)
-            request_sig = str(hashlib.md5(request_sig.encode()).hexdigest())
+            request_sig = signing_data + request_ts + app_var("qobuz_app_secret")
+            # Qobuz signs API requests with MD5; usedforsecurity=False as this is mandated by
+            # their API, not a security measure on our side.
+            request_sig = str(hashlib.md5(request_sig.encode(), usedforsecurity=False).hexdigest())
             kwargs["request_ts"] = request_ts
             kwargs["request_sig"] = request_sig
-            kwargs["app_id"] = app_var(0)
+            kwargs["app_id"] = app_var("qobuz_app_id")
             kwargs["user_auth_token"] = await self._auth_token()
         async with (
             self.mass.http_session.get(url, headers=headers, params=kwargs) as response,
@@ -932,7 +940,7 @@ class QobuzProvider(MusicProvider):
         if not data:
             data = {}
         url = f"https://www.qobuz.com/api.json/0.2/{endpoint}"
-        params["app_id"] = app_var(0)
+        params["app_id"] = app_var("qobuz_app_id")
         auth_token = await self._auth_token()
         if auth_token is None:
             msg = "Authentication token is required"

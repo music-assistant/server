@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import random
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -19,6 +18,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
@@ -263,7 +263,7 @@ class LastFMRecommendationManager:
         random_count = target_count - TOP_ITEMS_TO_TAKE
 
         # Hourly seed keeps the sampled remainder stable within the hour and rotates it each hour.
-        now = datetime.datetime.now(tz=datetime.UTC)
+        now = utc()
         seed = f"{now.date().isoformat()}_{now.hour}_{seed_suffix}"
         rng = random.Random(seed)
         random_items = rng.sample(remaining, min(random_count, len(remaining)))
@@ -414,7 +414,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_artists",
                     name="Discover Similar Artists",
-                    translation_key="recommendations.discover_similar_artists",
+                    translation_key="discover_similar_artists",
+                    translation_params=[str(len(top_artists))],
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_artists)} artists",
@@ -435,7 +436,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_tracks",
                     name="Discover Similar Tracks",
-                    translation_key="recommendations.discover_similar_tracks",
+                    translation_key="discover_similar_tracks",
+                    translation_params=[str(len(top_tracks))],
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_tracks)} tracks",
@@ -460,7 +462,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_artists",
                     name="Global Top Artists",
-                    translation_key="recommendations.global_top_artists",
+                    translation_key="global_top_artists",
                     provider=self.provider.instance_id,
                     items=UniqueList(top_artists),
                     subtitle="Most popular artists worldwide",
@@ -479,7 +481,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_tracks",
                     name="Global Top Tracks",
-                    translation_key="recommendations.global_top_tracks",
+                    translation_key="global_top_tracks",
                     provider=self.provider.instance_id,
                     items=UniqueList(top_tracks),
                     subtitle="Most popular tracks worldwide",
@@ -500,7 +502,7 @@ class LastFMRecommendationManager:
             return
 
         # cycle through the user's top genres day by day so the genre rows vary
-        day_index = datetime.datetime.now(tz=datetime.UTC).date().toordinal()
+        day_index = utc().date().toordinal()
         tag_name = top_genres[day_index % len(top_genres)]
 
         # Over-fetch so there's enough left after library filtering and resolution failures.
@@ -532,6 +534,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_artists",
                     name=f"Discover {tag_name.title()} Artists",
+                    translation_key="genre_artists",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_artists),
                     subtitle="Top artists in your top genres",
@@ -566,6 +570,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_albums",
                     name=f"Discover {tag_name.title()} Albums",
+                    translation_key="genre_albums",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_albums),
                     subtitle="Top albums in your top genres",
@@ -600,6 +606,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_tracks",
                     name=f"Discover {tag_name.title()} Tracks",
+                    translation_key="genre_tracks",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_tracks),
                     subtitle="Top tracks in your top genres",
@@ -644,7 +652,7 @@ class LastFMRecommendationManager:
         for artist, tags in zip(top_artists, tag_lists, strict=True):
             try:
                 artist_weight = float(artist.get("playcount", 0))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             if artist_weight <= 0:
                 continue
@@ -654,7 +662,7 @@ class LastFMRecommendationManager:
                     continue
                 try:
                     tag_count = float(tag.get("count", 0))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
                 key = name.lower()
                 scores[key] = scores.get(key, 0.0) + artist_weight * tag_count / 100
@@ -694,6 +702,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_geo_artists",
                     name=f"Top artists for {country}",
+                    translation_key="geo_artists",
+                    translation_params=[country],
                     provider=self.provider.instance_id,
                     items=UniqueList(geo_artists),
                     subtitle=f"Most popular artists in {country}",
@@ -712,6 +722,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_geo_tracks",
                     name=f"Top tracks for {country}",
+                    translation_key="geo_tracks",
+                    translation_params=[country],
                     provider=self.provider.instance_id,
                     items=UniqueList(geo_tracks),
                     subtitle=f"Most popular tracks in {country}",

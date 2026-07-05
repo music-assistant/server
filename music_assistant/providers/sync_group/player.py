@@ -202,15 +202,6 @@ class SyncGroupPlayer(Player):
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
         return self.sync_leader.source_list if self.sync_leader else []
 
-    def _is_member_allowed(self, player_id: str) -> bool:
-        """Return whether a player is allowed to join this group given the configured filter."""
-        # preset members should always be allowed to re-join
-        preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []) or [])
-        if player_id in preset_members:
-            return True
-        allowed_members = cast("list[str]", self.config.get_value(CONF_ALLOWED_MEMBERS, []) or [])
-        return not allowed_members or player_id in allowed_members
-
     @property
     def can_group_with(self) -> set[str]:
         """Return the id's of players this player can group with."""
@@ -437,7 +428,10 @@ class SyncGroupPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
-                f"Group {self.display_name} does not allow dynamically adding/removing members!"
+                f"Group {self.display_name} does not allow dynamically adding/removing members!",
+                translation_key="not_dynamic",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
             )
         sync_leader = self.sync_leader or self._select_sync_leader(new_members=player_ids_to_add)
         was_playing = self.playback_state == PlaybackState.PLAYING
@@ -484,6 +478,17 @@ class SyncGroupPlayer(Player):
         leader_removed = False
         for member_id in player_ids_to_remove or []:
             if member_id not in self._attr_group_members:
+                # Fallback for a member that was grouped to the sync leader
+                # outside of MA (e.g. via the Sonos app): it isn't part of our
+                # tracked member list but does show up in group_members via the
+                # leader's live state. Forward its removal to the sync leader
+                # instead of silently skipping it.
+                if (
+                    self.sync_leader
+                    and member_id != self.sync_leader.player_id
+                    and member_id in self.sync_leader.state.group_members
+                ):
+                    final_players_to_remove.append(member_id)
                 continue
             if member_id in self._attr_static_group_members:
                 # static members can not be removed from the group
@@ -496,7 +501,10 @@ class SyncGroupPlayer(Player):
                 continue
             if member_id == self.player_id:
                 raise PlayerCommandFailed(
-                    f"Cannot remove {self.display_name} from itself as a member!"
+                    f"Cannot remove {self.display_name} from itself as a member!",
+                    translation_key="remove_self",
+                    translation_owner=self.translation_owner,
+                    translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(member_id)
             final_players_to_remove.append(member_id)
@@ -566,6 +574,37 @@ class SyncGroupPlayer(Player):
         # sync group standing with a now-nonexistent leader behind it.
         if self.sync_leader is not None:
             await self._dissolve_syncgroup()
+
+    @property
+    def active_protocol_domain(self) -> str | None:
+        """
+        Derive the active protocol domain for this sync group on the fly.
+
+        Returns the domain of the protocol currently carrying the live stream
+        session, EXCEPT when no remaining member actually requires that
+        non-native protocol — in which case the group should downshift and
+        this returns the leader's native provider domain. Always computed
+        from live state so it cannot drift from reality.
+        """
+        session_player = self._active_session_player()
+        if session_player is None or self.sync_leader is None:
+            return None
+        domain = session_player.provider.domain
+        native_domain = self.sync_leader.provider.domain
+        # If a non-native protocol is in use, only keep it as "active" for
+        # leader-selection purposes when some member still requires it.
+        if domain != native_domain and not self._any_member_requires_protocol_domain(domain):
+            return native_domain
+        return domain
+
+    def _is_member_allowed(self, player_id: str) -> bool:
+        """Return whether a player is allowed to join this group given the configured filter."""
+        # preset members should always be allowed to re-join
+        preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []) or [])
+        if player_id in preset_members:
+            return True
+        allowed_members = cast("list[str]", self.config.get_value(CONF_ALLOWED_MEMBERS, []) or [])
+        return not allowed_members or player_id in allowed_members
 
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
@@ -703,7 +742,8 @@ class SyncGroupPlayer(Player):
         new_members: list[str] | None = None,
         preferred_protocol_domain: str | None = None,
     ) -> Player | None:
-        """Select a (new) sync leader, preferring protocol continuity.
+        """
+        Select a (new) sync leader, preferring protocol continuity.
 
         :param new_members: Optional list of newly added member ids to consider
             when no current/static members are available.
@@ -770,7 +810,8 @@ class SyncGroupPlayer(Player):
     # group's members.
 
     def _translate_to_parent_ids(self, player_ids: list[str]) -> list[str]:
-        """Translate a list of (possibly protocol) player IDs to parent player IDs.
+        """
+        Translate a list of (possibly protocol) player IDs to parent player IDs.
 
         Protocol players (e.g. AirPlay `apc...`) are translated to their parent
         (e.g. Sonos `RINCON_...`). Non-protocol IDs pass through unchanged.
@@ -788,7 +829,8 @@ class SyncGroupPlayer(Player):
         return result
 
     def _member_supports_protocol_domain(self, player: Player, domain: str) -> bool:
-        """Check if a player supports the given protocol domain.
+        """
+        Check if a player supports the given protocol domain.
 
         :param player: The player to check.
         :param domain: The protocol domain string (e.g. "airplay", "sonos").
@@ -801,7 +843,8 @@ class SyncGroupPlayer(Player):
         return False
 
     def _any_member_requires_protocol_domain(self, domain: str) -> bool:
-        """Return True if any current member can only play via the given protocol domain.
+        """
+        Return True if any current member can only play via the given protocol domain.
 
         A member "requires" the protocol when all of its available playback
         paths are on that domain — i.e. it has no native playback path outside
@@ -832,7 +875,8 @@ class SyncGroupPlayer(Player):
         return False
 
     def _active_session_player(self) -> Player | None:
-        """Return the player that owns the live sync session.
+        """
+        Return the player that owns the live sync session.
 
         If the current sync leader has a non-native active output protocol,
         returns the protocol player that carries the stream; otherwise returns
@@ -851,27 +895,6 @@ class SyncGroupPlayer(Player):
         ):
             return protocol_player
         return self.sync_leader
-
-    @property
-    def active_protocol_domain(self) -> str | None:
-        """Derive the active protocol domain for this sync group on the fly.
-
-        Returns the domain of the protocol currently carrying the live stream
-        session, EXCEPT when no remaining member actually requires that
-        non-native protocol — in which case the group should downshift and
-        this returns the leader's native provider domain. Always computed
-        from live state so it cannot drift from reality.
-        """
-        session_player = self._active_session_player()
-        if session_player is None or self.sync_leader is None:
-            return None
-        domain = session_player.provider.domain
-        native_domain = self.sync_leader.provider.domain
-        # If a non-native protocol is in use, only keep it as "active" for
-        # leader-selection purposes when some member still requires it.
-        if domain != native_domain and not self._any_member_requires_protocol_domain(domain):
-            return native_domain
-        return domain
 
     def _update_attributes(self) -> None:
         """Update dynamic attributes."""
@@ -918,7 +941,8 @@ class SyncGroupPlayer(Player):
             self._cancel_idle_grace_timer()
 
     def _is_player_in_session(self, player: Player, session_player: Player | None) -> bool:
-        """Return True if ``player`` is already a sync_client of the live session.
+        """
+        Return True if ``player`` is already a sync_client of the live session.
 
         A seamless leader handoff only works when the candidate's resolved
         protocol player is already in the active ``AirPlayStreamSession`` (or
@@ -958,7 +982,8 @@ class SyncGroupPlayer(Player):
         resume_playback: bool = True,
         preferred_protocol_domain: str | None = None,
     ) -> None:
-        """Stop the current sync session, dissolve the syncgroup, and optionally re-form.
+        """
+        Stop the current sync session, dissolve the syncgroup, and optionally re-form.
 
         Used when a seamless handoff isn't possible (e.g. the new leader is not
         part of the live session). Accepts a brief audio gap in exchange for
@@ -1076,7 +1101,8 @@ class SyncGroupPlayer(Player):
         return False
 
     async def _dynamic_leader_switch(self, old_leader_id: str) -> None:
-        """Switch the sync leader without tearing down the stream session.
+        """
+        Switch the sync leader without tearing down the stream session.
 
         Used when the provider supports dynamic leader selection (e.g. AirPlay,
         Snapcast). The old leader is removed from the live session and the
@@ -1233,7 +1259,8 @@ class SyncGroupPlayer(Player):
         await self._dissolve_syncgroup()
 
     def _resolve_session_target(self, player: Player, domain: str | None) -> Player | None:
-        """Resolve the player that participates in the live session for ``domain``.
+        """
+        Resolve the player that participates in the live session for ``domain``.
 
         For a player whose own provider domain matches, returns the player itself.
         For a parent player with a linked protocol on that domain, returns the

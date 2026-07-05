@@ -62,7 +62,7 @@ from music_assistant.constants import (
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
 )
-from music_assistant.helpers.util import get_changed_dataclass_values
+from music_assistant.helpers.util import get_changed_dataclass_values, html_to_markdown
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
@@ -70,6 +70,11 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
+
+
+def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
+    """Return elapsed_time clamped to a non-negative value."""
+    return max(0.0, elapsed_time) if elapsed_time is not None else None
 
 
 class Player(ABC):
@@ -196,7 +201,7 @@ class Player(ABC):
     @property
     def elapsed_time(self) -> float | None:
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
-        return self._attr_elapsed_time
+        return _clamp_elapsed_time(self._attr_elapsed_time)
 
     @property
     def elapsed_time_last_updated(self) -> float | None:
@@ -768,6 +773,12 @@ class Player(ABC):
 
     @property
     @final
+    def translation_owner(self) -> str:
+        """Return the translation owner namespace ("provider.<domain>") of the player's provider."""
+        return self._provider.translation_owner
+
+    @property
+    @final
     def config(self) -> PlayerConfig:
         """Return the config of the player."""
         return self._config
@@ -832,7 +843,7 @@ class Player(ABC):
                 try:
                     sample_rate_str, bit_depth_str = item.split(MULTI_VALUE_SPLITTER, 1)
                     config_rates.append((int(sample_rate_str.strip()), int(bit_depth_str.strip())))
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     self.logger.warning(
                         "Ignoring malformed CONF_SAMPLE_RATES entry %r for player %s",
                         item,
@@ -867,8 +878,10 @@ class Player(ABC):
         if self.elapsed_time is None or self.elapsed_time_last_updated is None:
             return None
         if self.playback_state == PlaybackState.PLAYING:
-            return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
-        return self.elapsed_time
+            return _clamp_elapsed_time(
+                self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
+            )
+        return _clamp_elapsed_time(self.elapsed_time)
 
     @cached_property
     @final
@@ -1585,6 +1598,7 @@ class Player(ABC):
             output_protocols=self.output_protocols,
             active_output_protocol=self.__attr_active_output_protocol,
             needs_setup=self.needs_setup,
+            sleep_timer_expires_at=self.sleep_timer_expires_at,
         )
 
         # track stop called state
@@ -1656,17 +1670,27 @@ class Player(ABC):
         # wrong clock for live plugin sources (loses upstream seeks and
         # pause-resume on the queue's corrected_elapsed_time, which the
         # player_queues controller and several player providers consume).
-        if (
-            (active_source := self.__final_active_source)
-            and (queue := self.mass.player_queues.get(active_source))
-            and (current_item := queue.current_item) is not None
-            and (sd := current_item.streamdetails) is not None
-            and sd.media_type == MediaType.AUDIO_SOURCE
-            and sd.stream_metadata is not None
-            and sd.stream_metadata.elapsed_time is not None
-        ):
-            elapsed_time = sd.stream_metadata.elapsed_time
-            elapsed_time_last_updated = sd.stream_metadata.elapsed_time_last_updated or time.time()
+        # A group player outputs the AudioSource from its own queue, which
+        # __final_active_source may not resolve to, so the group's own queue
+        # is also consulted.
+        candidate_source_ids = [self.__final_active_source]
+        if self.type == PlayerType.GROUP:
+            candidate_source_ids.append(self.player_id)
+        for source_id in candidate_source_ids:
+            if (
+                source_id
+                and (queue := self.mass.player_queues.get(source_id))
+                and (current_item := queue.current_item) is not None
+                and (sd := current_item.streamdetails) is not None
+                and sd.media_type == MediaType.AUDIO_SOURCE
+                and sd.stream_metadata is not None
+                and sd.stream_metadata.elapsed_time is not None
+            ):
+                elapsed_time = sd.stream_metadata.elapsed_time
+                elapsed_time_last_updated = (
+                    sd.stream_metadata.elapsed_time_last_updated or time.time()
+                )
+                break
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 
@@ -1839,6 +1863,9 @@ class Player(ABC):
                 podcast = getattr(media_item, "podcast", None)
                 metadata = getattr(media_item, "metadata", None)
                 description = getattr(metadata, "description", None) if metadata else None
+                if description:
+                    # descriptions may contain HTML markup; the OSD shows plain text
+                    description = html_to_markdown(description)
                 image_url = (
                     self.mass.metadata.get_image_url(current_item.media_item.image, size=512)
                     or item_image_url
@@ -2259,6 +2286,23 @@ class Player(ABC):
         self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         self.__active_mass_source = value
         self.update_state()
+
+    __sleep_timer_expires_at: float | None = None
+
+    @final
+    def set_sleep_timer_expires_at(self, value: float | None) -> None:
+        """
+        Set the unix (utc) timestamp at which the active sleep timer stops playback.
+
+        :param value: The expiry timestamp, or None to clear the sleep timer.
+        """
+        self.__sleep_timer_expires_at = value
+
+    @property
+    @final
+    def sleep_timer_expires_at(self) -> float | None:
+        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
+        return self.__sleep_timer_expires_at
 
     __stop_called: bool = False
 

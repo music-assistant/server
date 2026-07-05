@@ -6,7 +6,6 @@ import asyncio
 import logging
 import random
 from collections.abc import AsyncGenerator, Coroutine, Sequence
-from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
@@ -35,13 +34,12 @@ from music_assistant_models.media_items import (
 from PIL import Image as PilImage
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import KionMusicClient
 from .constants import (
     BROWSE_INITIAL_TRACKS,
-    BROWSE_NAMES_EN,
-    BROWSE_NAMES_RU,
     COLLECTION_FOLDER_ID,
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
@@ -94,7 +92,8 @@ if TYPE_CHECKING:
 
 
 def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
-    """Extract track_id and optional station_id from provider item_id.
+    """
+    Extract track_id and optional station_id from provider item_id.
 
     My Mix tracks use item_id format 'track_id@station_id'. Other tracks use
     plain track_id.
@@ -106,6 +105,22 @@ def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
         parts = item_id.split(RADIO_TRACK_ID_SEP, 1)
         return (parts[0], parts[1] if len(parts) > 1 else None)
     return (item_id, None)
+
+
+# Collection sub-folder browse ids -> (ProviderFeature, library sub_id, label key, English name).
+# The library sub_id ("tracks") and label key ("my_favorites") differ on purpose so the Collection
+# labels stay distinct from the core "media.folder.*" library labels.
+_COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, str], ...] = (
+    (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", "My Favorites"),
+    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", "My Artists"),
+    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", "My Albums"),
+    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", "My Playlists"),
+)
+
+
+def _media_label_key(slug: str) -> str:
+    """Normalize a tag/category slug into its strings.json authoring key (spaces → underscores)."""
+    return slug.replace(" ", "_")
 
 
 class _WaveState:
@@ -147,16 +162,34 @@ class KionMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
-    def _get_browse_names(self) -> dict[str, str]:
-        """Get locale-based browse folder names."""
-        try:
-            locale = (self.mass.metadata.locale or "en_US").lower()
-            use_russian = locale.startswith("ru")
-            self.logger.debug("Locale detection: locale=%s, use_russian=%s", locale, use_russian)
-        except Exception as err:
-            self.logger.debug("Locale detection failed: %s", err)
-            use_russian = False
-        return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
+    def _media_source_name(self, group: str, key: str) -> str | None:
+        """
+        Return the authored English ``name`` for *key* in *group*, or None when not authored.
+
+        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
+        :param key: Authoring key within the group.
+        """
+        return self.mass.translations.get_translation(
+            f"provider.{self.domain}.media.{group}.{key}.name"
+        )
+
+    def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
+        """
+        Map a browse label to the in-code ``name`` and ``translation_key`` for its media item.
+
+        Authored keys return ``(English source name, key)`` — the English name from the
+        provider's ``strings.json`` plus a ``translation_key`` so the server localizes it for
+        the connection locale at serialization. An unauthored key — e.g. a tag discovered from
+        KION's landing API — returns ``(fallback, None)`` so its already-localized name is kept.
+
+        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
+        :param key: Authoring key within the group; also the item's ``translation_key``.
+        :param fallback: English name to use when no string is authored for *key*.
+        """
+        source = self._media_source_name(group, key)
+        if source is None:
+            return fallback, None
+        return source, key
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -179,7 +212,8 @@ class KionMusicProvider(MusicProvider):
         self.logger.info("Successfully connected to KION Music")
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider.
+        """
+        Handle unload/close of the provider.
 
         :param is_removed: Whether the provider is being removed.
         """
@@ -190,7 +224,8 @@ class KionMusicProvider(MusicProvider):
         await super().unload(is_removed)
 
     def get_item_mapping(self, media_type: MediaType | str, key: str, name: str) -> ItemMapping:
-        """Create a generic item mapping.
+        """
+        Create a generic item mapping.
 
         :param media_type: The media type.
         :param key: The item ID.
@@ -207,13 +242,14 @@ class KionMusicProvider(MusicProvider):
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with locale-based folder names.
+        """
+        Browse provider items.
 
         Root level shows My Mix (personalised radio), For You (picks & mixes),
         Collection (liked tracks/albums/artists/playlists), Radio (rotor stations
-        by genre/mood/activity/era/local) and AI Mix Sets. Names are in Russian
-        when MA locale is ru_*, otherwise in English. My Mix tracks use item_id
-        format track_id@station_id for rotor feedback.
+        by genre/mood/activity/era/local) and AI Mix Sets. Folder labels carry a
+        translation_key so the server localizes them for the connection locale.
+        My Mix tracks use item_id format track_id@station_id for rotor feedback.
 
         :param path: The path to browse (e.g. provider_id:// or provider_id://waves).
         """
@@ -299,8 +335,8 @@ class KionMusicProvider(MusicProvider):
         if subpath:
             return await super().browse(path)
 
-        names = self._get_browse_names()
-
+        # Each folder carries an English name plus a translation_key; the server localizes the
+        # name for the connection locale at serialization, falling back to the English name.
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
         # My Mix folder (always enabled — Яндекс «Мой микс»)
@@ -309,7 +345,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                name=names[MY_WAVE_PLAYLIST_ID],
+                name="My Mix",
+                translation_key=MY_WAVE_PLAYLIST_ID,
                 is_playable=True,
             )
         )
@@ -319,7 +356,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=FOR_YOU_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{FOR_YOU_FOLDER_ID}",
-                name=names.get(FOR_YOU_FOLDER_ID, "For You"),
+                name="For You",
+                translation_key=FOR_YOU_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -339,17 +377,19 @@ class KionMusicProvider(MusicProvider):
                     item_id=COLLECTION_FOLDER_ID,
                     provider=self.instance_id,
                     path=f"{base}{COLLECTION_FOLDER_ID}",
-                    name=names.get(COLLECTION_FOLDER_ID, "Collection"),
+                    name="Collection",
+                    translation_key=COLLECTION_FOLDER_ID,
                     is_playable=False,
                 )
             )
-        # Radio folder — rotor stations (Яндекс волны, renamed to Radio)
+        # Radio folder — rotor stations (reuses the shared "Radio" label)
         folders.append(
             BrowseFolder(
                 item_id=RADIO_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{RADIO_FOLDER_ID}",
-                name=names.get(RADIO_FOLDER_ID, "Radio"),
+                name="Radio",
+                translation_key="radios",
                 is_playable=False,
             )
         )
@@ -359,7 +399,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=MY_WAVES_SET_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVES_SET_FOLDER_ID}",
-                name=names.get(MY_WAVES_SET_FOLDER_ID, "AI Mix Sets"),
+                name="AI Mix Sets",
+                translation_key=MY_WAVES_SET_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -369,7 +410,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=PINNED_ITEMS_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{PINNED_ITEMS_FOLDER_ID}",
-                name=names.get(PINNED_ITEMS_FOLDER_ID, "Pinned"),
+                name="Pinned",
+                translation_key=PINNED_ITEMS_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -379,7 +421,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=LISTENING_HISTORY_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{LISTENING_HISTORY_FOLDER_ID}",
-                name=names.get(LISTENING_HISTORY_FOLDER_ID, "Listening History"),
+                name="Listening History",
+                translation_key=LISTENING_HISTORY_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -390,7 +433,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_my_wave(
         self, path: str, sub_subpath: str | None
     ) -> list[Track | BrowseFolder]:
-        """Browse My Mix tracks (must be called under _my_wave_lock).
+        """
+        Browse My Mix tracks (must be called under _my_wave_lock).
 
         :param path: Full browse path.
         :param sub_subpath: Sub-path part ('next' for load more, or track_id cursor).
@@ -472,21 +516,21 @@ class KionMusicProvider(MusicProvider):
 
         # Only show "Load more" if we haven't reached the limit and there's more data
         if last_batch_id and total_track_count < max_tracks_config:
-            names = self._get_browse_names()
-            next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
                     provider=self.instance_id,
                     path=f"{path.rstrip('/')}/next",
-                    name=next_name,
+                    name="Load more",
+                    translation_key="load_more",
                     is_playable=False,
                 )
             )
         return all_tracks
 
     def _parse_my_wave_track(self, yt: Any, seen_ids: set[str]) -> Track | None:
-        """Parse a Kion track into a My Mix Track with composite item_id.
+        """
+        Parse a Kion track into a My Mix Track with composite item_id.
 
         Extracts the track_id, checks for duplicates in the seen_ids set,
         sets composite item_id (track_id@station_id), and updates provider_mappings.
@@ -520,7 +564,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _validate_tag(self, tag_slug: str) -> bool:
-        """Check if a tag has playlists by calling client.get_tag_playlists().
+        """
+        Check if a tag has playlists by calling client.get_tag_playlists().
 
         :param tag_slug: Tag identifier (e.g. 'chill', '80s').
         :return: True if the tag has at least one playlist.
@@ -534,7 +579,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_valid_tags_for_category(self, category: str) -> list[str]:
-        """Get validated tags for a category (only those with playlists).
+        """
+        Get validated tags for a category (only those with playlists).
 
         Combines hardcoded tags from the category lists with any landing-discovered
         tags, validates each by calling client.tags(), and returns only those with
@@ -573,23 +619,25 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str]]:
-        """Get all available tags by combining hardcoded tags with landing discovery.
+        """
+        Get all available tags by combining hardcoded tags with landing discovery.
 
         Starts with all hardcoded tags from category lists, adds landing-discovered
         tags, validates each via client.tags(), and returns only those with playlists.
         Results are cached for 1 hour. The locale parameter is included in the cache
-        key so that a locale change invalidates the cached result.
+        key so that a locale change invalidates the cached landing titles.
 
         :param locale: Current metadata locale (used as part of cache key).
-        :return: List of (slug, title) tuples for tags that have playlists.
+        :return: List of (slug, fallback display name) tuples for tags that have playlists.
+            Hardcoded tags use a derived fallback; landing-discovered tags carry their
+            (already localized) API title. Folder sites attach the translation_key via
+            ``_media_label`` so authored tags localize and discovered ones keep their title.
         """
-        names = self._get_browse_names()
-
         # Collect all hardcoded tags (non-seasonal)
         all_tags: dict[str, str] = {}
         for slug, cat in TAG_SLUG_CATEGORY.items():
             if cat != "seasonal":
-                all_tags[slug] = names.get(slug, slug.title())
+                all_tags[slug] = slug.title()
 
         # Add landing-discovered tags
         try:
@@ -610,27 +658,28 @@ class KionMusicProvider(MusicProvider):
         tag_items = list(all_tags.items())
         results = await asyncio.gather(*[_check(slug) for slug, _ in tag_items])
         return [
-            (slug, title) for (slug, title), valid in zip(tag_items, results, strict=True) if valid
+            (slug, name) for (slug, name), valid in zip(tag_items, results, strict=True) if valid
         ]
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
-        """Get set of all valid tag slugs (cached).
+        """
+        Get set of all valid tag slugs (cached).
 
         :return: Set of tag slug strings that have playlists.
         """
         discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
-        return {slug for slug, _title in discovered}
+        return {slug for slug, _name in discovered}
 
     async def _browse_for_you(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse «For You» folder — shows Picks and Mixes sub-folders.
+        """
+        Browse «For You» folder — shows Picks and Mixes sub-folders.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
         :return: List of sub-folders (Picks, Mixes).
         """
-        names = self._get_browse_names()
         # Strip the for_you segment to build child paths that route to picks/mixes
         # Path format: ...//for_you  → child paths should be ...//picks, ...//mixes
         # We build base from the root (before for_you) by dropping the last segment.
@@ -643,14 +692,16 @@ class KionMusicProvider(MusicProvider):
                     item_id="picks",
                     provider=self.instance_id,
                     path=f"{root_base}picks",
-                    name=names.get("picks", "Picks"),
+                    name="Picks",
+                    translation_key="picks",
                     is_playable=False,
                 ),
                 BrowseFolder(
                     item_id="mixes",
                     provider=self.instance_id,
                     path=f"{root_base}mixes",
-                    name=names.get("mixes", "Mixes"),
+                    name="Mixes",
+                    translation_key="mixes",
                     is_playable=False,
                 ),
             ]
@@ -660,60 +711,34 @@ class KionMusicProvider(MusicProvider):
     async def _browse_collection(
         self, path: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse «Collection» folder — shows library sub-folders (tracks/artists/albums/playlists).
+        """
+        Browse «Collection» folder — shows library sub-folders (tracks/artists/albums/playlists).
 
         :param path: Full browse path.
         :return: List of library sub-folders.
         """
-        names = self._get_browse_names()
         base_parts = path.split("//", 1)
         root_base = (base_parts[0] + "//") if len(base_parts) > 1 else path.rstrip("/") + "/"
 
         folders: list[BrowseFolder] = []
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
+        for feature, sub_id, label_key, label_name in _COLLECTION_SUBFOLDERS:
+            if feature not in self.supported_features:
+                continue
             folders.append(
                 BrowseFolder(
-                    item_id="tracks",
+                    item_id=sub_id,
                     provider=self.instance_id,
-                    path=f"{root_base}tracks",
-                    name=names["tracks"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="artists",
-                    provider=self.instance_id,
-                    path=f"{root_base}artists",
-                    name=names["artists"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="albums",
-                    provider=self.instance_id,
-                    path=f"{root_base}albums",
-                    name=names["albums"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="playlists",
-                    provider=self.instance_id,
-                    path=f"{root_base}playlists",
-                    name=names["playlists"],
+                    path=f"{root_base}{sub_id}",
+                    name=label_name,
+                    translation_key=label_key,
                     is_playable=True,
                 )
             )
         return folders
 
     async def _browse_pins(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse user's pinned items (artists/albums/playlists from Kion Pins).
+        """
+        Browse user's pinned items (artists/albums/playlists from Kion Pins).
 
         Resolves each pin to its full media item via existing single-item lookups.
         Wave pins are skipped — MA has no native concept for them.
@@ -765,7 +790,8 @@ class KionMusicProvider(MusicProvider):
         return items
 
     async def _browse_history(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse user's recent listening history (flattened across days).
+        """
+        Browse user's recent listening history (flattened across days).
 
         Filters to ``type == "track"`` entries only — album/playlist context
         items in the history feed are dropped. Tracks are de-duplicated by
@@ -803,7 +829,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_picks(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse picks folder using hardcoded tags validated against the API.
+        """
+        Browse picks folder using hardcoded tags validated against the API.
 
         Tags are sourced from hardcoded category lists and landing API discovery,
         then validated via client.tags() to ensure they have playlists.
@@ -813,20 +840,19 @@ class KionMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         # Get validated tags
         discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
 
-        # Categorize valid tags
+        # Categorize valid tags, carrying each tag's (slug, fallback display name)
         categorized: dict[str, list[tuple[str, str]]] = {}
-        for slug, title in discovered:
+        for slug, fallback_name in discovered:
             cat = TAG_SLUG_CATEGORY.get(slug, "mood")
             # Skip seasonal tags — they belong in mixes, not picks
             if cat == "seasonal":
                 continue
-            categorized.setdefault(cat, []).append((slug, title))
+            categorized.setdefault(cat, []).append((slug, fallback_name))
 
         # Sort tags within each category by preferred order
         for cat, cat_tags in categorized.items():
@@ -840,24 +866,28 @@ class KionMusicProvider(MusicProvider):
             folders: list[BrowseFolder] = []
             for cat in category_display_order:
                 if cat in categorized:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
             # Show any extra categories not in the standard order
             for cat in categorized:
                 if cat not in category_display_order:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
@@ -877,13 +907,17 @@ class KionMusicProvider(MusicProvider):
         if category and not tag:
             category_tags = categorized.get(category, [])
             folders = []
-            for slug, title in category_tags:
+            for slug, fallback_name in category_tags:
+                name, translation_key = self._media_label(
+                    "folder", _media_label_key(slug), fallback_name
+                )
                 folders.append(
                     BrowseFolder(
                         item_id=slug,
                         provider=self.instance_id,
                         path=f"{base}{slug}",
-                        name=names.get(slug, title),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
@@ -892,7 +926,7 @@ class KionMusicProvider(MusicProvider):
 
         # picks/category/tag - show playlists for the tag
         if tag:
-            discovered_slugs = {slug for slug, _ in discovered}
+            discovered_slugs = {slug for slug, _name in discovered}
             if tag in discovered_slugs:
                 self.logger.debug("Fetching playlists for tag: %s", tag)
                 return await self._get_tag_playlists_as_browse(tag)
@@ -903,7 +937,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_mixes(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse mixes folder (seasonal collections) using hardcoded tags.
+        """
+        Browse mixes folder (seasonal collections) using hardcoded tags.
 
         Uses TAG_MIXES directly and validates each tag via client.tags()
         to check if it has playlists. Does not depend on landing API discovery.
@@ -912,7 +947,6 @@ class KionMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         # Validate seasonal tags in parallel (no landing dependency)
@@ -929,12 +963,14 @@ class KionMusicProvider(MusicProvider):
         if len(path_parts) == 1:
             folders = []
             for t in available_mixes:
+                name, translation_key = self._media_label("folder", t, t.title())
                 folders.append(
                     BrowseFolder(
                         item_id=t,
                         provider=self.instance_id,
                         path=f"{base}{t}",
-                        name=names.get(t, t.title()),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
@@ -948,7 +984,8 @@ class KionMusicProvider(MusicProvider):
         return []
 
     def _get_wave_state(self, station_id: str) -> _WaveState:
-        """Get or create per-station wave state.
+        """
+        Get or create per-station wave state.
 
         :param station_id: Rotor station ID (e.g. 'genre:rock', 'mood:chill').
         :return: _WaveState instance for this station.
@@ -958,7 +995,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_waves(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse waves folder (rotor stations by genre/mood/activity/epoch/local).
+        """
+        Browse waves folder (rotor stations by genre/mood/activity/epoch/local).
 
         Fetches available stations from the Kion rotor API and groups them by category.
 
@@ -966,9 +1004,10 @@ class KionMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or tracks.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
+        # Station names come back from the rotor API already localized; the metadata locale
+        # selects the API content language (not the folder labels, which use translation_key).
         locale = (self.mass.metadata.locale or "en_US").lower()
         language = "ru" if locale.startswith("ru") else "en"
 
@@ -976,56 +1015,66 @@ class KionMusicProvider(MusicProvider):
 
         # Group stations by category, preserving image_url
         categorized: dict[str, list[tuple[str, str, str | None]]] = {}
-        for station_id, cat_key, name, image_url in all_stations:
-            categorized.setdefault(cat_key, []).append((station_id, name, image_url))
+        for station_id, cat_key, station_name, image_url in all_stations:
+            categorized.setdefault(cat_key, []).append((station_id, station_name, image_url))
 
         # waves/ — show category folders
         if len(path_parts) == 1:
             folders: list[BrowseFolder] = []
-            # Personalized "My Mixes" first — only show if dashboard returns stations
+            # Personalized stations first — only show if dashboard returns stations
             dashboard_stations = await self._get_dashboard_stations_cached()
             if dashboard_stations:
+                name, translation_key = self._media_label("folder", MY_WAVES_FOLDER_ID, "Personal")
                 folders.append(
                     BrowseFolder(
                         item_id=MY_WAVES_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{MY_WAVES_FOLDER_ID}",
-                        name=names.get(MY_WAVES_FOLDER_ID, "My Mixes"),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
             # Featured Mixes — only show if landing-blocks/waves returns data
             waves_landing = await self._get_waves_landing_cached()
             if waves_landing:
+                name, translation_key = self._media_label(
+                    "folder", WAVES_LANDING_FOLDER_ID, "Featured Mixes"
+                )
                 folders.append(
                     BrowseFolder(
                         item_id=WAVES_LANDING_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{WAVES_LANDING_FOLDER_ID}",
-                        name=names.get(WAVES_LANDING_FOLDER_ID, "Featured Mixes"),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
             for cat in WAVE_CATEGORY_DISPLAY_ORDER:
                 if cat in categorized:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
             # Append any categories returned by API that aren't in the predefined order
             for cat in categorized:
                 if cat not in WAVE_CATEGORY_DISPLAY_ORDER:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
@@ -1091,14 +1140,16 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(600)
     async def _get_dashboard_stations_cached(self) -> list[tuple[str, str, str | None]]:
-        """Get personalized dashboard stations, cached for 10 minutes.
+        """
+        Get personalized dashboard stations, cached for 10 minutes.
 
         :return: List of (station_id, name, image_url) tuples.
         """
         return await self.client.get_dashboard_stations()
 
     async def _browse_my_waves_stations(self, path: str) -> list[BrowseFolder]:
-        """Browse personalized wave stations from rotor/stations/dashboard.
+        """
+        Browse personalized wave stations from rotor/stations/dashboard.
 
         Names are resolved from the non-personalized station list so that
         stations show their actual genre/mood name (e.g. "Рок") rather than
@@ -1145,7 +1196,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_wave_station(
         self, station_id: str, path: str = ""
     ) -> list[Track | BrowseFolder]:
-        """Browse a rotor wave station and return tracks.
+        """
+        Browse a rotor wave station and return tracks.
 
         Fetches tracks from the rotor station, deduplicates within the current session,
         and sends radioStarted feedback on first call. Appends a "Load more" BrowseFolder
@@ -1220,8 +1272,6 @@ class KionMusicProvider(MusicProvider):
             # Append "Load more" sentinel so MA knows to call browse again for next batch.
             # This mirrors the My Mix mechanism and enables continuous radio playback.
             if tracks and len(state.seen_track_ids) < max_tracks and path:
-                names = self._get_browse_names()
-                next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
                 # Append /next to the current path (same pattern as _browse_my_wave).
                 # This makes each "Load more" path unique (e.g. /next/next/next...)
                 # so MA never serves a cached result for subsequent presses.
@@ -1230,7 +1280,8 @@ class KionMusicProvider(MusicProvider):
                         item_id="next",
                         provider=self.instance_id,
                         path=f"{path.rstrip('/')}/next",
-                        name=next_name,
+                        name="Load more",
+                        translation_key="load_more",
                         is_playable=False,
                     )
                 )
@@ -1239,7 +1290,8 @@ class KionMusicProvider(MusicProvider):
 
     @staticmethod
     def _extract_wave_item_cover(item: dict[str, Any]) -> tuple[str | None, str | None]:
-        """Extract cover URI and background color from a wave/mix item.
+        """
+        Extract cover URI and background color from a wave/mix item.
 
         :param item: Wave or mix item dict from the API.
         :return: (cover_uri, bg_color) tuple where bg_color is a hex string or None.
@@ -1251,7 +1303,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_mixes_waves_cached(self) -> list[dict[str, Any]] | None:
-        """Get AI Wave Set data from /landing-blocks/mixes-waves, cached for 1 hour.
+        """
+        Get AI Wave Set data from /landing-blocks/mixes-waves, cached for 1 hour.
 
         :return: List of mix category dicts from the API, or None on error.
         """
@@ -1259,7 +1312,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_waves_landing_cached(self) -> list[dict[str, Any]] | None:
-        """Get Featured Mixes data from /landing-blocks/waves, cached for 1 hour.
+        """
+        Get Featured Mixes data from /landing-blocks/waves, cached for 1 hour.
 
         :return: List of wave category dicts from the API, or None on error.
         """
@@ -1268,7 +1322,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_waves_landing(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Featured Mixes (from /landing-blocks/waves).
+        """
+        Browse Featured Mixes (from /landing-blocks/waves).
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1286,7 +1341,8 @@ class KionMusicProvider(MusicProvider):
         categories_data: list[dict[str, Any]],
         id_prefix: str,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse wave-like category folders and their station items.
+        """
+        Browse wave-like category folders and their station items.
 
         Shared logic for both 'my_waves_set' browse trees:
         - Level 1 (e.g. my_waves_set/): category folders
@@ -1383,7 +1439,8 @@ class KionMusicProvider(MusicProvider):
     async def _browse_vibe_sets(
         self, path: str, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse AI Mix Sets (from /landing-blocks/mixes-waves).
+        """
+        Browse AI Mix Sets (from /landing-blocks/mixes-waves).
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1398,7 +1455,8 @@ class KionMusicProvider(MusicProvider):
     async def _get_tag_playlists_as_browse(
         self, tag_id: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Get playlists for a tag and return as browse items.
+        """
+        Get playlists for a tag and return as browse items.
 
         :param tag_id: Tag identifier (e.g. 'chill', '80s').
         :return: List of Playlist objects.
@@ -1421,7 +1479,8 @@ class KionMusicProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Perform search on KION Music.
+        """
+        Perform search on KION Music.
 
         :param search_query: The search query.
         :param media_types: List of media types to search for.
@@ -1485,7 +1544,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30)
     async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get artist details by ID, enriched with description and listener stats.
+        """
+        Get artist details by ID, enriched with description and listener stats.
 
         :param prov_artist_id: The provider artist ID.
         :return: Artist object.
@@ -1501,7 +1561,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30)
     async def get_album(self, prov_album_id: str) -> Album:
-        """Get album details by ID.
+        """
+        Get album details by ID.
 
         :param prov_album_id: The provider album ID.
         :return: Album object.
@@ -1513,7 +1574,8 @@ class KionMusicProvider(MusicProvider):
         return parse_album(self, album)
 
     async def get_track(self, prov_track_id: str) -> Track:
-        """Get track details by ID.
+        """
+        Get track details by ID.
 
         Supports composite item_id (track_id@station_id) for My Mix tracks;
         only the track_id part is used for the API. Normalizes the ID before
@@ -1528,7 +1590,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30)
     async def _get_track_cached(self, track_id: str) -> Track:
-        """Get track details by normalized ID (cached).
+        """
+        Get track details by normalized ID (cached).
 
         :param track_id: Normalized track ID (without station suffix).
         :return: Track object.
@@ -1544,7 +1607,8 @@ class KionMusicProvider(MusicProvider):
         return parse_track(self, raw_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get playlist details by ID.
+        """
+        Get playlist details by ID.
 
         Supports virtual playlists MY_WAVE_PLAYLIST_ID (My Mix) and
         LIKED_TRACKS_PLAYLIST_ID (Liked Tracks). Real playlists use format "owner_id:kind".
@@ -1554,13 +1618,16 @@ class KionMusicProvider(MusicProvider):
         :return: Playlist object.
         :raises MediaNotFoundError: If playlist not found.
         """
-        # Virtual playlists - not cached (locale-dependent names)
+        # Virtual playlists - constructed locally (no API call). translation_key localizes
+        # the name for the connection locale at serialization; the English name is kept (not
+        # dropped like browse/recommendation folders) because a playable item's name is also
+        # read outside outbound API serialization (e.g. queue / now-playing metadata).
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
-            names = self._get_browse_names()
             return Playlist(
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names[MY_WAVE_PLAYLIST_ID],
+                name="My Mix",
+                translation_key=MY_WAVE_PLAYLIST_ID,
                 owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
@@ -1574,11 +1641,11 @@ class KionMusicProvider(MusicProvider):
             )
 
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
-            names = self._get_browse_names()
             return Playlist(
                 item_id=LIKED_TRACKS_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names[LIKED_TRACKS_PLAYLIST_ID],
+                name="My Favorites",
+                translation_key=LIKED_TRACKS_PLAYLIST_ID,
                 owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
@@ -1596,7 +1663,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30)
     async def _get_real_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get real playlist details by ID (cached).
+        """
+        Get real playlist details by ID (cached).
 
         :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
         :return: Playlist object.
@@ -1615,7 +1683,8 @@ class KionMusicProvider(MusicProvider):
         return parse_playlist(self, playlist)
 
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
-        """Get My Mix tracks for virtual playlist (uncached; uses cursor for page > 0).
+        """
+        Get My Mix tracks for virtual playlist (uncached; uses cursor for page > 0).
 
         Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
         the number of round-trips when the player controller paginates through pages.
@@ -1691,7 +1760,8 @@ class KionMusicProvider(MusicProvider):
             return tracks
 
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
-        """Get liked tracks for virtual playlist (sorted in reverse chronological order).
+        """
+        Get liked tracks for virtual playlist (sorted in reverse chronological order).
 
         :param page: Page number (0 = all tracks limited by config, >0 = empty for pagination).
         :return: List of Track objects.
@@ -1748,7 +1818,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get album tracks.
+        """
+        Get album tracks.
 
         :param prov_album_id: The provider album ID.
         :return: List of Track objects.
@@ -1771,7 +1842,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Get similar tracks using Kion Rotor station for this track.
+        """
+        Get similar tracks using Kion Rotor station for this track.
 
         Uses rotor station track:{id} so MA radio mode gets Kion recommendations.
 
@@ -1792,7 +1864,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 3)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
-        """Get artists similar to the given one via Kion artists/similar endpoint.
+        """
+        Get artists similar to the given one via Kion artists/similar endpoint.
 
         :param prov_artist_id: Provider artist ID.
         :param limit: Maximum number of artists to return.
@@ -1808,7 +1881,8 @@ class KionMusicProvider(MusicProvider):
         return artists
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations with multiple discovery folders.
+        """
+        Get recommendations with multiple discovery folders.
 
         Returns My Mix, Feed (Made for You), Chart, New Releases, and
         New Playlists sections.
@@ -1864,7 +1938,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(600)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
-        """Get My Mix recommendation folder with personalized tracks.
+        """
+        Get My Mix recommendation folder with personalized tracks.
 
         :return: RecommendationFolder with My Mix tracks, or None if empty.
         """
@@ -1910,18 +1985,23 @@ class KionMusicProvider(MusicProvider):
         if len(items) > initial_tracks_limit:
             items = items[:initial_tracks_limit]
 
-        names = self._get_browse_names()
+        # Recommendation folders keep their English name (not dropped like browse folders):
+        # MusicProvider.browse() re-wraps them into plain BrowseFolders for the
+        # "<provider>://recommendations" listing, where a bare translation_key would resolve
+        # under the wrong media group. translation_key still localizes the recommendations view.
         return RecommendationFolder(
             item_id=MY_WAVE_PLAYLIST_ID,
             provider=self.instance_id,
-            name=names[MY_WAVE_PLAYLIST_ID],
+            name="My Mix",
+            translation_key=MY_WAVE_PLAYLIST_ID,
             items=UniqueList(items),
             icon="mdi-waveform",
         )
 
     @use_cache(1800)
     async def _get_feed_recommendations(self) -> RecommendationFolder | None:
-        """Get personalized feed playlists (Playlist of the Day, DejaVu, etc.).
+        """
+        Get personalized feed playlists (Playlist of the Day, DejaVu, etc.).
 
         :return: RecommendationFolder with generated playlists, or None if unavailable.
         """
@@ -1937,18 +2017,19 @@ class KionMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing feed playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="feed",
             provider=self.instance_id,
-            name=names["feed"],
+            name="Made for you",
+            translation_key="made_for_you",
             items=UniqueList(items),
             icon="mdi-account-music",
         )
 
     @use_cache(3600)
     async def _get_chart_recommendations(self) -> RecommendationFolder | None:
-        """Get chart tracks (hot tracks of the month).
+        """
+        Get chart tracks (hot tracks of the month).
 
         :return: RecommendationFolder with chart tracks, or None if unavailable.
         """
@@ -1970,18 +2051,19 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing chart track: %s", err)
         if not tracks:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="chart",
             provider=self.instance_id,
-            name=names["chart"],
+            name="Chart",
+            translation_key="chart",
             items=UniqueList(tracks),
             icon="mdi-chart-line",
         )
 
     @use_cache(3600)
     async def _get_new_releases_recommendations(self) -> RecommendationFolder | None:
-        """Get new album releases.
+        """
+        Get new album releases.
 
         :return: RecommendationFolder with new albums, or None if unavailable.
         """
@@ -2003,18 +2085,19 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing new release album: %s", err)
         if not albums:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="new_releases",
             provider=self.instance_id,
-            name=names["new_releases"],
+            name="New Releases",
+            translation_key="new_releases",
             items=UniqueList(albums),
             icon="mdi-new-box",
         )
 
     @use_cache(3600)
     async def _get_new_playlists_recommendations(self) -> RecommendationFolder | None:
-        """Get new editorial playlists.
+        """
+        Get new editorial playlists.
 
         :return: RecommendationFolder with new playlists, or None if unavailable.
         """
@@ -2040,18 +2123,19 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing new playlist: %s", err)
         if not playlists:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="new_playlists",
             provider=self.instance_id,
-            name=names["new_playlists"],
+            name="New Playlists",
+            translation_key="new_playlists",
             items=UniqueList(playlists),
             icon="mdi-playlist-star",
         )
 
     @use_cache(3600)
     async def _get_top_picks_recommendations(self) -> RecommendationFolder | None:
-        """Get Top Picks recommendation folder (tag: top).
+        """
+        Get Top Picks recommendation folder (tag: top).
 
         :return: RecommendationFolder with top playlists, or None if unavailable.
         """
@@ -2066,17 +2150,18 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing top picks playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="top_picks",
             provider=self.instance_id,
-            name=names.get("top_picks", "Top Picks"),
+            name="Top Picks",
+            translation_key="top_picks",
             items=UniqueList(items),
             icon="mdi-star",
         )
 
     async def _pick_random_tag_for_category(self, category: str) -> str | None:
-        """Pick a random valid tag for a category (not cached — enables rotation).
+        """
+        Pick a random valid tag for a category (not cached — enables rotation).
 
         :param category: Category name ('mood', 'activity', etc.).
         :return: Random tag slug, or None if no valid tags.
@@ -2088,7 +2173,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(1800)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
-        """Get Mood Mix recommendation folder for a specific tag.
+        """
+        Get Mood Mix recommendation folder for a specific tag.
 
         :param mood_tag: Preselected mood tag slug.
         :return: RecommendationFolder with mood playlists, or None if unavailable.
@@ -2105,12 +2191,13 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing mood playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(mood_tag, mood_tag.title())
+        tag_name = self._media_source_name("folder", _media_label_key(mood_tag)) or mood_tag.title()
         return RecommendationFolder(
             item_id="mood_mix",
             provider=self.instance_id,
-            name=f"{names.get('mood_mix', 'Mood')}: {tag_name}",
+            name=f"Mood Mix: {tag_name}",
+            translation_key="mood_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-emoticon-outline",
         )
@@ -2119,7 +2206,8 @@ class KionMusicProvider(MusicProvider):
     async def _get_activity_mix_recommendations(
         self, activity_tag: str
     ) -> RecommendationFolder | None:
-        """Get Activity Mix recommendation folder for a specific tag.
+        """
+        Get Activity Mix recommendation folder for a specific tag.
 
         :param activity_tag: Preselected activity tag slug.
         :return: RecommendationFolder with activity playlists, or None if unavailable.
@@ -2138,24 +2226,29 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing activity playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(activity_tag, activity_tag.title())
+        tag_name = (
+            self._media_source_name("folder", _media_label_key(activity_tag))
+            or activity_tag.title()
+        )
         return RecommendationFolder(
             item_id="activity_mix",
             provider=self.instance_id,
-            name=f"{names.get('activity_mix', 'Activity')}: {tag_name}",
+            name=f"Activity Mix: {tag_name}",
+            translation_key="activity_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-run",
         )
 
     @use_cache(3600 * 6)
     async def _get_seasonal_mix_recommendations(self) -> RecommendationFolder | None:
-        """Get Seasonal Mix recommendation folder (based on current month).
+        """
+        Get Seasonal Mix recommendation folder (based on current month).
 
         :return: RecommendationFolder with seasonal playlists, or None if unavailable.
         """
         # Determine current season tag
-        current_month = datetime.now(tz=UTC).month
+        current_month = utc().month
         seasonal_tag = TAG_SEASONAL_MAP.get(current_month, "autumn")
 
         # Validate the seasonal tag; fall back to autumn if not available
@@ -2173,19 +2266,24 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing seasonal playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(seasonal_tag, seasonal_tag.title())
+        tag_name = (
+            self._media_source_name("folder", _media_label_key(seasonal_tag))
+            or seasonal_tag.title()
+        )
         return RecommendationFolder(
             item_id="seasonal_mix",
             provider=self.instance_id,
-            name=f"{names.get('seasonal_mix', 'Seasonal')}: {tag_name}",
+            name=f"Seasonal: {tag_name}",
+            translation_key="seasonal_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-weather-sunny",
         )
 
     @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks.
+        """
+        Get playlist tracks.
 
         :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind",
             my_wave, or liked_tracks).
@@ -2285,7 +2383,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get artist's albums.
+        """
+        Get artist's albums.
 
         :param prov_artist_id: The provider artist ID.
         :return: List of Album objects.
@@ -2301,7 +2400,8 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get artist's top tracks.
+        """
+        Get artist's top tracks.
 
         :param prov_artist_id: The provider artist ID.
         :return: List of Track objects.
@@ -2355,7 +2455,8 @@ class KionMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing library track: %s", err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
-        """Retrieve library playlists from KION Music.
+        """
+        Retrieve library playlists from KION Music.
 
         Includes virtual playlists (My Mix and Liked Tracks if enabled), user-created playlists,
         and user-liked editorial playlists (returned by a separate API endpoint).
@@ -2385,7 +2486,8 @@ class KionMusicProvider(MusicProvider):
     # Library edit methods
 
     async def library_add(self, item: MediaItemType) -> bool:
-        """Add item to library.
+        """
+        Add item to library.
 
         :param item: The media item to add.
         :return: True if successful.
@@ -2404,7 +2506,8 @@ class KionMusicProvider(MusicProvider):
         return False
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove item from library.
+        """
+        Remove item from library.
 
         :param prov_item_id: The provider item ID (may be track_id@station_id for tracks).
         :param media_type: The media type.
@@ -2431,7 +2534,8 @@ class KionMusicProvider(MusicProvider):
     async def get_stream_details(
         self, item_id: str, media_type: MediaType = MediaType.TRACK
     ) -> StreamDetails:
-        """Get stream details for a track.
+        """
+        Get stream details for a track.
 
         :param item_id: The track ID (or track_id@station_id for My Mix).
         :param media_type: The media type (should be TRACK).
@@ -2442,7 +2546,8 @@ class KionMusicProvider(MusicProvider):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Return the audio stream for the provider item.
+        """
+        Return the audio stream for the provider item.
 
         Uses windowed Range-request streaming to prevent Kion CDN drops.
         Handles both raw (direct) and encrypted (encraw) transports.
@@ -2457,14 +2562,16 @@ class KionMusicProvider(MusicProvider):
     async def get_rotor_station_tracks(
         self, station_id: str, queue: str | int | None = None
     ) -> tuple[list[Any], str | None]:
-        """Fetch tracks from a rotor station (My Mix, similar, etc.).
+        """
+        Fetch tracks from a rotor station (My Mix, similar, etc.).
 
         Wrapper around client.get_rotor_station_tracks for use by ynison plugin.
         """
         return await self.client.get_rotor_station_tracks(station_id, queue=queue)
 
     def get_quality(self) -> str:
-        """Return the configured audio quality tier (e.g. 'balanced', 'superb').
+        """
+        Return the configured audio quality tier (e.g. 'balanced', 'superb').
 
         Mirrors the legacy-value normalization used by the streaming layer:
         older configs store the lossless tier as ``"lossless"``, while the
@@ -2478,7 +2585,8 @@ class KionMusicProvider(MusicProvider):
         return quality
 
     async def resolve_image(self, path: str) -> str | bytes:
-        """Resolve wave cover image with background color fill for transparent PNGs.
+        """
+        Resolve wave cover image with background color fill for transparent PNGs.
 
         If the image URL has an associated background color (stored in _wave_bg_colors),
         downloads the PNG from Kion CDN and composites it on a solid color background
@@ -2507,7 +2615,7 @@ class KionMusicProvider(MusicProvider):
                 r = int(bg_clean[0:2], 16)
                 g = int(bg_clean[2:4], 16)
                 b = int(bg_clean[4:6], 16)
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 return raw
             fg = PilImage.open(BytesIO(raw)).convert("RGBA")
             bg = PilImage.new("RGBA", fg.size, (r, g, b, 255))
@@ -2531,7 +2639,8 @@ class KionMusicProvider(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Report playback for rotor feedback when the track is from My Mix.
+        """
+        Report playback for rotor feedback when the track is from My Mix.
 
         Sends trackStarted when the track is currently playing (is_playing=True).
         trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
@@ -2555,7 +2664,8 @@ class KionMusicProvider(MusicProvider):
             )
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
-        """Report stream completion for My Mix rotor feedback.
+        """
+        Report stream completion for My Mix rotor feedback.
 
         Sends trackFinished or skip with actual seconds_streamed so Kion
         can improve recommendations.

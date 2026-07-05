@@ -38,7 +38,8 @@ class PlaybackMixin:
         ) -> list[str]: ...
 
     async def _seek_to_offset_after_playback(self, player_id: str, offset: int) -> None:
-        """Seek to the specified offset after playback starts.
+        """
+        Seek to the specified offset after playback starts.
 
         :param player_id: The player ID to seek on.
         :param offset: The offset in milliseconds.
@@ -206,7 +207,7 @@ class PlaybackMixin:
 
         except Exception as e:
             LOGGER.exception(f"Error handling skipTo: {e}")
-            return web.Response(status=500, text=str(e))
+            return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
 

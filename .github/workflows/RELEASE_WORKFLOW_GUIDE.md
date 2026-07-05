@@ -96,11 +96,7 @@ Special thanks to the following contributors who helped with this release:
 @contributor1, @contributor2, @contributor3, @frontenddev, @serverdev, @translator
 ```
 
-### 3. PyPI Publish (`pypi-publish` job)
-- ✅ **Only runs for stable releases**
-- ✅ Publishes the package to PyPI using the configured token
-
-### 4. Docker Image Build (`build-and-push-container-image` job)
+### 3. Docker Image Build (`build-and-push-container-image` job)
 - ✅ Builds multi-platform Docker images (amd64 + arm64)
 - ✅ Uses the correct base image version for the channel
 - ✅ Tags images appropriately based on the channel:
@@ -120,7 +116,7 @@ Special thanks to the following contributors who helped with this release:
 - `ghcr.io/music-assistant/server:X.Y.Z.devN`
 - `ghcr.io/music-assistant/server:nightly`
 
-### 5. Update Add-on Repository (`update-addon-repository` job)
+### 4. Update Add-on Repository (`update-addon-repository` job)
 - ✅ Determines the correct add-on folder based on channel:
   - **Stable**: `music_assistant`
   - **Beta**: `music_assistant_beta`
@@ -163,7 +159,6 @@ Channel: stable
 ```
 This will:
 - Create release `2.1.0` (not a prerelease)
-- Publish to PyPI
 - Tag Docker images with `2.1.0`, `2.1`, `2`, `stable`, and `latest`
 
 ### Creating a Beta Release
@@ -173,7 +168,6 @@ Channel: beta
 ```
 This will:
 - Create release `2.2.0.b1` (marked as prerelease)
-- Skip PyPI publish
 - Tag Docker images with `2.2.0.b1` and `beta`
 
 ### Creating a Nightly Release
@@ -183,7 +177,6 @@ Channel: nightly
 ```
 This will:
 - Create release `2.2.0.dev20251023` (marked as prerelease)
-- Skip PyPI publish
 - Tag Docker images with `2.2.0.dev20251023` and `nightly`
 
 ## Troubleshooting
@@ -191,10 +184,6 @@ This will:
 ### Workflow Fails During Validation
 - Check that your version number matches the format for the selected channel
 - Ensure the version doesn't already exist as a tag
-
-### PyPI Publish Fails
-- Verify the `PYPI_TOKEN` secret is configured correctly
-- Check that the version doesn't already exist on PyPI
 
 ### Docker Build Fails
 - Check that the base image version exists

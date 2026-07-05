@@ -8,6 +8,11 @@
       "label": "Bridge ID"
     },
     "pair": {
+      "label": "Pair with Hue Bridge",
+      "description": "Connects to the bridge and retrieves the API credentials."
+    },
+    "repair_bridge": {
+      "label": "(Re)Pair with Hue Bridge",
       "description": "Connects to the bridge and retrieves the API credentials."
     },
     "hue_username": {

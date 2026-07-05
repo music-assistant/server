@@ -1,4 +1,5 @@
-"""Test the OpenSubsonic provider methods (internet radio support).
+"""
+Test the OpenSubsonic provider methods (internet radio support).
 
 These exercise the provider's radio methods against a mocked py-opensonic
 connection (provider.conn). The parser snapshot tests live in test_parsers.py;
@@ -40,7 +41,8 @@ _STATIONS = [
 
 
 def _make_provider(*, enable_radios: bool = True) -> OpenSonicProvider:
-    """Build an OpenSonicProvider with a mocked connection (no network).
+    """
+    Build an OpenSonicProvider with a mocked connection (no network).
 
     The base provider reads config values at construction (notably log_level),
     so config.get_value must return real values, not bare Mocks. enable_radios
@@ -80,7 +82,8 @@ def test_radio_feature_declared() -> None:
 
 
 def test_radio_config_key_wired() -> None:
-    """Pin the CONF_ENABLE_RADIOS key string contract.
+    """
+    Pin the CONF_ENABLE_RADIOS key string contract.
 
     This key is the contract between the config UI (the __init__.py ConfigEntry)
     and what handle_async_init reads. The toggle tests force-set _enable_radios
@@ -111,7 +114,8 @@ async def test_get_library_radios_empty(provider: OpenSonicProvider) -> None:
 
 
 async def test_get_library_radios_disabled_yields_nothing() -> None:
-    """Disabling CONF_ENABLE_RADIOS short-circuits before touching the server.
+    """
+    Disabling CONF_ENABLE_RADIOS short-circuits before touching the server.
 
     Mirrors the podcasts _enable_podcasts config-time gate.
     """
@@ -127,7 +131,8 @@ async def test_get_library_radios_disabled_yields_nothing() -> None:
 
 
 async def test_get_radio_found(provider: OpenSonicProvider) -> None:
-    """A known station id resolves to its Radio.
+    """
+    A known station id resolves to its Radio.
 
     Targets the SECOND station (not _STATIONS[0]) so a "return the first
     station" stub can't pass by accident — the id must actually be matched.
@@ -152,7 +157,8 @@ async def test_get_radio_not_found(provider: OpenSonicProvider) -> None:
 
 
 async def test_get_stream_details_radio(provider: OpenSonicProvider) -> None:
-    """A radio item streams as a direct HTTP URL, unseekable, no proxying.
+    """
+    A radio item streams as a direct HTTP URL, unseekable, no proxying.
 
     NOTE on false-confidence: StreamDetails defaults media_type=TRACK,
     stream_type=CUSTOM, path=None, allow_seek=False, can_seek=False. So the
@@ -191,9 +197,11 @@ async def test_get_stream_details_radio_not_found(provider: OpenSonicProvider) -
 
 
 async def test_get_stream_details_track_unchanged(provider: OpenSonicProvider) -> None:
-    """Adding the radio branch must not disturb the existing TRACK stream path.
+    """
+    Adding the radio branch must not disturb the existing TRACK stream path.
 
-    A CUSTOM stream type is still returned for tracks.
+    The TRACK path builds an HTTP stream via conn.get_stream_url (POST-body auth)
+    and is seekable, distinguishing it from the radio branch above.
     """
     song = Mock()
     song.id = "t1"
@@ -205,7 +213,17 @@ async def test_get_stream_details_track_unchanged(provider: OpenSonicProvider) -
     song.channel_count = 2
     song.duration = 180
     provider.conn.get_song = AsyncMock(return_value=song)
-    provider._seek_support = False
+    provider._raw_file = False
+    # the TRACK path resolves the stream URL + POST params through get_stream_url;
+    # it returns a (url, params) tuple that get_stream_details unpacks.
+    provider.conn.get_stream_url = Mock(
+        return_value=("http://ts.lan:4533/rest/stream.view", {"id": "t1", "u": "user"})
+    )
     sd = await provider.get_stream_details("t1", MediaType.TRACK)
     assert sd.media_type == MediaType.TRACK
-    assert sd.stream_type == StreamType.CUSTOM
+    assert sd.stream_type == StreamType.HTTP
+    # discriminates the TRACK builder from the radio branch, which is unseekable:
+    assert sd.allow_seek is True
+    assert sd.can_seek is True
+    assert sd.path == "http://ts.lan:4533/rest/stream.view"
+    provider.conn.get_stream_url.assert_called_once()

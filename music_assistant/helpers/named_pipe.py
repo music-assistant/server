@@ -31,11 +31,6 @@ class AsyncNamedPipeWriter:
         self._write_fd: int | None = None
 
     @property
-    def _log_owner(self) -> str:
-        """Return a short descriptor for logging (owner_id or pipe path)."""
-        return self._owner_id or self._pipe_path
-
-    @property
     def path(self) -> str:
         """Return the named pipe path."""
         return self._pipe_path
@@ -50,29 +45,6 @@ class AsyncNamedPipeWriter:
             os.mkfifo(self._pipe_path)
 
         await asyncio.to_thread(_create)
-
-    def _ensure_write_fd(self) -> bool:
-        """Ensure we have a write fd open. Returns True if successful."""
-        if self._write_fd is not None:
-            return True
-        if not Path(self._pipe_path).exists():
-            return False
-        # Retry opening until reader is available (up to 1s)
-        for _ in range(20):
-            try:
-                self._write_fd = os.open(self._pipe_path, os.O_WRONLY | os.O_NONBLOCK)
-                return True
-            except OSError as e:
-                if e.errno in (errno_module.ENXIO, errno_module.ENOENT):
-                    time.sleep(0.05)
-                    continue
-                raise
-        _LOGGER.warning(
-            "Could not open pipe %s (owner=%s): no reader after retries",
-            self._pipe_path,
-            self._log_owner,
-        )
-        return False
 
     async def write(self, data: bytes) -> None:
         """Write data to the named pipe."""
@@ -121,6 +93,34 @@ class AsyncNamedPipeWriter:
     def __str__(self) -> str:
         """Return string representation."""
         return self._pipe_path
+
+    @property
+    def _log_owner(self) -> str:
+        """Return a short descriptor for logging (owner_id or pipe path)."""
+        return self._owner_id or self._pipe_path
+
+    def _ensure_write_fd(self) -> bool:
+        """Ensure we have a write fd open. Returns True if successful."""
+        if self._write_fd is not None:
+            return True
+        if not Path(self._pipe_path).exists():
+            return False
+        # Retry opening until reader is available (up to 1s)
+        for _ in range(20):
+            try:
+                self._write_fd = os.open(self._pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+                return True
+            except OSError as e:
+                if e.errno in (errno_module.ENXIO, errno_module.ENOENT):
+                    time.sleep(0.05)
+                    continue
+                raise
+        _LOGGER.warning(
+            "Could not open pipe %s (owner=%s): no reader after retries",
+            self._pipe_path,
+            self._log_owner,
+        )
+        return False
 
 
 async def read_named_pipe(

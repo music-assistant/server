@@ -12,6 +12,13 @@
       "label": "Subscribed Podcasts"
     }
   },
+  "media": {
+    "folder": {
+      "trending_podcasts": { "name": "Trending Podcasts" },
+      "recent_episodes": { "name": "Recent Episodes" },
+      "categories": { "name": "Categories" }
+    }
+  },
   "manifest": {
     "description": "Discover and play podcasts using the open Podcast Index."
   }

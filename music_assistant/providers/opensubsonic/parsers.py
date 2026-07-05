@@ -293,7 +293,8 @@ def parse_artist(
 
 
 def parse_radio(instance_id: str, sonic_radio: SonicInternetRadioStation) -> Radio:
-    """Parse an InternetRadioStation into a Music Assistant Radio.
+    """
+    Parse an InternetRadioStation into a Music Assistant Radio.
 
     The station's streamUrl is carried in the single ProviderMapping's `details`
     (the convention other radio providers use, e.g. tunein) - get_stream_details

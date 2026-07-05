@@ -41,6 +41,7 @@ from music_assistant.providers.snapcast.constants import (
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
     SHIPPED_SNAPSERVER_CONFIG_FILE,
+    SNAPCLIENT_LIVENESS_POLL_INTERVAL,
     SNAPWEB_DIR,
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
@@ -79,10 +80,12 @@ class SnapCastProvider(PlayerProvider):
     _controlscript_available: bool
     _snapcast_ma_streams: dict[str, SnapcastMAStream]
     _snapcast_ma_streams_lock: asyncio.Lock
+    _last_status_refresh: float
 
     @property
     def queue_control_available(self) -> bool:
-        """Return whether queue-based control scripts are available.
+        """
+        Return whether queue-based control scripts are available.
 
         Indicates if the Snapcast control script has been successfully initialized
         and can be used to control playback via a queue-specific control channel.
@@ -129,6 +132,7 @@ class SnapCastProvider(PlayerProvider):
             )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         self._ids_map = bidict({})
+        self._last_status_refresh = 0.0
 
         self._snapcast_ma_streams = {}
         self._snapcast_ma_streams_lock = asyncio.Lock()
@@ -181,6 +185,25 @@ class SnapCastProvider(PlayerProvider):
         self._snapserver.stop()
         await self._stop_builtin_server()
 
+    async def refresh_server_status(self) -> None:
+        """
+        Refresh the full snapserver state, throttled to once per poll cycle.
+
+        Snapcast players all poll within the same controller pass; this collapses
+        that burst into a single Server.GetStatus so each client's lastSeen is
+        refreshed once per interval. Transient errors are ignored and retried.
+        """
+        now = self.mass.loop.time()
+        if now - self._last_status_refresh < SNAPCLIENT_LIVENESS_POLL_INTERVAL / 2:
+            return
+        self._last_status_refresh = now
+        try:
+            status, _ = await self._snapserver.status()
+            if isinstance(status, dict) and "server" in status:
+                self._snapserver.synchronize(status)
+        except Exception:
+            self.logger.debug("Snapserver status refresh failed", exc_info=True)
+
     async def _start_builtin_server(self) -> None:
         """Start the built-in Snapserver."""
         if self._use_builtin_server:
@@ -195,7 +218,8 @@ class SnapCastProvider(PlayerProvider):
             self._snapserver_runner.cancel()
 
     def _setup_controlscript(self) -> str | None:
-        """Copy control script to plugin directory (blocking I/O).
+        """
+        Copy control script to plugin directory (blocking I/O).
 
         :return: plugin dir if successful, None otherwise.
         """
@@ -424,7 +448,8 @@ class SnapCastProvider(PlayerProvider):
     async def ensure_player_owned_group(
         self, ma_player_id: str, set_stream_id: str | None = None
     ) -> SnapgroupProto | None:
-        """Ensure a Snapcast group is owned by the given player.
+        """
+        Ensure a Snapcast group is owned by the given player.
 
         This method guarantees that the returned Snapcast group is *owned* by the
         specified Music Assistant player, meaning the group name equals the
@@ -484,7 +509,8 @@ class SnapCastProvider(PlayerProvider):
         target_stream_id: str | None = None,
         others_stream_id: str | None = "default",
     ) -> None:
-        """Isolate a player into a dedicated Snapcast group.
+        """
+        Isolate a player into a dedicated Snapcast group.
 
         Ensures that the target player ends up in a group where it is the sole
         member and group leader.
@@ -543,7 +569,8 @@ class SnapCastProvider(PlayerProvider):
         filter_settings_owner: str | None = None,
         existing_only: bool = False,
     ) -> SnapcastMAStream | None:
-        """Get or create a Snapcast Music Assistant stream for the given media.
+        """
+        Get or create a Snapcast Music Assistant stream for the given media.
 
         Determines a deterministic Snapcast stream name based on the media type
         and source, and either returns an existing stream or creates a new one.
@@ -623,7 +650,8 @@ class SnapCastProvider(PlayerProvider):
         return stream
 
     def get_snap_ma_stream(self, stream_name: str) -> SnapcastMAStream | None:
-        """Return an existing Music Assistant Snapcast stream by name.
+        """
+        Return an existing Music Assistant Snapcast stream by name.
 
         Args:
             stream_name: Snapcast stream name.
@@ -634,7 +662,8 @@ class SnapCastProvider(PlayerProvider):
         return self._snapcast_ma_streams.get(stream_name)
 
     async def delete_ma_stream(self, stream_name: str) -> None:
-        """Remove and destroy a Music Assistant Snapcast stream.
+        """
+        Remove and destroy a Music Assistant Snapcast stream.
 
         The stream is removed from internal tracking and its resources are
         destroyed asynchronously. Errors during destruction are logged but
@@ -655,7 +684,8 @@ class SnapCastProvider(PlayerProvider):
             self.logger.exception("Failed to destroy stream session %s", stream_name)
 
     def update_stream_usage(self) -> None:
-        """Update usage state for all tracked Snapcast streams.
+        """
+        Update usage state for all tracked Snapcast streams.
 
         Marks streams as "in use" if they are currently assigned to any Snapcast
         group, and schedules unused streams for delayed shutdown.

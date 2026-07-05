@@ -1,11 +1,11 @@
 {
   "config_entries": {
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "Your Pandora username or email address"
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Your Pandora password"
     },
     "quality": {
@@ -14,6 +14,10 @@
       "options": {
         "standard": "Standard (64 kbps AAC+)",
         "high": "High (192 kbps MP3)"
+      },
+      "option_descriptions": {
+        "standard": "Always available, on any account.",
+        "high": "Requires an active Pandora subscription; otherwise playback falls back to Standard."
       }
     },
     "socks_url": {
@@ -23,6 +27,13 @@
     "takeover_stream": {
       "label": "Take over stream",
       "description": "Pandora only allows one active stream at a time per account. You can request that Pandora terminate any existing stream on other devices and allow streaming here. You must manually restart playback after performing this action."
+    }
+  },
+  "media": {
+    "radio": {
+      "pandora_station": {
+        "name": "Pandora Station {0}"
+      }
     }
   },
   "manifest": {

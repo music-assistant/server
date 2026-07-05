@@ -250,10 +250,8 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
-        # legacy /imageproxy?provider=&path= form — deprecated; the canonical
-        # /imageproxy/<image_id> form is registered as a dynamic route on the
-        # webserver by MetaDataController.post_setup()
-        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_legacy_imageproxy))
+        # the canonical /imageproxy/<image_id> form is registered as a dynamic
+        # route on the webserver by MetaDataController.post_setup()
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
@@ -404,7 +402,8 @@ class WebserverController(CoreController):
                 client._cancel()
 
     def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
-        """Set the sendspin player_id on websocket clients for a specific user.
+        """
+        Set the sendspin player_id on websocket clients for a specific user.
 
         This is called by the sendspin proxy when a client connects, allowing
         the player controller to auto-whitelist the player for that user's session.
@@ -422,7 +421,8 @@ class WebserverController(CoreController):
                 )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
-        """Set the sendspin player_id on a websocket client for a WebRTC session.
+        """
+        Set the sendspin player_id on a websocket client for a WebRTC session.
 
         This is called by the WebRTC gateway when it extracts the client_id from
         the sendspin auth message, allowing auto-whitelisting of the player.
@@ -639,7 +639,8 @@ class WebserverController(CoreController):
         return await self._server.serve_static(swagger_html_path, request)
 
     async def _render_error_page(self, error_message: str, status: int = 403) -> web.Response:
-        """Render a user-friendly error page with the given message.
+        """
+        Render a user-friendly error page with the given message.
 
         :param error_message: The error message to display to the user.
         :param status: HTTP status code for the response.
@@ -746,6 +747,15 @@ class WebserverController(CoreController):
 
             # If return_url provided, append code parameter and return as redirect_to
             if return_url:
+                # SECURITY FIX (GHSA-j369-4c4w-7qmq): only forward the token to trusted
+                # destinations. is_allowed_redirect_url returns (True, "external") for any
+                # unknown external URL, so checking is_valid alone would still leak the JWT.
+                # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
+                # the token immediately with no consent step, so "external" must be rejected.
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category != "trusted":
+                    return web.Response(status=400, text="Invalid return_url")
+
                 # Insert code parameter before any hash fragment
                 code_param = f"code={quote(token, safe='')}"
                 if "#" in return_url:

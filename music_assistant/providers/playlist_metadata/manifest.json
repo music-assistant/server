@@ -1,0 +1,12 @@
+{
+  "type": "metadata",
+  "domain": "playlist_metadata",
+  "stage": "experimental",
+  "name": "Playlist Metadata",
+  "description": "Generates metadata for library playlists, including custom artwork with configurable layout templates, and (future) genres and descriptions.",
+  "codeowners": ["@dmoo500"],
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": false,
+  "requirements": []
+}

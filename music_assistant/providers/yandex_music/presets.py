@@ -1,4 +1,5 @@
-"""Shared helpers for user-defined wave presets.
+"""
+Shared helpers for user-defined wave presets.
 
 Both the settings UI (in ``__init__.py``) and the Browse handler (in
 ``provider.py``) need to read the same JSON-encoded preset store.
@@ -11,7 +12,8 @@ import json
 
 
 def parse_stored_presets(raw: object) -> list[dict[str, str]]:
-    """Decode the hidden JSON wave-presets store into a sanitised list.
+    """
+    Decode the hidden JSON wave-presets store into a sanitised list.
 
     Only entries with a non-empty ``name`` string are kept. The optional
     ``diversity`` / ``moodEnergy`` / ``language`` fields are carried through

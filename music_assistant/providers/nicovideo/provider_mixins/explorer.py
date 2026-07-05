@@ -25,7 +25,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -68,7 +69,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_recommendations",
-                    name="nicovideo recommendations",
+                    name="Recommended tracks",
+                    translation_key="recommended_tracks",
                     provider=self.instance_id,
                     icon="mdi-star-circle-outline",
                     items=UniqueList(main_recommendation_tracks),
@@ -81,7 +83,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_history",
-                    name="Recently watched (nicovideo history)",
+                    name="Recently played",
+                    translation_key="recently_played",
                     provider=self.instance_id,
                     icon="mdi-history",
                     items=UniqueList(history_tracks),
@@ -97,6 +100,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 RecommendationFolder(
                     item_id="nicovideo_following_activities",
                     name="New Tracks from Followed Users",
+                    translation_key="nicovideo_following_activities",
                     provider=self.instance_id,
                     icon="mdi-account-plus-outline",
                     items=UniqueList(following_activities_tracks),
@@ -109,7 +113,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_like_history",
-                    name="Recently liked (Like history)",
+                    name="Recently favorited tracks",
+                    translation_key="recent_favorite_tracks",
                     provider=self.instance_id,
                     icon="mdi-heart-outline",
                     items=UniqueList(like_history_tracks),
