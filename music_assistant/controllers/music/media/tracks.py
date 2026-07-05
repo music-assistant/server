@@ -184,6 +184,7 @@ class TracksController(MediaControllerBase[Track]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        explicit: bool | None = None,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -196,10 +197,24 @@ class TracksController(MediaControllerBase[Track]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param played_only: Filter to only played tracks.
+        :param explicit: Filter by explicit content (True=only explicit, False=no explicit, None=all).
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
+
+        # Apply explicit content filter
+        if explicit is not None:
+            if explicit:
+                # Only explicit tracks
+                extra_query_parts.append("json_extract(tracks.metadata, '$.explicit') = 1")
+            else:
+                # No explicit tracks (null or false)
+                extra_query_parts.append(
+                    "(json_extract(tracks.metadata, '$.explicit') IS NULL "
+                    "OR json_extract(tracks.metadata, '$.explicit') = 0)"
+                )
         if search and " - " in search:
             # handle combined artist + title search
             artist_str, title_str = search.split(" - ", 1)
