@@ -585,13 +585,11 @@ class UniversalGroupPlayer(Player):
             "Content-Type": get_mime_type(output_format_str),
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
+        http_profile = self.get_config_value(CONF_HTTP_PROFILE, "chunked")
         # prefer the child (protocol) player configuration
         # (child player_id may be stale/invalid; fall back to the group profile)
         if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
-            http_profile = cast(
-                "str", child_player.config.get_value(CONF_HTTP_PROFILE, http_profile)
-            )
+            http_profile = child_player.get_config_value(CONF_HTTP_PROFILE, http_profile)
         if http_profile == "chunked" and request.version < HttpVersion11:
             # chunked encoding is not allowed on HTTP/1.0; fall back to
             # connection-close streaming to avoid raising in resp.prepare()

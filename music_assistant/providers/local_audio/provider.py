@@ -44,19 +44,11 @@ class LocalAudioProvider(PlayerProvider):
 
         self._bridge_manager = LocalAudioBridgeManager(self)
 
-    async def loaded_in_mass(self) -> None:
-        """Handle provider fully loaded in Music Assistant."""
+    async def discover_players(self) -> None:
+        """Discover local audio output devices and register their players."""
         await self._bridge_manager.discover_and_register()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/removal of the provider."""
         if bridge_manager := getattr(self, "_bridge_manager", None):
-            await bridge_manager.stop_all()
-
-    def on_player_enabled(self, player_id: str) -> None:
-        """
-        Override to suppress re-discovery on player enable.
-
-        ALSA devices are statically enumerated once at startup —
-        there is no need to re-run discovery when a player is enabled.
-        """
+            await bridge_manager.close()

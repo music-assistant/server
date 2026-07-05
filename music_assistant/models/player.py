@@ -13,12 +13,13 @@ The final active source can be retrieved by using the 'state' property.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import time
 from abc import ABC
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast, final
+from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
-from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
+from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
 from music_assistant_models.constants import (
     EXTRA_ATTRIBUTES_TYPES,
     PLAYER_CONTROL_FAKE,
@@ -55,6 +56,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_SAMPLE_RATES,
+    CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
     PLAYER_CONTROL_PROTOCOL,
@@ -64,11 +66,14 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import html_to_markdown
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
+    from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
+
+# TypeVar for config value type inference
+_ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
 
 def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
@@ -257,7 +262,15 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
             for s in state.source_list
         ),
         "output_protocols": tuple(
-            (o.output_protocol_id, o.name, o.protocol_domain, o.is_native, o.priority, o.available)
+            (
+                o.output_protocol_id,
+                o.name,
+                o.protocol_domain,
+                o.is_native,
+                o.priority,
+                o.available,
+                o.derived_from,
+            )
             for o in state.output_protocols
         ),
         "device_info.model": state.device_info.model,
@@ -860,6 +873,43 @@ class Player(ABC):
         # and it will be used instead of the default one.
         return []
 
+    @overload
+    def get_config_value(
+        self, key: str, default: _ConfigValueT, *, return_type: builtins.type[_ConfigValueT] = ...
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: builtins.type[_ConfigValueT]
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: None = ...
+    ) -> ConfigValueType: ...
+
+    def get_config_value(
+        self,
+        key: str,
+        default: ConfigValueType = None,
+        *,
+        return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
+    ) -> _ConfigValueT | ConfigValueType:
+        """
+        Return a single config value from this player's active configuration.
+
+        Entry defaults are already applied to the active configuration, so the
+        default is only returned when the key itself is not present.
+
+        :param key: The config key to retrieve.
+        :param default: Value to return when the key is not present in the config.
+        :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
+        """
+        return self.config.get_value(key, default)
+
     async def on_config_updated(self) -> None:
         """
         Handle logic when the player is loaded or updated.
@@ -1383,6 +1433,7 @@ class Player(ABC):
                     protocol_domain=linked.protocol_domain,
                     priority=linked.priority,
                     available=is_available,
+                    derived_from=linked.derived_from,
                 )
             )
 
@@ -1399,6 +1450,11 @@ class Player(ABC):
                 provider_id = raw_conf.get("provider", "")
                 protocol_domain = provider_id.split("--")[0] if provider_id else "unknown"
                 priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
+                # resolve the persisted derived-transport edge (if any) so derived
+                # outputs keep their base reference even while not registered
+                derived_from = raw_conf.get("values", {}).get(CONF_UNDERLYING_PLAYER_ID)
+                if derived_from == self.player_id:
+                    derived_from = "native"
                 result.append(
                     OutputProtocol(
                         output_protocol_id=protocol_id,
@@ -1406,6 +1462,7 @@ class Player(ABC):
                         protocol_domain=protocol_domain,
                         priority=priority,
                         available=False,  # Disabled protocols are not available
+                        derived_from=derived_from,
                     )
                 )
 
@@ -1513,6 +1570,7 @@ class Player(ABC):
                     priority=linked.priority,
                     available=current_available,
                     is_native=False,
+                    derived_from=linked.derived_from,
                 )
         return None
 
@@ -1896,7 +1954,7 @@ class Player(ABC):
                 self._extra_data.get(ATTR_FAKE_MUTE),
             ),
             "linked_protocols": tuple(
-                (p.output_protocol_id, p.protocol_domain, p.priority)
+                (p.output_protocol_id, p.protocol_domain, p.priority, p.derived_from)
                 for p in self.__attr_linked_protocols
             ),
             "protocol_parent_id": self.__attr_protocol_parent_id,

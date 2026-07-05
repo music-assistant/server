@@ -19,19 +19,12 @@ from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 import pytest
 from zeroconf.asyncio import AsyncZeroconf
 
-from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
+from tests.common import suppress_auto_loaded_providers
 
 NUM_DEMO_PLAYERS = 3
-
-# builtin providers that must not be auto-setup in the hermetic boot: local_audio
-# bridges the host machine's sound devices (built-in speakers, bluetooth, ...) as
-# sendspin players, which would leak real hardware into the player registry
-SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
-
-_orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
 
 
 async def wait_for(predicate: Callable[[], bool], timeout: float = 25.0) -> bool:
@@ -78,15 +71,6 @@ async def play_test_track(mass: MusicAssistant, queue_id: str, track_id: str = "
     assert test_prov is not None
     track = await test_prov.get_track(track_id)
     await mass.player_queues.play_media(queue_id, track)
-
-
-async def _create_builtin_provider_config_hermetic(
-    self: ProviderConfigMixin, provider_domain: str
-) -> None:
-    """Create builtin provider configs, skipping providers that discover host hardware."""
-    if provider_domain in SUPPRESSED_BUILTIN_PROVIDERS:
-        return
-    await _orig_create_builtin_provider_config(self, provider_domain)
 
 
 def _create_mock_zeroconf() -> MagicMock:
@@ -136,19 +120,13 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
         ),
-        # hermetic: no real SSDP search and no auto-loaded device providers
+        # hermetic: no real SSDP search
         patch(
             "music_assistant.controllers.discovery.controller.async_upnp_search",
             new=AsyncMock(),
         ),
-        patch("music_assistant.mass.DEFAULT_PROVIDERS", ()),
-        # hermetic: local_audio is a builtin provider that would bridge the host
-        # machine's sound devices (e.g. bluetooth headsets) as extra players
-        patch.object(
-            ProviderConfigMixin,
-            "create_builtin_provider_config",
-            _create_builtin_provider_config_hermetic,
-        ),
+        # hermetic: no auto-loaded device providers and no host-audio bridging
+        suppress_auto_loaded_providers(),
     ):
         await mass_instance.start()
         # configure the fake music + player providers

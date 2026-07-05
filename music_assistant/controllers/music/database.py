@@ -242,6 +242,7 @@ class MusicDatabaseSetupMixin:
                 [media_type] TEXT NOT NULL,
                 [name] TEXT NOT NULL,
                 [image] json,
+                [artists] json,
                 [timestamp] INTEGER DEFAULT 0,
                 [fully_played] BOOLEAN,
                 [seconds_played] INTEGER,

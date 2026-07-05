@@ -1193,6 +1193,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "media_type": media_item.media_type.value,
             "name": media_item.name,
             "image": serialize_to_json(media_item.image.to_dict()) if media_item.image else None,
+            # store lightweight artist mappings so playlog rows can later be matched or
+            # resolved by artist without an extra provider lookup
+            "artists": serialize_to_json(
+                [ItemMapping.from_item(artist).to_dict() for artist in artists]
+            )
+            if (artists := getattr(media_item, "artists", None))
+            else None,
             "fully_played": fully_played,
             "seconds_played": seconds_played,
             "timestamp": timestamp,
@@ -1621,7 +1628,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return self.podcasts
         if media_type == MediaType.GENRE:
             return self.genres
-        raise NotImplementedError
+        raise NotImplementedError(
+            f"No media controller available for media type: {media_type.value}"
+        )
 
     def get_provider_instances(
         self, domain: str, return_unavailable: bool = False

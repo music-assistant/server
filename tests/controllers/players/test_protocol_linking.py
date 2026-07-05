@@ -11,6 +11,8 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import (
     ATTR_ENABLED,
+    CONF_PLAYER_DSP,
+    CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
 )
@@ -7633,6 +7635,9 @@ class TestSelfReferentialProtocolLinks:
         assert display_player.protocol_parent_id is None
         assert store.get("players/esp_client/values/protocol_parent_id") != "esp_client"
         assert "esp_client" not in store.get("players/esp_client/values/linked_protocol_ids", [])
+        # the obsolete universal player must not keep listing the native player,
+        # or its permanent cleanup would re-evaluate it as an orphaned protocol
+        assert "esp_client" not in universal._protocol_player_ids
 
     async def test_migrate_clears_persisted_self_referential_link(self) -> None:
         """Config migration scrubs a self-referential link left by an older version."""
@@ -7706,6 +7711,10 @@ class TestDerivedProtocolLinking:
         controller._try_link_protocol_to_native(derived)
 
         assert derived.protocol_parent_id == "native_1"
+        # the derived link carries its base output, the non-derived link does not
+        links = {link.output_protocol_id: link for link in native.linked_output_protocols}
+        assert links["spb_1"].derived_from == "ap_1"
+        assert links["ap_1"].derived_from is None
 
     def test_waiting_derived_follows_when_underlying_links(self, mock_mass: MagicMock) -> None:
         """Test a derived player that registered early follows once its underlying links."""
@@ -7753,6 +7762,9 @@ class TestDerivedProtocolLinking:
         controller._try_link_protocols_to_native(local_player)
 
         assert derived.protocol_parent_id == "local_1"
+        # riding on the parent player itself normalizes the base output to "native"
+        links = {link.output_protocol_id: link for link in local_player.linked_output_protocols}
+        assert links["spb_1"].derived_from == "native"
 
     @pytest.mark.asyncio
     async def test_derived_delayed_eval_never_creates_universal_player(
@@ -7874,3 +7886,206 @@ class TestDerivedProtocolLinking:
         del stored["players/spb_1"]
         controller._save_underlying_player_id(derived)
         mock_mass.config.set.assert_not_called()
+
+
+class TestLocalAudioPlayerPromotion:
+    """
+    Tests for the local_audio reshape: attribution stub -> regular native player.
+
+    The local_audio device player (bare device-uuid player_id) is a regular,
+    visible PLAYER that parents its Sendspin bridge directly. On upgrade, the
+    previously auto-created universal player wrapper (up<uuid-hex>) must be
+    absorbed by the native player without re-wrapping it.
+    """
+
+    DEVICE_UUID = "aabbccdd-1122-3344-5566-77889900aabb"
+    UNIVERSAL_ID = "upaabbccdd11223344556677889900aabb"
+
+    def test_native_local_player_absorbs_universal_wrapper(self, mock_mass: MagicMock) -> None:
+        """The native player takes over the bridge protocol and the wrapper is emptied."""
+        universal = _create_universal_player(
+            mock_mass,
+            self.UNIVERSAL_ID,
+            "Dummy Output",
+            protocol_player_ids=[self.DEVICE_UUID, "spb_1"],
+        )
+        native = MockPlayer(
+            MockProvider("local_audio", mass=mock_mass),
+            self.DEVICE_UUID,
+            "Dummy Output",
+            player_type=PlayerType.PLAYER,
+            identifiers={IdentifierType.UUID: self.DEVICE_UUID},
+        )
+        native.set_initialized()
+        spb = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "spb_1",
+            "Dummy Output Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        spb._attr_underlying_player_id = self.DEVICE_UUID
+        spb.set_initialized()
+
+        store: dict[str, Any] = {
+            f"players/{self.DEVICE_UUID}": {"enabled": True},
+            "players/spb_1": {"enabled": True},
+        }
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: store.get(key, default)
+        )
+        mock_mass.config.set = MagicMock(side_effect=store.__setitem__)
+
+        def _close_coro(coro: Any, *_args: Any, **_kwargs: Any) -> None:
+            if hasattr(coro, "close"):
+                coro.close()
+
+        mock_mass.create_task = MagicMock(side_effect=_close_coro)
+        mock_mass.players = controller = PlayerController(mock_mass)
+        controller._players = {
+            self.UNIVERSAL_ID: universal,
+            self.DEVICE_UUID: native,
+            "spb_1": spb,
+        }
+        controller._add_protocol_link(universal, spb, "sendspin")
+
+        controller._try_link_protocols_to_native(native)
+
+        assert spb.protocol_parent_id == self.DEVICE_UUID
+        assert [link.output_protocol_id for link in native.linked_output_protocols] == ["spb_1"]
+        # the obsolete wrapper keeps neither the bridge nor the native player itself,
+        # so its permanent cleanup has no orphaned protocols to re-evaluate
+        assert universal._protocol_player_ids == []
+        assert store.get("players/spb_1/values/protocol_parent_id") == self.DEVICE_UUID
+
+    async def test_delayed_eval_skips_type_changed_player(self, mock_mass: MagicMock) -> None:
+        """A pending evaluation for a player that is not (or no longer) a protocol is a no-op."""
+        controller, _ = TestEndToEndDuplicateProtocol._setup_e2e_controller(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        native = MockPlayer(
+            MockProvider("local_audio", mass=mock_mass),
+            self.DEVICE_UUID,
+            "Dummy Output",
+            player_type=PlayerType.PLAYER,
+        )
+        native.set_initialized()
+        controller._players = {self.DEVICE_UUID: native}
+
+        await controller._delayed_protocol_evaluation(self.DEVICE_UUID)
+
+        assert native.protocol_parent_id is None
+        assert not any(pid.startswith("up") for pid in controller._players)
+
+
+class TestLocalAudioStubMigration:
+    """Tests for the config migration that promotes local_audio stubs to regular players."""
+
+    DEVICE_UUID = "aabbccdd-1122-3344-5566-77889900aabb"
+    UNIVERSAL_ID = "upaabbccdd11223344556677889900aabb"
+
+    def _make_data(self) -> dict[str, Any]:
+        """Build a settings dict as persisted by the previous local_audio setup."""
+        return {
+            CONF_PLAYERS: {
+                self.DEVICE_UUID: {
+                    "player_id": self.DEVICE_UUID,
+                    "provider": "local_audio",
+                    "player_type": "protocol",
+                    "enabled": True,
+                    "values": {"protocol_parent_id": self.UNIVERSAL_ID},
+                },
+                self.UNIVERSAL_ID: {
+                    "player_id": self.UNIVERSAL_ID,
+                    "provider": "universal_player",
+                    "player_type": "group",
+                    "enabled": False,
+                    "name": "Kitchen Output",
+                    "values": {
+                        "linked_protocol_ids": [self.DEVICE_UUID, "spb_1"],
+                        "device_identifiers": {"uuid": self.DEVICE_UUID},
+                        "device_info": {"model": "Dummy Output", "manufacturer": "Local Audio"},
+                        "expose_to_ha": False,
+                        "hide_in_ui": True,
+                    },
+                },
+                "spb_1": {
+                    "player_id": "spb_1",
+                    "provider": "sendspin",
+                    "player_type": "protocol",
+                    "enabled": True,
+                    "values": {"protocol_parent_id": self.UNIVERSAL_ID},
+                },
+                "syncgroup_1": {
+                    "player_id": "syncgroup_1",
+                    "provider": "sync_group",
+                    "player_type": "group",
+                    "enabled": True,
+                    "values": {
+                        "group_members": [self.UNIVERSAL_ID, "other_player"],
+                        "allowed_members": [self.UNIVERSAL_ID],
+                    },
+                },
+            },
+            CONF_PLAYER_QUEUES: {
+                self.UNIVERSAL_ID: {
+                    "queue_id": self.UNIVERSAL_ID,
+                    "values": {"autoplay_mode": "smart"},
+                },
+            },
+            CONF_PLAYER_DSP: {
+                self.UNIVERSAL_ID: {"enabled": True},
+            },
+        }
+
+    async def test_stub_promoted_and_universal_absorbed(self) -> None:
+        """The stub becomes a regular player carrying the universal player's settings."""
+        data = self._make_data()
+
+        assert await migrate(data) is True
+
+        stub_cfg = data[CONF_PLAYERS][self.DEVICE_UUID]
+        assert stub_cfg["player_type"] == "player"
+        # the universal player was the device toggle the user operated
+        assert stub_cfg["enabled"] is False
+        assert stub_cfg["name"] == "Kitchen Output"
+        values = stub_cfg["values"]
+        assert "protocol_parent_id" not in values
+        assert values["expose_to_ha"] is False
+        assert values["hide_in_ui"] is True
+        assert values["linked_protocol_ids"] == ["spb_1"]
+        assert "device_identifiers" not in values
+        assert "device_info" not in values
+
+        # the wrapper is gone and the bridge protocol re-parented
+        assert self.UNIVERSAL_ID not in data[CONF_PLAYERS]
+        assert data[CONF_PLAYERS]["spb_1"]["values"]["protocol_parent_id"] == self.DEVICE_UUID
+        assert data[CONF_PLAYERS]["spb_1"]["player_type"] == "protocol"
+
+        # queue settings, DSP config and group memberships follow the new player_id
+        queue_cfg = data[CONF_PLAYER_QUEUES][self.DEVICE_UUID]
+        assert queue_cfg["queue_id"] == self.DEVICE_UUID
+        assert queue_cfg["values"]["autoplay_mode"] == "smart"
+        assert self.UNIVERSAL_ID not in data[CONF_PLAYER_QUEUES]
+        assert data[CONF_PLAYER_DSP] == {self.DEVICE_UUID: {"enabled": True}}
+        group_values = data[CONF_PLAYERS]["syncgroup_1"]["values"]
+        assert group_values["group_members"] == [self.DEVICE_UUID, "other_player"]
+        assert group_values["allowed_members"] == [self.DEVICE_UUID]
+
+    async def test_stub_without_universal_wrapper(self) -> None:
+        """A stub without a universal player wrapper is still promoted."""
+        data = self._make_data()
+        del data[CONF_PLAYERS][self.UNIVERSAL_ID]
+
+        assert await migrate(data) is True
+
+        stub_cfg = data[CONF_PLAYERS][self.DEVICE_UUID]
+        assert stub_cfg["player_type"] == "player"
+        assert stub_cfg["enabled"] is True
+        assert "protocol_parent_id" not in stub_cfg["values"]
+
+    async def test_migration_is_idempotent(self) -> None:
+        """A second run finds nothing left to migrate."""
+        data = self._make_data()
+
+        assert await migrate(data) is True
+        assert await migrate(data) is False

@@ -432,6 +432,11 @@ class ProtocolLinkingMixin:
             protocol_player = self.get_player(player_id)
             if not protocol_player or protocol_player.protocol_parent_id:
                 return
+            if protocol_player.state.type != PlayerType.PROTOCOL:
+                # The player changed type while the evaluation was pending
+                # (e.g. re-registered as a regular player); it must never be
+                # linked as a protocol or wrapped in a universal player.
+                return
 
             # Derived protocol players resolve strictly via their underlying
             # player and never match by identifiers or wrap into universal
@@ -980,9 +985,15 @@ class ProtocolLinkingMixin:
             cached_only_ids = known_protocol_ids - active_protocol_ids
             preserved_protocol_ids = moved_protocol_ids | cached_only_ids
             # A device that kept its id across a type change lists itself here.
+            # It must never become its own protocol, and it must also be dropped
+            # from the obsolete universal player so the permanent cleanup below
+            # doesn't treat it as an orphaned protocol (which would re-wrap the
+            # native player in a fresh universal player).
             preserved_protocol_ids.discard(native_player.player_id)
             self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
-            self._remove_protocol_ids_from_parent(player, preserved_protocol_ids)
+            self._remove_protocol_ids_from_parent(
+                player, preserved_protocol_ids | {native_player.player_id}
+            )
             native_player.refresh_state()
 
             # Remove the now-obsolete universal player
@@ -1045,6 +1056,13 @@ class ProtocolLinkingMixin:
         # Get priority for this protocol
         priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
 
+        # Derived transports (e.g. a Sendspin bridge riding on an AirPlay player)
+        # reference the base output they run on top of; "native" when they ride
+        # on the parent player itself
+        derived_from = protocol_player.underlying_player_id
+        if derived_from == native_player.player_id:
+            derived_from = "native"
+
         # Add the new link
         updated_protocols.append(
             OutputProtocol(
@@ -1052,6 +1070,7 @@ class ProtocolLinkingMixin:
                 name=protocol_player.provider.name,
                 protocol_domain=protocol_domain,
                 priority=priority,
+                derived_from=derived_from,
             )
         )
         native_player.set_linked_output_protocols(updated_protocols)
@@ -1255,6 +1274,16 @@ class ProtocolLinkingMixin:
             protocol_player = self.get_player(protocol_id)
             is_available = protocol_player is not None and protocol_player.available
 
+            # Resolve the derived-transport edge from the live player when
+            # registered, else from the persisted edge in config
+            derived_from = (
+                protocol_player.underlying_player_id
+                if protocol_player
+                else protocol_config.get("values", {}).get(CONF_UNDERLYING_PLAYER_ID)
+            )
+            if derived_from == native_player.player_id:
+                derived_from = "native"
+
             # Add the OutputProtocol entry
             native_player.linked_output_protocols.append(
                 OutputProtocol(
@@ -1264,6 +1293,7 @@ class ProtocolLinkingMixin:
                     priority=priority,
                     is_native=False,
                     available=is_available,
+                    derived_from=derived_from,
                 )
             )
             self.logger.debug(
