@@ -14,6 +14,7 @@ from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -79,7 +80,7 @@ def _to_date(timestamp: str | datetime) -> str:
     return _date_convertor(timestamp, "%d/%m/%y")
 
 
-class ConversionError(Exception):
+class ConversionError(MusicAssistantError):
     """Raised when object conversion fails."""
 
 
