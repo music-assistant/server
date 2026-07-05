@@ -64,17 +64,23 @@ def _make_playlist(
 
 
 class TestPlaylistTranslationKey:
-    """The translation_key column survives the library round-trip (mirrors genres)."""
+    """
+    The translation_key column survives the library round-trip (mirrors genres).
+
+    Item ids and names must not collide with BUILTIN_PLAYLISTS: the builtin provider is
+    auto-loaded by the mass fixture and its startup sync adds those playlists to the
+    library with a translation_key already set, racing with (and matching) our rows.
+    """
 
     async def test_parameterless_key_survives_round_trip(
         self, playlist_ctrl: PlaylistController
     ) -> None:
         """A static (parameterless) translation_key is persisted and read back."""
         created = await playlist_ctrl.add_item_to_library(
-            _make_playlist("infinite_mix", "Infinite Mix (library)", translation_key="infinite_mix")
+            _make_playlist("static_key_mix", "Static Key Mix", translation_key="static_key_mix")
         )
         fetched = await playlist_ctrl.get_library_item(int(created.item_id))
-        assert fetched.translation_key == "infinite_mix"
+        assert fetched.translation_key == "static_key_mix"
 
     async def test_key_and_params_survive_round_trip(
         self, playlist_ctrl: PlaylistController
@@ -95,14 +101,12 @@ class TestPlaylistTranslationKey:
     async def test_update_backfills_key_on_resync(self, playlist_ctrl: PlaylistController) -> None:
         """A row added without a key adopts one when the provider later supplies it."""
         created = await playlist_ctrl.add_item_to_library(
-            _make_playlist("recently_played", "Recently played tracks")
+            _make_playlist("backfill_mix", "Backfill Mix")
         )
         assert (await playlist_ctrl.get_library_item(int(created.item_id))).translation_key is None
         # re-sync: same provider item, now carrying a translation_key -> update path adopts it
         await playlist_ctrl.add_item_to_library(
-            _make_playlist(
-                "recently_played", "Recently played tracks", translation_key="recently_played"
-            )
+            _make_playlist("backfill_mix", "Backfill Mix", translation_key="backfill_mix")
         )
         fetched = await playlist_ctrl.get_library_item(int(created.item_id))
-        assert fetched.translation_key == "recently_played"
+        assert fetched.translation_key == "backfill_mix"
