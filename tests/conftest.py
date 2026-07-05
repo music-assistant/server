@@ -15,6 +15,7 @@ from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.mass import MusicAssistant
+from tests.common import suppress_auto_loaded_providers
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +102,9 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
         ),
+        # keep the fixture isolated from the developer's machine: no auto-loaded device
+        # providers and no local_audio bridging the host's sound devices as players
+        suppress_auto_loaded_providers(),
     ):
         await mass_instance.start()
 
