@@ -13,12 +13,13 @@ The final active source can be retrieved by using the 'state' property.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import time
 from abc import ABC
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast, final
+from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
-from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
+from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
 from music_assistant_models.constants import (
     EXTRA_ATTRIBUTES_TYPES,
     PLAYER_CONTROL_FAKE,
@@ -64,11 +65,14 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import html_to_markdown
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
+    from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
+
+# TypeVar for config value type inference
+_ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
 
 def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
@@ -859,6 +863,43 @@ class Player(ABC):
         # To override the default config entries, simply define an entry with the same key
         # and it will be used instead of the default one.
         return []
+
+    @overload
+    def get_config_value(
+        self, key: str, default: _ConfigValueT, *, return_type: builtins.type[_ConfigValueT] = ...
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: builtins.type[_ConfigValueT]
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: None = ...
+    ) -> ConfigValueType: ...
+
+    def get_config_value(
+        self,
+        key: str,
+        default: ConfigValueType = None,
+        *,
+        return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
+    ) -> _ConfigValueT | ConfigValueType:
+        """
+        Return a single config value from this player's active configuration.
+
+        Entry defaults are already applied to the active configuration, so the
+        default is only returned when the key itself is not present.
+
+        :param key: The config key to retrieve.
+        :param default: Value to return when the key is not present in the config.
+        :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
+        """
+        return self.config.get_value(key, default)
 
     async def on_config_updated(self) -> None:
         """

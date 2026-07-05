@@ -360,7 +360,7 @@ class StreamsAudio:
 
         streamdetails.prefer_album_loudness = prefer_album_loudness
         conf_volume_normalization_target = float(
-            str(mass.streams.config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
+            mass.streams.get_config_value(CONF_VOLUME_NORMALIZATION_TARGET, return_type=int)
         )
         # guard against invalid volume normalization values
         # range and default_value are guaranteed to be set for this constant
@@ -1541,7 +1541,7 @@ class StreamsAudio:
                 if streamdetails.media_type == MediaType.TRACK
                 else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO
             )
-            gain_value = float(str(self.mass.streams.config.get_value(config_key, 0.0)))
+            gain_value = self.mass.streams.get_config_value(config_key, return_type=float)
             gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
@@ -2614,11 +2614,7 @@ class StreamsAudio:
             else CONF_VOLUME_NORMALIZATION_TRACKS
         )
         return VolumeNormalizationMode(
-            str(
-                self.mass.streams.config.get_value(
-                    conf_key, VolumeNormalizationMode.FALLBACK_DYNAMIC.value
-                )
-            )
+            self.mass.streams.get_config_value(conf_key, return_type=str)
         )
 
     def _update_radio_stream_metadata(
