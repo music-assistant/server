@@ -1739,7 +1739,8 @@ class PlexProvider(MusicProvider):
                 url, headers={"Accept": "application/json"}, timeout=30
             )
             response.raise_for_status()
-            return response.text
+            # plexapi's untyped session makes the response Any for mypy; force str
+            return str(response.text)
 
         try:
             content = await self._run_async(_fetch)
