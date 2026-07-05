@@ -908,14 +908,18 @@ class QobuzProvider(MusicProvider):
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
-            # raise_for_status on 401 embeds the request URL in the exception message;
-            # on /user/login that URL carries the username/password query params.
+            # deliberately no raise_for_status here: its exception message embeds
+            # the full request URL, which on /user/login carries the username and
+            # password as query params (and the user_auth_token on signed requests),
+            # so those would end up in the logs.
             if response.status == 401:
                 if endpoint == "user/login":
                     raise LoginFailed("Invalid Qobuz credentials")
                 self._user_auth_info = None
                 raise LoginFailed("Qobuz session expired")
-            response.raise_for_status()
+            if response.status >= 400:
+                msg = f"Error {response.status} ({response.reason}) while handling {endpoint}"
+                raise InvalidDataError(msg)
             try:
                 return cast("dict[str, Any]", await response.json(loads=json_loads))
             except client_exceptions.ContentTypeError as err:
@@ -960,12 +964,15 @@ class QobuzProvider(MusicProvider):
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
-            # raise_for_status on 401 embeds the request URL in the exception message,
-            # which carries the user_auth_token as a query param.
+            # deliberately no raise_for_status here: its exception message embeds
+            # the full request URL, which carries the user_auth_token as a query
+            # param, so it would end up in the logs.
             if response.status == 401:
                 self._user_auth_info = None
                 raise LoginFailed("Qobuz session expired")
-            response.raise_for_status()
+            if response.status >= 400:
+                msg = f"Error {response.status} ({response.reason}) while handling {endpoint}"
+                raise InvalidDataError(msg)
             return cast("dict[str, Any]", await response.json(loads=json_loads))
 
     def __get_image(self, obj: dict[str, Any]) -> str | None:
