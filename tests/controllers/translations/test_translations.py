@@ -19,7 +19,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
-from music_assistant.controllers.config import _with_translation_owner
+from music_assistant.controllers.config.helpers import _with_translation_owner
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks.controller import _namespaced_translation_key
 from music_assistant.controllers.translations import (
@@ -338,7 +338,8 @@ def test_provider_config_parse_stamps_owner() -> None:
 
 
 def test_bare_list_config_entries_stamp_owner() -> None:
-    """The get_*_config_entries handlers return owner-stamped copies, so a bare list localizes.
+    """
+    The get_*_config_entries handlers return owner-stamped copies, so a bare list localizes.
 
     The api_commands (config/providers|players|core/get_entries) return a list of ConfigEntry
     rather than a Config object; _with_translation_owner is what gives each entry its owner so it
@@ -389,7 +390,8 @@ def test_recommendation_folder_localized_serialization() -> None:
 
 
 def test_provider_sync_task_localized_serialization() -> None:
-    """Provider-sync BackgroundTasks resolve their name from the built catalog with the provider name.
+    """
+    Provider-sync BackgroundTasks resolve their name from the built catalog with the provider name.
 
     Guards that every key returned by MusicController._get_sync_task_translation_key resolves to a
     core.music.background_task.* entry authored in strings.json (the tasks controller namespaces the
@@ -425,7 +427,8 @@ def test_provider_sync_task_localized_serialization() -> None:
 
 
 def test_core_owned_strings_moved_out_of_common() -> None:
-    """Owner-specific strings live under their owner namespace, not in the shared common space.
+    """
+    Owner-specific strings live under their owner namespace, not in the shared common space.
 
     Background-task names and the stream server's network/normalization config entries each belong
     to a single core module (or provider), so they are authored there rather than in common; only
@@ -559,7 +562,8 @@ def test_media_item_without_translation_key_is_untouched() -> None:
 
 @pytest.mark.asyncio
 async def test_build_translations_matches_runtime_source() -> None:
-    """The standalone Lokalise source generator yields the same strings as the runtime loader.
+    """
+    The standalone Lokalise source generator yields the same strings as the runtime loader.
 
     Guards against the key scheme drifting between the (standalone) build script and the
     controller's live source scan.
@@ -589,7 +593,8 @@ def test_media_names_are_keyed_by_media_type() -> None:
 
 
 def test_genre_descriptions_are_authored() -> None:
-    """Genre descriptions are authored centrally under common.media.genre.<slug>.description.
+    """
+    Genre descriptions are authored centrally under common.media.genre.<slug>.description.
 
     Migrated from the frontend's genre_descriptions.* keys; the model resolver fills them into
     a Genre's nested metadata.description, the same way names fill the top-level name field.
@@ -611,7 +616,8 @@ def test_genre_descriptions_are_authored() -> None:
 
 
 def test_genre_description_resolves_via_controller() -> None:
-    """The resolver maps a genre's media.genre.<slug>.description key to the common entry.
+    """
+    The resolver maps a genre's media.genre.<slug>.description key to the common entry.
 
     Mirrors how the model's _resolve_translation looks up a genre's nested metadata.description:
     a relative key plus the item's provider as owner, resolved via the common.* rewrite.

@@ -40,7 +40,8 @@ class SamsungWamProvider(PlayerProvider):
         return cast("list[WamPlayer]", self.players)
 
     def get_player(self, player_id: str) -> WamPlayer | None:
-        """Return a WAM player by ID.
+        """
+        Return a WAM player by ID.
 
         :param player_id: The player ID to look up.
         :return: The matching WamPlayer, or None if not found.
@@ -59,7 +60,8 @@ class SamsungWamProvider(PlayerProvider):
         self.groups.start_sync_task()
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle close/cleanup of the provider.
+        """
+        Handle close/cleanup of the provider.
 
         :param is_removed: True if the provider is being permanently removed.
         """
@@ -73,7 +75,8 @@ class SamsungWamProvider(PlayerProvider):
     async def on_upnp_service_discovered(
         self, search_target: str, discovery_info: Mapping[str, Any]
     ) -> None:
-        """Handle a UPnP/SSDP presence notification.
+        """
+        Handle a UPnP/SSDP presence notification.
 
         :param search_target: The SSDP service type that was matched.
         :param discovery_info: The raw SSDP response headers.
@@ -97,7 +100,8 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return all config entries for this provider.
+    """
+    Return all config entries for this provider.
 
     :param mass: The MusicAssistant instance.
     :param instance_id: The ID of the provider instance.

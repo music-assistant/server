@@ -1,4 +1,5 @@
-"""ConfigEntry builders for the Yandex Smart Home provider.
+"""
+ConfigEntry builders for the Yandex Smart Home provider.
 
 Builds the numbered-step config form per connection type:
 
@@ -108,7 +109,8 @@ def should_show_button(
     cloud_instance_id: str,
     base_url: str,
 ) -> bool:
-    """Return True iff the auto-create action button is actionable now.
+    """
+    Return True iff the auto-create action button is actionable now.
 
     Hides the button when:
     - Mode is plain ``cloud`` (no custom skill exists there).
@@ -136,7 +138,8 @@ def auto_create_entries(
     verification_url: str | None,
     existing_artifacts_raw: str | None,
 ) -> Sequence[ConfigEntry]:
-    """Build the auto-create section of the config form.
+    """
+    Build the auto-create section of the config form.
 
     Empty list for ``cloud`` mode — the feature is meaningless without
     a custom skill.
@@ -239,7 +242,8 @@ def build_cloud_plus_entries(  # noqa: PLR0913
     skill_id: str = "",
     skill_token_set: bool = False,
 ) -> list[ConfigEntry]:
-    """Return the cloud_plus-mode config entries as three visible steps.
+    """
+    Return the cloud_plus-mode config entries as three visible steps.
 
     Step 1 (Register)       — always visible.
     Step 2 (Create skill)   — visible once cloud instance is registered.
@@ -316,7 +320,8 @@ def _create_skill_step_entries(
     skill_id: str = "",
     fully_configured: bool = False,
 ) -> list[ConfigEntry]:
-    """Shared builder for the Create-Skill step.
+    """
+    Shared builder for the Create-Skill step.
 
     Used by both cloud_plus Step 2 and direct single-step mode.
 
@@ -492,7 +497,8 @@ def _manual_fallback_entries(
     direct_client_secret: str,
     advanced: bool,
 ) -> list[ConfigEntry]:
-    """Copy-paste fields for creating the skill by hand.
+    """
+    Copy-paste fields for creating the skill by hand.
 
     ``advanced=True``  → hidden from the default view, shown when the
     user toggles Advanced. Used when auto-create is expected to work
@@ -658,7 +664,8 @@ def _step2_create_skill_entries(
     skill_id: str = "",
     fully_configured: bool = False,
 ) -> list[ConfigEntry]:
-    """cloud_plus Step 2 — always emitted.
+    """
+    cloud_plus Step 2 — always emitted.
 
     The Create-Skill action button self-hides via ``should_show_button``
     when no cloud instance exists yet, but the section's other fields
@@ -682,7 +689,8 @@ def _step2_create_skill_entries(
 def _step3_link_entries(
     *, is_registered: bool, skill_id_set: bool, otp_code: str | None
 ) -> list[ConfigEntry]:
-    """Step 3 — get an OTP from the cloud and enter it in the Yandex app.
+    """
+    Step 3 — get an OTP from the cloud and enter it in the Yandex app.
 
     Hidden until both Step 1 (cloud registration) and Step 2 (skill
     created — ``skill_id_set``) are done: OTP linking only makes sense
@@ -747,7 +755,8 @@ def build_direct_entries(
     skill_id: str = "",
     skill_token_set: bool = False,
 ) -> list[ConfigEntry]:
-    """Return the direct-mode config entries as a single Create-Skill step.
+    """
+    Return the direct-mode config entries as a single Create-Skill step.
 
     direct mode has no yaha-cloud registration (Step 1) and no OTP
     linking (Step 3) — Yandex Dialogs' account-linking UI handles that

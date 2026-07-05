@@ -1,4 +1,5 @@
-"""Tests for the Universal Group Player lifecycle.
+"""
+Tests for the Universal Group Player lifecycle.
 
 Mirrors the structure of ``tests/providers/sync_group/test_sync_group.py`` but covers the
 multicast-stream variant (Universal Group). The new lifecycle replaces the

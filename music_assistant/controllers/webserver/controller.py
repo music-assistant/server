@@ -34,6 +34,7 @@ from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_VALUE_AUTO,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
@@ -105,6 +106,8 @@ class WebserverController(CoreController):
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
         self.clients: set[WebsocketClientHandler] = set()
+        # the URL that the "auto" base_url setting resolves to, detected at setup
+        self._auto_base_url: str = ""
         self.manifest.name = "Web Server (frontend and api)"
         self.manifest.description = (
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
@@ -120,7 +123,10 @@ class WebserverController(CoreController):
         config = getattr(self, "config", None)
         if config is None:
             return ""
-        return str(config.get_value(CONF_BASE_URL)).removesuffix("/")
+        base_url = str(config.get_value(CONF_BASE_URL) or CONF_VALUE_AUTO)
+        if base_url == CONF_VALUE_AUTO:
+            return self._auto_base_url
+        return base_url.removesuffix("/")
 
     async def get_config_entries(
         self,
@@ -129,7 +135,6 @@ class WebserverController(CoreController):
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
-        default_publish_ip = ip_addresses[0]
 
         # Handle verify SSL action
         ssl_verify_result = ""
@@ -140,12 +145,6 @@ class WebserverController(CoreController):
             )
             ssl_verify_result = format_certificate_info(cert_info)
 
-        # Determine if SSL is enabled from values
-        ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
-        protocol = "https" if ssl_enabled else "http"
-        default_base_url = (
-            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{DEFAULT_SERVER_PORT}"
-        )
         return (
             ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -157,7 +156,7 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
-                default_value=default_base_url,
+                default_value=CONF_VALUE_AUTO,
                 requires_reload=False,
             ),
             ConfigEntry(
@@ -250,10 +249,8 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
-        # legacy /imageproxy?provider=&path= form — deprecated; the canonical
-        # /imageproxy/<image_id> form is registered as a dynamic route on the
-        # webserver by MetaDataController.post_setup()
-        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_legacy_imageproxy))
+        # the canonical /imageproxy/<image_id> form is registered as a dynamic
+        # route on the webserver by MetaDataController.post_setup()
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
@@ -298,12 +295,18 @@ class WebserverController(CoreController):
             ingress_tcp_site_params = (ingress_host, INGRESS_SERVER_PORT)
         else:
             ingress_tcp_site_params = None
-        base_url = str(config.get_value(CONF_BASE_URL))
         port_value = config.get_value(CONF_BIND_PORT)
         assert isinstance(port_value, int)
         self.publish_port = port_value
         self.publish_ip = default_publish_ip
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
+        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
+        # resolve the URL that the "auto" base_url default (or an unset value) translates to
+        protocol = "https" if ssl_enabled else "http"
+        self._auto_base_url = (
+            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{self.publish_port}"
+        )
+        base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
         if not self.auth.has_users:
@@ -336,7 +339,6 @@ class WebserverController(CoreController):
 
         # Create SSL context if SSL is enabled
         ssl_context = None
-        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
         if ssl_enabled:
             ssl_context = await create_server_ssl_context(
                 str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
@@ -404,7 +406,8 @@ class WebserverController(CoreController):
                 client._cancel()
 
     def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
-        """Set the sendspin player_id on websocket clients for a specific user.
+        """
+        Set the sendspin player_id on websocket clients for a specific user.
 
         This is called by the sendspin proxy when a client connects, allowing
         the player controller to auto-whitelist the player for that user's session.
@@ -422,7 +425,8 @@ class WebserverController(CoreController):
                 )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
-        """Set the sendspin player_id on a websocket client for a WebRTC session.
+        """
+        Set the sendspin player_id on a websocket client for a WebRTC session.
 
         This is called by the WebRTC gateway when it extracts the client_id from
         the sendspin auth message, allowing auto-whitelisting of the player.
@@ -639,7 +643,8 @@ class WebserverController(CoreController):
         return await self._server.serve_static(swagger_html_path, request)
 
     async def _render_error_page(self, error_message: str, status: int = 403) -> web.Response:
-        """Render a user-friendly error page with the given message.
+        """
+        Render a user-friendly error page with the given message.
 
         :param error_message: The error message to display to the user.
         :param status: HTTP status code for the response.
@@ -746,6 +751,15 @@ class WebserverController(CoreController):
 
             # If return_url provided, append code parameter and return as redirect_to
             if return_url:
+                # SECURITY FIX (GHSA-j369-4c4w-7qmq): only forward the token to trusted
+                # destinations. is_allowed_redirect_url returns (True, "external") for any
+                # unknown external URL, so checking is_valid alone would still leak the JWT.
+                # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
+                # the token immediately with no consent step, so "external" must be rejected.
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category != "trusted":
+                    return web.Response(status=400, text="Invalid return_url")
+
                 # Insert code parameter before any hash fragment
                 code_param = f"code={quote(token, safe='')}"
                 if "#" in return_url:

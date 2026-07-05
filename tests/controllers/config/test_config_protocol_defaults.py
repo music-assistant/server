@@ -132,7 +132,7 @@ async def test_protocol_prefixed_reset_to_default_sticks(mass: MusicAssistant) -
     # set the prefixed value to a non-default, alongside an unrelated parent change
     await mass.config.save_player_config(
         PARENT_ID,
-        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "volume_normalization": False},
+        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "output_limiter": False},
     )
     config = await mass.config.get_player_config(PARENT_ID)
     assert config.values[PREFIXED_KEY].value == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
@@ -154,7 +154,8 @@ async def test_protocol_prefixed_reset_to_default_sticks(mass: MusicAssistant) -
 
 
 async def test_stale_prefixed_copy_does_not_shadow_default(mass: MusicAssistant) -> None:
-    """A pre-existing stale prefixed copy on the parent must not shadow the default.
+    """
+    A pre-existing stale prefixed copy on the parent must not shadow the default.
 
     Covers installs that already accumulated a redundant prefixed value before the
     fix: the protocol player holds the default (no stored value), so the config must
@@ -181,12 +182,12 @@ async def test_full_form_save_does_not_persist_prefixed_copy_on_parent(
 
     await mass.config.save_player_config(
         PARENT_ID,
-        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "volume_normalization": False},
+        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "output_limiter": False},
     )
 
     stored = _parent_stored_values(mass)
     # parent-level (non-protocol) change is fine to persist
-    assert stored.get("volume_normalization") is False
+    assert stored.get("output_limiter") is False
     # protocol-prefixed entries are virtual mirrors of the child and must never live on the parent
     assert not any(CONF_PROTOCOL_KEY_SPLITTER in key for key in stored)
 

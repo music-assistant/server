@@ -54,7 +54,8 @@ class BandcampConverters:
     def streaming_url_from_api(
         streaming_info: dict[str, str],
     ) -> tuple[str | None, int | None, ContentType]:
-        """Parse streaming URL info.
+        """
+        Parse streaming URL info.
 
         :param streaming_info: Dict of format keys to URLs from the Bandcamp API.
         """
@@ -326,7 +327,8 @@ class BandcampConverters:
         return output
 
     def album_from_discography_item(self, item: DiscographyItem) -> MAAlbum:
-        """Convert a raw discography dict to MA Album format.
+        """
+        Convert a raw discography dict to MA Album format.
 
         Discography items come from the band_details API and contain summary
         data (title, art_id, release_date string) without full album details.

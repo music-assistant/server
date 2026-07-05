@@ -36,7 +36,8 @@ class DummyHandler(ScrobblerHelper):
 
 
 async def test_it_does_not_scrobble_the_same_track_twice() -> None:
-    """While songs are playing we get updates every 30 seconds.
+    """
+    While songs are playing we get updates every 30 seconds.
 
     Here we test that songs only get scrobbled once during each play.
     """
@@ -64,7 +65,8 @@ async def test_it_does_not_scrobble_the_same_track_twice() -> None:
 
 
 async def test_it_resets_now_playing_when_songs_are_on_loop() -> None:
-    """When a song starts playing we update the 'now playing' endpoint.
+    """
+    When a song starts playing we update the 'now playing' endpoint.
 
     This ends automatically, so if a single song is on repeat, we need to send the request again
     """

@@ -19,16 +19,33 @@ class LibraryHelper(DataClassDictMixin):
 
 
 @dataclass(kw_only=True)
-class LibrariesHelper(DataClassDictMixin):
-    """Helper class to store ABSLibrary name, id and the uuids of its media items.
+class NarratorHelper(DataClassDictMixin):
+    """Store narrator's name and id."""
 
-    Dictionary is lib_id:LibraryHelper or lib_id:set[playlist_ids].
+    id_: str
+    name: str
+
+    def __hash__(self) -> int:
+        """Hash."""
+        return hash(self.id_)
+
+
+@dataclass(kw_only=True)
+class LibrariesHelper(DataClassDictMixin):
+    """
+    Helper class to store ABSLibrary name, id and the uuids of its media items.
+
+    Dictionary is lib_id:LibraryHelper or lib_id:set[playlist_ids/narrator_ids/author_ids].
     """
 
     audiobooks: dict[str, LibraryHelper] = field(default_factory=dict)
     podcasts: dict[str, LibraryHelper] = field(default_factory=dict)
     playlists_audiobooks: dict[str, set[str]] = field(default_factory=dict)
     playlists_podcasts: dict[str, set[str]] = field(default_factory=dict)
+    authors: dict[str, set[str]] = field(default_factory=dict)
+    narrators: dict[str, set[str]] = field(default_factory=dict)
+    # audiobook_id is key. Abs does not have a dedicated narrator endpoint.
+    audiobook_narrators: dict[str, set[NarratorHelper]] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True)
@@ -47,7 +64,8 @@ class _ProgressHelper:
 
 
 class ProgressGuard:
-    """Class used to avoid ping pong between abs and mass.
+    """
+    Class used to avoid ping pong between abs and mass.
 
     We continuously update the progress from mass to abs with the provider's on_played function.
     We also register callbacks for progress reports from abs to mass. This is not only triggered
@@ -93,7 +111,8 @@ class ProgressGuard:
         self._progresses.append(progress)
 
     def guard_ok_abs(self, abs_progress: MediaProgress) -> bool:
-        """Check, if we may update against an abs media progress.
+        """
+        Check, if we may update against an abs media progress.
 
         The abs media progress has a property last_update_ms, which also reflects non
         mass external updates. Here, we compare this property against a potential
@@ -102,7 +121,8 @@ class ProgressGuard:
         return self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id)
 
     def guard_ok_mass(self, item_id: str, episode_id: str | None = None) -> bool:
-        """Check, if we may update against a mass internal item.
+        """
+        Check, if we may update against a mass internal item.
 
         Here, we use the current time and compare it against the stored time.
         """

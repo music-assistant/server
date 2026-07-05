@@ -9,13 +9,17 @@ This provider supports the Digitally Incorporated network of streaming radio ser
 - ClassicalRadio
 - ZenRadio
 
-The provider requires a premium account and listen key for authentication.
+The provider requires a premium account and listen key for streaming. Library
+favorites are read from each network's listen host ``favorites.pls`` (read-only;
+edit favorites on the service website).
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -26,7 +30,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -38,9 +46,10 @@ from music_assistant_models.media_items import (
     SearchResults,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.playlists import parse_pls
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
@@ -72,7 +81,26 @@ API_BASE_URL = "api.audioaddict.com/v1"
 API_TIMEOUT = 30
 CACHE_CHANNELS = 86400  # 24 hours
 CACHE_GENRES = 86400  # 24 hours
-CACHE_STREAM_URL = 3600  # 1 hour
+CACHE_STREAM_URLS = 3600  # 1 hour
+CACHE_FAVORITES = 300  # 5 minutes
+
+# Favorites playlist on listen.* (premium tier; ``public3`` is legacy and not used here).
+_PLS_CHANNEL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
+
+# Root ``/favorites.pls`` (no tier) often returns HTTP 406 — use premium only.
+FAVORITES_PLS_PATHS: tuple[str, ...] = ("premium/favorites.pls",)
+FAVORITES_PLS_EXTRA_PARAMS: dict[str, str] = {"download": "1"}
+
+# Premium PLS may use codec-specific mounts (``pianojazz_aac``) while API ``key`` is ``pianojazz``.
+PLS_KEY_CODEC_SUFFIXES: tuple[str, ...] = ("_aac", "_mp3")
+
+# Optional short listen-host basename prefixes (besides ``3rdparty_{network}_`` / ``{network}_``).
+NETWORK_PLS_SHORT_PREFIXES: dict[str, tuple[str, ...]] = {
+    "radiotunes": ("rt_",),
+    "rockradio": ("rr_",),
+    "classicalradio": ("cr_",),
+    "zenradio": ("zr_",),
+}
 
 # Rate limiting
 RATE_LIMIT = 2  # requests per period
@@ -268,13 +296,25 @@ class DigitallyIncorporatedProvider(MusicProvider):
         return results
 
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
-        """Retrieve all radio stations from active networks."""
+        """Retrieve the user's favorite radio stations from active networks."""
         for network_key in self._get_active_networks():
             try:
-                channels = await self._get_channels(network_key)
+                channel_keys = await self._get_favorite_channel_keys(network_key)
+                if not channel_keys:
+                    continue
 
-                for channel_data in channels:
-                    yield self._channel_to_radio(channel_data, network_key)
+                channels = await self._get_channels(network_key)
+                channels_by_key = {
+                    str(ch["key"]): ch for ch in channels if isinstance(ch, dict) and ch.get("key")
+                }
+                channels_lower_by_key = {k.lower(): v for k, v in channels_by_key.items()}
+
+                for channel_key in channel_keys:
+                    ch_data = self._channel_data_for_pls_key(
+                        channel_key, channels_by_key, channels_lower_by_key
+                    )
+                    if ch_data:
+                        yield self._channel_to_radio(ch_data, network_key)
 
             except (
                 ProviderUnavailableError,
@@ -284,7 +324,10 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 KeyError,
             ) as err:
                 self.logger.debug(
-                    "%s: Failed to get channels for network %s: %s", self.domain, network_key, err
+                    "%s: Failed to get favorites for network %s: %s",
+                    self.domain,
+                    network_key,
+                    err,
                 )
                 continue
 
@@ -329,8 +372,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         # Validate and parse the provider ID
         network_key, channel_key = self._validate_item_id(item_id)
 
-        # Get the stream URL
-        stream_url = await self._get_stream_url(network_key, channel_key)
+        stream_urls = await self._get_stream_urls(network_key, channel_key)
 
         return StreamDetails(
             provider=self.instance_id,
@@ -340,7 +382,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
             ),
             media_type=MediaType.RADIO,
             stream_type=StreamType.ICY,
-            path=stream_url,
+            path=[MultiPartPath(path=url) for url in stream_urls],
             allow_seek=False,
             can_seek=False,
             duration=0,  # Infinite duration for radio streams
@@ -455,7 +497,9 @@ class DigitallyIncorporatedProvider(MusicProvider):
         self,
         network_key: str,
         endpoint: str,
+        method: str = "GET",
         use_https: bool = True,
+        json_body: dict[str, Any] | None = None,
         **params: Any,
     ) -> Any:
         """Make a generic API request to Digitally Incorporated."""
@@ -467,7 +511,9 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
         async with (
             self._throttler,
-            self.mass.http_session.get(url, params=params, timeout=timeout) as resp,
+            self.mass.http_session.request(
+                method, url, params=params, json=json_body, timeout=timeout
+            ) as resp,
         ):
             if resp.status == 403:
                 msg = f"{self.domain}: Access denied - check your listen key and subscription"
@@ -480,7 +526,164 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 raise ProviderUnavailableError(msg)
 
             resp.raise_for_status()
+
+            if resp.status == 204:
+                return None
             return await resp.json()
+
+    async def _fetch_favorites_pls(self, network_key: str) -> str:
+        """Download favorites.pls from the listen.* host for this network."""
+        domain = NETWORKS[network_key]["domain"]
+        listen_key = self.config.get_value("listen_key")
+        timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
+        params: dict[str, str] = {"listen_key": str(listen_key), **FAVORITES_PLS_EXTRA_PARAMS}
+        try:
+            for rel in FAVORITES_PLS_PATHS:
+                url = f"https://listen.{domain}/{rel}"
+                async with (
+                    self._throttler,
+                    self.mass.http_session.get(url, params=params, timeout=timeout) as resp,
+                ):
+                    if resp.status == 200:
+                        return await resp.text()
+                    if resp.status == 403:
+                        self.logger.debug(
+                            "%s: favorites.pls access denied for network %s (%s)",
+                            self.domain,
+                            network_key,
+                            rel,
+                        )
+                        return ""
+                    if resp.status in (404, 406):
+                        continue
+                    if resp.status >= 500:
+                        self.logger.debug(
+                            "%s: favorites.pls HTTP %s for network %s (%s)",
+                            self.domain,
+                            resp.status,
+                            network_key,
+                            rel,
+                        )
+                        return ""
+                    resp.raise_for_status()
+            self.logger.debug(
+                "%s: favorites.pls not usable for network %s (tried %s)",
+                self.domain,
+                network_key,
+                ", ".join(FAVORITES_PLS_PATHS),
+            )
+            return ""
+        except (aiohttp.ClientError, aiohttp.ServerTimeoutError) as err:
+            self.logger.debug(
+                "%s: favorites.pls request failed for network %s: %s",
+                self.domain,
+                network_key,
+                err,
+            )
+            return ""
+
+    def _pls_url_basename(self, stream_url: str) -> str | None:
+        """Last path segment of a stream URL (stream mount / slug)."""
+        parsed = urlparse(stream_url.strip())
+        path = parsed.path.strip("/")
+        if not path:
+            return None
+        return path.rsplit("/", maxsplit=1)[-1]
+
+    def _pls_basename_prefixes(self, network_key: str) -> tuple[str, ...]:
+        """Prefixes to strip from PLS stream basenames; longest match wins."""
+        parts: list[str] = []
+        parts.extend(NETWORK_PLS_SHORT_PREFIXES.get(network_key, ()))
+        parts.append(f"3rdparty_{network_key}_")
+        parts.append(f"{network_key}_")
+        # Dedupe, then longest first so e.g. ``3rdparty_jazzradio_`` beats ``jazzradio_``.
+        unique = dict.fromkeys(parts)
+        return tuple(sorted(unique, key=len, reverse=True))
+
+    def _stream_url_to_channel_key(self, stream_url: str, network_key: str) -> str | None:
+        """Map a favorites.pls stream URL to a slug we can match to API channel ``key``."""
+        basename = self._pls_url_basename(stream_url)
+        if not basename:
+            return None
+        for prefix in self._pls_basename_prefixes(network_key):
+            if basename.startswith(prefix):
+                key = basename[len(prefix) :]
+                if key:
+                    return key
+        # Premium PLS often uses the API channel key alone (e.g. ``ambient``), not ``di_ambient``.
+        if _PLS_CHANNEL_SLUG_RE.fullmatch(basename):
+            return basename
+        return None
+
+    def _channel_data_for_pls_key(
+        self,
+        pls_key: str,
+        channels_by_key: dict[str, dict[str, Any]],
+        channels_lower_by_key: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Match a PLS-derived slug to channel JSON (case-insensitive; ``*_aac`` / ``*_mp3``)."""
+        if pls_key in channels_by_key:
+            return channels_by_key[pls_key]
+        pls_lower = pls_key.lower()
+        if pls_lower in channels_lower_by_key:
+            return channels_lower_by_key[pls_lower]
+        for suffix in PLS_KEY_CODEC_SUFFIXES:
+            if pls_lower.endswith(suffix):
+                trimmed_lower = pls_lower[: -len(suffix)]
+                if trimmed_lower in channels_lower_by_key:
+                    return channels_lower_by_key[trimmed_lower]
+        return None
+
+    def _parse_favorites_pls_channel_keys(self, pls_body: str, network_key: str) -> list[str]:
+        """Return ordered, unique channel keys derived from the favorites PLS entries."""
+        try:
+            items = parse_pls(pls_body)
+        except InvalidDataError as err:
+            self.logger.debug(
+                "%s: could not parse favorites PLS for network %s: %s",
+                self.domain,
+                network_key,
+                err,
+            )
+            return []
+        ordered: list[str] = []
+        seen_keys: set[str] = set()
+        unmapped_basenames: set[str] = set()
+        for item in items:
+            channel_key = self._stream_url_to_channel_key(item.path, network_key)
+            if channel_key and channel_key not in seen_keys:
+                seen_keys.add(channel_key)
+                ordered.append(channel_key)
+            elif not channel_key and (bn := self._pls_url_basename(item.path)):
+                unmapped_basenames.add(bn)
+        if unmapped_basenames:
+            sample = ", ".join(sorted(unmapped_basenames)[:12])
+            extra = len(unmapped_basenames) - 12
+            more = f" (+{extra} more)" if extra > 0 else ""
+            self.logger.debug(
+                "%s: PLS for network %s: could not map %d path(s) to channel keys: %s%s",
+                self.domain,
+                network_key,
+                len(unmapped_basenames),
+                sample,
+                more,
+            )
+        return ordered
+
+    @use_cache(CACHE_FAVORITES)
+    async def _get_favorite_channel_keys(self, network_key: str) -> list[str]:
+        """Channel keys for user favorites, from listen host favorites.pls."""
+        pls_body = await self._fetch_favorites_pls(network_key)
+        if not pls_body.strip():
+            return []
+        keys = self._parse_favorites_pls_channel_keys(pls_body, network_key)
+        self.logger.debug(
+            "%s: Parsed %d favorite channel keys for network %s from PLS",
+            self.domain,
+            len(keys),
+            network_key,
+        )
+        return keys
 
     @use_cache(CACHE_CHANNELS)
     async def _get_channels(self, network_key: str) -> list[dict[str, Any]]:
@@ -603,10 +806,12 @@ class DigitallyIncorporatedProvider(MusicProvider):
             )
             return {}
 
-    @use_cache(CACHE_STREAM_URL)
-    async def _get_stream_url(self, network_key: str, channel_key: str) -> str:
-        """Get the streaming URL for a channel."""
-        self.logger.debug("%s: Getting stream URL for %s:%s", self.domain, network_key, channel_key)
+    @use_cache(CACHE_STREAM_URLS)
+    async def _get_stream_urls(self, network_key: str, channel_key: str) -> list[str]:
+        """Get the streaming URLs for a channel (ordered mirrors / failover)."""
+        self.logger.debug(
+            "%s: Getting stream URLs for %s:%s", self.domain, network_key, channel_key
+        )
 
         listen_key = self.config.get_value("listen_key")
         if not listen_key:
@@ -614,46 +819,48 @@ class DigitallyIncorporatedProvider(MusicProvider):
             raise ProviderUnavailableError(msg)
 
         try:
-            params = {"listen_key": listen_key}
             playlist = await self._api_request(
-                network_key, f"listen/premium_high/{channel_key}", use_https=True, **params
+                network_key,
+                f"listen/premium_high/{channel_key}",
+                method="GET",
+                use_https=True,
+                listen_key=str(listen_key),
             )
 
-            # Use the first stream URL from the playlist
-            self.logger.debug(
-                "%s: Digitally Incorporated playlist returned %d URLs", self.domain, len(playlist)
-            )
             if not playlist or not isinstance(playlist, list):
                 msg = f"{self.domain}: No stream URLs returned from Digitally Incorporated API"
                 raise MediaNotFoundError(msg)
 
-            # Log all available URLs for debugging
-            for i, url in enumerate(playlist):
-                self.logger.debug("%s: Available stream URL %d: %s", self.domain, i + 1, url)
+            stream_list: list[str] = [url for url in playlist if url and isinstance(url, str)]
+            self.logger.debug(
+                "%s: Filtered %d valid stream URLs from playlist of %d URLs",
+                self.domain,
+                len(stream_list),
+                len(playlist),
+            )
 
-            # Use the first URL - Digitally Incorporated typically returns them in priority order
-            stream_url: str = str(playlist[0])
-            self.logger.debug("%s: Selected stream URL: %s", self.domain, stream_url)
-
-            # Validate the stream URL
-            if not stream_url or not isinstance(stream_url, str):
-                msg = f"{self.domain}: Invalid stream URL received: {stream_url}"
+            if not stream_list:
+                msg = f"{self.domain}: No valid stream URLs found in the playlist"
                 raise MediaNotFoundError(msg)
 
-            return stream_url
+            # Log all available URLs
+            for i, url in enumerate(stream_list):
+                self.logger.debug("%s: Available stream URL %d: %s", self.domain, i + 1, url)
+
+            return stream_list
 
         except ProviderUnavailableError, MediaNotFoundError:
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
-        except (aiohttp.ClientError, ValueError, KeyError, IndexError) as err:
+        except (aiohttp.ClientError, ValueError) as err:
             self.logger.error(
-                "%s: Failed to get stream URL for %s:%s: %s",
+                "%s: Failed to get stream URLs for %s:%s: %s",
                 self.domain,
                 network_key,
                 channel_key,
                 err,
             )
-            raise MediaNotFoundError(f"{self.domain}: Unable to get stream URL: {err}") from err
+            raise MediaNotFoundError(f"{self.domain}: Unable to get stream URLs: {err}") from err
 
     def _channel_to_radio(self, channel_data: dict[str, Any], network_key: str) -> Radio:
         """Convert channel data to Radio object."""

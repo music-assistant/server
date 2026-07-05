@@ -36,7 +36,8 @@ async def cache(mass_minimal: MusicAssistant) -> CacheController:
 
 
 async def _create_db_files(cache_path: str) -> list[str]:
-    """Create small cache.db, cache.db-wal, and cache.db-shm files.
+    """
+    Create small cache.db, cache.db-wal, and cache.db-shm files.
 
     :param cache_path: Path to the cache directory.
     """

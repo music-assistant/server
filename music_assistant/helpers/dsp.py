@@ -18,7 +18,8 @@ if TYPE_CHECKING:
 
 
 def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) -> list[str]:
-    """Convert a DSP filter model to FFmpeg filter parameters.
+    """
+    Convert a DSP filter model to FFmpeg filter parameters.
 
     Args:
         dsp_filter: DSP filter configuration (ParametricEQ or ToneControl)

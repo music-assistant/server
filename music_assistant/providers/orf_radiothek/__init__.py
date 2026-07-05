@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncGenerator, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -54,6 +54,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -765,7 +766,7 @@ class RadiothekProvider(MusicProvider):
             raise MediaNotFoundError("Podcast not found.")
         podcast_title = st.name or station_id
 
-        today = datetime.now(UTC).date()
+        today = utc().date()
         for day_offset in range(CATCHUP_DAYS):
             d = today - timedelta(days=day_offset)
             yyyymmdd = f"{d.year:04d}{d.month:02d}{d.day:02d}"

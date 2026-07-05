@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest.mock
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import pytest
 from aiohttp import ClientPayloadError, ServerDisconnectedError
@@ -95,7 +95,8 @@ def test_select_best_quality_balanced_falls_back_to_highest(
 def test_select_best_quality_legacy_lossless_alias_returns_flac(
     streaming_manager: YandexMusicStreamingManager,
 ) -> None:
-    """Legacy stored value 'lossless' (pre-Superb rename) still maps to FLAC.
+    """
+    Legacy stored value 'lossless' (pre-Superb rename) still maps to FLAC.
 
     Current UI writes ``superb``; older configs may still hold the literal
     ``lossless`` string. The selector must treat the two as synonyms.
@@ -451,7 +452,7 @@ class _MockResponse:
         if self._error is not None:
             raise self._error
 
-    async def __aenter__(self) -> _MockResponse:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *args: object) -> None:
@@ -511,7 +512,8 @@ async def test_get_audio_stream_http_error_does_not_leak_signed_url(
     streaming_manager: YandexMusicStreamingManager,
     streaming_provider_stub: StreamingProviderStub,
 ) -> None:
-    """Re-raised stream error must not include the signed CDN URL.
+    """
+    Re-raised stream error must not include the signed CDN URL.
 
     ``aiohttp``'s ``ClientResponseError.__str__`` embeds the request URL, which
     for Yandex audio responses carries an expiring signature in the query
@@ -789,7 +791,8 @@ async def test_get_audio_stream_exact_window_boundary(
     streaming_manager: YandexMusicStreamingManager,
     streaming_provider_stub: StreamingProviderStub,
 ) -> None:
-    """File whose size is an exact multiple of _RANGE_WINDOW does not trigger a 416 error.
+    """
+    File whose size is an exact multiple of _RANGE_WINDOW does not trigger a 416 error.
 
     Without the Content-Range EOF guard the loop would request the next window after
     receiving exactly _RANGE_WINDOW bytes in a 206 response, which would result in a
@@ -831,7 +834,8 @@ async def test_get_audio_stream_continues_after_non_block_boundary_drop(
     streaming_manager: YandexMusicStreamingManager,
     streaming_provider_stub: StreamingProviderStub,
 ) -> None:
-    """TCP drop at a non-AES-block boundary must not cause premature EOF on reconnect.
+    """
+    TCP drop at a non-AES-block boundary must not cause premature EOF on reconnect.
 
     Scenario (patched window = 32 bytes = 2 AES blocks, 50-byte file):
     - Window 1 (bytes=0-31) drops at byte 17 (not on a 16-byte AES boundary).
@@ -1133,7 +1137,8 @@ def _attach_get_track(
 async def test_get_stream_details_happy_path_uses_get_file_info(
     streaming_manager: YandexMusicStreamingManager,
 ) -> None:
-    """When ``get_track_file_info`` returns a URL, build StreamDetails directly.
+    """
+    When ``get_track_file_info`` returns a URL, build StreamDetails directly.
 
     The fast path skips the legacy ``download-info`` fallback entirely.
     """
@@ -1165,7 +1170,8 @@ async def test_get_stream_details_happy_path_uses_get_file_info(
 async def test_get_stream_details_falls_back_to_download_info_when_file_info_empty(
     streaming_manager: YandexMusicStreamingManager,
 ) -> None:
-    """When ``get_track_file_info`` returns ``None``, use the download-info path.
+    """
+    When ``get_track_file_info`` returns ``None``, use the download-info path.
 
     The fallback uses ``StreamType.HTTP`` with the direct CDN link from the
     legacy ``/tracks/{id}/download-info`` endpoint.

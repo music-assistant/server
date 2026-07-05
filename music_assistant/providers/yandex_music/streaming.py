@@ -60,7 +60,8 @@ class YandexMusicStreamingManager:
     """Manages Yandex Music streaming operations."""
 
     def __init__(self, provider: YandexMusicProvider) -> None:
-        """Initialize streaming manager.
+        """
+        Initialize streaming manager.
 
         :param provider: The Yandex Music provider instance.
         """
@@ -76,7 +77,8 @@ class YandexMusicStreamingManager:
         return item_id
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
-        """Get stream details for a track.
+        """
+        Get stream details for a track.
 
         Uses the unified /get-file-info endpoint for all quality tiers.
         Falls back to /tracks/{id}/download-info if get-file-info fails.
@@ -224,7 +226,8 @@ class YandexMusicStreamingManager:
     def _select_best_quality(
         self, download_infos: list[Any], preferred_quality: str | None
     ) -> DownloadInfo | None:
-        """Select the best quality download info based on user preference.
+        """
+        Select the best quality download info based on user preference.
 
         Used as fallback when get-file-info is unavailable.
 
@@ -314,7 +317,8 @@ class YandexMusicStreamingManager:
         return sorted_infos[0] if sorted_infos else None
 
     def _get_content_type(self, codec: str | None) -> tuple[ContentType, ContentType]:
-        """Determine content_type and codec_type from Yandex API codec string.
+        """
+        Determine content_type and codec_type from Yandex API codec string.
 
         Parses the codec string automatically:
         - Simple codecs ("flac", "mp3", "aac") → (ContentType.<codec>, UNKNOWN)
@@ -358,7 +362,8 @@ class YandexMusicStreamingManager:
         sample_rate: int = 0,
         bit_depth: int = 0,
     ) -> AudioFormat:
-        """Build AudioFormat from codec string and optional stream metadata.
+        """
+        Build AudioFormat from codec string and optional stream metadata.
 
         Values of 0 mean "unknown — let MA/ffmpeg detect from the actual stream".
         Pass real values from the API response when available.
@@ -386,7 +391,8 @@ class YandexMusicStreamingManager:
 
     @staticmethod
     def _parse_flac_streaminfo(header: bytes) -> tuple[int, int]:
-        """Extract sample_rate and bit_depth from FLAC STREAMINFO block.
+        """
+        Extract sample_rate and bit_depth from FLAC STREAMINFO block.
 
         FLAC format: 4-byte magic "fLaC", then metadata blocks.
         STREAMINFO is always the first block (type 0), 34 bytes payload.
@@ -410,7 +416,8 @@ class YandexMusicStreamingManager:
 
     @staticmethod
     def _parse_mp4_audio_params(header: bytes) -> tuple[int, int]:
-        """Extract sample_rate and bit_depth from MP4/fMP4 container.
+        """
+        Extract sample_rate and bit_depth from MP4/fMP4 container.
 
         Scans for the 'dfLa' (FLAC-in-MP4) box, or falls back to parsing
         the AudioSampleEntry in an 'mp4a' box to read sample size and sample rate.
@@ -453,7 +460,8 @@ class YandexMusicStreamingManager:
         return 0, 0
 
     async def _probe_stream_params(self, url: str, codec: str) -> tuple[int, int]:
-        """Probe audio params by reading the first bytes of the stream.
+        """
+        Probe audio params by reading the first bytes of the stream.
 
         Makes a small Range request to read container/stream headers,
         then parses FLAC STREAMINFO or MP4 box structure.
@@ -501,7 +509,8 @@ class YandexMusicStreamingManager:
         attempt: int,
         max_retries: int,
     ) -> bool:
-        """Re-fetch an expired stream URL (works for both raw and encraw).
+        """
+        Re-fetch an expired stream URL (works for both raw and encraw).
 
         Updates streamdetails.data in-place with new URL (and key for encraw).
 
@@ -542,7 +551,8 @@ class YandexMusicStreamingManager:
         block_size: int,
         bytes_delivered: int,
     ) -> AsyncGenerator[bytes]:
-        """Decrypt one HTTP response and yield plaintext chunks.
+        """
+        Decrypt one HTTP response and yield plaintext chunks.
 
         Aligns the AES-CTR counter to the correct block for resumption.
         If the server ignores a Range header (200 instead of 206), resets the
@@ -592,7 +602,8 @@ class YandexMusicStreamingManager:
         delays: tuple[float, ...],
         label: str,
     ) -> tuple[int, float]:
-        """Increment retry counter, log a warning, or raise if retries are exhausted.
+        """
+        Increment retry counter, log a warning, or raise if retries are exhausted.
 
         :param err: The exception that caused the retry.
         :param attempt: Current retry attempt count (0-based).
@@ -618,7 +629,8 @@ class YandexMusicStreamingManager:
 
     @staticmethod
     def _is_content_range_eof(headers: Any, window_end: int) -> bool:
-        """Return True when Content-Range indicates *window_end* reached the last file byte.
+        """
+        Return True when Content-Range indicates *window_end* reached the last file byte.
 
         Parses ``Content-Range: bytes start-end/total`` and checks whether
         ``window_end >= total - 1``.  Returns False on any malformed header so
@@ -641,7 +653,8 @@ class YandexMusicStreamingManager:
         bytes_delivered: int,
         block_start: int,
     ) -> AsyncGenerator[bytes]:
-        """Yield raw (unencrypted) chunks from one HTTP response.
+        """
+        Yield raw (unencrypted) chunks from one HTTP response.
 
         If the server ignored the Range header (200 instead of 206), skips the
         already-delivered prefix transparently.
@@ -671,7 +684,8 @@ class YandexMusicStreamingManager:
         attempt: int,
         max_retries: int,
     ) -> bytes:
-        """Handle URL expiry (401/403/410) by refreshing and returning updated key.
+        """
+        Handle URL expiry (401/403/410) by refreshing and returning updated key.
 
         :return: Updated AES key bytes for encrypted streams, or empty ``bytes``
             for raw streams.
@@ -697,7 +711,8 @@ class YandexMusicStreamingManager:
 
     @staticmethod
     def _validate_encryption_key(data: dict[str, Any]) -> tuple[bool, bytes | None]:
-        """Validate and extract encryption parameters from stream data.
+        """
+        Validate and extract encryption parameters from stream data.
 
         :return: (is_encrypted, key_bytes) tuple.
         :raises MediaNotFoundError: If AES key length is invalid.
@@ -715,7 +730,8 @@ class YandexMusicStreamingManager:
     def _calculate_seek_offset(
         self, data: dict[str, Any], seek_position: int, is_encrypted: bool
     ) -> int:
-        """Calculate initial byte offset for raw transport seeking.
+        """
+        Calculate initial byte offset for raw transport seeking.
 
         :param data: Stream data dict (must contain 'bit_rate' in kbps).
         :param seek_position: Seek offset in seconds.
@@ -739,7 +755,8 @@ class YandexMusicStreamingManager:
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Return the audio stream via windowed Range requests.
+        """
+        Return the audio stream via windowed Range requests.
 
         Handles both raw (direct) and encraw (AES-CTR encrypted) transports.
         Downloads in windowed Range requests of _RANGE_WINDOW bytes each to prevent

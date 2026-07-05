@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import random
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -19,6 +18,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
@@ -263,7 +263,7 @@ class LastFMRecommendationManager:
         random_count = target_count - TOP_ITEMS_TO_TAKE
 
         # Hourly seed keeps the sampled remainder stable within the hour and rotates it each hour.
-        now = datetime.datetime.now(tz=datetime.UTC)
+        now = utc()
         seed = f"{now.date().isoformat()}_{now.hour}_{seed_suffix}"
         rng = random.Random(seed)
         random_items = rng.sample(remaining, min(random_count, len(remaining)))
@@ -502,7 +502,7 @@ class LastFMRecommendationManager:
             return
 
         # cycle through the user's top genres day by day so the genre rows vary
-        day_index = datetime.datetime.now(tz=datetime.UTC).date().toordinal()
+        day_index = utc().date().toordinal()
         tag_name = top_genres[day_index % len(top_genres)]
 
         # Over-fetch so there's enough left after library filtering and resolution failures.

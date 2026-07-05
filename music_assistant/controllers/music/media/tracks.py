@@ -183,9 +183,12 @@ class TracksController(MediaControllerBase[Track]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
+        explicit: bool | None = None,
         **kwargs: Any,
     ) -> list[Track]:
-        """Get in-database tracks.
+        """
+        Get in-database tracks.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
@@ -194,10 +197,24 @@ class TracksController(MediaControllerBase[Track]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param played_only: Filter to only played tracks.
+        :param explicit: Filter by explicit content (True=only explicit, False=no explicit, None=all).
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
+
+        # Apply explicit content filter
+        if explicit is not None:
+            if explicit:
+                # Only explicit tracks
+                extra_query_parts.append("json_extract(tracks.metadata, '$.explicit') = 1")
+            else:
+                # No explicit tracks (null or false)
+                extra_query_parts.append(
+                    "(json_extract(tracks.metadata, '$.explicit') IS NULL "
+                    "OR json_extract(tracks.metadata, '$.explicit') = 0)"
+                )
         if search and " - " in search:
             # handle combined artist + title search
             artist_str, title_str = search.split(" - ", 1)
@@ -224,6 +241,7 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            played_only=played_only,
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
@@ -579,19 +597,6 @@ class TracksController(MediaControllerBase[Track]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_track.item_id, match)
                 processed_domains.add(provider.domain)
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Track,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Track to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        return [item]
 
     async def _add_library_item(self, item: Track, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""

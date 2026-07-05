@@ -1,4 +1,5 @@
-"""Integration tests for the PlaylistController.
+"""
+Integration tests for the PlaylistController.
 
 Uses a full MusicAssistant instance with a real SQLite database in a temporary
 directory (mirroring ``tests/controllers/music/test_genres.py``) to verify that a

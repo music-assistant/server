@@ -21,7 +21,8 @@ from music_assistant.helpers.throttle_retry import (
 
 
 class FakeProvider:
-    """Minimal provider stub for testing the decorator.
+    """
+    Minimal provider stub for testing the decorator.
 
     The decorator requires `self.throttler` and `self.logger`.
     """
@@ -35,7 +36,8 @@ class FakeProvider:
         self._side_effects: list[Exception | str] = []
 
     def set_side_effects(self, effects: Sequence[Exception | str]) -> None:
-        """Configure what happens on each call.
+        """
+        Configure what happens on each call.
 
         :param effects: List of exceptions to raise, or "ok" to return successfully.
         """

@@ -16,8 +16,11 @@ from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_arm
-from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
+from music_assistant.models.audio_analysis_provider import (
+    ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS,
+    AudioAnalysisProvider,
+)
 
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
@@ -59,6 +62,9 @@ class SmartFadesData:
 class SmartFadesProvider(AudioAnalysisProvider):
     """Smart fades audio analysis provider using Beat This for beat tracking."""
 
+    max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
+    has_unloadable_models = True
+
     def __init__(
         self,
         mass: MusicAssistant,
@@ -72,43 +78,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
         self._device = "cpu"
 
     async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
+        """Handle async initialization of the provider; idle models are reloaded on demand."""
         # Configure the inference runtime before loading any model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
-        (
-            self._beat_this_model,
-            self._beat_this_post_processor,
-            self._skey_vqt,
-            self._skey_chromanet,
-            self._skey_crop,
-            self._spectral_centroid,
-        ) = await asyncio.to_thread(self._initialize_models)
-
-    def _initialize_models(self) -> tuple[Any, ...]:
-        """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
-        beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
-        # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
-        preference = ("qnnpack", "fbgemm") if is_arm() else ("fbgemm", "qnnpack")
-        supported_engines = torch.backends.quantized.supported_engines
-        quantized_engine = next((e for e in preference if e in supported_engines), None)
-        if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
-            torch.backends.quantized.engine = quantized_engine
-        beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
-            beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
-        )
-        beat_this_post_processor = DBNDownBeatTracker(
-            beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=50
-        )
-        skey_vqt, skey_chromanet, skey_crop = load_skey_components(device=self._device)
-        spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
-        return (
-            beat_this_model,
-            beat_this_post_processor,
-            skey_vqt,
-            skey_chromanet,
-            skey_crop,
-            spectral_centroid,
-        )
+        await self._load_models()
+        self._models_loaded = True
 
     async def process_pcm_chunk(
         self,
@@ -151,6 +125,52 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
             data.features.reset()
         await super().cancel(session_id)
+
+    async def _load_models(self) -> None:
+        """Load the Beat This and S-KEY models into memory."""
+        (
+            self._beat_this_model,
+            self._beat_this_post_processor,
+            self._skey_vqt,
+            self._skey_chromanet,
+            self._skey_crop,
+            self._spectral_centroid,
+        ) = await asyncio.to_thread(self._initialize_models)
+
+    def _free_models(self) -> None:
+        """Release the Beat This and S-KEY models."""
+        self._beat_this_model = None
+        self._beat_this_post_processor = None
+        self._skey_vqt = None
+        self._skey_chromanet = None
+        self._skey_crop = None
+        self._spectral_centroid = None
+
+    def _initialize_models(self) -> tuple[Any, ...]:
+        """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
+        beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
+        # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
+        preference = ("qnnpack", "fbgemm") if is_arm() else ("fbgemm", "qnnpack")
+        supported_engines = torch.backends.quantized.supported_engines
+        quantized_engine = next((e for e in preference if e in supported_engines), None)
+        if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
+            torch.backends.quantized.engine = quantized_engine
+        beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
+            beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
+        )
+        beat_this_post_processor = DBNDownBeatTracker(
+            beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=50
+        )
+        skey_vqt, skey_chromanet, skey_crop = load_skey_components(device=self._device)
+        spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
+        return (
+            beat_this_model,
+            beat_this_post_processor,
+            skey_vqt,
+            skey_chromanet,
+            skey_crop,
+            spectral_centroid,
+        )
 
     async def _start_analysis(
         self,
@@ -218,8 +238,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         # Run beat and key inference sequentially to keep peak CPU bounded.
         beats, downbeats = await self._run_offloaded(self._infer_beat_timings, feats)
         if len(beats) < 2:
-            self.logger.debug("Not enough beats detected, skipping storage")
-            return None
+            raise AudioAnalysisError("no rhythmic beat detected")
         key, mode = await self._run_offloaded(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)

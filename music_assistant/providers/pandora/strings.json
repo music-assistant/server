@@ -14,6 +14,10 @@
       "options": {
         "standard": "Standard (64 kbps AAC+)",
         "high": "High (192 kbps MP3)"
+      },
+      "option_descriptions": {
+        "standard": "Always available, on any account.",
+        "high": "Requires an active Pandora subscription; otherwise playback falls back to Standard."
       }
     },
     "socks_url": {

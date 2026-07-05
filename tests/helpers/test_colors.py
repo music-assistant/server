@@ -88,7 +88,8 @@ def test_derive_palette_empty() -> None:
 
 
 def test_palette_invariants_over_random_candidates() -> None:
-    """Across many synthetic candidate sets, every emitted contrast pair holds.
+    """
+    Across many synthetic candidate sets, every emitted contrast pair holds.
 
     Sweeps a fixed-seed RNG over candidate counts and RGB values to catch
     regressions in the contrast invariants. Calibrate the iteration count so

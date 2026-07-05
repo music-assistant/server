@@ -97,8 +97,6 @@ class MetaDataController(
         # thread during outbound websocket serialization.
         self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._image_id_lock = threading.Lock()
-        # per-IP throttle for the legacy /imageproxy deprecation warning
-        self._legacy_imageproxy_warn_at: dict[str, float] = {}
 
     async def get_config_entries(
         self,
@@ -158,15 +156,12 @@ class MetaDataController(
         # and the streams server (the latter is what player metadata URLs hit)
         self.mass.streams.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
         self.mass.webserver.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
-        # deprecated /imageproxy?provider=&path=&size=&fmt= form (kept for back-compat)
-        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_legacy_imageproxy)
         self._register_maintenance_tasks()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
         self.mass.streams.unregister_dynamic_route("/imageproxy/*")
         self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
-        self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
     def providers(self) -> list[MetadataProvider]:
@@ -417,8 +412,9 @@ class MetaDataController(
         update_current_task_progress_text("Searching for playlists needing metadata refresh")
         refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
+            f"{DB_TABLE_PLAYLISTS}.is_dynamic = 0 AND ("
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
-            f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before}"
+            f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before})"
         )
         playlists = await self.mass.music.playlists.get_library_items_by_query(
             limit=METADATA_SCAN_BATCH_SIZE,
