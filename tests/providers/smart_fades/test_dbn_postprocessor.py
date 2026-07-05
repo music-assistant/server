@@ -238,6 +238,7 @@ def _naive_viterbi(
     return path
 
 
+@pytest.mark.skipif(_viterbi_numba is None, reason="numba unavailable on this platform")
 @pytest.mark.parametrize(
     ("seed", "num_frames", "bpm", "meter"),
     [
