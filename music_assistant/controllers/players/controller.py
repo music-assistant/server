@@ -1601,6 +1601,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             player.set_config(player_config)
             # update state again now that config is loaded
             player.update_state(signal_event=False)
+            self._save_underlying_player_id(player)
             # call hook after the player is registered and config is set
             await player.on_config_updated()
 
@@ -1636,6 +1637,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.player_id in self._players:
             self._players[player.player_id] = player
             player.update_state()
+            # the derived-transport edge may have been set/revoked after the
+            # initial registration (e.g. via a bridge claim)
+            self._save_underlying_player_id(player)
             # Also schedule update when replacing existing player
             self._schedule_update_all_players()
             return

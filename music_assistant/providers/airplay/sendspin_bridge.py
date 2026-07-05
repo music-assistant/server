@@ -7,7 +7,8 @@ Sendspin handles all synchronization and timing - AirPlay is just the output.
 The bridge:
 1. Registers AirPlay players as external Sendspin clients (using MAC as client_id)
 2. The Sendspin provider creates a SendspinPlayer for this external client
-3. Protocol linking matches the SendspinPlayer with the AirPlayPlayer via MAC
+3. Protocol linking parents the SendspinPlayer next to the AirPlayPlayer via the
+   declared underlying player (derived-transport edge)
 4. When grouped, Sendspin handles timing/sync, AirPlay streams audio
 
 Audio flow:
@@ -28,6 +29,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 
 from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_BYTES_PER_SAMPLE,
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
     from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
     from aiosendspin.server.roles import AudioChunk
 
+    from music_assistant.models.player import Player
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .player import AirPlayPlayer
@@ -166,6 +169,9 @@ class SendspinAirPlayBridge:
             sendspin_prov.register_bridge_identifiers(
                 self._bridge_client_id,
                 {IdentifierType.AIRPLAY_ID: self.airplay_player.player_id},
+            )
+            sendspin_prov.register_bridge_underlying_player(
+                self._bridge_client_id, self.airplay_player.player_id
             )
 
         self._sendspin_client = self.sendspin_server.register_external_player(
@@ -617,88 +623,8 @@ class SendspinAirPlayBridge:
             self.airplay_player.stream = None
 
 
-class SendspinBridgeManager:
+class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     """Manages Sendspin bridges for all AirPlay players."""
-
-    def __init__(self, provider: AirPlayProvider) -> None:
-        """
-        Initialize the bridge manager.
-
-        :param provider: The AirPlay provider instance.
-        """
-        self.provider = provider
-        self.mass = provider.mass
-        self.logger = provider.logger.getChild("bridge_manager")
-        self._bridges: dict[str, SendspinAirPlayBridge] = {}
-        self._lock = asyncio.Lock()
-
-    @property
-    def sendspin_provider(self) -> SendspinProvider | None:
-        """Get the Sendspin provider if available."""
-        return cast(
-            "SendspinProvider | None",
-            self.mass.get_provider("sendspin"),
-        )
-
-    @property
-    def sendspin_server(self) -> SendspinServer | None:
-        """Get the Sendspin server if available."""
-        if provider := self.sendspin_provider:
-            return provider.server_api
-        return None
-
-    async def setup_bridge(self, airplay_player: AirPlayPlayer) -> None:
-        """Set up a Sendspin bridge for an AirPlay player."""
-        async with self._lock:
-            player_id = airplay_player.player_id
-            sendspin_server = self.sendspin_server
-            if not sendspin_server:
-                self.logger.debug(
-                    "Sendspin provider not available, skipping bridge for %s",
-                    airplay_player.display_name,
-                )
-                return
-
-            if player_id in self._bridges:
-                self.logger.debug("Bridge already exists for %s", airplay_player.display_name)
-                return
-
-            bridge = SendspinAirPlayBridge(self.provider, airplay_player, sendspin_server)
-
-            try:
-                await bridge.start()
-            except Exception:
-                self.logger.warning(
-                    "Failed to start Sendspin bridge for %s", airplay_player.display_name
-                )
-                with suppress(Exception):
-                    await bridge.stop()
-                return
-
-            if not bridge.is_registered:
-                return
-
-            self._bridges[player_id] = bridge
-
-            self.logger.info("Sendspin bridge created for %s", airplay_player.display_name)
-
-    async def remove_bridge(self, airplay_player_id: str) -> None:
-        """Remove the Sendspin bridge for an AirPlay player."""
-        async with self._lock:
-            if bridge := self._bridges.pop(airplay_player_id, None):
-                await bridge.stop()
-
-            self.logger.debug("Sendspin bridge removed for AirPlay player %s", airplay_player_id)
-
-    async def stop_all(self) -> None:
-        """Stop all Sendspin bridges."""
-        async with self._lock:
-            for bridge in list(self._bridges.values()):
-                with suppress(Exception):
-                    await bridge.stop()
-            self._bridges.clear()
-
-        self.logger.debug("All Sendspin bridges stopped")
 
     def stop_streaming(self, airplay_player_id: str) -> bool:
         """
@@ -712,6 +638,20 @@ class SendspinBridgeManager:
             return True
         return False
 
-    def get_bridge(self, airplay_player_id: str) -> SendspinAirPlayBridge | None:
-        """Get the bridge for an AirPlay player."""
-        return self._bridges.get(airplay_player_id)
+    def _bridge_client_id(self, player: Player) -> str | None:
+        """Return the Sendspin client_id used to bridge an AirPlay player."""
+        return get_bridge_client_id(cast("AirPlayPlayer", player))
+
+    def _create_bridge(self, player: Player) -> SendspinAirPlayBridge:
+        """Create a bridge instance for an AirPlay player."""
+        sendspin_server = self.sendspin_server
+        assert sendspin_server is not None  # guaranteed by _lifecycle_allows_bridge
+        return SendspinAirPlayBridge(
+            cast("AirPlayProvider", self.provider),
+            cast("AirPlayPlayer", player),
+            sendspin_server,
+        )
+
+    def _should_have_bridge(self, player: Player) -> bool:
+        """Return whether an AirPlay player should have a Sendspin bridge."""
+        return get_bridge_client_id(cast("AirPlayPlayer", player)) is not None

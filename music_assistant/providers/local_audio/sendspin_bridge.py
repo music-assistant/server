@@ -210,6 +210,11 @@ class SendspinLocalAudioBridge:
                 self._bridge_client_id,
                 {IdentifierType.UUID: self._device_uuid},
             )
+            # The attribution-stub protocol player (registered under the bare
+            # device uuid) is the player this bridge runs on top of.
+            sendspin_prov.register_bridge_underlying_player(
+                self._bridge_client_id, self._device_uuid
+            )
 
         # Restore cached volume/mute state from a previous session.
         # Never restore muted=True on startup: a stale cached mute silently

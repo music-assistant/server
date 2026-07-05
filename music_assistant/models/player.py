@@ -317,6 +317,7 @@ class Player(ABC):
     _attr_enabled_by_default: bool = True
     _attr_needs_setup: bool = False
     _attr_supported_sample_rates: list[tuple[int, int]] | None = None
+    _attr_underlying_player_id: str | None = None
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -1423,6 +1424,18 @@ class Player(ABC):
     def protocol_parent_id(self) -> str | None:
         """Return the parent player_id if this is a protocol player linked to a native player."""
         return self.__attr_protocol_parent_id
+
+    @property
+    @final
+    def underlying_player_id(self) -> str | None:
+        """
+        Return the player_id this (derived) protocol player runs on top of, if any.
+
+        Set by bridge implementations (e.g. a Sendspin bridge riding on an AirPlay
+        player) so the protocol linking layer can resolve the parent deterministically
+        instead of relying on device identifier matching.
+        """
+        return self._attr_underlying_player_id
 
     @property
     @final
