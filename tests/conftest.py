@@ -3,16 +3,35 @@
 import asyncio
 import logging
 import pathlib
-from collections.abc import AsyncGenerator
+import threading
+from collections.abc import AsyncGenerator, Generator
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
+from music_assistant_models import helpers as models_helpers
 from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.mass import MusicAssistant
+from tests.common import suppress_auto_loaded_providers
+
+
+@pytest.fixture(autouse=True)
+def isolate_models_global_cache() -> Generator[None]:
+    """
+    Reset the models package's process-global cache between tests.
+
+    A full server boot populates module-level globals in music_assistant_models
+    (e.g. ``available_providers``, which drives ``MediaItem.available``). Left in
+    place, they leak into later tests in the same pytest process and change item
+    availability depending on test ordering. Note that an empty cache falls back
+    to permissive defaults, so tests sharing a broader-scoped server instance are
+    unaffected by the per-test clear.
+    """
+    yield
+    models_helpers._global_cache.clear()
 
 
 @pytest.fixture(name="caplog")
@@ -23,7 +42,8 @@ def caplog_fixture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
 
 
 def _create_mock_zeroconf() -> MagicMock:
-    """Create a mock AsyncZeroconf that prevents real network I/O.
+    """
+    Create a mock AsyncZeroconf that prevents real network I/O.
 
     Uses spec=AsyncZeroconf to ensure the mock only has valid attributes,
     preventing it from being mistakenly registered as an API handler.
@@ -44,7 +64,8 @@ def _create_mock_zeroconf() -> MagicMock:
 
 @pytest.fixture
 async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
-    """Start a Music Assistant in test mode.
+    """
+    Start a Music Assistant in test mode.
 
     :param tmp_path: Temporary directory for test data.
     """
@@ -75,6 +96,15 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=mock_browser,
         ),
+        # Booting the server runs an ffmpeg presence check; mock it so tests can boot
+        # without the binary. Tests that actually spawn ffmpeg still use the real one.
+        patch(
+            "music_assistant.controllers.streams.controller.check_ffmpeg_version",
+            new=AsyncMock(),
+        ),
+        # keep the fixture isolated from the developer's machine: no auto-loaded device
+        # providers and no local_audio bridging the host's sound devices as players
+        suppress_auto_loaded_providers(),
     ):
         await mass_instance.start()
 
@@ -86,7 +116,8 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
 
 @pytest.fixture
 async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
-    """Create a minimal Music Assistant instance without starting the full server.
+    """
+    Create a minimal Music Assistant instance without starting the full server.
 
     Only initializes the event loop and config controller.
     Useful for testing individual controllers without the overhead of the webserver.
@@ -103,11 +134,8 @@ async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]
     mass_instance = MusicAssistant(str(storage_path), str(cache_path))
 
     mass_instance.loop = asyncio.get_running_loop()
-    mass_instance.loop_thread_id = (
-        getattr(mass_instance.loop, "_thread_id", None)
-        if hasattr(mass_instance.loop, "_thread_id")
-        else id(mass_instance.loop)
-    )
+    # fixture runs on the event loop thread, like MusicAssistant.start()
+    mass_instance.loop_thread_id = threading.get_ident()
 
     mass_instance.config = ConfigController(mass_instance)
     await mass_instance.config.setup()

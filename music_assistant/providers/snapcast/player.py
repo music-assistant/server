@@ -14,6 +14,10 @@ from propcache import under_cached_property as cached_property
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
+from music_assistant.providers.snapcast.constants import (
+    SNAPCLIENT_LIVENESS_POLL_INTERVAL,
+    SNAPCLIENT_STALE_THRESHOLD,
+)
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
@@ -25,7 +29,8 @@ if TYPE_CHECKING:
 
 
 class TrackedPlayerState(TypedDict, total=False):
-    """Tracked state for the Snapcast MA player.
+    """
+    Tracked state for the Snapcast MA player.
 
     It is used for change detection and state synchronization, and may be
     partially populated depending on which information is
@@ -53,9 +58,6 @@ class TrackedPlayerState(TypedDict, total=False):
 class SnapCastPlayer(Player):
     """SnapCastPlayer."""
 
-    # snapcast has fixed sample rate/bit depth
-    _attr_supported_sample_rates = [(48000, 16)]
-
     def __init__(
         self,
         provider: SnapCastProvider,
@@ -66,12 +68,18 @@ class SnapCastPlayer(Player):
         self.snap_client = snap_client
         super().__init__(provider, player_id)
 
+        # snapcast has fixed sample rate/bit depth
+        self._attr_supported_sample_rates = [(48000, 16)]
+
         self._snap_ma_stream: SnapcastMAStream | None = None
 
         self._update_worker: asyncio.Task[None] | None = None
         self._poke_evt = asyncio.Event()
         self._state_update_lock = asyncio.Lock()
         self._last_tracked_state: TrackedPlayerState | None = None
+        # raw lastSeen value + monotonic time it last advanced (skew-proof liveness)
+        self._last_seen_raw: tuple[int, int] | None = None
+        self._last_seen_changed: float = 0.0
 
     @property
     def snap_provider(self) -> SnapCastProvider:
@@ -184,8 +192,16 @@ class SnapCastPlayer(Player):
             PlayerFeature.PLAY_ANNOUNCEMENT,
         }
         self._attr_can_group_with = {self.snap_provider.instance_id}
+        # poll to detect abruptly powered-off clients (see _is_alive)
+        self._attr_needs_poll = True
+        self._attr_poll_interval = SNAPCLIENT_LIVENESS_POLL_INTERVAL
         if not self._update_worker:
             self._update_worker = self.mass.create_task(self._player_update_worker)
+
+    async def poll(self) -> None:
+        """Poll the snapserver so abruptly powered-off clients are detected."""
+        await self.snap_provider.refresh_server_status()
+        self.poke_player_update()
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -393,7 +409,8 @@ class SnapCastPlayer(Player):
                 break
 
     async def _process_snapcast_client_state(self) -> bool:
-        """Process the latest Snapcast client state and apply changes to this player.
+        """
+        Process the latest Snapcast client state and apply changes to this player.
 
         Returns:
         True if changes were applied and a state update should be emitted via
@@ -417,7 +434,7 @@ class SnapCastPlayer(Player):
             "_attr_name": self.snap_client.friendly_name,
             "_attr_volume_level": self.snap_client.volume,
             "_attr_volume_muted": self.snap_client.muted,
-            "_attr_available": self.snap_client.connected,
+            "_attr_available": self._is_alive(),
             "connected": self.snap_client.connected,
             "stream_id": snap_group.stream,
             "stream_status": snap_stream.status if snap_stream is not None else None,
@@ -524,6 +541,25 @@ class SnapCastPlayer(Player):
 
         # external snapcast stream
         return grp.stream or None
+
+    def _is_alive(self) -> bool:
+        """
+        Return whether the snapclient is connected and recently seen.
+
+        The snapserver advances lastSeen on every Time message a client sends
+        (~1/s while alive), but never marks an abruptly powered-off client
+        disconnected. We treat a connected client whose lastSeen has been frozen
+        longer than the threshold as gone.
+        """
+        now = self.mass.loop.time()
+        last_seen = self.snap_client._client.get("lastSeen")
+        ls = (last_seen["sec"], last_seen["usec"]) if last_seen else None
+        if ls != self._last_seen_raw:
+            self._last_seen_raw = ls
+            self._last_seen_changed = now
+        if not self.snap_client.connected:
+            return False
+        return (now - self._last_seen_changed) < SNAPCLIENT_STALE_THRESHOLD
 
     def _get_active_snapstream(self) -> SnapstreamProto | None:
         """Get active stream for given player_id."""

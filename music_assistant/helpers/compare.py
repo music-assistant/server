@@ -87,6 +87,13 @@ def compare_artist(
         )
         if external_id_match is not None:
             return external_id_match
+    # return early if artist_types don't match
+    if (
+        isinstance(base_item, Artist)
+        and isinstance(compare_item, Artist)
+        and base_item.artist_type != compare_item.artist_type
+    ):
+        return False
     # finally comparing on (exact) name match
     return compare_strings(base_item.name, compare_item.name, strict=strict)
 
@@ -331,8 +338,8 @@ def compare_audiobook(
     ):
         return False
 
-    def _audiobook_artist_name(value: str | Artist) -> str:
-        return value.name if isinstance(value, Artist) else value
+    def _audiobook_artist_name(value: str | Artist | ItemMapping) -> str:
+        return value.name if isinstance(value, Artist | ItemMapping) else value
 
     # compare narrator(s) — different narrators indicate different recordings and must not be merged
     if base_item.narrators and compare_item.narrators:

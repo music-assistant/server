@@ -8,6 +8,7 @@ import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import WSMsgType, web
@@ -28,6 +29,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
@@ -66,6 +68,7 @@ class WebsocketClientHandler:
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
+        self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # Track WebRTC session ID if this is a WebRTC gateway connection
@@ -105,7 +108,11 @@ class WebsocketClientHandler:
 
         # Block until onboarding is complete
         if not self.webserver.auth.has_users and not self._is_ingress:
-            await self._send_message(ErrorResultMessage("connection", 503, "Setup required"))
+            await self._send_message(
+                ErrorResultMessage(
+                    "connection", 503, "Setup required", translation_key="setup_required"
+                )
+            )
             await wsock.close()
             return wsock
 
@@ -177,6 +184,11 @@ class WebsocketClientHandler:
             await self._handle_auth_command(msg)
             return
 
+        # Handle special "translations/set_locale" command (updates connection state)
+        if msg.command == "translations/set_locale":
+            await self._handle_set_locale_command(msg)
+            return
+
         # work out handler for the given path/command
         handler = self.mass.command_handlers.get(msg.command)
 
@@ -186,6 +198,7 @@ class WebsocketClientHandler:
                     msg.message_id,
                     InvalidCommand.error_code,
                     f"Invalid command: {msg.command}",
+                    translation_key="invalid_command",
                 )
             )
             self._logger.warning("Invalid command: %s", msg.command)
@@ -201,11 +214,12 @@ class WebsocketClientHandler:
                         msg.message_id,
                         AuthenticationRequired.error_code,
                         "Authentication required. Please send auth command first.",
+                        translation_key="authentication_required",
                     )
                 )
                 return
 
-            # Set user, token, and sendspin player in context for API methods
+            # Set user, token and sendspin player in context for API methods
             set_current_user(self._authenticated_user)
             set_current_token(self._current_token)
             set_sendspin_player_id(self._sendspin_player_id)
@@ -218,6 +232,7 @@ class WebsocketClientHandler:
                             msg.message_id,
                             InsufficientPermissions.error_code,
                             "Admin access required",
+                            translation_key="insufficient_permissions",
                         )
                     )
                     return
@@ -249,7 +264,18 @@ class WebsocketClientHandler:
             # Log at warning level since these are normal error responses, not crashes.
             self._logger.warning("%s: %s", msg.command, err)
             err_msg = str(err) or err.__class__.__name__
-            await self._send_message(ErrorResultMessage(msg.message_id, err.error_code, err_msg))
+            # err_msg is the English fallback; the translation_key (per-type default or a
+            # provider override) localizes `details` to the connection locale at serialization.
+            await self._send_message(
+                ErrorResultMessage(
+                    msg.message_id,
+                    err.error_code,
+                    err_msg,
+                    translation_key=err.translation_key,
+                    translation_args=err.translation_args,
+                    translation_owner=err.translation_owner,
+                )
+            )
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
@@ -276,7 +302,8 @@ class WebsocketClientHandler:
                 await self.wsock.send_str(message)
 
     async def _send_message(self, message: MessageType) -> None:
-        """Send a message to the client (for large response messages).
+        """
+        Send a message to the client (for large response messages).
 
         Runs JSON serialization in executor to avoid blocking for large messages.
         Closes connection if the client is not reading the messages.
@@ -284,16 +311,20 @@ class WebsocketClientHandler:
         Async friendly.
         """
         # Run JSON serialization in executor to avoid blocking for large messages.
-        # copy_context() propagates the IMAGE_PROXY_ID_RESOLVER ContextVar into
-        # the executor thread so that MediaItemImage instances nested in the
-        # message can inject `proxy_id` via their `__post_serialize__` hook.
+        # copy_context() propagates the IMAGE_PROXY_ID_RESOLVER and TRANSLATION_RESOLVER
+        # ContextVars into the executor thread so that nested models can inject `proxy_id`
+        # and localize human-readable fields via their `__post_serialize__` hooks.
         loop = asyncio.get_running_loop()
         token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+        token_loc = TRANSLATION_RESOLVER.set(
+            partial(self.mass.translations.get_translation, locale=self._locale)
+        )
         try:
             ctx = contextvars.copy_context()
             _message = await loop.run_in_executor(None, ctx.run, message.to_json)
         finally:
             IMAGE_PROXY_ID_RESOLVER.reset(token)
+            TRANSLATION_RESOLVER.reset(token_loc)
 
         try:
             self._to_write.put_nowait(_message)
@@ -303,15 +334,20 @@ class WebsocketClientHandler:
             self._cancel()
 
     def _send_message_sync(self, message: MessageType) -> None:
-        """Send a message from a sync context (for small messages like events).
+        """
+        Send a message from a sync context (for small messages like events).
 
         Serializes inline without executor overhead since events are typically small.
         """
         token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+        token_loc = TRANSLATION_RESOLVER.set(
+            partial(self.mass.translations.get_translation, locale=self._locale)
+        )
         try:
             _message = message.to_json()
         finally:
             IMAGE_PROXY_ID_RESOLVER.reset(token)
+            TRANSLATION_RESOLVER.reset(token_loc)
 
         try:
             self._to_write.put_nowait(_message)
@@ -321,7 +357,8 @@ class WebsocketClientHandler:
             self._cancel()
 
     async def _handle_auth_command(self, msg: CommandMessage) -> None:
-        """Handle WebSocket authentication command.
+        """
+        Handle WebSocket authentication command.
 
         :param msg: The auth command message with access token.
         """
@@ -347,6 +384,7 @@ class WebsocketClientHandler:
                     msg.message_id,
                     InvalidToken.error_code,
                     "Invalid or expired token",
+                    translation_key="invalid_token",
                 )
             )
             return
@@ -371,6 +409,11 @@ class WebsocketClientHandler:
         self._token_id = token_id
         self._logger.info("WebSocket client authenticated as %s", user.username)
 
+        # Optionally store the UI locale declared with the auth command and warm it up
+        if msg.args and (locale := msg.args.get("locale")):
+            self._locale = locale
+            await self.mass.translations.ensure_locale_loaded(locale)
+
         # Send success response
         await self._send_message(
             SuccessResultMessage(
@@ -384,6 +427,26 @@ class WebsocketClientHandler:
 
         # Register with webserver for tracking
         self.webserver.register_websocket_client(self)
+
+    async def _handle_set_locale_command(self, msg: CommandMessage) -> None:
+        """
+        Handle the WebSocket set_locale command (updates the connection's UI locale).
+
+        :param msg: The set_locale command message; expects a "locale" arg.
+        """
+        locale = msg.args.get("locale") if msg.args else None
+        if not locale:
+            await self._send_message(
+                ErrorResultMessage(
+                    msg.message_id,
+                    InvalidCommand.error_code,
+                    "locale required in args",
+                )
+            )
+            return
+        self._locale = locale
+        await self.mass.translations.ensure_locale_loaded(locale)
+        await self._send_message(SuccessResultMessage(msg.message_id, {"locale": locale}))
 
     async def _handle_ingress_auth(self) -> None:
         """Handle authentication for Ingress connections (auto-create/link user)."""
@@ -455,6 +518,7 @@ class WebsocketClientHandler:
                     EventType.PLAYER_ADDED,
                     EventType.PLAYER_REMOVED,
                     EventType.PLAYER_UPDATED,
+                    EventType.PLAYER_SLEEP_TIMER_UPDATED,
                     EventType.QUEUE_ADDED,
                     EventType.QUEUE_ITEMS_UPDATED,
                     EventType.QUEUE_TIME_UPDATED,

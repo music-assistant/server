@@ -431,7 +431,8 @@ async def test_library_tracks_fetches_detail_for_album_name_only_mapping() -> No
 
 @pytest.mark.asyncio
 async def test_catalog_backed_playlist_uses_library_id_as_item_id() -> None:
-    """Catalog-backed library playlists must use the library ID as item_id.
+    """
+    Catalog-backed library playlists must use the library ID as item_id.
 
     When a playlist hasCatalog=True, Apple only accepts write operations
     (add tracks) against the library endpoint using the library ID (p.XXXXX),

@@ -91,13 +91,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
         ),
     )
@@ -247,16 +245,19 @@ class NugsProvider(MusicProvider):
 
         popular_folder = RecommendationFolder(
             name="Most Popular",
+            translation_key="nugs_popular_shows",
             item_id="nugs_popular_shows",
             provider=self.instance_id,
         )
         recommended_folder = RecommendationFolder(
             name="Recommended Shows",
+            translation_key="nugs_recommended_shows",
             item_id="nugs_recommended_shows",
             provider=self.instance_id,
         )
         recent_folder = RecommendationFolder(
             name="Recent Shows",
+            translation_key="nugs_recent_shows",
             item_id="nugs_recent_shows",
             provider=self.instance_id,
         )

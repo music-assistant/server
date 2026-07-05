@@ -276,7 +276,8 @@ def test_numba_unavailable_uses_numpy_fallback() -> None:
 
 
 def test_decoders_match_naive_reference() -> None:
-    """Both optimized decode paths must match a plain textbook Viterbi.
+    """
+    Both optimized decode paths must match a plain textbook Viterbi.
 
     Uses a small tempo range so the naive O(T*S*P) reference is cheap to run.
     """

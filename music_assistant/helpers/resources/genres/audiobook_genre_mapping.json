@@ -1,0 +1,107 @@
+[
+    {
+        "genre": "Arts & Entertainment",
+        "translation_key": "arts_and_entertainment",
+        "aliases": ["Arts & Entertainment", "Arts and Entertainment", "Arts", "Entertainment"]
+    },
+    {
+        "genre": "Biography & Memoir",
+        "translation_key": "biography_and_memoir",
+        "aliases": ["Biography & Memoir", "Biography and Memoir", "Biographies & Memoirs", "Biography", "Memoir", "Memoirs"]
+    },
+    {
+        "genre": "Business",
+        "translation_key": "business",
+        "aliases": ["Business", "Business & Personal Finance", "Money & Finance", "Finance", "Careers", "Economics"]
+    },
+    {
+        "genre": "Classics",
+        "translation_key": "classics",
+        "aliases": ["Classics", "Classic Literature", "Literature"]
+    },
+    {
+        "genre": "Comedy & Humor",
+        "translation_key": "comedy_and_humor",
+        "aliases": ["Comedy & Humor", "Comedy and Humor", "Comedy", "Humor", "Humour"]
+    },
+    {
+        "genre": "Drama & Poetry",
+        "translation_key": "drama_and_poetry",
+        "aliases": ["Drama & Poetry", "Drama and Poetry", "Drama", "Poetry"]
+    },
+    {
+        "genre": "Fantasy & Science Fiction",
+        "translation_key": "fantasy_and_science_fiction",
+        "aliases": ["Fantasy & Science Fiction", "Fantasy and Science Fiction", "Science Fiction & Fantasy", "Fantasy", "Science Fiction", "Sci-Fi", "SciFi"]
+    },
+    {
+        "genre": "Fiction",
+        "translation_key": "fiction",
+        "aliases": ["Fiction", "Literary Fiction"]
+    },
+    {
+        "genre": "Foreign Language",
+        "translation_key": "foreign_language",
+        "aliases": ["Foreign Language", "Languages", "Language Instruction", "Language Learning"]
+    },
+    {
+        "genre": "History",
+        "translation_key": "history",
+        "aliases": ["History"]
+    },
+    {
+        "genre": "Kids & Young Adult",
+        "translation_key": "kids_and_young_adult",
+        "aliases": ["Kids & Young Adult", "Kids and Young Adult", "Kids", "Children's", "Childrens", "Young Adult", "YA", "Teen"]
+    },
+    {
+        "genre": "Mystery",
+        "translation_key": "mystery",
+        "aliases": ["Mystery", "Mysteries", "Mysteries & Thrillers", "Thriller", "Thrillers", "Suspense", "Crime"]
+    },
+    {
+        "genre": "Nonfiction",
+        "translation_key": "nonfiction",
+        "aliases": ["Nonfiction", "Non-Fiction", "Non Fiction"]
+    },
+    {
+        "genre": "Religion & Spirituality",
+        "translation_key": "religion_and_spirituality",
+        "aliases": ["Religion & Spirituality", "Religion and Spirituality", "Religion", "Spirituality"]
+    },
+    {
+        "genre": "Romance",
+        "translation_key": "romance",
+        "aliases": ["Romance"]
+    },
+    {
+        "genre": "Science",
+        "translation_key": "science",
+        "aliases": ["Science", "Science & Nature", "Nature"]
+    },
+    {
+        "genre": "Self Help",
+        "translation_key": "self_help",
+        "aliases": ["Self Help", "Self-Help", "Self Development", "Self-Development", "Personal Development"]
+    },
+    {
+        "genre": "Speakers & Storytellers",
+        "translation_key": "speakers_and_storytellers",
+        "aliases": ["Speakers & Storytellers", "Speakers and Storytellers", "Speakers", "Storytellers"]
+    },
+    {
+        "genre": "Sports",
+        "translation_key": "sports",
+        "aliases": ["Sports", "Sport", "Sports & Recreation", "Sports & Outdoors", "Outdoors"]
+    },
+    {
+        "genre": "Technology",
+        "translation_key": "technology",
+        "aliases": ["Technology", "Tech", "Computers & Technology"]
+    },
+    {
+        "genre": "Travel & Adventure",
+        "translation_key": "travel_and_adventure",
+        "aliases": ["Travel & Adventure", "Travel and Adventure", "Travel", "Adventure", "Tourism"]
+    }
+]

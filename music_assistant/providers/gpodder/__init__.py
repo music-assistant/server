@@ -1,4 +1,5 @@
-"""gPodder provider for Music Assistant.
+"""
+gPodder provider for Music Assistant.
 
 Tested against opodsync, https://github.com/kd2org/opodsync
 and nextcloud-gpodder, https://github.com/thrillfall/nextcloud-gpodder
@@ -38,6 +39,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
     get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
@@ -144,71 +146,56 @@ async def get_config_entries(
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            label="Authentication did succeed! Please press save to continue.",
             hidden=not authenticated_nc,
         ),
         ConfigEntry(
             key="label_gpodder",
             type=ConfigEntryType.LABEL,
-            label="Authentication with gPodder compatible web service, e.g. opodsync:",
             hidden=authenticated_nc,
         ),
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="gPodder Service URL",
             required=False,
-            description="URL of gPodder instance.",
             value=values.get(CONF_URL),
             hidden=authenticated_nc,
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=False,
-            description="Username of gPodder instance.",
             hidden=authenticated_nc,
             value=values.get(CONF_USERNAME),
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="Password for gPodder instance.",
             hidden=authenticated_nc,
             value=values.get(CONF_PASSWORD),
         ),
         ConfigEntry(
             key=CONF_DEVICE_ID,
             type=ConfigEntryType.STRING,
-            label="Device ID",
             required=False,
-            description="Device ID of user.",
             hidden=authenticated_nc,
             value=values.get(CONF_DEVICE_ID),
         ),
         ConfigEntry(
             key="label_nextcloud",
             type=ConfigEntryType.LABEL,
-            label="Authentication with Nextcloud with gPodder Sync (nextcloud-gpodder) installed:",
             hidden=authenticated_nc or using_gpodder,
         ),
         ConfigEntry(
             key=CONF_URL_NC,
             type=ConfigEntryType.STRING,
-            label="Nextcloud URL",
             required=False,
-            description="URL of Nextcloud instance.",
             value=values.get(CONF_URL_NC),
             hidden=using_gpodder,
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH_NC,
             type=ConfigEntryType.ACTION,
-            label="(Re)Authenticate with Nextcloud",
-            description="This button will redirect you to your Nextcloud instance to authenticate.",
             action=CONF_ACTION_AUTH_NC,
             required=False,
             hidden=using_gpodder,
@@ -216,23 +203,18 @@ async def get_config_entries(
         ConfigEntry(
             key="label_general",
             type=ConfigEntryType.LABEL,
-            label="General config:",
         ),
         ConfigEntry(
             key=CONF_MAX_NUM_EPISODES,
             type=ConfigEntryType.INTEGER,
-            label="Maximum number of episodes (0 for unlimited)",
             required=False,
-            description="Maximum number of episodes to sync per feed. Use 0 for unlimited",
             default_value=0,
             value=values.get(CONF_MAX_NUM_EPISODES),
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL",
             required=False,
-            description="Whether or not to verify the certificate of SSL/TLS connections.",
             advanced=True,
             default_value=True,
             value=values.get(CONF_VERIFY_SSL),
@@ -240,7 +222,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TOKEN_NC,
             type=ConfigEntryType.SECURE_STRING,
-            label="token",
             hidden=True,
             required=False,
             value=values.get(CONF_TOKEN_NC),
@@ -248,7 +229,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USING_GPODDER,
             type=ConfigEntryType.BOOLEAN,
-            label="using_gpodder",
             hidden=True,
             required=False,
             value=values.get(CONF_USING_GPODDER),
@@ -455,6 +435,7 @@ class GPodder(MusicProvider):
                 prov_podcast_id=prov_podcast_id,
                 episode_cnt=cnt,
                 podcast_cover=podcast_cover,
+                podcast_name=podcast.get("title"),
                 domain=self.domain,
                 instance_id=self.instance_id,
             )
@@ -507,6 +488,7 @@ class GPodder(MusicProvider):
             _, _guid_or_stream_url = mass_episode.item_id.split(" ")
             # this is enough, as internal
             if guid_or_stream_url == _guid_or_stream_url:
+                await self._enrich_episode_chapters(podcast_id, guid_or_stream_url, mass_episode)
                 return mass_episode
         raise MediaNotFoundError("Did not find episode.")
 
@@ -600,13 +582,41 @@ class GPodder(MusicProvider):
             allow_seek=True,
         )
 
+    async def _enrich_episode_chapters(
+        self, prov_podcast_id: str, guid_or_stream_url: str, mass_episode: PodcastEpisode
+    ) -> None:
+        """
+        Attach external ``podcast:chapters`` JSON to a resolved single episode, if any.
+
+        :param prov_podcast_id: Provider podcast id the episode belongs to.
+        :param guid_or_stream_url: Episode identifier used to locate the raw parsed episode.
+        :param mass_episode: The episode to enrich in place; left untouched on any failure.
+        """
+        if mass_episode.metadata.chapters:
+            return
+        podcast = await self._cache_get_podcast(prov_podcast_id)
+        for episode in podcast.get("episodes", []):
+            try:
+                stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+            except ValueError:
+                continue
+            if guid_or_stream_url in (guid, stream_url):
+                await enrich_episode_chapters(
+                    session=self.mass.http_session,
+                    chapters_json_url=episode.get("chapters_json_url"),
+                    mass_episode=mass_episode,
+                )
+                return
+
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         podcast = await self._cache_get_podcast(podcast_id)
         episodes = podcast.get("episodes", [])
-        for cnt, episode in enumerate(episodes):
+        for episode in episodes:
             episode_enclosures = episode.get("enclosures", [])
             if len(episode_enclosures) < 1:
-                raise MediaNotFoundError
+                # episode without an enclosure carries no stream; skip it instead of
+                # aborting the lookup for the (potentially later) requested episode
+                continue
             stream_url: str | None = episode_enclosures[0].get("url", None)
             guid = episode.get("guid")
             if guid is not None and len(guid.split(" ")) == 1:

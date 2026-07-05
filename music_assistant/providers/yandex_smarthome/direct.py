@@ -1,4 +1,5 @@
-"""HTTP handlers for Yandex Smart Home direct connection.
+"""
+HTTP handlers for Yandex Smart Home direct connection.
 
 Registers dynamic routes on the MA webserver to handle Yandex Smart Home API
 requests directly (without the yaha-cloud.ru WebSocket relay).
@@ -100,7 +101,8 @@ class DirectConnectionHandler:
         logger: logging.Logger | None = None,
         on_token_created: Callable[[str], None] | None = None,
     ) -> None:
-        """Initialize the handler.
+        """
+        Initialize the handler.
 
         Args:
             mass: MusicAssistant instance.
@@ -300,7 +302,8 @@ class DirectConnectionHandler:
             del self._pending_codes[code]
 
     async def _handle_oauth_authorize(self, request: web.Request) -> web.Response:
-        """Handle GET /auth/authorize — show authorization page.
+        """
+        Handle GET /auth/authorize — show authorization page.
 
         Yandex opens this URL in the user's browser during account linking.
         Parameters: client_id, redirect_uri, state, response_type=code
@@ -341,7 +344,8 @@ class DirectConnectionHandler:
         return web.Response(text=html, content_type="text/html", status=200)
 
     async def _handle_oauth_token(self, request: web.Request) -> web.Response:
-        """Handle POST /auth/token — exchange code for access token.
+        """
+        Handle POST /auth/token — exchange code for access token.
 
         Supports:
         - grant_type=authorization_code: exchange code for new token

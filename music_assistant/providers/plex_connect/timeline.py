@@ -34,7 +34,8 @@ class TimelineMixin:
         plex_server: Any
 
     def _resolve_plex_state(self, player: Any, queue: Any) -> str:
-        """Resolve the Plex playback state string from MA player/queue state.
+        """
+        Resolve the Plex playback state string from MA player/queue state.
 
         The queue is the source of truth for playback: for synced or grouped
         players (and players using a protocol output) the child player's own
@@ -77,7 +78,8 @@ class TimelineMixin:
         controllable: str,
         queue: Any | None,
     ) -> list[str]:
-        """Build timeline attributes for a playing track.
+        """
+        Build timeline attributes for a playing track.
 
         :param track: The current track media item.
         :param state: Playback state (playing, paused, etc.).
@@ -138,7 +140,8 @@ class TimelineMixin:
     async def _build_timeline_xml(
         self, include_metadata: bool = False, command_id: str = "0"
     ) -> str:
-        """Build timeline XML from current Music Assistant player state.
+        """
+        Build timeline XML from current Music Assistant player state.
 
         :param include_metadata: Whether to include metadata in the timeline.
         :param command_id: The command ID for the timeline response.
@@ -203,7 +206,8 @@ class TimelineMixin:
         )
 
     async def _send_timeline(self, client_id: str) -> None:
-        """Send timeline update to a specific subscribed controller.
+        """
+        Send timeline update to a specific subscribed controller.
 
         :param client_id: The client ID to send the timeline to.
         """
@@ -300,7 +304,7 @@ class TimelineMixin:
                 last_update = float(sub["last_update"])  # type: ignore[arg-type]
                 if current_time - last_update > 90:
                     stale_clients.append(client_id)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 LOGGER.debug(f"Invalid last_update for client {client_id}, treating as stale")
                 stale_clients.append(client_id)
 

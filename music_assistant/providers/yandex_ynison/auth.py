@@ -1,4 +1,5 @@
-"""Yandex Passport authentication helpers.
+"""
+Yandex Passport authentication helpers.
 
 Delegates Passport interactions to the ``ya-passport-auth`` library. Two
 helpers are exposed to the rest of the plugin:
@@ -24,7 +25,8 @@ if TYPE_CHECKING:
 
 
 async def perform_qr_auth(mass: MusicAssistant, session_id: str) -> tuple[str, str, str | None]:
-    """Run a QR login flow and return ``(x_token, music_token, display_login)``.
+    """
+    Run a QR login flow and return ``(x_token, music_token, display_login)``.
 
     Opens the QR popup in the MA frontend via
     :class:`music_assistant.helpers.auth.AuthenticationHelper`, polls the

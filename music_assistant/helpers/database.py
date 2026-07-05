@@ -8,6 +8,7 @@ import os
 import time
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any, cast
 
@@ -16,7 +17,7 @@ import aiosqlite
 from music_assistant.constants import MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Sequence
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.database")
 
@@ -26,7 +27,7 @@ class _UnsetType:
 
     _instance: _UnsetType | None = None
 
-    def __new__(cls) -> _UnsetType:
+    def __new__(cls) -> _UnsetType:  # noqa: PYI034  # singleton sentinel always returns the one instance, not Self
         """Create singleton instance."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -93,6 +94,44 @@ def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[s
     return (result_query, result_params)
 
 
+def get_sqlite_memory_settings() -> tuple[int, int]:
+    """
+    Return (cache_size_kib, mmap_size_bytes) scaled to available system memory.
+
+    The page cache is a per-connection ceiling that is filled lazily, so a small database
+    never consumes a large ceiling. Hosts with ample RAM keep the previous generous values
+    (and a much bigger cache on very large hosts) so performance is unaffected — only memory-
+    constrained devices are scaled down. Returns the generous defaults when memory is
+    unknown (e.g. Windows), so those hosts fail open to full performance.
+    """
+    # imported lazily to keep this low-level helper free of the heavier util import chain
+    from music_assistant.helpers.util import get_total_system_memory  # noqa: PLC0415
+
+    # SQLite caps mmap_size at its build-time SQLITE_MAX_MMAP_SIZE (~2GiB), so the previous
+    # 30GB request was already effectively ~2GiB. We keep that ceiling on capable hosts and
+    # only request less on memory-constrained devices (where a large DB would otherwise map
+    # most of the file into reclaimable RSS). The page cache is the only fast path for the
+    # part of a database beyond that ~2GiB window, so hosts with lots of RAM get a much larger
+    # cache to keep a very large library hot.
+    gib = 1024**3
+    total_ram_gb = get_total_system_memory()
+    if total_ram_gb >= 16.0:
+        # very large host: cache enough to keep a multi-GB library hot in memory
+        return 1024000, 2 * gib
+    if total_ram_gb >= 12.0:
+        return 512000, 2 * gib
+    if total_ram_gb >= 8.0:
+        # plenty of RAM: favour performance with a larger page cache
+        return 128000, 2 * gib
+    if total_ram_gb == 0.0 or total_ram_gb >= 4.0:
+        # unknown (fail open) or capable: keep the previous 64MB cache and ~2GiB mmap ceiling
+        return 64000, 2 * gib
+    if total_ram_gb >= 2.0:
+        return 32000, gib
+    # memory-constrained device: keep each connection's footprint small
+    return 16000, 256 * 1024 * 1024
+
+
 class DatabaseConnection:
     """Class that holds the (connection to the) database with some convenience helper functions."""
 
@@ -101,9 +140,34 @@ class DatabaseConnection:
     def __init__(self, db_path: str) -> None:
         """Initialize class."""
         self.db_path = db_path
+        # per-instance ContextVar (instead of module level) so multiple database
+        # connections (library/cache/auth) track their deferred_commit scopes
+        # independently; only a handful of long-lived instances exist per process
+        self._deferred_commit_depth: ContextVar[int] = ContextVar(
+            "deferred_commit_depth", default=0
+        )
 
-    async def setup(self) -> None:
-        """Perform async initialization."""
+    async def setup(
+        self,
+        cache_size_kib: int | None = None,
+        mmap_size_bytes: int | None = None,
+    ) -> None:
+        """
+        Perform async initialization.
+
+        :param cache_size_kib: SQLite page-cache ceiling for this connection, in KiB.
+            Defaults to a value scaled to the host's available memory.
+        :param mmap_size_bytes: SQLite memory-map ceiling for this connection, in bytes.
+            Defaults to a value scaled to the host's available memory.
+        """
+        default_cache_kib, default_mmap_bytes = get_sqlite_memory_settings()
+        # coerce + clamp to non-negative ints so the values are always safe to interpolate
+        cache_size_kib = max(
+            0, int(default_cache_kib if cache_size_kib is None else cache_size_kib)
+        )
+        mmap_size_bytes = max(
+            0, int(default_mmap_bytes if mmap_size_bytes is None else mmap_size_bytes)
+        )
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         # setup some default settings for more performance
@@ -113,8 +177,8 @@ class DatabaseConnection:
         await self.execute("PRAGMA journal_size_limit = 6144000;")
         await self.execute("PRAGMA synchronous=normal;")
         await self.execute("PRAGMA temp_store=memory;")
-        await self.execute("PRAGMA mmap_size = 30000000000;")
-        await self.execute("PRAGMA cache_size = -64000;")
+        await self.execute(f"PRAGMA mmap_size = {mmap_size_bytes};")
+        await self.execute(f"PRAGMA cache_size = -{cache_size_kib};")
         await self.commit()
 
     async def close(self) -> None:
@@ -231,7 +295,7 @@ class DatabaseConnection:
             sql_query = f"INSERT INTO {table}({','.join(keys)})"
         sql_query += f" VALUES ({','.join(f':{x}' for x in keys)})"
         row_id = await self._db.execute_insert(sql_query, values)
-        await self._db.commit()
+        await self._maybe_commit()
         assert row_id is not None  # for type checking
         assert isinstance(row_id[0], int)  # for type checking
         return row_id[0]
@@ -250,14 +314,40 @@ class DatabaseConnection:
         )
         sql_query += f" ON CONFLICT DO UPDATE SET {','.join(f'{x}=:{x}' for x in keys)}"
         await self._db.execute(sql_query, values)
-        await self._db.commit()
+        await self._maybe_commit()
+
+    async def upsert_many(self, table: str, values: Sequence[dict[str, Any]]) -> None:
+        """
+        Upsert multiple rows in the given table with a single commit.
+
+        :param table: The table to upsert the rows into.
+        :param values: The rows to upsert, each given as a column->value dict.
+            Rows do not need to share the same set of columns.
+        """
+        if not values:
+            return
+        # rows are grouped by their column set so each group can be executed as a
+        # single (prepared) statement, while omitted columns keep their existing
+        # value on conflict - identical to calling upsert() per row
+        rows_per_column_set: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+        for row in values:
+            # Filter out UNSET values so database defaults are used
+            filtered_row = {k: v for k, v in row.items() if v is not UNSET}
+            rows_per_column_set.setdefault(tuple(sorted(filtered_row)), []).append(filtered_row)
+        for keys, rows in rows_per_column_set.items():
+            sql_query = (
+                f"INSERT INTO {table}({','.join(keys)}) VALUES ({','.join(f':{x}' for x in keys)})"
+            )
+            sql_query += f" ON CONFLICT DO UPDATE SET {','.join(f'{x}=:{x}' for x in keys)}"
+            await self._db.executemany(sql_query, rows)
+        await self._maybe_commit()
 
     async def update(
         self,
         table: str,
         match: dict[str, Any],
         values: dict[str, Any],
-    ) -> Mapping[str, Any]:
+    ) -> None:
         """Update record."""
         # Filter out UNSET values so those fields are not updated
         values = {k: v for k, v in values.items() if v is not UNSET}
@@ -265,11 +355,7 @@ class DatabaseConnection:
         sql_query = f"UPDATE {table} SET {','.join(f'{x}=:{x}' for x in keys)} WHERE "
         sql_query += " AND ".join(f"{x} = :{x}" for x in match)
         await self.execute(sql_query, {**match, **values})
-        await self._db.commit()
-        # return updated item
-        updated_item = await self.get_row(table, match)
-        assert updated_item is not None  # for type checking
-        return updated_item
+        await self._maybe_commit()
 
     async def delete(
         self, table: str, match: dict[str, Any] | None = None, query: str | None = None
@@ -284,13 +370,13 @@ class DatabaseConnection:
         elif query:
             sql_query += query
         await self.execute(sql_query, match)
-        await self._db.commit()
+        await self._maybe_commit()
 
     async def delete_where_query(self, table: str, query: str | None = None) -> None:
         """Delete data in given table using given where clausule."""
         sql_query = f"DELETE FROM {table} WHERE {query}"
         await self.execute(sql_query)
-        await self._db.commit()
+        await self._maybe_commit()
 
     async def execute(self, query: str, values: dict[str, Any] | None = None) -> Any:
         """Execute command on the database."""
@@ -299,6 +385,34 @@ class DatabaseConnection:
     async def commit(self) -> None:
         """Commit the current transaction."""
         return await self._db.commit()
+
+    @asynccontextmanager
+    async def deferred_commit(self) -> AsyncGenerator[None]:
+        """
+        Batch all writes of the current task into a single commit when the scope exits.
+
+        Within the scope, the per-statement commit of the insert/upsert/update/delete
+        helpers is skipped for the current task and a single commit is issued when the
+        outermost scope exits (scopes may be nested). This greatly reduces the commit
+        overhead of multi-statement operations such as adding a media item with all
+        its relations to the library.
+
+        Note: this is not an atomic transaction. The scope always commits on exit -
+        also on error or cancellation - and never rolls back. Writes from other tasks
+        are unaffected and still commit immediately.
+        """
+        depth = self._deferred_commit_depth.get()
+        token = self._deferred_commit_depth.set(depth + 1)
+        try:
+            yield
+        finally:
+            self._deferred_commit_depth.reset(token)
+            # always commit on exit, never rollback: the connection is shared by all
+            # tasks, so statements from concurrent writers may interleave with this
+            # scope's statements in the same underlying SQLite transaction and a
+            # rollback would revert their (already acknowledged) writes as well
+            if depth == 0:
+                await self._db.commit()
 
     async def iter_items(
         self,
@@ -352,3 +466,8 @@ class DatabaseConnection:
         async with self._db.execute(f"PRAGMA {pragma}") as cursor:
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
+
+    async def _maybe_commit(self) -> None:
+        """Commit now, unless the current task is inside a deferred_commit scope."""
+        if self._deferred_commit_depth.get() == 0:
+            await self._db.commit()

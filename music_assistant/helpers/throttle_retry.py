@@ -1,7 +1,6 @@
 """Context manager using asyncio_throttle that catches and re-raises RetriesExhausted."""
 
 import asyncio
-import datetime
 import functools
 import logging
 import random
@@ -21,6 +20,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.helpers.datetime import utc
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
 
@@ -34,7 +34,8 @@ MAX_RETRY_AFTER = 3600
 
 
 def parse_retry_after(value: str | None) -> int:
-    """Parse a Retry-After header value per RFC 9110 Section 10.2.3.
+    """
+    Parse a Retry-After header value per RFC 9110 Section 10.2.3.
 
     Supports both valid formats: delay-seconds (integer) and HTTP-date.
 
@@ -46,19 +47,20 @@ def parse_retry_after(value: str | None) -> int:
     # Try delay-seconds (non-negative integer) first — the common case
     try:
         return max(0, int(value))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         pass
     # Try HTTP-date format (e.g., "Fri, 31 Dec 1999 23:59:59 GMT")
     try:
         target = parsedate_to_datetime(value)
-        delta = (target - datetime.datetime.now(tz=datetime.UTC)).total_seconds()
+        delta = (target - utc()).total_seconds()
         return max(0, int(delta))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return 0
 
 
 class Throttler:
-    """asyncio_throttle (https://github.com/hallazzang/asyncio-throttle).
+    """
+    asyncio_throttle (https://github.com/hallazzang/asyncio-throttle).
 
     With improvements:
     - Accurate sleep without "busy waiting" (PR #4)
@@ -70,14 +72,6 @@ class Throttler:
         self.rate_limit = rate_limit
         self.period = period
         self._task_logs: deque[float] = deque()
-
-    def _flush(self) -> None:
-        now = time.monotonic()
-        while self._task_logs:
-            if now - self._task_logs[0] > self.period:
-                self._task_logs.popleft()
-            else:
-                break
 
     async def acquire(self) -> float:
         """Acquire a free slot from the Throttler, returns the throttled time."""
@@ -106,6 +100,14 @@ class Throttler:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Nothing to do on exit."""
+
+    def _flush(self) -> None:
+        now = time.monotonic()
+        while self._task_logs:
+            if now - self._task_logs[0] > self.period:
+                self._task_logs.popleft()
+            else:
+                break
 
 
 class ThrottlerManager:

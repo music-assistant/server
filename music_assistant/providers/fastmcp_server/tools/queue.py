@@ -6,7 +6,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from music_assistant_models.enums import RepeatMode
 
 from ..models import QueueBrief
 from ..tags import Tag
@@ -42,7 +44,8 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         ``item_count``, shuffle / repeat flags, ``available`` and up to
         ``include_items`` lookahead ``items``. Note that
         ``QueueBrief.queue_id`` is the identifier the mutation tools
-        (``set_shuffle``, ``clear_queue``, ``transfer_queue``) expect — it is
+        (``set_shuffle``, ``set_repeat``, ``clear_queue``, ``transfer_queue``)
+        expect — it is
         distinct from ``player_id``. For a queue fed by an external plugin
         source (Connect / AirPlay / Ynison), the current item's ``name`` is
         the real track title rather than the source wrapper name.
@@ -83,6 +86,40 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param enabled: ``True`` to shuffle, ``False`` to play in queue order.
         """
         await mass.player_queues.set_shuffle(queue_id, enabled)
+
+    @sub.tool(
+        tags={Tag.EDIT_QUEUE},
+        annotations=ToolAnnotations(
+            title="Set queue repeat mode",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        timeout=TIMEOUT_MUTATION,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def set_repeat(queue_id: str, repeat_mode: str = "off") -> None:
+        """
+        Set the repeat mode for the given queue.
+
+        Setting the current value again is a no-op. Returns nothing.
+
+        :param queue_id: Queue identifier from ``QueueBrief.queue_id`` (distinct
+            from ``PlayerBrief.player_id``).
+        :param repeat_mode: Repeat mode:
+
+            - ``off`` (default): No repeating.
+            - ``one``: Repeat the current track.
+            - ``all``: Repeat the entire queue.
+        """
+        # RepeatMode._missing_ silently falls back to UNKNOWN for invalid values
+        # instead of raising ValueError, so we must validate explicitly.
+        mode = RepeatMode(repeat_mode.lower())
+        if mode is RepeatMode.UNKNOWN:
+            valid = ", ".join(f"``{e.value}``" for e in RepeatMode if e is not RepeatMode.UNKNOWN)
+            raise ToolError(f"Invalid repeat_mode {repeat_mode!r}. Valid options: {valid}")
+
+        mass.player_queues.set_repeat(queue_id, mode)
 
     @sub.tool(
         tags={Tag.DELETE_QUEUE},

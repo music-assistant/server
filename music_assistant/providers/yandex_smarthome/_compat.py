@@ -1,4 +1,5 @@
-"""Compatibility shim for ya-passport-auth.
+"""
+Compatibility shim for ya-passport-auth.
 
 Provides a single source of `SecretStr` for the provider. When `ya-passport-auth`
 is installed (the normal runtime case — declared in manifest.json), we re-export

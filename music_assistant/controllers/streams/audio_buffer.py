@@ -14,15 +14,19 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_SMART_FADES_MODE, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
     CONF_BUFFER_SIZE,
@@ -33,7 +37,6 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
@@ -42,16 +45,20 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 
-# Callback signature for chunk observers: (chunk_position_seconds, pcm_data, is_last_chunk)
-# When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
-ChunkCallback = Callable[[int, bytes, bool], Awaitable[None]]
-
 # Callback signature for cancel observers: invoked when the buffer is cancelled/cleared.
 CancelCallback = Callable[[], None]
 
 
 class AudioBufferEOF(Exception):
     """Exception raised when the audio buffer reaches end-of-file."""
+
+
+class AudioBufferDiscarded(Exception):
+    """
+    Raised when a passive (analysis) reader requests a chunk evicted from the retained window.
+
+    Means the reader is a full window behind playback, so its session is dropped.
+    """
 
 
 class AudioBuffer:
@@ -96,8 +103,8 @@ class AudioBuffer:
         self._inactivity_task: asyncio.Task[None] | None = None
         self._cancelled = False
         self._producer_error: Exception | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self.ready = asyncio.Event()
-        self._chunk_callbacks: list[ChunkCallback] = []
         self._cancel_callbacks: list[CancelCallback] = []
 
     # -- Properties --
@@ -129,19 +136,12 @@ class AudioBuffer:
         """Return number of seconds of audio currently available."""
         return len(self._chunks)
 
+    @property
+    def first_buffered_chunk(self) -> int:
+        """Return the chunk number of the oldest chunk still retained in the buffer."""
+        return self._discarded_chunks
+
     # -- Public methods --
-
-    def register_chunk_callback(self, callback: ChunkCallback) -> None:
-        """
-        Register a callback to receive raw PCM chunks as they are buffered.
-
-        The callback receives (chunk_position_seconds, pcm_data, is_last_chunk).
-        When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
-        Callbacks must be non-blocking.
-
-        :param callback: Callable receiving (position_seconds, pcm_data, is_last_chunk).
-        """
-        self._chunk_callbacks.append(callback)
 
     def register_cancel_callback(self, callback: CancelCallback) -> None:
         """
@@ -204,6 +204,34 @@ class AudioBuffer:
                 chunk_number += 1
             except AudioBufferEOF:
                 break
+
+    async def read_chunk_for_analysis(self, chunk_number: int) -> bytes:
+        """
+        Return one PCM chunk for a passive (analysis) reader, waiting until it is available.
+
+        A read-only accessor: it leaves the buffer untouched — no discard, no producer-space
+        signalling, no inactivity-timer reset — so an analysis reader never affects playback's
+        buffering.
+
+        :param chunk_number: Absolute chunk index to read.
+        :raises AudioBufferEOF: the stream ended before this chunk.
+        :raises AudioBufferDiscarded: the chunk has been evicted from the retained window (the
+            reader is a full window behind playback) or the buffer was torn down.
+        """
+        async with self._data_available:
+            while True:
+                if self.cancelled:
+                    raise AudioBufferDiscarded
+                if chunk_number < self._discarded_chunks:
+                    raise AudioBufferDiscarded
+                index = chunk_number - self._discarded_chunks
+                if index < len(self._chunks):
+                    return self._chunks[index]
+                if self._producer_error:
+                    raise self._producer_error
+                if self._eof_received:
+                    raise AudioBufferEOF
+                await self._data_available.wait()
 
     async def get_stream(
         self,
@@ -310,7 +338,6 @@ class AudioBuffer:
             self._cancelled = True
             self._producer_error = None
             self.ready.clear()
-            self._chunk_callbacks.clear()
             self._cancel_callbacks.clear()
             self._data_available.notify_all()
             self._space_available.notify_all()
@@ -391,16 +418,11 @@ class AudioBuffer:
 
         # determine ready threshold: how many seconds of audio must be buffered
         # before signaling ready for playback
-        smart_fades_mode = (
-            SmartFadesMode(
-                mass.config.get_raw_player_config_value(
-                    streamdetails.queue_id, CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED
-                )
-            )
-            if streamdetails.queue_id and streamdetails.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+        queue = mass.player_queues.get(streamdetails.queue_id) if streamdetails.queue_id else None
+        crossfade_enabled = bool(
+            queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
         )
-        if smart_fades_mode != SmartFadesMode.DISABLED:
+        if crossfade_enabled:
             ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             # radio streams are continuous so the normalization will converge quickly,
@@ -435,8 +457,12 @@ class AudioBuffer:
         # skip AudioSource — it's an open-ended live stream so analysis would never finalize
         # (radio still runs analysis; the analyzer caps it at 10 minutes)
         if seek_position_ms == 0 and streamdetails.media_type != MediaType.AUDIO_SOURCE:
-            # audio analysis providers (loudness, beat tracking, key detection, etc.)
-            await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+            # audio analysis providers (loudness, beat tracking, key detection, etc.).
+            # Fire-and-forget: analysis setup — including a possible model (re)load — must never
+            # delay the buffer fill. The analysis worker reads the retained chunks once ready.
+            mass.create_task(
+                mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+            )
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
@@ -464,7 +490,6 @@ class AudioBuffer:
 
         Waits for space when the buffer is full (backpressure).
         """
-        chunk_position = -1
         async with self._lock:
             if self._cancelled:
                 return
@@ -497,18 +522,6 @@ class AudioBuffer:
 
             self._data_available.notify_all()
 
-        # notify chunk callbacks outside the lock
-        if chunk_position >= 0 and self._chunk_callbacks:
-            failed: list[ChunkCallback] = []
-            for callback in self._chunk_callbacks:
-                try:
-                    await callback(chunk_position, chunk, False)
-                except Exception:
-                    LOGGER.exception("Chunk callback failed, removing it")
-                    failed.append(callback)
-            for cb in failed:
-                self._chunk_callbacks.remove(cb)
-
     async def _set_eof(self) -> None:
         """Signal that no more data will be added to the buffer."""
         async with self._lock:
@@ -522,14 +535,6 @@ class AudioBuffer:
                 self.ready.set()
             self._data_available.notify_all()
             self._space_available.notify_all()
-
-        # notify chunk callbacks of EOF (empty bytes with is_last_chunk=True)
-        total_chunks = self._discarded_chunks + len(self._chunks)
-        for callback in list(self._chunk_callbacks):
-            try:
-                await callback(total_chunks, b"", True)
-            except Exception:
-                LOGGER.exception("Chunk callback failed at EOF")
 
     async def _get(self, chunk_number: int = 0) -> bytes:
         """
@@ -636,7 +641,9 @@ class AudioBuffer:
             if exc is not None and isinstance(exc, Exception):
                 self._producer_error = exc
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._notify_on_producer_error())
+                task = loop.create_task(self._notify_on_producer_error())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
         task.add_done_callback(_on_producer_done)
 
@@ -645,14 +652,22 @@ class AudioBuffer:
             loop = asyncio.get_running_loop()
             self._inactivity_task = loop.create_task(self._monitor_inactivity())
 
-    async def _monitor_inactivity(self) -> None:
-        """Clear the buffer if inactive for 5 minutes."""
-        inactivity_timeout = 60 * 5
-        check_interval = 30
+    async def _monitor_inactivity(
+        self, inactivity_timeout: float = 300, check_interval: float = 30
+    ) -> None:
+        """
+        Clear the buffer once it has been inactive for inactivity_timeout seconds.
+
+        :param inactivity_timeout: Seconds without access before the buffer is released.
+        :param check_interval: Seconds between inactivity checks.
+        """
         while True:
             await asyncio.sleep(check_interval)
             time_since_access = time.time() - self._last_access_time
-            if len(self._chunks) > 0 and time_since_access > inactivity_timeout:
+            # break on inactivity regardless of how many chunks remain: a rolling buffer
+            # that has drained to empty (e.g. an abandoned radio stream) must still release
+            # its resources and stop this monitor, otherwise the task loops forever
+            if time_since_access > inactivity_timeout:
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
                     "AudioBuffer: No activity for %.1fs, clearing (%s chunks)",
