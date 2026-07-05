@@ -556,7 +556,11 @@ class Storytel(MusicProvider):
         # This contains personal recommendations for the user.
         # It may also be empty
         # accept = "application/vnd.storytel.explore-v21+json"
-        recommendations = await self.api.get_recommendations()
+        try:
+            recommendations = await self.api.get_recommendations()
+        except ProviderUnavailableError as err:
+            self.logger.debug("Unable to fetch Storytel recommendations: %s", err)
+            return []
         if recommendations:
             recommendations_folders.append(recommendations)
 
