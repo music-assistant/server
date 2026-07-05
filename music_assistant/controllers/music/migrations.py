@@ -705,6 +705,15 @@ async def migrate_database(  # noqa: PLR0915
         except Exception as err:
             logger.warning("Could not seed default podcast/audiobook genres: %s", err)
 
+    if prev_version <= 46:
+        # add artists column to playlog (lightweight artist mappings for track rows) so
+        # recency matching can recognize the same song across different releases/providers
+        try:
+            await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN artists json")
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
     # save changes
     await database.commit()
 
