@@ -99,28 +99,21 @@ async def get_config_entries(
         ConfigEntry(
             key="label",
             type=ConfigEntryType.LABEL,
-            label="Sign in with your Storytel username and password.",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username or email",
             required=True,
-            description="Storytel account username or email.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
-            description="Storytel account password.",
         ),
         ConfigEntry(
             key=CONF_LANGUAGES,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Content Languages",
-            description="Select which languages to include in recommendations and search results.",
             default_value=["English"],
             options=[ConfigValueOption(name, name) for name in sorted(ALL_LANGUAGES.keys())],
             required=True,
@@ -140,7 +133,8 @@ class Storytel(MusicProvider):
     def handle_login_failed(
         method: F,
     ) -> F:
-        """Decorate a method to retry once after a login failure.
+        """
+        Decorate a method to retry once after a login failure.
 
         :param method: the method to decorate.
         """
@@ -167,7 +161,7 @@ class Storytel(MusicProvider):
         """
 
         @functools.wraps(method)
-        async def wrapper(*args: Any, **kwargs: Any) -> AsyncGenerator[Any, None]:
+        async def wrapper(*args: Any, **kwargs: Any) -> AsyncGenerator[Any]:
             self = cast("Storytel", args[0])
             try:
                 async for item in method(*args, **kwargs):
@@ -259,7 +253,7 @@ class Storytel(MusicProvider):
     # -------------------
 
     @handle_login_failed_generator
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Yield audiobooks from the user's Storytel bookshelf."""
         books, _ = await self.api.get_library()
         for consumable_id in books:
@@ -451,7 +445,7 @@ class Storytel(MusicProvider):
     @handle_login_failed_generator
     async def get_podcast_episodes(
         self, prov_podcast_id: str, use_cache: bool = True
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """
         Fetch all episodes for a given podcast by our provider id.
 
@@ -500,7 +494,7 @@ class Storytel(MusicProvider):
                 yield task.result()
 
     @handle_login_failed_generator
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Yield podcasts from the user's library."""
         _, podcasts = await self.api.get_library()
         for podcast_data in podcasts.values():

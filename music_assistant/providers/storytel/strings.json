@@ -1,0 +1,19 @@
+{
+  "config_entries": {
+    "label": {
+      "label": "Sign in with your Storytel username and password."
+    },
+    "username": {
+      "label": "Username or email",
+      "description": "Storytel account username or email."
+    },
+    "password": {
+      "label": "Password",
+      "description": "Storytel account password."
+    },
+    "languages": {
+      "label": "Content Languages",
+      "description": "Select which languages to include in recommendations and search results."
+    }
+  }
+}

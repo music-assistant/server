@@ -173,14 +173,6 @@ class StorytelHelper:
             headers["authorization"] = f"bearer {self._auth.jwt}"
         return headers
 
-    def _encrypt_password_hex(self, password: str) -> str:
-        """Encrypt password for Storytel API."""
-        # AES-128-CBC encrypt password, hex encoded (PKCS#7 padding).
-        # Source for key and IV: https://github.com/MauritsWilke/storytel-api/blob/v1_archive/src/utils/encryptPassword.ts
-        cipher = AES.new(self._KEY, AES.MODE_CBC, self._IV)
-        enc = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
-        return enc.hex()
-
     async def raise_for_status(self, resp: ClientResponse) -> None:
         """Raise a provider exception for non-success Storytel responses."""
         if 200 <= resp.status < 300:
@@ -243,18 +235,6 @@ class StorytelHelper:
             raise LoginFailed(msg)
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
         return self._auth
-
-    def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
-        for format_data in formats_data:
-            if format_data.get("type") != "abook":
-                continue
-            is_released: bool = format_data.get("isReleased") or False
-            return is_released
-        return False
-
-    def _is_audiobook(self, model_data: dict[str, Any]) -> bool:
-        result_type: str = model_data.get("resultType") or ""
-        return result_type == "book"
 
     async def get_library(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """
@@ -338,65 +318,6 @@ class StorytelHelper:
         ) as resp:
             await self.raise_for_status(resp)
             return cast("dict[str, Any]", await resp.json())
-
-    def _parse_duration(self, duration_data: dict[str, int]) -> int:
-        """Parse duration data to seconds."""
-        if not duration_data:
-            return 0
-        hours = int(duration_data.get("hours") or 0)
-        minutes = int(duration_data.get("minutes") or 0)
-        seconds = int(duration_data.get("seconds") or 0)
-        return hours * 3600 + minutes * 60 + seconds
-
-    async def _fetch_chapters(self, consumable_id: str) -> list[dict[str, Any]]:
-        """Fetch chapters for a given consumable_id."""
-        chapters: list[dict[str, Any]] = []
-
-        url = URL_PLAYBACK_BOOK_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
-        try:
-            headers = self.headers_api()
-            async with self.session.get(url, headers=headers) as resp:
-                await self.raise_for_status(resp)
-                data: dict[str, Any] = await resp.json()
-            formats = data.get("formats") or []
-            audiobook_format = next((f for f in formats if f.get("type") == "abook"), None)
-            chapters = audiobook_format.get("chapters") or [] if audiobook_format else []
-        except (ClientError, KeyError, TypeError, ValueError) as err:
-            self.logger.debug("Failed to fetch chapters for %s: %s", consumable_id, err)
-
-        return list(chapters)
-
-    async def _parse_chapters(self, chapters_data: list[dict[str, Any]]) -> list[MediaItemChapter]:
-        """Parse raw chapter data into MediaChapter objects."""
-        chapters: list[MediaItemChapter] = []
-        chapters_data = await self._compute_chapter_start(chapters_data)
-        for chap in chapters_data:
-            chapter_number = int(chap.get("number") or 0)
-            title = chap.get("title") or f"Chapter {chapter_number}"
-            start = chap.get("startPosition") or 0
-            end = chap.get("endPosition") or 0
-            chapter = MediaItemChapter(
-                position=chapter_number,
-                name=title,
-                start=start,
-                end=end,
-            )
-            chapters.append(chapter)
-        return chapters
-
-    async def _compute_chapter_start(
-        self, chapters_data: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Augment the chapters data with computed start positions."""
-        for i, chap in enumerate(chapters_data):
-            if i == 0:
-                chap["startPosition"] = 0
-                chap["endPosition"] = int(chap.get("durationInSeconds", 0))
-            else:
-                prev_chap = chapters_data[i - 1]
-                chap["startPosition"] = prev_chap.get("endPosition", 0)
-                chap["endPosition"] = chap["startPosition"] + int(chap.get("durationInSeconds", 0))
-        return chapters_data
 
     async def fetch_resource_version(self) -> None:
         """Fetch and cache the resource version for the Storytel API."""
@@ -649,102 +570,8 @@ class StorytelHelper:
             return []
         return await fetch_pages(page_tokens)
 
-    async def _parse_podcast_episode_item(self, item_data: dict[str, Any]) -> PodcastEpisode:
-        consumable_id = item_data.get("consumableId") or ""
-        title = item_data.get("title") or "Unknown"
-        duration_seconds = self._parse_duration(item_data.get("duration") or {})
-        podcast_info = item_data.get("seriesInfo") or {}
-        mass_podcast = await self.provider_instance.get_podcast(podcast_info.get("id") or "")
-        hosts = parse_podcast_hosts(item_data)
-        episode_number = item_data.get("seriesInfo", {}).get("orderInSeries") or 0
-        media_item = PodcastEpisode(
-            item_id=consumable_id,
-            provider=self.provider_id,
-            podcast=mass_podcast,
-            name=title,
-            duration=duration_seconds,
-            position=0,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=consumable_id,
-                    provider_domain=self.provider_domain,
-                    provider_instance=self.provider_id,
-                )
-            },
-        )
-        if hosts:
-            media_item.metadata.performers = set(hosts)
-        if episode_number:
-            media_item.position = episode_number
-        return media_item
-
-    async def _parse_audiobook_item(self, item_data: dict[str, Any]) -> Audiobook:
-        consumable_id = item_data.get("consumableId") or ""
-        title = item_data.get("title") or "Unknown"
-        duration_seconds = self._parse_duration(item_data.get("duration") or {})
-        authors = [a.get("name") for a in item_data.get("authors", []) if a.get("name")]
-        narrators = [n.get("name") for n in item_data.get("narrators", []) if n.get("name")]
-        publisher = ((item_data.get("formats") or [{}])[0].get("publisher") or {}).get("name") or ""
-        media_item = Audiobook(
-            item_id=consumable_id,
-            provider=self.provider_id,
-            name=title,
-            duration=duration_seconds,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=consumable_id,
-                    provider_domain=self.provider_domain,
-                    provider_instance=self.provider_id,
-                )
-            },
-            publisher=publisher,
-            favorite=False,
-        )
-        chapters = await self._fetch_chapters(consumable_id=consumable_id)
-        chapters_list = await self._parse_chapters(chapters)
-        if authors:
-            media_item.authors.set(authors)
-        if narrators:
-            media_item.narrators.set(narrators)
-        if chapters_list:
-            media_item.metadata.chapters = chapters_list
-        return media_item
-
-    async def _apply_media_item_metadata(
-        self,
-        media_item: Audiobook | PodcastEpisode,
-        item_data: dict[str, Any],
-        bookmark: dict[str, Any] | None,
-    ) -> Audiobook | PodcastEpisode:
-        release_date = (item_data.get("formats") or [{}])[0].get("releaseDate") or ""
-        description = item_data.get("description") or ""
-        cover_url = (item_data.get("cover") or {}).get("url")
-        language = item_data.get("language") or ""
-        category_name = (item_data.get("category") or {}).get("name") or ""
-        languages = UniqueList([language]) if language else UniqueList()
-        genres = {category_name} if category_name else set()
-
-        if bookmark:
-            media_item.resume_position_ms = int(bookmark.get("position") or 0)
-        if release_date:
-            media_item.metadata.release_date = datetime.fromisoformat(release_date).astimezone(UTC)
-        if description:
-            media_item.metadata.description = description
-        if cover_url:
-            media_item.metadata.images = UniqueList(
-                [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=self.provider_id)]
-            )
-        if languages:
-            media_item.metadata.languages = languages
-        if genres:
-            media_item.metadata.genres = genres
-
-        return media_item
-
     async def parse_media_item(self, item_data: dict[str, Any]) -> MediaItemType:
         """Parse a media item from Storytel API to the appropriate Music Assistant media item type."""
-        consumable_id = item_data.get("consumableId") or ""
-        bookmark = await self.get_bookmark(consumable_id=consumable_id)
         item_type = item_data.get("type") or ""
         media_item: Audiobook | PodcastEpisode
 
@@ -756,7 +583,7 @@ class StorytelHelper:
             self.logger.warning("Unsupported media item type for parsing: %s", item_type)
             raise UnsupportedFeaturedException(f"Unsupported media item type: {item_type}")
 
-        return await self._apply_media_item_metadata(media_item, item_data, bookmark)
+        return await self._apply_media_item_metadata(media_item, item_data)
 
     async def get_podcast_details(self, consumable_id: str) -> dict[str, Any]:
         """
@@ -770,64 +597,6 @@ class StorytelHelper:
         async with self.session.get(url, headers=headers) as resp:
             await self.raise_for_status(resp)
             return cast("dict[str, Any]", await resp.json())
-
-    async def _fetch_search_page(
-        self,
-        query: str,
-        search_for: str,
-        page_token: str,
-        filter_func: Callable[[list[dict[str, Any]]], list[str]],
-        fetch_func: Callable[[str], Coroutine[Any, Any, T]],
-    ) -> tuple[list[T], int, int]:
-        """
-        Fetch a single search page and prepare items for the given search type.
-
-        :param query: The search query string.
-        :param search_for: The search type (e.g., "podcast_shows" or "books").
-        :param page_token: The page token for this request.
-        :param filter_func: Callable to filter item IDs from results.
-        :param fetch_func: Async callable to fetch full item details by ID.
-        """
-        url = URL_SEARCH
-        url += (
-            "?configVariant=baseline"
-            f"&searchFor={quote(search_for, safe='')}"
-            "&includeFormats=abook"
-            f"&includeLanguages={quote(self.languages_query, safe='')}"
-            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
-            f"&query={quote(query, safe='')}"
-            "&v2=true"
-        )
-        if page_token != "":
-            url += f"&page={quote(page_token, safe='')}"
-        headers = self.headers_api()
-        headers["Accept"] = API_HEADER_CONTENT_TYPE_SEARCH
-        async with self.session.get(url, headers=headers) as resp:
-            await self.raise_for_status(resp)
-            data: dict[str, Any] = await resp.json()
-
-        results = data.get("items") or []
-        item_ids = filter_func(results)
-        self.logger.debug(
-            "Filtered away %d results, %d candidates on page %s for query '%s'",
-            len(results) - len(item_ids),
-            len(item_ids),
-            page_token or "0",
-            query,
-        )
-
-        page_items: list[T] = []
-        if item_ids:
-            task_results: list[Task[T]] = []
-            async with TaskGroup() as tg:
-                for item_id in item_ids:
-                    task_results.append(tg.create_task(fetch_func(item_id)))
-            for task in task_results:
-                page_items.append(task.result())
-
-        total_results = int(data.get("totalCount", 0) or 0)
-        next_page_offset = int(data.get("nextPageToken", 0) or 0)
-        return page_items, total_results, next_page_offset
 
     async def search_podcasts(
         self, query: str, limit: int = 10, page_token: str = "", results_count: int = 0
@@ -983,7 +752,8 @@ class StorytelHelper:
             item_id=f"{self.provider_id}_recommendations",
             provider=self.provider_id,
             icon="mdi-star-circle-outline",
-            name="Storytel Recommendations",
+            name="Recommendations",
+            translation_key="common.media.folder.recommendations.name",
         )
 
         chip_url = URL_FRONTPAGE
@@ -1145,6 +915,232 @@ class StorytelHelper:
             allow_seek=True,
             duration=content_duration_seconds,
         )
+
+    def _encrypt_password_hex(self, password: str) -> str:
+        """Encrypt password for Storytel API."""
+        # AES-128-CBC encrypt password, hex encoded (PKCS#7 padding).
+        # Source for key and IV: https://github.com/MauritsWilke/storytel-api/blob/v1_archive/src/utils/encryptPassword.ts
+        cipher = AES.new(self._KEY, AES.MODE_CBC, self._IV)
+        enc = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
+        return enc.hex()
+
+    def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
+        for format_data in formats_data:
+            if format_data.get("type") != "abook":
+                continue
+            is_released: bool = format_data.get("isReleased") or False
+            return is_released
+        return False
+
+    def _is_audiobook(self, model_data: dict[str, Any]) -> bool:
+        result_type: str = model_data.get("resultType") or ""
+        return result_type == "book"
+
+    def _parse_duration(self, duration_data: dict[str, int]) -> int:
+        """Parse duration data to seconds."""
+        if not duration_data:
+            return 0
+        hours = int(duration_data.get("hours") or 0)
+        minutes = int(duration_data.get("minutes") or 0)
+        seconds = int(duration_data.get("seconds") or 0)
+        return hours * 3600 + minutes * 60 + seconds
+
+    async def _fetch_chapters(self, consumable_id: str) -> list[dict[str, Any]]:
+        """Fetch chapters for a given consumable_id."""
+        chapters: list[dict[str, Any]] = []
+
+        url = URL_PLAYBACK_BOOK_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
+        try:
+            headers = self.headers_api()
+            async with self.session.get(url, headers=headers) as resp:
+                await self.raise_for_status(resp)
+                data: dict[str, Any] = await resp.json()
+            formats = data.get("formats") or []
+            audiobook_format = next((f for f in formats if f.get("type") == "abook"), None)
+            chapters = audiobook_format.get("chapters") or [] if audiobook_format else []
+        except (ClientError, KeyError, TypeError, ValueError) as err:
+            self.logger.debug("Failed to fetch chapters for %s: %s", consumable_id, err)
+
+        return list(chapters)
+
+    async def _parse_chapters(self, chapters_data: list[dict[str, Any]]) -> list[MediaItemChapter]:
+        """Parse raw chapter data into MediaChapter objects."""
+        chapters: list[MediaItemChapter] = []
+        chapters_data = await self._compute_chapter_start(chapters_data)
+        for chap in chapters_data:
+            chapter_number = int(chap.get("number") or 0)
+            title = chap.get("title") or f"Chapter {chapter_number}"
+            start = chap.get("startPosition") or 0
+            end = chap.get("endPosition") or 0
+            chapter = MediaItemChapter(
+                position=chapter_number,
+                name=title,
+                start=start,
+                end=end,
+            )
+            chapters.append(chapter)
+        return chapters
+
+    async def _compute_chapter_start(
+        self, chapters_data: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Augment the chapters data with computed start positions."""
+        for i, chap in enumerate(chapters_data):
+            if i == 0:
+                chap["startPosition"] = 0
+                chap["endPosition"] = int(chap.get("durationInSeconds", 0))
+            else:
+                prev_chap = chapters_data[i - 1]
+                chap["startPosition"] = prev_chap.get("endPosition", 0)
+                chap["endPosition"] = chap["startPosition"] + int(chap.get("durationInSeconds", 0))
+        return chapters_data
+
+    async def _parse_podcast_episode_item(self, item_data: dict[str, Any]) -> PodcastEpisode:
+        consumable_id = item_data.get("consumableId") or ""
+        title = item_data.get("title") or "Unknown"
+        duration_seconds = self._parse_duration(item_data.get("duration") or {})
+        podcast_info = item_data.get("seriesInfo") or {}
+        mass_podcast = await self.provider_instance.get_podcast(podcast_info.get("id") or "")
+        hosts = parse_podcast_hosts(item_data)
+        episode_number = item_data.get("seriesInfo", {}).get("orderInSeries") or 0
+        media_item = PodcastEpisode(
+            item_id=consumable_id,
+            provider=self.provider_id,
+            podcast=mass_podcast,
+            name=title,
+            duration=duration_seconds,
+            position=0,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=consumable_id,
+                    provider_domain=self.provider_domain,
+                    provider_instance=self.provider_id,
+                )
+            },
+        )
+        if hosts:
+            media_item.metadata.performers = set(hosts)
+        if episode_number:
+            media_item.position = episode_number
+        return media_item
+
+    async def _parse_audiobook_item(self, item_data: dict[str, Any]) -> Audiobook:
+        consumable_id = item_data.get("consumableId") or ""
+        title = item_data.get("title") or "Unknown"
+        duration_seconds = self._parse_duration(item_data.get("duration") or {})
+        authors = [a.get("name") for a in item_data.get("authors", []) if a.get("name")]
+        narrators = [n.get("name") for n in item_data.get("narrators", []) if n.get("name")]
+        publisher = ((item_data.get("formats") or [{}])[0].get("publisher") or {}).get("name") or ""
+        media_item = Audiobook(
+            item_id=consumable_id,
+            provider=self.provider_id,
+            name=title,
+            duration=duration_seconds,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=consumable_id,
+                    provider_domain=self.provider_domain,
+                    provider_instance=self.provider_id,
+                )
+            },
+            publisher=publisher,
+            favorite=False,
+        )
+        chapters = await self._fetch_chapters(consumable_id=consumable_id)
+        chapters_list = await self._parse_chapters(chapters)
+        if authors:
+            media_item.authors.set(authors)
+        if narrators:
+            media_item.narrators.set(narrators)
+        if chapters_list:
+            media_item.metadata.chapters = chapters_list
+        return media_item
+
+    async def _apply_media_item_metadata(
+        self,
+        media_item: Audiobook | PodcastEpisode,
+        item_data: dict[str, Any],
+    ) -> Audiobook | PodcastEpisode:
+        release_date = (item_data.get("formats") or [{}])[0].get("releaseDate") or ""
+        description = item_data.get("description") or ""
+        cover_url = (item_data.get("cover") or {}).get("url")
+        language = item_data.get("language") or ""
+        category_name = (item_data.get("category") or {}).get("name") or ""
+        languages = UniqueList([language]) if language else UniqueList()
+        genres = {category_name} if category_name else set()
+
+        if release_date:
+            media_item.metadata.release_date = datetime.fromisoformat(release_date).astimezone(UTC)
+        if description:
+            media_item.metadata.description = description
+        if cover_url:
+            media_item.metadata.images = UniqueList(
+                [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=self.provider_id)]
+            )
+        if languages:
+            media_item.metadata.languages = languages
+        if genres:
+            media_item.metadata.genres = genres
+
+        return media_item
+
+    async def _fetch_search_page(
+        self,
+        query: str,
+        search_for: str,
+        page_token: str,
+        filter_func: Callable[[list[dict[str, Any]]], list[str]],
+        fetch_func: Callable[[str], Coroutine[Any, Any, T]],
+    ) -> tuple[list[T], int, int]:
+        """
+        Fetch a single search page and prepare items for the given search type.
+
+        :param query: The search query string.
+        :param search_for: The search type (e.g., "podcast_shows" or "books").
+        :param page_token: The page token for this request.
+        :param filter_func: Callable to filter item IDs from results.
+        :param fetch_func: Async callable to fetch full item details by ID.
+        """
+        url = URL_SEARCH
+        url += (
+            "?configVariant=baseline"
+            f"&searchFor={quote(search_for, safe='')}"
+            "&includeFormats=abook"
+            f"&includeLanguages={quote(self.languages_query, safe='')}"
+            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+            f"&query={quote(query, safe='')}"
+            "&v2=true"
+        )
+        if page_token != "":
+            url += f"&page={quote(page_token, safe='')}"
+        headers = self.headers_api()
+        headers["Accept"] = API_HEADER_CONTENT_TYPE_SEARCH
+        async with self.session.get(url, headers=headers) as resp:
+            await self.raise_for_status(resp)
+            data: dict[str, Any] = await resp.json()
+
+        results = data.get("items") or []
+        item_ids = filter_func(results)
+        self.logger.debug(
+            "Filtered away %d results, %d candidates on page %s for query '%s'",
+            len(results) - len(item_ids),
+            len(item_ids),
+            page_token or "0",
+            query,
+        )
+
+        page_items: list[T] = []
+        if item_ids:
+            task_results: list[Task[T]] = []
+            async with TaskGroup() as tg:
+                for item_id in item_ids:
+                    task_results.append(tg.create_task(fetch_func(item_id)))
+            for task in task_results:
+                page_items.append(task.result())
+
+        total_results = int(data.get("totalCount", 0) or 0)
+        next_page_offset = int(data.get("nextPageToken", 0) or 0)
+        return page_items, total_results, next_page_offset
 
 
 def parse_raw_headers(raw_headers: tuple[tuple[bytes, bytes], ...]) -> dict[str, str]:
