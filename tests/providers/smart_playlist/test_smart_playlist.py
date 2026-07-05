@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1037,10 +1036,10 @@ async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) 
 
 
 @pytest.mark.asyncio
-async def test_get_playlist_copies_library_artwork(
+async def test_get_playlist_loads_library_artwork(
     tmp_path: Any,
 ) -> None:
-    """get_playlist uses artwork from images cache when available."""
+    """get_playlist loads artwork from the library when available."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     manifest = MagicMock()
@@ -1052,20 +1051,28 @@ async def test_get_playlist_copies_library_artwork(
 
     plugin._rules_store["abc"] = SmartPlaylistRules(limit=10, is_dynamic=False)
 
-    # Populate images cache (simulates metadata enrichment event)
+    # Mock library item with artwork
     library_artwork = MediaItemImage(
         type=ImageType.THUMB,
         path="generated_artwork.jpg",
         provider="playlist_art",
         remotely_accessible=False,
     )
-    plugin._images_store["abc"] = UniqueList([library_artwork])
+    library_playlist = MagicMock()
+    library_playlist.metadata.images = UniqueList([library_artwork])
+
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=library_playlist)
 
     playlist = await plugin.get_playlist("abc")
     assert playlist.metadata.images is not None
     assert len(playlist.metadata.images) == 1
     assert playlist.metadata.images[0].path == "generated_artwork.jpg"
     assert playlist.metadata.images[0].provider == "playlist_art"
+
+    # Verify library lookup was called
+    mass.music.playlists.get_library_item_by_prov_id.assert_awaited_once_with(
+        "abc", plugin.instance_id
+    )
 
 
 @pytest.mark.asyncio
@@ -1645,6 +1652,7 @@ def _make_ai_plugin(
     mass.storage_path = str(tmp_path)
     mass.cache.clear = AsyncMock()
     mass.metadata.locale = "en_US"
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
     providers = [ai_provider] if ai_provider is not None else []
     mass.get_providers_supporting_feature = MagicMock(return_value=providers)
     manifest = MagicMock()
@@ -1792,7 +1800,7 @@ async def test_build_playlist_uses_stored_ai_description(tmp_path: Any) -> None:
     plugin._names_store["abc"] = "My List"
     plugin._descriptions_store["abc"] = "Hand-crafted AI summary."
 
-    playlist = plugin._build_playlist("abc", SmartPlaylistRules(favorites_only=True))
+    playlist = await plugin._build_playlist("abc", SmartPlaylistRules(favorites_only=True))
 
     assert playlist.metadata.description == "Hand-crafted AI summary."
 
@@ -1806,7 +1814,7 @@ async def test_build_playlist_ignores_stored_description_when_disabled(tmp_path:
     plugin._descriptions_store["abc"] = "Old AI text."
     rules = SmartPlaylistRules(favorites_only=True)
 
-    playlist = plugin._build_playlist("abc", rules)
+    playlist = await plugin._build_playlist("abc", rules)
 
     assert playlist.metadata.description == f"[Smart Playlist] {rules.human_readable()}"
 
@@ -1819,7 +1827,7 @@ async def test_build_playlist_falls_back_to_human_readable(tmp_path: Any) -> Non
     plugin._names_store["abc"] = "My List"
     rules = SmartPlaylistRules(favorites_only=True)
 
-    playlist = plugin._build_playlist("abc", rules)
+    playlist = await plugin._build_playlist("abc", rules)
 
     assert playlist.metadata.description == f"[Smart Playlist] {rules.human_readable()}"
 
@@ -2332,177 +2340,3 @@ async def test_static_playlist_ignores_recency_filter() -> None:
         result = await plugin.get_playlist_tracks("42")
 
     assert [track.item_id for track in result] == ["keep", "drop"]
-
-
-@pytest.mark.asyncio
-async def test_load_images_from_library_populates_cache(tmp_path: Any) -> None:
-    """_load_images_from_library loads playlist images from library into cache on startup."""
-    mass = MagicMock()
-    mass.storage_path = str(tmp_path)
-    manifest = MagicMock()
-    manifest.domain = "smart_playlist"
-    config = MagicMock()
-    config.get_value.return_value = "GLOBAL"
-    plugin = SmartPlaylistProvider(mass, manifest, config, set())
-    await plugin.handle_async_init()
-
-    plugin._rules_store["playlist-1"] = SmartPlaylistRules(limit=10)
-    plugin._rules_store["playlist-2"] = SmartPlaylistRules(limit=20)
-
-    # Mock library playlists with images
-    artwork_1 = MediaItemImage(
-        type=ImageType.THUMB,
-        path="artwork1.jpg",
-        provider="playlist_metadata",
-        remotely_accessible=False,
-    )
-    artwork_2 = MediaItemImage(
-        type=ImageType.THUMB,
-        path="artwork2.jpg",
-        provider="playlist_metadata",
-        remotely_accessible=False,
-    )
-
-    library_playlist_1 = MagicMock()
-    library_playlist_1.metadata.images = UniqueList([artwork_1])
-    library_playlist_1.provider_mappings = [
-        ProviderMapping(
-            item_id="playlist-1",
-            provider_domain="smart_playlist",
-            provider_instance=plugin.instance_id,
-        )
-    ]
-
-    library_playlist_2 = MagicMock()
-    library_playlist_2.metadata.images = UniqueList([artwork_2])
-    library_playlist_2.provider_mappings = [
-        ProviderMapping(
-            item_id="playlist-2",
-            provider_domain="smart_playlist",
-            provider_instance=plugin.instance_id,
-        )
-    ]
-
-    async def mock_iter_library(provider: str | None = None) -> AsyncIterator[Playlist]:  # noqa: ARG001
-        yield library_playlist_1
-        yield library_playlist_2
-
-    mass.music.playlists.iter_library_items = mock_iter_library
-
-    # Load images
-    await plugin._load_images_from_library()
-
-    # Verify cache populated
-    assert "playlist-1" in plugin._images_store
-    assert "playlist-2" in plugin._images_store
-    assert plugin._images_store["playlist-1"][0].path == "artwork1.jpg"
-    assert plugin._images_store["playlist-2"][0].path == "artwork2.jpg"
-
-
-@pytest.mark.asyncio
-async def test_on_media_item_updated_syncs_images(tmp_path: Any) -> None:
-    """_on_media_item_updated updates images cache when playlist artwork changes."""
-    mass = MagicMock()
-    mass.storage_path = str(tmp_path)
-    manifest = MagicMock()
-    manifest.domain = "smart_playlist"
-    config = MagicMock()
-    config.get_value.return_value = "GLOBAL"
-    plugin = SmartPlaylistProvider(mass, manifest, config, set())
-    await plugin.handle_async_init()
-
-    plugin._rules_store["playlist-123"] = SmartPlaylistRules(limit=10)
-    plugin._names_store["playlist-123"] = "Test Playlist"
-
-    # Initial artwork
-    initial_artwork = MediaItemImage(
-        type=ImageType.THUMB,
-        path="initial.jpg",
-        provider="playlist_metadata",
-        remotely_accessible=False,
-    )
-    plugin._images_store["playlist-123"] = UniqueList([initial_artwork])
-
-    # Updated artwork
-    updated_artwork = MediaItemImage(
-        type=ImageType.THUMB,
-        path="updated.jpg",
-        provider="playlist_metadata",
-        remotely_accessible=False,
-    )
-
-    updated_playlist = Playlist(
-        item_id="1",
-        provider="library",
-        name="Test Playlist Updated",
-        owner="Smart Playlist",
-        is_editable=True,
-        provider_mappings={
-            ProviderMapping(
-                item_id="playlist-123",
-                provider_domain="smart_playlist",
-                provider_instance=plugin.instance_id,
-            )
-        },
-    )
-    updated_playlist.metadata = MediaItemMetadata(images=UniqueList([updated_artwork]))
-
-    event = MagicMock()
-    event.data = updated_playlist
-
-    # Trigger update
-    await plugin._on_media_item_updated(event)
-
-    # Verify cache updated
-    assert plugin._images_store["playlist-123"][0].path == "updated.jpg"
-
-
-@pytest.mark.asyncio
-async def test_on_media_item_updated_clears_images_when_removed(tmp_path: Any) -> None:
-    """_on_media_item_updated removes images from cache when playlist artwork is deleted."""
-    mass = MagicMock()
-    mass.storage_path = str(tmp_path)
-    manifest = MagicMock()
-    manifest.domain = "smart_playlist"
-    config = MagicMock()
-    config.get_value.return_value = "GLOBAL"
-    plugin = SmartPlaylistProvider(mass, manifest, config, set())
-    await plugin.handle_async_init()
-
-    plugin._rules_store["playlist-456"] = SmartPlaylistRules(limit=10)
-    plugin._names_store["playlist-456"] = "Test Playlist"
-
-    # Initial artwork
-    initial_artwork = MediaItemImage(
-        type=ImageType.THUMB,
-        path="artwork.jpg",
-        provider="playlist_metadata",
-        remotely_accessible=False,
-    )
-    plugin._images_store["playlist-456"] = UniqueList([initial_artwork])
-
-    # Playlist with no images
-    updated_playlist = Playlist(
-        item_id="1",
-        provider="library",
-        name="Test Playlist",
-        owner="Smart Playlist",
-        is_editable=True,
-        provider_mappings={
-            ProviderMapping(
-                item_id="playlist-456",
-                provider_domain="smart_playlist",
-                provider_instance=plugin.instance_id,
-            )
-        },
-    )
-    updated_playlist.metadata = MediaItemMetadata(images=UniqueList([]))
-
-    event = MagicMock()
-    event.data = updated_playlist
-
-    # Trigger update
-    await plugin._on_media_item_updated(event)
-
-    # Verify cache cleared
-    assert "playlist-456" not in plugin._images_store

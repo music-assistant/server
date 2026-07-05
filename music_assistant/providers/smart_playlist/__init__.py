@@ -183,7 +183,6 @@ class SmartPlaylistProvider(PluginProvider):
         self._rules_store = {}
         self._names_store = {}
         self._descriptions_store = {}
-        self._images_store: dict[str, UniqueList[MediaItemImage]] = {}
         self._unregister_handles = []
         self._flush_lock = asyncio.Lock()
         self._rules_dir = os.path.join(self.mass.storage_path, "smart_playlists")
@@ -228,8 +227,6 @@ class SmartPlaylistProvider(PluginProvider):
         self.logger.info(
             "Smart Playlist provider loaded with %d stored playlists", len(self._rules_store)
         )
-        # Load images from library on startup
-        await self._load_images_from_library()
         # Re-add playlists missing from the library (e.g. after a DB reset).
         self.mass.create_task(self._reconcile_library())
         # One-time migration: remove legacy icon.svg from smart playlists
@@ -269,22 +266,27 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse smart playlists."""
-        return [self._build_playlist(pid, rules) for pid, rules in self._rules_store.items()]
+        playlists = []
+        for pid, rules in self._rules_store.items():
+            playlists.append(await self._build_playlist(pid, rules))
+        return playlists
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """Return smart playlists as a recommendation folder."""
-        playlists = [self._build_playlist(pid, r) for pid, r in self._rules_store.items()]
-        if not playlists:
-            return []
-        return [
-            RecommendationFolder(
-                item_id="smart_playlists",
-                provider=self.domain,
-                name="Smart Playlists",
-                translation_key="smart_playlists",
-                items=playlists,  # type: ignore[arg-type]
-            )
-        ]
+        playlists = []
+        for pid, r in self._rules_store.items():
+            playlists.append(await self._build_playlist(pid, r))
+        if playlists:
+            return [
+                RecommendationFolder(
+                    item_id="smart_playlists",
+                    provider=self.domain,
+                    name="Smart Playlists",
+                    translation_key="smart_playlists",
+                    items=playlists,  # type: ignore[arg-type]
+                )
+            ]
+        return []
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details by provider id."""
@@ -294,7 +296,7 @@ class SmartPlaylistProvider(PluginProvider):
             raise MediaNotFoundError(msg)
 
         # Build playlist from rules
-        return self._build_playlist(resolved_id, rules)
+        return await self._build_playlist(resolved_id, rules)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
@@ -355,24 +357,10 @@ class SmartPlaylistProvider(PluginProvider):
                 if existing is not None:
                     continue
                 self.logger.info("Re-adding missing smart playlist '%s' to library", playlist_id)
-                playlist = self._build_playlist(playlist_id, rules)
+                playlist = await self._build_playlist(playlist_id, rules)
                 await self.mass.music.playlists.add_item_to_library(playlist)
             except Exception as exc:
                 self.logger.warning("Could not re-add smart playlist %s: %s", playlist_id, exc)
-
-    async def _load_images_from_library(self) -> None:
-        """Load playlist images from library into the in-memory cache on startup."""
-        try:
-            async for playlist in self.mass.music.playlists.iter_library_items(
-                provider=self.instance_id
-            ):
-                if playlist.metadata.images:
-                    for mapping in playlist.provider_mappings:
-                        if mapping.provider_instance == self.instance_id:
-                            self._images_store[mapping.item_id] = playlist.metadata.images
-                            break
-        except Exception as exc:
-            self.logger.warning("Failed to load images from library: %s", exc)
 
     async def _migrate_legacy_icon(self) -> None:
         """Remove legacy icon.svg from smart playlists (added by versions prior to PR #4447)."""
@@ -417,13 +405,12 @@ class SmartPlaylistProvider(PluginProvider):
                 self._rules_store.pop(prov_id, None)
                 self._names_store.pop(prov_id, None)
                 self._descriptions_store.pop(prov_id, None)
-                self._images_store.pop(prov_id, None)
                 await self._invalidate_dynamic_sample_cache(prov_id)
                 await self._flush_rules_to_disk()
                 break
 
     async def _on_media_item_updated(self, event: MassEvent) -> None:
-        """Sync library playlist name and images back to the in-memory store."""
+        """Sync library playlist name back to the in-memory store."""
         item = event.data
         if not isinstance(item, Playlist):
             return
@@ -433,10 +420,6 @@ class SmartPlaylistProvider(PluginProvider):
                 if prov_id in self._names_store and self._names_store[prov_id] != item.name:
                     self._names_store[prov_id] = item.name
                     await self._flush_rules_to_disk()
-                if item.metadata.images:
-                    self._images_store[prov_id] = item.metadata.images
-                else:
-                    self._images_store.pop(prov_id, None)
                 break
 
     # --- API commands ---
@@ -472,7 +455,7 @@ class SmartPlaylistProvider(PluginProvider):
         self._names_store[playlist_id] = name
         await self._save_rules(playlist_id, parsed_rules)
 
-        playlist = self._build_playlist(playlist_id, parsed_rules)
+        playlist = await self._build_playlist(playlist_id, parsed_rules)
         library_playlist = await self.mass.music.playlists.add_item_to_library(playlist)
         self.mass.metadata.schedule_update_metadata(library_playlist)
         self._schedule_ai_description_refresh(playlist_id)
@@ -673,7 +656,7 @@ class SmartPlaylistProvider(PluginProvider):
             self.logger.debug("Could not resolve playlist id %s: %s", playlist_id, err)
         return None
 
-    def _build_playlist(self, playlist_id: str, rules: SmartPlaylistRules) -> Playlist:
+    async def _build_playlist(self, playlist_id: str, rules: SmartPlaylistRules) -> Playlist:
         """Build a Playlist object from stored rules."""
         name = self._names_store.get(playlist_id, playlist_id)
         playlist = Playlist(
@@ -695,13 +678,18 @@ class SmartPlaylistProvider(PluginProvider):
         playlist.is_dynamic = rules.is_dynamic
         playlist.metadata = MediaItemMetadata(
             description=self._description_for(playlist_id, rules),
-            images=self._images_for(playlist_id),
+            images=await self._images_for(playlist_id),
         )
         return playlist
 
-    def _images_for(self, playlist_id: str) -> UniqueList[MediaItemImage]:
-        """Return cached images for the playlist, or empty list if none available."""
-        return self._images_store.get(playlist_id, UniqueList([]))
+    async def _images_for(self, playlist_id: str) -> UniqueList[MediaItemImage]:
+        """Return images for the playlist from the library, or empty list if none available."""
+        library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+            playlist_id, self.instance_id
+        )
+        if library_item and library_item.metadata and library_item.metadata.images:
+            return library_item.metadata.images
+        return UniqueList([])
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Return the smart playlist provider icon as fallback image."""
