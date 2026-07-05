@@ -1601,6 +1601,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             player.set_config(player_config)
             # update state again now that config is loaded
             player.update_state(signal_event=False)
+            self._save_underlying_player_id(player)
             # call hook after the player is registered and config is set
             await player.on_config_updated()
 

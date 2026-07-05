@@ -7654,3 +7654,191 @@ class TestSelfReferentialProtocolLinks:
         values = config._data[CONF_PLAYERS]["esp_client"]["values"]
         assert values["protocol_parent_id"] is None
         assert "esp_client" not in values["linked_protocol_ids"]
+
+
+class TestDerivedProtocolLinking:
+    """
+    Tests for derived protocol players (players with underlying_player_id set).
+
+    Derived protocol players (e.g. Sendspin bridges riding on an AirPlay player)
+    resolve their parent deterministically via the underlying player instead of
+    device identifier matching, and never seed universal players themselves.
+    """
+
+    @staticmethod
+    def _make_derived_player(
+        mock_mass: MagicMock, player_id: str, underlying_player_id: str
+    ) -> MockPlayer:
+        """Create a derived protocol player without any device identifiers."""
+        provider = MockProvider("sendspin", mass=mock_mass)
+        player = MockPlayer(
+            provider,
+            player_id,
+            f"Bridge {player_id}",
+            player_type=PlayerType.PROTOCOL,
+        )
+        player._attr_underlying_player_id = underlying_player_id
+        player.set_initialized()
+        return player
+
+    def test_derived_links_to_parent_of_linked_underlying(self, mock_mass: MagicMock) -> None:
+        """Test a derived player joins the parent of its (linked) underlying player."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        native = MockPlayer(
+            MockProvider("heos", mass=mock_mass), "native_1", "AVR", player_type=PlayerType.PLAYER
+        )
+        native.set_initialized()
+        ap_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_1",
+            "AVR AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        ap_player.set_initialized()
+        controller._players = {"native_1": native, "ap_1": ap_player}
+        controller._add_protocol_link(native, ap_player, "airplay")
+
+        # The derived player has NO identifiers - the edge alone must resolve it
+        derived = self._make_derived_player(mock_mass, "spb_1", "ap_1")
+        controller._players["spb_1"] = derived
+        controller._try_link_protocol_to_native(derived)
+
+        assert derived.protocol_parent_id == "native_1"
+
+    def test_waiting_derived_follows_when_underlying_links(self, mock_mass: MagicMock) -> None:
+        """Test a derived player that registered early follows once its underlying links."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        native = MockPlayer(
+            MockProvider("heos", mass=mock_mass), "native_1", "AVR", player_type=PlayerType.PLAYER
+        )
+        native.set_initialized()
+        ap_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_1",
+            "AVR AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        ap_player.set_initialized()
+        derived = self._make_derived_player(mock_mass, "spb_1", "ap_1")
+        controller._players = {"native_1": native, "ap_1": ap_player, "spb_1": derived}
+
+        # Underlying is not linked yet: derived stays unlinked
+        controller._try_link_protocol_to_native(derived)
+        assert derived.protocol_parent_id is None
+
+        # Linking the underlying player propagates to the waiting derived player
+        controller._add_protocol_link(native, ap_player, "airplay")
+        assert derived.protocol_parent_id == "native_1"
+
+    def test_derived_links_directly_to_non_protocol_underlying(self, mock_mass: MagicMock) -> None:
+        """Test a derived player parents to the underlying player itself when not a protocol."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+
+        local_player = MockPlayer(
+            MockProvider("local_audio", mass=mock_mass),
+            "local_1",
+            "Dummy Output",
+            player_type=PlayerType.PLAYER,
+        )
+        local_player.set_initialized()
+        derived = self._make_derived_player(mock_mass, "spb_1", "local_1")
+        controller._players = {"spb_1": derived, "local_1": local_player}
+
+        # The final derived pass of _try_link_protocols_to_native picks it up
+        controller._try_link_protocols_to_native(local_player)
+
+        assert derived.protocol_parent_id == "local_1"
+
+    @pytest.mark.asyncio
+    async def test_derived_delayed_eval_never_creates_universal_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test delayed evaluation of a derived player never wraps it in a universal player."""
+        controller, _ = TestEndToEndDuplicateProtocol._setup_e2e_controller(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        derived = self._make_derived_player(mock_mass, "spb_1", "ap_missing")
+        controller._players = {"spb_1": derived}
+
+        await controller._delayed_protocol_evaluation("spb_1")
+
+        assert derived.protocol_parent_id is None
+        assert not any(pid.startswith("up") for pid in controller._players)
+
+    def test_derived_link_refused_on_domain_duplicate(self, mock_mass: MagicMock) -> None:
+        """Test a derived player stays unlinked when the parent already has its domain."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        native = MockPlayer(
+            MockProvider("heos", mass=mock_mass), "native_1", "AVR", player_type=PlayerType.PLAYER
+        )
+        native.set_initialized()
+        ap_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_1",
+            "AVR AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        ap_player.set_initialized()
+        other_sendspin = MockPlayer(
+            MockProvider("sendspin", mass=mock_mass),
+            "sendspin_native_client",
+            "AVR Sendspin",
+            player_type=PlayerType.PROTOCOL,
+        )
+        other_sendspin.set_initialized()
+        controller._players = {
+            "native_1": native,
+            "ap_1": ap_player,
+            "sendspin_native_client": other_sendspin,
+        }
+        controller._add_protocol_link(native, ap_player, "airplay")
+        controller._add_protocol_link(native, other_sendspin, "sendspin")
+
+        derived = self._make_derived_player(mock_mass, "spb_1", "ap_1")
+        controller._players["spb_1"] = derived
+        controller._try_link_protocol_to_native(derived)
+
+        assert derived.protocol_parent_id is None
+
+    def test_derived_joins_universal_parent(self, mock_mass: MagicMock) -> None:
+        """Test a derived player joins the universal player of its underlying player."""
+        controller = PlayerController(mock_mass)
+        mock_mass.config.get = MagicMock(return_value=[])
+
+        def _close_coro(coro: Any, *_args: Any, **_kwargs: Any) -> None:
+            if hasattr(coro, "close"):
+                coro.close()
+
+        mock_mass.create_task = MagicMock(side_effect=_close_coro)
+
+        universal = _create_universal_player(
+            mock_mass,
+            "up_aabbccddeeff",
+            "Living Room Speaker",
+            protocol_player_ids=["ap_1"],
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_player = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_1",
+            "AirPlay Speaker",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_player.set_initialized()
+        controller._players = {"up_aabbccddeeff": universal, "ap_1": ap_player}
+        controller._add_protocol_link(universal, ap_player, "airplay")
+
+        derived = self._make_derived_player(mock_mass, "spb_1", "ap_1")
+        controller._players["spb_1"] = derived
+        controller._try_link_protocol_to_native(derived)
+
+        assert derived.protocol_parent_id == "up_aabbccddeeff"
+        assert "spb_1" in universal._protocol_player_ids
