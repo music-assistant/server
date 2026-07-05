@@ -56,6 +56,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_SAMPLE_RATES,
+    CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
     PLAYER_CONTROL_PROTOCOL,
@@ -261,7 +262,15 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
             for s in state.source_list
         ),
         "output_protocols": tuple(
-            (o.output_protocol_id, o.name, o.protocol_domain, o.is_native, o.priority, o.available)
+            (
+                o.output_protocol_id,
+                o.name,
+                o.protocol_domain,
+                o.is_native,
+                o.priority,
+                o.available,
+                o.derived_from,
+            )
             for o in state.output_protocols
         ),
         "device_info.model": state.device_info.model,
@@ -1424,6 +1433,7 @@ class Player(ABC):
                     protocol_domain=linked.protocol_domain,
                     priority=linked.priority,
                     available=is_available,
+                    derived_from=linked.derived_from,
                 )
             )
 
@@ -1440,6 +1450,11 @@ class Player(ABC):
                 provider_id = raw_conf.get("provider", "")
                 protocol_domain = provider_id.split("--")[0] if provider_id else "unknown"
                 priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
+                # resolve the persisted derived-transport edge (if any) so derived
+                # outputs keep their base reference even while not registered
+                derived_from = raw_conf.get("values", {}).get(CONF_UNDERLYING_PLAYER_ID)
+                if derived_from == self.player_id:
+                    derived_from = "native"
                 result.append(
                     OutputProtocol(
                         output_protocol_id=protocol_id,
@@ -1447,6 +1462,7 @@ class Player(ABC):
                         protocol_domain=protocol_domain,
                         priority=priority,
                         available=False,  # Disabled protocols are not available
+                        derived_from=derived_from,
                     )
                 )
 
@@ -1554,6 +1570,7 @@ class Player(ABC):
                     priority=linked.priority,
                     available=current_available,
                     is_native=False,
+                    derived_from=linked.derived_from,
                 )
         return None
 
@@ -1937,7 +1954,7 @@ class Player(ABC):
                 self._extra_data.get(ATTR_FAKE_MUTE),
             ),
             "linked_protocols": tuple(
-                (p.output_protocol_id, p.protocol_domain, p.priority)
+                (p.output_protocol_id, p.protocol_domain, p.priority, p.derived_from)
                 for p in self.__attr_linked_protocols
             ),
             "protocol_parent_id": self.__attr_protocol_parent_id,

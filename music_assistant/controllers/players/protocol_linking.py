@@ -1056,6 +1056,13 @@ class ProtocolLinkingMixin:
         # Get priority for this protocol
         priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
 
+        # Derived transports (e.g. a Sendspin bridge riding on an AirPlay player)
+        # reference the base output they run on top of; "native" when they ride
+        # on the parent player itself
+        derived_from = protocol_player.underlying_player_id
+        if derived_from == native_player.player_id:
+            derived_from = "native"
+
         # Add the new link
         updated_protocols.append(
             OutputProtocol(
@@ -1063,6 +1070,7 @@ class ProtocolLinkingMixin:
                 name=protocol_player.provider.name,
                 protocol_domain=protocol_domain,
                 priority=priority,
+                derived_from=derived_from,
             )
         )
         native_player.set_linked_output_protocols(updated_protocols)
@@ -1266,6 +1274,16 @@ class ProtocolLinkingMixin:
             protocol_player = self.get_player(protocol_id)
             is_available = protocol_player is not None and protocol_player.available
 
+            # Resolve the derived-transport edge from the live player when
+            # registered, else from the persisted edge in config
+            derived_from = (
+                protocol_player.underlying_player_id
+                if protocol_player
+                else protocol_config.get("values", {}).get(CONF_UNDERLYING_PLAYER_ID)
+            )
+            if derived_from == native_player.player_id:
+                derived_from = "native"
+
             # Add the OutputProtocol entry
             native_player.linked_output_protocols.append(
                 OutputProtocol(
@@ -1275,6 +1293,7 @@ class ProtocolLinkingMixin:
                     priority=priority,
                     is_native=False,
                     available=is_available,
+                    derived_from=derived_from,
                 )
             )
             self.logger.debug(
