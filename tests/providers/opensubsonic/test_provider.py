@@ -182,7 +182,7 @@ async def test_get_stream_details_radio(provider: OpenSonicProvider) -> None:
     assert sd.item_id == "v1.chan.streamer"
     # behavioral: radio is a live, unseekable stream. allow_seek=False also
     # discriminates against a "reuse the TRACK builder" impl, since the TRACK
-    # path sets allow_seek=True (sonic_provider.py:687).
+    # path sets allow_seek=True.
     assert sd.allow_seek is False
     assert sd.can_seek is False
     # the list was fetched + filtered (no singular getter), not guessed:
