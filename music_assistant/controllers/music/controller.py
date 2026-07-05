@@ -113,10 +113,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     domain: str = "music"
     config: CoreConfig
-    # Suppress the sync-completion check while start_sync is still scheduling
-    # tasks, so an early-finishing task (e.g. artists) can't fire
-    # MUSIC_SYNC_COMPLETED before the remaining media types are queued.
-    _sync_starting: bool = False
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -240,53 +236,38 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if providers is None:
             providers = [x.instance_id for x in self.providers]
 
-        # Prevent a task that finishes mid-scheduling from prematurely signalling
-        # MUSIC_SYNC_COMPLETED before all media types have been queued.
-        self._sync_starting = True
-        try:
-            for media_type in media_types:
-                for provider in self.providers:
-                    if provider.instance_id not in providers:
-                        continue
-                    if not self.library_supported(provider, media_type):
-                        continue
-                    # handle mediatype specific sync config
-                    conf_key = f"library_sync_{media_type}s"
-                    sync_conf: ConfigValueType = await self.mass.config.get_provider_config_value(
-                        provider.instance_id, conf_key
-                    )
-                    if not sync_conf:
-                        continue
-                    await self._schedule_provider_mediatype_sync(provider, media_type, True)
-                    task_id = self._get_sync_task_id(provider, media_type)
-                    try:
-                        tasks.append(self.mass.tasks.run_task(task_id))
-                    except InvalidDataError:
-                        tasks.append(
-                            self.mass.tasks.run_background_task(
-                                task_id=task_id,
-                                name=self._get_sync_task_name(provider, media_type),
-                                handler=self._create_provider_sync_handler(provider, media_type),
-                                translation_key=self._get_sync_task_translation_key(media_type),
-                                translation_args=[provider.name],
-                                translation_owner=self.translation_owner,
-                                user_id=(user.user_id if (user := get_current_user()) else None),
-                                metadata=self._get_sync_task_metadata(provider, media_type),
-                                allow_retry=True,
-                                priority=True,
-                            )
+        for media_type in media_types:
+            for provider in self.providers:
+                if provider.instance_id not in providers:
+                    continue
+                if not self.library_supported(provider, media_type):
+                    continue
+                # handle mediatype specific sync config
+                conf_key = f"library_sync_{media_type}s"
+                sync_conf: ConfigValueType = await self.mass.config.get_provider_config_value(
+                    provider.instance_id, conf_key
+                )
+                if not sync_conf:
+                    continue
+                await self._schedule_provider_mediatype_sync(provider, media_type, True)
+                task_id = self._get_sync_task_id(provider, media_type)
+                try:
+                    tasks.append(self.mass.tasks.run_task(task_id))
+                except InvalidDataError:
+                    tasks.append(
+                        self.mass.tasks.run_background_task(
+                            task_id=task_id,
+                            name=self._get_sync_task_name(provider, media_type),
+                            handler=self._create_provider_sync_handler(provider, media_type),
+                            translation_key=self._get_sync_task_translation_key(media_type),
+                            translation_args=[provider.name],
+                            translation_owner=self.translation_owner,
+                            user_id=(user.user_id if (user := get_current_user()) else None),
+                            metadata=self._get_sync_task_metadata(provider, media_type),
+                            allow_retry=True,
+                            priority=True,
                         )
-        finally:
-            self._sync_starting = False
-        # Run a completion check now that all tasks are queued: if every task
-        # already finished while we were scheduling (so each of their checks was
-        # suppressed), this fires MUSIC_SYNC_COMPLETED; otherwise it no-ops and
-        # the last task to finish will signal it.
-        self.mass.call_later(
-            0,
-            self._handle_sync_completion_check,
-            task_id=MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
-        )
+                    )
         return tasks
 
     @property
@@ -2339,7 +2320,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     def _handle_sync_completion_check(self) -> None:
         """Run follow-up maintenance when no provider sync tasks remain active."""
-        if self._sync_starting or self.active_sync_tasks:
+        if self.active_sync_tasks:
             return
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
         self._queue_database_cleanup_task()

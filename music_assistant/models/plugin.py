@@ -32,6 +32,22 @@ class PluginProvider(Provider):
     Plugin Provider implementations should inherit from this base model.
     """
 
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 50
+
+    @property
+    def ordered_similarity(self) -> bool:
+        """
+        Whether get_similar_tracks results are meaningfully ordered.
+
+        Return True when results come back best-match-first (e.g. sorted by
+        sonic distance), so consumers such as dynamic radio may preserve the
+        order instead of shuffling.
+        """
+        return False
+
     async def get_audio_sources(self) -> list[AudioSource]:
         """
         Return all AudioSources this plugin currently exposes.

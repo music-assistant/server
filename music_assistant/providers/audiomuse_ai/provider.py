@@ -59,6 +59,16 @@ class AudioMuseAiPlugin(PluginProvider):
         self._media_provider = str(config.get_value(CONF_MEDIA_PROVIDER) or "")
         self._unregister_handles: list[Callable[[], None]] = []
 
+    @property
+    def priority(self) -> int:
+        """Consult AudioMuse-AI before the track's own music provider (default 50)."""
+        return 25
+
+    @property
+    def ordered_similarity(self) -> bool:
+        """AudioMuse-AI returns similar tracks best-match-first (sorted by sonic distance)."""
+        return True
+
     async def handle_async_init(self) -> None:
         """
         Build the HTTP client and verify the server is reachable.

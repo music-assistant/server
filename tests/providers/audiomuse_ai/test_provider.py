@@ -78,6 +78,20 @@ def _provider(
     return prov
 
 
+class TestDispatchContract:
+    """The generic dispatch properties the rest of MA keys its behavior on."""
+
+    def test_claims_priority_over_music_providers(self) -> None:
+        """Priority below the provider default (50) so sonic matches lead similar_tracks."""
+        prov = _provider()
+        assert prov.priority < 50
+
+    def test_declares_ordered_similarity(self) -> None:
+        """ordered_similarity=True keeps dynamic radio in provider order (no shuffle)."""
+        prov = _provider()
+        assert prov.ordered_similarity is True
+
+
 class TestSeedItemId:
     """Mapping an MA track to the media-server item id AudioMuse-AI knows."""
 

@@ -1,9 +1,11 @@
 """
 Tests for TracksController.similar_tracks provider dispatch.
 
-Guards the core contract plugin providers (e.g. AudioMuse-AI) rely on: plugin/metadata
-similarity providers are consulted first, the track's own music provider tops up the
-remainder, and the combined result is de-duplicated up to the limit.
+Guards the core contract: similarity sources are consulted by the provider's
+``priority`` attribute (lower = more preferred, the track's own music provider
+wins ties), later sources top up the remainder, and the combined result is
+de-duplicated up to the limit. A plugin that claims a lower priority (e.g.
+AudioMuse-AI at 25) therefore leads the track's own music provider (default 50).
 """
 
 from __future__ import annotations
@@ -50,6 +52,8 @@ def _controller(
 
     plugin = MagicMock(spec=PluginProvider)
     plugin.get_similar_tracks = AsyncMock(return_value=plugin_tracks)
+    # claim priority over the music provider's default of 50, as AudioMuse-AI does
+    plugin.priority = 25
 
     music = MagicMock(spec=MusicProvider)
     music.supported_features = {ProviderFeature.SIMILAR_TRACKS}
@@ -113,3 +117,19 @@ async def test_no_plugin_falls_back_to_music_provider(
 
     assert [t.uri for t in result] == ["t/m1", "t/m2"]
     music.get_similar_tracks.assert_awaited_once()
+
+
+async def test_default_priority_keeps_music_provider_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plugin at the default priority does NOT beat the track's own music provider."""
+    ctrl, plugin, _music = _controller(
+        monkeypatch,
+        plugin_tracks=[_track("t/p1")],
+        music_tracks=[_track("t/m1"), _track("t/m2")],
+    )
+    plugin.priority = 50  # no explicit claim -> same as the music-provider default
+
+    result = await ctrl.similar_tracks("seed", "library", limit=10)
+
+    assert [t.uri for t in result] == ["t/m1", "t/m2", "t/p1"]

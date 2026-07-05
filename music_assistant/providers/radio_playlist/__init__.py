@@ -12,9 +12,10 @@ seed.
 from __future__ import annotations
 
 import random
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -45,11 +46,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-
-# When this plugin is enabled, radio keeps provider order (its picks on top)
-# instead of the default shuffle, so other setups are unaffected.
-AUDIOMUSE_PLUGIN_DOMAIN: Final[str] = "audiomuse_ai"
 
 
 async def setup(
@@ -162,7 +158,7 @@ class RadioPlaylistProvider(PluginProvider):
         if active_filter is not None:
             base_tracks = [t for t in base_tracks if active_filter.allows(t)] or base_tracks
         # Collect similar tracks, keeping insertion order (used by the ordered
-        # assembly below when AudioMuse-AI is enabled).
+        # assembly below when an ordered-similarity provider is active).
         dynamic_tracks: list[Track] = []
         seen_dynamic: set[Track] = set(base_tracks)
         for allow_lookup in (False, True):
@@ -190,10 +186,14 @@ class RadioPlaylistProvider(PluginProvider):
                 if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
                     break
 
-        # When AudioMuse-AI is enabled, preserve provider order (its picks on top,
-        # music-provider top-up below). Otherwise keep the original shuffled mix so
-        # non-AudioMuse setups are unaffected.
-        if any(prov.domain == AUDIOMUSE_PLUGIN_DOMAIN for prov in self.mass.providers):
+        # A provider that returns similar tracks best-match-first (declared via
+        # its `ordered_similarity` property, e.g. a sonic-similarity plugin)
+        # makes `dynamic_tracks` meaningfully ordered: preserve that order (its
+        # picks on top, top-up below) instead of the default shuffled mix.
+        if any(
+            getattr(prov, "ordered_similarity", False)
+            for prov in self.mass.get_providers_supporting_feature(ProviderFeature.SIMILAR_TRACKS)
+        ):
             ordered: list[Track] = list(base_tracks) if include_base_tracks else []
             ordered += dynamic_tracks[:target_size]
             return ordered
