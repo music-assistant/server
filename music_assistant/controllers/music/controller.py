@@ -286,6 +286,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 25,
         library_only: bool = False,
+        username: str | None = None,
     ) -> SearchResults:
         """
         Perform global search for media items on all providers.
@@ -293,6 +294,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
+        :param username: search providers/ library of this user
         """
         # use cache to avoid repeated searches
         plugin_search_providers = [
@@ -302,7 +304,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 priority=(ProviderType.PLUGIN,),
             )
         ]
-        search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
+        async with ImpersonatedUser(self.mass, username):
+            search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
         cache_provider_key = "library" if library_only else ",".join(search_providers)
         cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"
         if cache := await self.mass.cache.get(
@@ -353,7 +356,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # handle normal global search by querying all providers
         results_per_provider: list[SearchResults] = []
         # always first search the library
-        library_results = await self.search_library(search_query, media_types, limit=limit)
+        library_results = await self.search_library(
+            search_query, media_types, limit=limit, username=username
+        )
         results_per_provider.append(library_results)
         if not library_only:
             # create a set of all provider item ids already in library
@@ -455,6 +460,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         search_query: str,
         media_types: list[MediaType],
         limit: int = 10,
+        username: str | None = None,
     ) -> SearchResults:
         """
         Perform search on the library.
@@ -462,26 +468,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param search_query: Search query
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
+        :param username: search providers/ library of this user
         """
         result = SearchResults()
-        for media_type in media_types:
-            ctrl = self.get_controller(media_type)
-            search_results = await ctrl.search(search_query, "library", limit=limit)
-            if search_results:
-                if media_type == MediaType.ARTIST:
-                    result.artists = cast("list[Artist]", search_results)
-                elif media_type == MediaType.ALBUM:
-                    result.albums = cast("list[Album]", search_results)
-                elif media_type == MediaType.TRACK:
-                    result.tracks = cast("list[Track]", search_results)
-                elif media_type == MediaType.PLAYLIST:
-                    result.playlists = cast("list[Playlist]", search_results)
-                elif media_type == MediaType.RADIO:
-                    result.radio = cast("list[Radio]", search_results)
-                elif media_type == MediaType.AUDIOBOOK:
-                    result.audiobooks = cast("list[Audiobook]", search_results)
-                elif media_type == MediaType.PODCAST:
-                    result.podcasts = cast("list[Podcast]", search_results)
+        async with ImpersonatedUser(self.mass, username):
+            for media_type in media_types:
+                ctrl = self.get_controller(media_type)
+                search_results = await ctrl.search(search_query, "library", limit=limit)
+                if search_results:
+                    if media_type == MediaType.ARTIST:
+                        result.artists = cast("list[Artist]", search_results)
+                    elif media_type == MediaType.ALBUM:
+                        result.albums = cast("list[Album]", search_results)
+                    elif media_type == MediaType.TRACK:
+                        result.tracks = cast("list[Track]", search_results)
+                    elif media_type == MediaType.PLAYLIST:
+                        result.playlists = cast("list[Playlist]", search_results)
+                    elif media_type == MediaType.RADIO:
+                        result.radio = cast("list[Radio]", search_results)
+                    elif media_type == MediaType.AUDIOBOOK:
+                        result.audiobooks = cast("list[Audiobook]", search_results)
+                    elif media_type == MediaType.PODCAST:
+                        result.podcasts = cast("list[Podcast]", search_results)
         return result
 
     @api_command("music/browse")
