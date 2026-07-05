@@ -175,16 +175,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> ItemCls:
         """Add item to library and return the new (or updated) database item."""
         new_item = False
-        # check for existing item first
-        if library_id := await self._get_library_item_by_match(item):
-            # update existing item
-            await self._update_library_item(library_id, item, overwrite=overwrite_existing)
-        else:
-            # actually add a new item in the library db
-            self.mass.music.match_provider_instances(item)
-            async with self._db_add_lock:
-                library_id = await self._add_library_item(item)
-                new_item = True
+        # batch the many writes of an item add/update into a single commit
+        async with self.mass.music.database.deferred_commit():
+            # check for existing item first
+            if library_id := await self._get_library_item_by_match(item):
+                # update existing item
+                await self._update_library_item(library_id, item, overwrite=overwrite_existing)
+            else:
+                # actually add a new item in the library db
+                self.mass.music.match_provider_instances(item)
+                async with self._db_add_lock:
+                    library_id = await self._add_library_item(item)
+                    new_item = True
         # return final library_item
         library_item = await self.get_library_item(library_id)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -201,7 +203,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> ItemCls:
         """Update existing library record in the library database."""
         self.mass.music.match_provider_instances(update)
-        await self._update_library_item(item_id, update, overwrite=overwrite)
+        # batch the many writes of an item update into a single commit
+        async with self.mass.music.database.deferred_commit():
+            await self._update_library_item(item_id, update, overwrite=overwrite)
         # return the updated object
         library_item = await self.get_library_item(item_id)
         if SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -907,6 +911,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 DB_TABLE_PROVIDER_MAPPINGS,
                 {"media_type": self.media_type.value, "item_id": db_id},
             )
+        prov_map_objs: list[dict[str, Any]] = []
         for provider_mapping in provider_mappings:
             prov_map_obj = {
                 "media_type": self.media_type.value,
@@ -920,10 +925,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for key in ("url", "details", "in_library", "is_unique"):
                 if (value := getattr(provider_mapping, key, None)) is not None:
                     prov_map_obj[key] = value
-            await self.mass.music.database.upsert(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                prov_map_obj,
-            )
+            prov_map_objs.append(prov_map_obj)
+        await self.mass.music.database.upsert_many(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            prov_map_objs,
+        )
 
     @abstractmethod
     async def match_providers(self, db_item: ItemCls) -> None:
