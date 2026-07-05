@@ -367,16 +367,16 @@ async def test_analyze_playlist_genres_returns_most_common_genres(
 
     # Create tracks with genres:
     # Rock: 15/20 = 75%
-    # Pop: 10/20 = 50%
-    # Jazz: 5/20 = 25%
+    # Pop: 5/20 = 25%
+    # Jazz: 3/20 = 15%
     # Electronic: 2/20 = 10%  (exactly at threshold)
     # Classical: 1/20 = 5%  (below threshold)
     tracks = (
         [_make_track_with_genres(f"track{i}", {"Rock"}) for i in range(15)]
-        + [_make_track_with_genres(f"track{i}", {"Pop"}) for i in range(15, 25)]
-        + [_make_track_with_genres(f"track{i}", {"Jazz"}) for i in range(25, 30)]
-        + [_make_track_with_genres(f"track{i}", {"Electronic"}) for i in range(30, 32)]
-        + [_make_track_with_genres(f"track{i}", {"Classical"}) for i in range(32, 33)]
+        + [_make_track_with_genres(f"track{i}", {"Pop"}) for i in range(15, 20)]
+        + [_make_track_with_genres(f"track{i}", {"Jazz"}) for i in range(20, 23)]
+        + [_make_track_with_genres(f"track{i}", {"Electronic"}) for i in range(23, 25)]
+        + [_make_track_with_genres(f"track{i}", {"Classical"}) for i in range(25, 26)]
     )
 
     async def mock_tracks_iter(

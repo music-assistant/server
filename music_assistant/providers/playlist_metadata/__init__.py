@@ -194,34 +194,39 @@ class PlaylistMetadataProvider(MetadataProvider):
 
         :param playlist: The playlist to generate metadata for.
         """
-        skip_provider = self.config.get_value(CONF_SKIP_PROVIDER_PLAYLISTS)
-        if skip_provider:
+        generated_images: list[MediaItemImage] = []
+        detected_genres: set[str] | None = None
+
+        # Check if we should skip artwork generation (but not genre detection)
+        skip_artwork = False
+        if self.config.get_value(CONF_SKIP_PROVIDER_PLAYLISTS):
             has_builtin = any(pm.provider_domain == "builtin" for pm in playlist.provider_mappings)
             has_smart_playlist = any(
                 pm.provider_domain == "smart_playlist" for pm in playlist.provider_mappings
             )
             if not has_builtin and not has_smart_playlist:
-                # Only skip if playlist has a provider-supplied image (not our generated one)
+                # Only skip artwork if playlist has a provider-supplied image (not our generated one)
                 if playlist.metadata.images:
                     for img in playlist.metadata.images:
                         if img.type == ImageType.THUMB and not self._is_our_image(img):
-                            return None
+                            skip_artwork = True
+                            break
 
-        generated_images: list[MediaItemImage] = []
-        detected_genres: set[str] | None = None
+        if not skip_artwork:
+            if thumb_image := await self._generate_and_write(playlist, fanart=False):
+                generated_images.append(thumb_image)
 
-        if thumb_image := await self._generate_and_write(playlist, fanart=False):
-            generated_images.append(thumb_image)
+            if fanart_image := await self._generate_and_write(playlist, fanart=True):
+                generated_images.append(fanart_image)
 
-        if fanart_image := await self._generate_and_write(playlist, fanart=True):
-            generated_images.append(fanart_image)
-
-        # Aggregate genres from playlist tracks if enabled
+        # Aggregate genres from playlist tracks if enabled (independent of artwork)
         if self.config.get_value(CONF_ENABLE_GENRE_DETECTION):
             detected_genres = await self._analyze_playlist_genres(playlist)
 
         if generated_images or detected_genres:
-            await self._cleanup_old_playlist_images(playlist)
+            # Only clean up old images when we have new ones to replace them
+            if generated_images:
+                await self._cleanup_old_playlist_images(playlist)
             metadata = MediaItemMetadata()
             if generated_images:
                 metadata.images = UniqueList(generated_images)
