@@ -366,11 +366,11 @@ async def test_analyze_playlist_genres_returns_most_common_genres(
     playlist = _make_playlist()
 
     # Create tracks with genres:
-    # Rock: 15/20 = 75%
-    # Pop: 5/20 = 25%
-    # Jazz: 3/20 = 15%
-    # Electronic: 2/20 = 10%  (exactly at threshold)
-    # Classical: 1/20 = 5%  (below threshold)
+    # Rock: 15/26 = 57.7%
+    # Pop: 5/26 = 19.2%
+    # Jazz: 3/26 = 11.5% (above threshold)
+    # Electronic: 2/26 = 7.7% (below 10% threshold)
+    # Classical: 1/26 = 3.8% (below threshold)
     tracks = (
         [_make_track_with_genres(f"track{i}", {"Rock"}) for i in range(15)]
         + [_make_track_with_genres(f"track{i}", {"Pop"}) for i in range(15, 20)]
