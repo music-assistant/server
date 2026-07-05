@@ -7706,6 +7706,10 @@ class TestDerivedProtocolLinking:
         controller._try_link_protocol_to_native(derived)
 
         assert derived.protocol_parent_id == "native_1"
+        # the derived link carries its base output, the non-derived link does not
+        links = {link.output_protocol_id: link for link in native.linked_output_protocols}
+        assert links["spb_1"].derived_from == "ap_1"
+        assert links["ap_1"].derived_from is None
 
     def test_waiting_derived_follows_when_underlying_links(self, mock_mass: MagicMock) -> None:
         """Test a derived player that registered early follows once its underlying links."""
@@ -7753,6 +7757,9 @@ class TestDerivedProtocolLinking:
         controller._try_link_protocols_to_native(local_player)
 
         assert derived.protocol_parent_id == "local_1"
+        # riding on the parent player itself normalizes the base output to "native"
+        links = {link.output_protocol_id: link for link in local_player.linked_output_protocols}
+        assert links["spb_1"].derived_from == "native"
 
     @pytest.mark.asyncio
     async def test_derived_delayed_eval_never_creates_universal_player(
