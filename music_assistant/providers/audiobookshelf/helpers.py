@@ -1,13 +1,49 @@
 """Helpers for Audiobookshelf provider."""
 
+import functools
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
+from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from mashumaro.mixins.dict import DataClassDictMixin
 
 if TYPE_CHECKING:
     from aioaudiobookshelf.schema.media_progress import MediaProgress
+
+    from . import Audiobookshelf
+    from .mixins.mixin_base import MixinBase
+
+
+R = TypeVar("R")
+P = ParamSpec("P")
+
+
+def handle_refresh_token(
+    method: Callable[P, Coroutine[Any, Any, R]],
+) -> Callable[P, Coroutine[Any, Any, R]]:
+    """
+    Decorate a method to handle an expired refresh token by relogin.
+
+    Only usable as decorator within the MusicProvider.
+    """
+
+    @functools.wraps(method)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        _class = cast("Audiobookshelf | MixinBase", args[0])
+        try:
+            return await method(*args, **kwargs)
+        except RefreshTokenExpiredError:
+            abs_provider = cast(
+                "Audiobookshelf",
+                _class.mass.get_provider(provider_instance_or_domain=_class.instance_id),
+            )
+            abs_provider.logger.debug("Refresh token expired. Trying to renew.")
+            await abs_provider.reauthenticate()
+            return await method(*args, **kwargs)
+
+    return wrapper
 
 
 @dataclass(kw_only=True)
