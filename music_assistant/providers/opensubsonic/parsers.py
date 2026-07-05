@@ -293,13 +293,7 @@ def parse_artist(
 
 
 def parse_radio(instance_id: str, sonic_radio: SonicInternetRadioStation) -> Radio:
-    """
-    Parse an InternetRadioStation into a Music Assistant Radio.
-
-    The station's streamUrl is carried in the single ProviderMapping's `details`
-    (the convention other radio providers use, e.g. tunein) - get_stream_details
-    reads it to build the StreamType.HTTP path.
-    """
+    """Parse an InternetRadioStation into a Music Assistant Radio."""
     metadata: MediaItemMetadata = MediaItemMetadata()
 
     if sonic_radio.cover_art:
@@ -323,6 +317,8 @@ def parse_radio(instance_id: str, sonic_radio: SonicInternetRadioStation) -> Rad
                 provider_domain=SUBSONIC_DOMAIN,
                 provider_instance=instance_id,
                 audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                # stream URL lives in details; get_stream_details reads it back
+                # (tunein convention)
                 details=sonic_radio.stream_url,
             )
         },

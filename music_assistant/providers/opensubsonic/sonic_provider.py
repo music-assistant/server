@@ -504,13 +504,10 @@ class OpenSonicProvider(MusicProvider):
                 yield parse_podcast(self.instance_id, channel)
 
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
-        """
-        Retrieve internet radio stations from the provider.
-
-        Gated by the enable_radios config toggle (mirrors enable_podcasts). The
-        OpenSubsonic getInternetRadioStations endpoint returns the full list in
-        one call (no pagination), so there is no offset loop here.
-        """
+        """Yield the internet radio stations in the user's library."""
+        # Keep this enable_radios gate: when off we yield nothing, which is what
+        # drives MA's sync to purge already-synced stations (orphan removal).
+        # Looks redundant with library_sync_radios, but isn't.
         if self._enable_radios:
             for station in await self.conn.get_internet_radio_stations():
                 yield parse_radio(self.instance_id, station)
@@ -996,13 +993,9 @@ class OpenSonicProvider(MusicProvider):
         return station.id, station.stream_url
 
     async def _find_radio_station(self, prov_radio_id: str) -> SonicInternetRadioStation:
-        """
-        Resolve a single station by id.
-
-        libopensonic exposes no get-by-id for radio, so we fetch the full list
-        (the only available call) and filter. Raises MediaNotFoundError if the
-        id is not present.
-        """
+        """Return the station with the given id, or raise MediaNotFoundError."""
+        # libopensonic has no get-by-id for radio, so fetch the full list (the
+        # only available call) and filter.
         for station in await self.conn.get_internet_radio_stations():
             if station.id == prov_radio_id:
                 return station
