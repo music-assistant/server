@@ -255,7 +255,7 @@ class SendspinProvider(PlayerProvider):
         await self.server_api.start_server(
             port=8927,
             host=self.mass.streams.bind_ip,
-            advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
+            advertise_addresses=[self.mass.streams.publish_ip],
         )
         for address in self._manual_ip_config:
             try:

@@ -169,6 +169,11 @@ CONF_VALUE_GLOBAL: Final[str] = "global"
 CONF_VALUE_ENABLED: Final[str] = "enabled"
 CONF_VALUE_DISABLED: Final[str] = "disabled"
 
+# Sentinel option VALUE for network settings that are resolved at runtime when not explicitly
+# set (e.g. streams publish_ip / webserver base_url resolve to the server's primary IP at
+# startup), keeping the config entry defaults static/deterministic.
+CONF_VALUE_AUTO: Final[str] = "auto"
+
 
 def _default_background_scan_concurrency() -> int:
     # Slow and steady by default: at most 2 tracks at once even on big machines. Users who
