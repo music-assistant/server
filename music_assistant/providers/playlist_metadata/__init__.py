@@ -194,32 +194,29 @@ class PlaylistMetadataProvider(MetadataProvider):
 
         :param playlist: The playlist to generate metadata for.
         """
-        generated_images: list[MediaItemImage] = []
-        detected_genres: set[str] | None = None
-
-        # Check if we should skip artwork generation (but not genre detection)
-        skip_artwork = False
-        if self.config.get_value(CONF_SKIP_PROVIDER_PLAYLISTS):
+        skip_provider = self.config.get_value(CONF_SKIP_PROVIDER_PLAYLISTS)
+        if skip_provider:
             has_builtin = any(pm.provider_domain == "builtin" for pm in playlist.provider_mappings)
             has_smart_playlist = any(
                 pm.provider_domain == "smart_playlist" for pm in playlist.provider_mappings
             )
             if not has_builtin and not has_smart_playlist:
-                # Only skip artwork if playlist has a provider-supplied image (not our generated one)
+                # Only skip if playlist has a provider-supplied image (not our generated one)
                 if playlist.metadata.images:
                     for img in playlist.metadata.images:
                         if img.type == ImageType.THUMB and not self._is_our_image(img):
-                            skip_artwork = True
-                            break
+                            return None
 
-        if not skip_artwork:
-            if thumb_image := await self._generate_and_write(playlist, fanart=False):
-                generated_images.append(thumb_image)
+        generated_images: list[MediaItemImage] = []
+        detected_genres: set[str] | None = None
 
-            if fanart_image := await self._generate_and_write(playlist, fanart=True):
-                generated_images.append(fanart_image)
+        if thumb_image := await self._generate_and_write(playlist, fanart=False):
+            generated_images.append(thumb_image)
 
-        # Aggregate genres from playlist tracks if enabled (independent of artwork)
+        if fanart_image := await self._generate_and_write(playlist, fanart=True):
+            generated_images.append(fanart_image)
+
+        # Aggregate genres from playlist tracks if enabled
         if self.config.get_value(CONF_ENABLE_GENRE_DETECTION):
             detected_genres = await self._analyze_playlist_genres(playlist)
 
