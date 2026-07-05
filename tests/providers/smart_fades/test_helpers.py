@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from music_assistant.controllers.streams.smart_fades.models import BAND_RMS_BANDS
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.providers.smart_fades.helpers import (
-    BAND_RMS_BANDS,
     aggregate_series_to_bins,
     compute_band_rms_frames,
 )
