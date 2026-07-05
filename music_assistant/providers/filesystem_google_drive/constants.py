@@ -17,7 +17,7 @@ OAUTH_TOKEN_URL: Final[str] = "https://oauth2.googleapis.com/token"
 # fixed https redirect URI (registered in the user's Google OAuth client) that
 # forwards to the local MA callback passed in the OAuth `state` param
 CALLBACK_REDIRECT_URL: Final[str] = "https://music-assistant.io/callback"
-# read-only access to files the user opens/creates with this app
+# read-only access to all files in the user's Drive
 OAUTH_SCOPE: Final[str] = "https://www.googleapis.com/auth/drive.readonly"
 
 # Google Drive marks folders with this mimeType
