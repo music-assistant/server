@@ -9,7 +9,7 @@ The Local Audio Out provider exposes locally attached soundcards as players in M
 - **Automatic Device Discovery**: On Linux with PulseAudio/PipeWire, enumerates all output sinks via `pactl --format=json` — returns native sample rate and format regardless of active stream state. On Linux with ALSA direct, enumerates hardware `hw:` devices via PortAudio. On macOS, enumerates via PortAudio/sounddevice
 - **Backend Selector** *(Linux)*: Choose between Auto (PulseAudio/PipeWire if available, else ALSA direct), PulseAudio/PipeWire, or ALSA direct. Auto mode detects PulseAudio/PipeWire first and falls back to ALSA if unavailable
 - **Native Format Negotiation** *(Linux PulseAudio)*: Each PA sink advertises its native sample rate and bit depth (16, 24, or 32-bit) so Music Assistant transcodes to the correct format — no unnecessary resampling
-- **Sendspin Integration**: Each device is registered as a Sendspin bridge client, enabling synchronized multi-room playback
+- **Sendspin Integration**: Each device is registered as a regular, visible MA player whose (single) output protocol is provided by a Sendspin bridge client, enabling synchronized multi-room playback. Disabling the player tears the bridge down; enabling it re-registers the player and rebuilds the bridge
 - **Self-Managed Remap-Sink Topology** *(Linux PulseAudio)*: For multi-channel sound cards (5.1, 7.1), the provider creates and owns its own `module-remap-sink` topology on startup — one stereo "zone" sink per channel pair (front, rear, side, center/LFE) plus a full-channel "multichannel stereo" passthrough sink. No external addon or pre-configuration is required; the topology is created idempotently on every startup and torn down on provider stop
 - **Hardware Volume Control** *(Linux PulseAudio)*: Per-player volume and mute are applied as native PulseAudio sink volume via `libpulse`, using an exponential "audio taper" curve mapped from the MA 0-100 slider so slider position corresponds to a constant dB change per step (see Volume Control below). Each remap sink has an independent hardware volume that doesn't affect its master sink or sibling sinks. Falls back to software volume (PCM scaling) if hardware volume control is unavailable
 - **Stable Player IDs**: Uses UUIDv5 derived from device name + host API index so players persist across restarts
@@ -29,7 +29,10 @@ The Local Audio Out provider exposes locally attached soundcards as players in M
                               │
                 ┌─────────────▼──────────────┐
                 │  LocalAudioBridgeManager   │
+                │  (SendspinBridgeManagerBase│
+                │   desired-state reconciler)│
                 │  - Enumerates devices      │
+                │  - Registers device players│
                 │  - Creates/stops bridges   │
                 └─────────────┬──────────────┘
                               │
