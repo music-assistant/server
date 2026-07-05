@@ -132,6 +132,7 @@ async def get_config_entries(
             required=False,
             default_value=10,
             range=(5, 50),
+            advanced=True,
             value=values.get(CONF_GENRE_MIN_THRESHOLD, 10) if values else 10,
         ),
         ConfigEntry(
@@ -140,6 +141,7 @@ async def get_config_entries(
             required=False,
             default_value=3,
             range=(1, 10),
+            advanced=True,
             value=values.get(CONF_GENRE_MAX_COUNT, 3) if values else 3,
         ),
     )
