@@ -432,6 +432,11 @@ class ProtocolLinkingMixin:
             protocol_player = self.get_player(player_id)
             if not protocol_player or protocol_player.protocol_parent_id:
                 return
+            if protocol_player.state.type != PlayerType.PROTOCOL:
+                # The player changed type while the evaluation was pending
+                # (e.g. re-registered as a regular player); it must never be
+                # linked as a protocol or wrapped in a universal player.
+                return
 
             # Derived protocol players resolve strictly via their underlying
             # player and never match by identifiers or wrap into universal
@@ -980,9 +985,15 @@ class ProtocolLinkingMixin:
             cached_only_ids = known_protocol_ids - active_protocol_ids
             preserved_protocol_ids = moved_protocol_ids | cached_only_ids
             # A device that kept its id across a type change lists itself here.
+            # It must never become its own protocol, and it must also be dropped
+            # from the obsolete universal player so the permanent cleanup below
+            # doesn't treat it as an orphaned protocol (which would re-wrap the
+            # native player in a fresh universal player).
             preserved_protocol_ids.discard(native_player.player_id)
             self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
-            self._remove_protocol_ids_from_parent(player, preserved_protocol_ids)
+            self._remove_protocol_ids_from_parent(
+                player, preserved_protocol_ids | {native_player.player_id}
+            )
             native_player.refresh_state()
 
             # Remove the now-obsolete universal player
