@@ -448,6 +448,7 @@ for more details.
                     self.libraries.playlists_audiobooks[library.id_] = set()
             elif library.media_type == AbsLibraryMediaType.BOOK and media_type == MediaType.ARTIST:
                 self.libraries.narrators[library.id_] = set()
+                self.libraries.authors[library.id_] = set()
 
         await super().sync_library(media_type)
         await self._cache_set_helper_libraries()
