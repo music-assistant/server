@@ -70,7 +70,9 @@ class TestFinalPlaybackStateWithActiveProtocol:
         controller._players = {"player_1": player, "ap_1": protocol_player}
 
         protocol_player.update_state(signal_event=False)
-        player.update_state(signal_event=False)
+        # refresh: the protocol player is cross-player state and the production
+        # fan-out (which marks the parent dirty) is suppressed in this test
+        player.refresh_state(signal_event=False)
 
         assert player.state.playback_state == PlaybackState.PLAYING
 
@@ -102,7 +104,7 @@ class TestFinalPlaybackStateWithActiveProtocol:
         controller._players = {"player_1": player, "ap_1": protocol_player}
 
         protocol_player.update_state(signal_event=False)
-        player.update_state(signal_event=False)
+        player.refresh_state(signal_event=False)
 
         assert player.state.playback_state == PlaybackState.IDLE
 

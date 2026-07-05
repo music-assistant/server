@@ -930,7 +930,11 @@ class LocalFileSystemProvider(MusicProvider):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
             return False
-        abs_path = self.get_absolute_path(file_path)
+        try:
+            abs_path = self.get_absolute_path(file_path)
+        except MediaNotFoundError:
+            # a path that escapes the base directory simply does not exist here
+            return False
         return bool(await exists(abs_path))
 
     def get_absolute_path(self, file_path: str) -> str:
