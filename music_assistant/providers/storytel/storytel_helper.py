@@ -595,14 +595,11 @@ class StorytelHelper:
         :param page_token: the page token for pagination.
         :param results_count: the current count of results.
         """
+        max_pages = 10
 
-        def filter_podcasts(results: list[dict[str, Any]]) -> list[str]:
-            """Filter results to extract podcast IDs."""
-            return [
-                result_id
-                for result in results
-                if result.get("resultType") == "podcast" and (result_id := result.get("id"))
-            ]
+        def filter_podcasts(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Filter results to extract podcast result payloads."""
+            return [result for result in results if result.get("resultType") == "podcast"]
 
         async def fetch_page(search_page_token: str) -> tuple[list[Podcast], int, int]:
             return await self._fetch_search_page(
@@ -610,7 +607,7 @@ class StorytelHelper:
                 "podcast_shows",
                 search_page_token,
                 filter_podcasts,
-                self.provider_instance.get_podcast,
+                self._parse_search_podcast_item,
             )
 
         podcasts: list[Podcast] = []
@@ -628,8 +625,13 @@ class StorytelHelper:
             next_page_offset - (int(current_page_token) if current_page_token else 0), 1
         )
         page_batch_size = 5
+        pages_fetched = 1
 
-        while current_results_count < limit and next_page_offset < total_results:
+        while (
+            current_results_count < limit
+            and next_page_offset < total_results
+            and pages_fetched < max_pages
+        ):
             batch_tokens = [
                 str(page_offset)
                 for page_offset in range(
@@ -652,6 +654,7 @@ class StorytelHelper:
                 podcasts.extend(page_podcasts)
                 current_results_count += len(page_podcasts)
 
+            pages_fetched += len(batch_tokens)
             next_page_offset = int(batch_tokens[-1]) + page_size
 
         return podcasts
@@ -667,17 +670,18 @@ class StorytelHelper:
         :param page_token: the page token for pagination.
         :param results_count: the current count of results.
         """
+        max_pages = 10
 
-        def filter_audiobooks(results: list[dict[str, Any]]) -> list[str]:
-            """Filter results to extract audiobook IDs."""
+        def filter_audiobooks(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Filter results to extract audiobook result payloads."""
             return [
-                result_id
+                result
                 for result in results
                 if result.get("resultType") == "book"
                 and any(
-                    book_format.get("type") == "abook" for book_format in result.get("formats", [])
+                    isinstance(book_format, dict) and book_format.get("type") == "abook"
+                    for book_format in result.get("formats", [])
                 )
-                and (result_id := result.get("id"))
             ]
 
         async def fetch_page(search_page_token: str) -> tuple[list[Audiobook], int, int]:
@@ -686,7 +690,7 @@ class StorytelHelper:
                 "books",
                 search_page_token,
                 filter_audiobooks,
-                self.provider_instance.get_audiobook,
+                self._parse_search_audiobook_item,
             )
 
         audiobooks: list[Audiobook] = []
@@ -704,8 +708,13 @@ class StorytelHelper:
             next_page_offset - (int(current_page_token) if current_page_token else 0), 1
         )
         page_batch_size = 5
+        pages_fetched = 1
 
-        while current_results_count < limit and next_page_offset < total_results:
+        while (
+            current_results_count < limit
+            and next_page_offset < total_results
+            and pages_fetched < max_pages
+        ):
             batch_tokens = [
                 str(page_offset)
                 for page_offset in range(
@@ -728,6 +737,7 @@ class StorytelHelper:
                 audiobooks.extend(page_audiobooks)
                 current_results_count += len(page_audiobooks)
 
+            pages_fetched += len(batch_tokens)
             next_page_offset = int(batch_tokens[-1]) + page_size
 
         return audiobooks
@@ -804,9 +814,9 @@ class StorytelHelper:
         # TODO: Currently doesn't handle podcast recommendations
         async with TaskGroup() as tg:
             for item in items:
-                task_results.append(
-                    tg.create_task(self.provider_instance.get_audiobook(item.get("id")))
-                )
+                if item.get("resultType") != "book":
+                    continue
+                task_results.append(tg.create_task(self._parse_search_audiobook_item(item)))
 
         for task in task_results:
             folder.items.append(task.result())
@@ -1070,13 +1080,83 @@ class StorytelHelper:
 
         return media_item
 
+    async def _parse_search_audiobook_item(self, item_data: dict[str, Any]) -> Audiobook:
+        """Build a lightweight audiobook item from a search result payload."""
+        consumable_id = item_data.get("id") or ""
+        title = item_data.get("title") or item_data.get("name") or "Unknown"
+        authors_data = item_data.get("authors") or []
+        authors = [
+            str(author.get("name"))
+            for author in authors_data
+            if isinstance(author, dict) and author.get("name")
+        ]
+        media_item = Audiobook(
+            item_id=consumable_id,
+            provider=self.provider_id,
+            name=title,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=consumable_id,
+                    provider_domain=self.provider_domain,
+                    provider_instance=self.provider_id,
+                )
+            },
+            favorite=False,
+        )
+        if authors:
+            media_item.authors.set(authors)
+
+        audiobook_formats_data = [
+            format_data
+            for format_data in (item_data.get("formats") or [])
+            if isinstance(format_data, dict) and format_data.get("type") == "abook"
+        ]
+        for format_data in audiobook_formats_data:
+            cover_url = (
+                (format_data.get("cover") or {}).get("url")
+                if isinstance(format_data.get("cover"), dict)
+                else None
+            )
+        if cover_url:
+            media_item.metadata.images = UniqueList(
+                [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=self.provider_id)]
+            )
+        return media_item
+
+    async def _parse_search_podcast_item(self, item_data: dict[str, Any]) -> Podcast:
+        """Build a lightweight podcast item from a search result payload."""
+        podcast_id = item_data.get("id") or ""
+        title = item_data.get("title") or item_data.get("name") or "Unknown"
+        podcast = Podcast(
+            item_id=podcast_id,
+            provider=self.provider_id,
+            name=title,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=podcast_id,
+                    provider_domain=self.provider_domain,
+                    provider_instance=self.provider_id,
+                )
+            },
+        )
+        cover_url = (
+            (item_data.get("cover") or {}).get("url")
+            if isinstance(item_data.get("cover"), dict)
+            else None
+        )
+        if cover_url:
+            podcast.metadata.images = UniqueList(
+                [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=self.provider_id)]
+            )
+        return podcast
+
     async def _fetch_search_page(
         self,
         query: str,
         search_for: str,
         page_token: str,
-        filter_func: Callable[[list[dict[str, Any]]], list[str]],
-        fetch_func: Callable[[str], Coroutine[Any, Any, T]],
+        filter_func: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+        fetch_func: Callable[[dict[str, Any]], Coroutine[Any, Any, T]],
     ) -> tuple[list[T], int, int]:
         """
         Fetch a single search page and prepare items for the given search type.
@@ -1105,22 +1185,24 @@ class StorytelHelper:
             await self.raise_for_status(resp)
             data: dict[str, Any] = await resp.json()
 
+        if data is None:
+            raise MediaNotFoundError(f"No search results found for query '{query}'")
         results = data.get("items") or []
-        item_ids = filter_func(results)
+        item_results = filter_func(results)
         self.logger.debug(
             "Filtered away %d results, %d candidates on page %s for query '%s'",
-            len(results) - len(item_ids),
-            len(item_ids),
+            len(results) - len(item_results),
+            len(item_results),
             page_token or "0",
             query,
         )
 
         page_items: list[T] = []
-        if item_ids:
+        if item_results:
             task_results: list[Task[T]] = []
             async with TaskGroup() as tg:
-                for item_id in item_ids:
-                    task_results.append(tg.create_task(fetch_func(item_id)))
+                for item_data in item_results:
+                    task_results.append(tg.create_task(fetch_func(item_data)))
             for task in task_results:
                 page_items.append(task.result())
 
