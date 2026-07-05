@@ -878,7 +878,7 @@ _ip_addresses_pending: dict[bool, asyncio.Task[tuple[str, ...]]] = {}
 
 async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     """
-    Return all IP-adresses of all network interfaces.
+    Return all IP addresses of all network interfaces.
 
     Results are cached for a short while, so an IP/interface change may take up to
     IP_ADDRESSES_CACHE_TTL seconds to be reflected.
@@ -909,7 +909,7 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
 
 
 def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
-    """Enumerate all IP-adresses of all network interfaces (blocking)."""
+    """Enumerate all IP addresses of all network interfaces (blocking)."""
     result: list[tuple[int, str]] = []
     # try to get the primary IP address
     # this is the IP address of the default route
