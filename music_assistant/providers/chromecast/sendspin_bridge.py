@@ -598,7 +598,7 @@ class SendspinChromecastBridge:
         """
         # The Sendspin server runs on its own port (8927), NOT through
         # the MA webserver or streams server. Use publish_ip directly.
-        publish_ip = cast("str", self.mass.streams.publish_ip)
+        publish_ip = self.mass.streams.publish_ip
         # sendspin-js's SendspinCore appends `/sendspin` to baseUrl when constructing
         # the WebSocket URL. Send the bare server URL here so it ends up correct.
         server_url = f"ws://{format_ip_for_url(publish_ip)}:8927"
