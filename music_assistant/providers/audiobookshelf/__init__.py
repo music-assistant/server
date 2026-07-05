@@ -496,7 +496,7 @@ for more details.
                 provider_instance_id_or_domain=self.instance_id,
             )
             if mass_item is not None:
-                assert isinstance(mass_item, Audiobook)  # for type checking
+                mass_item = cast("Audiobook", mass_item)
                 audiobooks.append(mass_item)
         return audiobooks
 
@@ -1755,7 +1755,7 @@ for more details.
                     provider_instance_id_or_domain=self.instance_id,
                 )
                 if mass_item is not None:
-                    assert isinstance(mass_item, Audiobook)  # for type checking
+                    mass_item = cast("Audiobook", mass_item)
                     items.append(mass_item)
 
         return sorted(items, key=lambda x: x.name)
@@ -2124,19 +2124,8 @@ for more details.
         """Get narrators of an audiobook, either from cache or API calls."""
         if cached_narrators := self.libraries.audiobook_narrators.get(book.id_):
             return cached_narrators
-        lib_narrators = await self._client.get_library_narrators(library_id=book.library_id)
-        narrators: set[NarratorHelper] = set()
-        for narrator in lib_narrators:
-            async for response in self._client.get_library_items(
-                library_id=book.library_id, filter_str=f"narrators.{narrator.id_}"
-            ):
-                if not response.results:
-                    break
-                for item in response.results:
-                    if item.id_ == book.id_:
-                        narrators.add(NarratorHelper(id_=narrator.id_, name=narrator.name))
-        self.libraries.audiobook_narrators[book.id_] = narrators
-        return narrators
+        await self._update_book_narrators(book.library_id)
+        return self.libraries.audiobook_narrators.get(book.id_, set())
 
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(
