@@ -869,6 +869,7 @@ async def test_set_provider_mappings_upsert_writes_explicit_in_library(
 async def test_library_items_default_filters_in_library_only() -> None:
     """Test that library_items passes in_library_only=True by default."""
     ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
     ctrl._ensure_provider_filter = Mock(return_value=None)
     ctrl.get_library_items_by_query = AsyncMock(return_value=[])
     ctrl.library_items = MediaControllerBase.library_items.__get__(ctrl)
