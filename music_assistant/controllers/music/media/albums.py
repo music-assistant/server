@@ -19,7 +19,10 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ImpersonatedUser,
+    get_current_user,
+)
 from music_assistant.helpers.compare import (
     compare_album,
     compare_artists,
@@ -122,6 +125,7 @@ class AlbumsController(MediaControllerBase[Album]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        username: str | None = None,
         album_types: list[AlbumType] | None = None,
         **kwargs: Any,
     ) -> list[Album]:
@@ -134,9 +138,13 @@ class AlbumsController(MediaControllerBase[Album]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
+        :param username: Get library items of this user.
         :param album_types: Filter by album types.
         :param genre: Filter by genre id(s).
         """
+        async with ImpersonatedUser(self.mass, username):
+            provider_filter = self._ensure_provider_filter(provider)
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
@@ -177,7 +185,7 @@ class AlbumsController(MediaControllerBase[Album]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=provider_filter,
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
@@ -206,7 +214,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 search=None,
                 limit=remaining_limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=provider_filter,
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,

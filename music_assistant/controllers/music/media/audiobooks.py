@@ -21,7 +21,10 @@ from music_assistant.constants import (
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_PLAYLOG,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ImpersonatedUser,
+    get_current_user,
+)
 from music_assistant.helpers.compare import (
     compare_audiobook,
     compare_media_item,
@@ -113,6 +116,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        username: str | None = None,
         without_collections: bool | None = None,
         **kwargs: Any,
     ) -> list[Audiobook]:
@@ -126,8 +130,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param username: Get library items of this user.
         :param without_collections: Do not return audiobooks which are part of a collection
         """
+        async with ImpersonatedUser(self.mass, username):
+            provider_filter = self._ensure_provider_filter(provider)
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         if without_collections:
@@ -142,7 +150,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=provider_filter,
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             played_only=played_only,
@@ -160,7 +168,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=provider_filter,
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,

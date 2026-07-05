@@ -36,6 +36,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.compare import (
     compare_album,
     compare_artist,
@@ -106,10 +107,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        username: str | None = None,
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
         **kwargs: Any,
     ) -> list[Artist]:
+        # ruff: noqa: PLR0913
         """
         Get in-database (album) artists.
 
@@ -122,7 +125,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param album_artists_only: Only return artists that have albums.
         :param genre: Filter by genre id(s).
         :param artist_type: The artist's type
+        :param username: Get library items of this user.
         """
+        async with ImpersonatedUser(self.mass, username):
+            provider_filter = self._ensure_provider_filter(provider)
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         if artist_type:
@@ -139,7 +146,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=provider_filter,
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             played_only=played_only,

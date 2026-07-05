@@ -27,6 +27,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.compare import (
     compare_artists,
     compare_media_item,
@@ -184,6 +185,7 @@ class TracksController(MediaControllerBase[Track]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        username: str | None = None,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -196,7 +198,11 @@ class TracksController(MediaControllerBase[Track]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param username: Get library items of this user.
         """
+        async with ImpersonatedUser(self.mass, username):
+            provider_filter = self._ensure_provider_filter(provider)
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
@@ -222,7 +228,7 @@ class TracksController(MediaControllerBase[Track]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=provider_filter,
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
@@ -245,7 +251,7 @@ class TracksController(MediaControllerBase[Track]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=provider_filter,
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,

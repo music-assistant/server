@@ -40,7 +40,10 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ImpersonatedUser,
+    get_current_user,
+)
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
@@ -296,6 +299,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        username: str | None = None,
         **kwargs: Any,
     ) -> list[ItemCls]:
         """
@@ -309,34 +313,36 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param played_only: Only include items that have been played (last_played > 0).
+        :param username: Get library items of this user.
         """
-        items = await self.get_library_items_by_query(
-            favorite=favorite,
-            search=search,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
-            genre_ids=genre,
-            played_only=played_only,
-            in_library_only=True,
-        )
-        if (
-            kwargs.get("_localized_fallback", True)
-            and search
-            and not items
-            and self.media_type in (MediaType.GENRE, MediaType.PLAYLIST)
-        ):
-            return await self._localized_search_fallback(
-                search,
+        async with ImpersonatedUser(self.mass, username):
+            items = await self.get_library_items_by_query(
+                favorite=favorite,
+                search=search,
                 limit=limit,
                 offset=offset,
-                favorite=favorite,
                 order_by=order_by,
-                provider=provider,
-                genre=genre,
+                provider_filter=self._ensure_provider_filter(provider),
+                genre_ids=genre,
+                played_only=played_only,
+                in_library_only=True,
             )
-        return items
+            if (
+                kwargs.get("_localized_fallback", True)
+                and search
+                and not items
+                and self.media_type in (MediaType.GENRE, MediaType.PLAYLIST)
+            ):
+                return await self._localized_search_fallback(
+                    search,
+                    limit=limit,
+                    offset=offset,
+                    favorite=favorite,
+                    order_by=order_by,
+                    provider=provider,
+                    genre=genre,
+                )
+            return items
 
     async def iter_library_items(
         self,

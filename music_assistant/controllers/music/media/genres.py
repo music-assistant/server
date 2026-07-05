@@ -244,6 +244,7 @@ class GenreController(MediaControllerBase[Genre]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        username: str | None = None,
         hide_empty: bool | None = None,
         media_type: MediaType | None = None,
         content_type: str | None = None,

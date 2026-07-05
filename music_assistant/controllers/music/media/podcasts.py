@@ -10,7 +10,10 @@ from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailabl
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ImpersonatedUser,
+    get_current_user,
+)
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_podcast,
@@ -55,6 +58,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        username: str | None = None,
         **kwargs: Any,
     ) -> list[Podcast]:
         """
@@ -67,7 +71,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param username: Get library items of this user.
         """
+        async with ImpersonatedUser(self.mass, username):
+            provider_filter = self._ensure_provider_filter(provider)
+
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -75,7 +83,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=provider_filter,
             played_only=played_only,
             in_library_only=True,
         )
@@ -93,7 +101,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=provider_filter,
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,
