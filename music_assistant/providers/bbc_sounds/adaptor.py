@@ -808,18 +808,12 @@ class Adaptor:
 
         for converter in converters:
             if converter.can_convert(source_obj):
-                try:
-                    stream_details = await converter.get_stream_details(source_obj)
-                    self.provider.logger.debug(
-                        f"Successfully converted {type(source_obj).__name__}"
-                        f" to {type(stream_details).__name__}"
-                    )
-                    return stream_details
-                except Exception as e:
-                    self.provider.logger.error(
-                        f"Unexpected error in converter {type(converter).__name__}: {e}"
-                    )
-                    raise
+                stream_details = await converter.get_stream_details(source_obj)
+                self.provider.logger.debug(
+                    f"Successfully converted {type(source_obj).__name__}"
+                    f" to {type(stream_details).__name__}"
+                )
+                return stream_details
         self.provider.logger.warning(
             f"No stream converter found for type {type(source_obj).__name__}"
         )
@@ -875,23 +869,17 @@ class Adaptor:
         for converter in converters:
             self.logger.debug(f"Checking if converter {converter} can convert {type(source_obj)}")
             if converter.can_convert(source_obj):
-                try:
-                    result = await converter.convert(source_obj)
-                    if context.force_type:
-                        assert type(result) is context.force_type, (
-                            f"Forced type to {context.force_type} but received {type(result)} "
-                            f"using {type(converter)}"
-                        )
-                    self.provider.logger.debug(
-                        f"Successfully converted {type(source_obj).__name__}"
-                        f" to {type(result).__name__} {result}"
+                result = await converter.convert(source_obj)
+                if context.force_type:
+                    assert type(result) is context.force_type, (
+                        f"Forced type to {context.force_type} but received {type(result)} "
+                        f"using {type(converter)}"
                     )
-                    return result
-                except Exception as e:
-                    self.provider.logger.error(
-                        f"Unexpected error in converter {type(converter).__name__}: {e}"
-                    )
-                    raise
+                self.provider.logger.debug(
+                    f"Successfully converted {type(source_obj).__name__}"
+                    f" to {type(result).__name__} {result}"
+                )
+                return result
             self.logger.debug(f"Converter {converter} could not convert {type(source_obj)}")
 
         self.logger.warning(f"No converter found for type {type(source_obj).__name__}")
