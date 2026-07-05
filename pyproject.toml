@@ -173,6 +173,13 @@ warn_unused_ignores = true
 follow_imports = "skip"
 module = ["plexapi", "plexapi.*"]
 
+# numba is intentionally unpinned (it must follow whatever librosa resolves), so its
+# type info comes and goes between releases. Treat it as untyped so the mypy outcome
+# does not depend on the numba version that happens to be installed.
+[[tool.mypy.overrides]]
+follow_imports = "skip"
+module = ["numba", "numba.*"]
+
 [tool.ruff.format]
 # Force Linux/macOS line endings
 line-ending = "lf"
