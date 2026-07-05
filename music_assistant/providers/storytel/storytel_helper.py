@@ -22,16 +22,19 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
+    StreamType,
 )
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
+    MediaNotFoundError,
     ProviderUnavailableError,
     UnplayableMediaError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
     Audiobook,
+    AudioFormat,
     MediaItemChapter,
     MediaItemImage,
     MediaItemType,
@@ -41,6 +44,8 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     UniqueList,
 )
+from music_assistant_models.streamdetails import StreamDetails
+from yarl import URL
 
 from .constants import (
     API_DEFAULT_RESOURCE_VERSION,
@@ -50,9 +55,12 @@ from .constants import (
     API_HEADER_CONTENT_TYPE_EXPLORE,
     API_HEADER_CONTENT_TYPE_LIBRARY_DELTA,
     API_HEADER_CONTENT_TYPE_SEARCH,
+    API_HEADER_STORYTEL_MEDIA_ACCEPT,
+    API_HEADER_STORYTEL_MEDIA_FORMATS,
     URL_BOOKMARK_GET,
     URL_BOOKMARK_SET,
     URL_CONSUMABLE_DETAILS,
+    URL_CONSUMABLE_DOWNLOAD_NO_RANGE,
     URL_FRONTPAGE,
     URL_LIBRARY_MANAGEMENT,
     URL_LOGIN,
@@ -132,6 +140,11 @@ class StorytelHelper:
         return bool(self._auth and self._auth.jwt and self._auth.single_sign_token)
 
     @property
+    def session(self) -> ClientSession:
+        """Return the aiohttp session used for Storytel requests."""
+        return self._session
+
+    @property
     def languages_query(self) -> str:
         """Return comma-separated ISO language codes for API queries."""
         if not self._languages:
@@ -150,7 +163,8 @@ class StorytelHelper:
     def resource_version(self, value: str) -> None:
         self._resource_version = value
 
-    def _headers_api(self) -> dict[str, str]:
+    def headers_api(self) -> dict[str, str]:
+        """Build the standard API headers used for Storytel requests."""
         headers: dict[str, str] = {
             "Accept": "application/json",
             "User-Agent": "MusicAssistant-Storytel/1.0",
@@ -167,7 +181,8 @@ class StorytelHelper:
         enc = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
         return enc.hex()
 
-    async def _raise_for_status(self, resp: ClientResponse) -> None:
+    async def raise_for_status(self, resp: ClientResponse) -> None:
+        """Raise a provider exception for non-success Storytel responses."""
         if 200 <= resp.status < 300:
             return
         try:
@@ -193,8 +208,8 @@ class StorytelHelper:
         url = URL_LOGIN.replace("{UID}", quote(username, safe="")).replace(
             "{PASSWORD}", quote(enc, safe="")
         )
-        async with self._session.get(url) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.get(url) as resp:
+            await self.raise_for_status(resp)
             data: dict[str, Any] = await resp.json()
         acc = data.get("accountInfo") or {}
         jwt = acc.get("jwt")
@@ -211,10 +226,10 @@ class StorytelHelper:
         if not self._auth or not self._auth.single_sign_token:
             raise LoginFailed("No single sign token")
         try:
-            async with self._session.post(
+            async with self.session.post(
                 URL_REVALIDATE, json={"token": self._auth.single_sign_token}
             ) as resp:
-                await self._raise_for_status(resp)
+                await self.raise_for_status(resp)
                 data: dict[str, Any] = await resp.json()
         except LoginFailed:
             raise ProviderUnavailableError(
@@ -248,11 +263,11 @@ class StorytelHelper:
         Returns a tuple of (library_items, following_items) where each is a dict keyed by consumableId.
         """
         url = URL_LIBRARY_MANAGEMENT
-        headers = self._headers_api()
+        headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_LIBRARY_DELTA
 
-        async with self._session.post(url, headers=headers, json={}) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.post(url, headers=headers, json={}) as resp:
+            await self.raise_for_status(resp)
             data: dict[str, Any] = await resp.json()
 
         library_items = data.get("items") or {}
@@ -275,10 +290,10 @@ class StorytelHelper:
         :param consumable_id: the consumable id.
         """
         url = URL_CONSUMABLE_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
-        headers = self._headers_api()
+        headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_BOOK_DETAILS
-        async with self._session.get(url, headers=headers) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.get(url, headers=headers) as resp:
+            await self.raise_for_status(resp)
             return cast("dict[str, Any]", await resp.json())
 
     async def get_bookmark(self, consumable_id: str) -> dict[str, Any] | None:
@@ -288,8 +303,8 @@ class StorytelHelper:
         :param consumable_id: the consumable id.
         """
         url = URL_BOOKMARK_GET.replace("{CONSUMABLE_ID}", consumable_id)
-        async with self._session.get(url, headers=self._headers_api()) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.get(url, headers=self.headers_api()) as resp:
+            await self.raise_for_status(resp)
             data: dict[str, Any] = await resp.json()
         bookmarks = data.get("bookmarks") or []
         # Only abook bookmark
@@ -316,12 +331,12 @@ class StorytelHelper:
             "secondsSinceCreated": 0,
             "type": "abook",
         }
-        async with self._session.post(
+        async with self.session.post(
             URL_BOOKMARK_SET,
-            headers={**self._headers_api(), "content-type": "application/json"},
+            headers={**self.headers_api(), "content-type": "application/json"},
             json=payload,
         ) as resp:
-            await self._raise_for_status(resp)
+            await self.raise_for_status(resp)
             return cast("dict[str, Any]", await resp.json())
 
     def _parse_duration(self, duration_data: dict[str, int]) -> int:
@@ -339,9 +354,9 @@ class StorytelHelper:
 
         url = URL_PLAYBACK_BOOK_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
         try:
-            headers = self._headers_api()
-            async with self._session.get(url, headers=headers) as resp:
-                await self._raise_for_status(resp)
+            headers = self.headers_api()
+            async with self.session.get(url, headers=headers) as resp:
+                await self.raise_for_status(resp)
                 data: dict[str, Any] = await resp.json()
             formats = data.get("formats") or []
             audiobook_format = next((f for f in formats if f.get("type") == "abook"), None)
@@ -386,7 +401,7 @@ class StorytelHelper:
     async def fetch_resource_version(self) -> None:
         """Fetch and cache the resource version for the Storytel API."""
         url = URL_LIBRARY_MANAGEMENT
-        headers = self._headers_api()
+        headers = self.headers_api()
         headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
         request_data: dict[str, Any] = {
             "resourceVersion": self.resource_version,
@@ -394,8 +409,8 @@ class StorytelHelper:
             "items": {},
         }
 
-        async with self._session.post(url, headers=headers, json=request_data) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.post(url, headers=headers, json=request_data) as resp:
+            await self.raise_for_status(resp)
             response_data: dict[str, Any] = await resp.json()
 
         resource_version = response_data.get("resourceVersion", "")
@@ -415,7 +430,7 @@ class StorytelHelper:
         :param item: the media item to add.
         """
         url = URL_LIBRARY_MANAGEMENT
-        headers = self._headers_api()
+        headers = self.headers_api()
         headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
         request_data: dict[str, Any] = {
             "resourceVersion": self.resource_version,
@@ -437,8 +452,8 @@ class StorytelHelper:
                 "millisecondsSinceEvent": 10,
             }
 
-        async with self._session.post(url, headers=headers, json=request_data) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.post(url, headers=headers, json=request_data) as resp:
+            await self.raise_for_status(resp)
             response_data: dict[str, Any] = await resp.json()
 
         following_items = response_data.get("followingItems") or {}
@@ -475,7 +490,7 @@ class StorytelHelper:
         :param media_type: the media type.
         """
         url = URL_LIBRARY_MANAGEMENT
-        headers = self._headers_api()
+        headers = self.headers_api()
         headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
         request_data: dict[str, Any] = {
             "resourceVersion": self.resource_version,
@@ -495,8 +510,8 @@ class StorytelHelper:
                 "millisecondsSinceEvent": 10,
             }
 
-        async with self._session.post(url, headers=headers, json=request_data) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.post(url, headers=headers, json=request_data) as resp:
+            await self.raise_for_status(resp)
             response_data: dict[str, Any] = await resp.json()
 
         following_items = response_data.get("followingItems") or {}
@@ -519,7 +534,7 @@ class StorytelHelper:
 
         return success
 
-    async def _parse_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
+    async def parse_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
         """Parse Storytel podcast data to Music Assistant Podcast."""
         list_metadata = podcast_data.get("listMetadata") or {}
         media_type = list_metadata.get("type") or ""
@@ -603,10 +618,10 @@ class StorytelHelper:
             )
             if token != "":
                 url += f"&nextPageToken={quote(token, safe='')}"
-            headers = self._headers_api()
+            headers = self.headers_api()
             headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
-            async with self._session.get(url, headers=headers) as resp:
-                await self._raise_for_status(resp)
+            async with self.session.get(url, headers=headers) as resp:
+                await self.raise_for_status(resp)
                 return cast("dict[str, Any]", await resp.json())
 
         async def fetch_items(token: str) -> list[dict[str, Any]]:
@@ -726,7 +741,7 @@ class StorytelHelper:
 
         return media_item
 
-    async def _parse_media_item(self, item_data: dict[str, Any]) -> MediaItemType:
+    async def parse_media_item(self, item_data: dict[str, Any]) -> MediaItemType:
         """Parse a media item from Storytel API to the appropriate Music Assistant media item type."""
         consumable_id = item_data.get("consumableId") or ""
         bookmark = await self.get_bookmark(consumable_id=consumable_id)
@@ -750,10 +765,10 @@ class StorytelHelper:
         :param consumable_id: the consumable id.
         """
         url = URL_PODCAST_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
-        headers = self._headers_api()
+        headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
-        async with self._session.get(url, headers=headers) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.get(url, headers=headers) as resp:
+            await self.raise_for_status(resp)
             return cast("dict[str, Any]", await resp.json())
 
     async def _fetch_search_page(
@@ -785,10 +800,10 @@ class StorytelHelper:
         )
         if page_token != "":
             url += f"&page={quote(page_token, safe='')}"
-        headers = self._headers_api()
+        headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_SEARCH
-        async with self._session.get(url, headers=headers) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.get(url, headers=headers) as resp:
+            await self.raise_for_status(resp)
             data: dict[str, Any] = await resp.json()
 
         results = data.get("items") or []
@@ -973,7 +988,7 @@ class StorytelHelper:
 
         chip_url = URL_FRONTPAGE
 
-        headers = self._headers_api()
+        headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
         chip_url += (
             "?includeFormats=abook%2Cpodcast"
@@ -982,8 +997,8 @@ class StorytelHelper:
             "&onboarding=false&version=2"
         )
 
-        async with self._session.get(chip_url, headers=headers) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.get(chip_url, headers=headers) as resp:
+            await self.raise_for_status(resp)
             chip_response: dict[str, Any] = await resp.json()
         chips = chip_response.get("chips") or []
 
@@ -1005,8 +1020,8 @@ class StorytelHelper:
             "&onboarding=false&version=2"
         )
 
-        async with self._session.get(frontpage_url, headers=headers) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.get(frontpage_url, headers=headers) as resp:
+            await self.raise_for_status(resp)
             frontpage_response: dict[str, Any] = await resp.json()
         content_blocks = frontpage_response.get("contentBlocks") or []
 
@@ -1023,8 +1038,8 @@ class StorytelHelper:
         else:
             return None
 
-        async with self._session.get(personal_recommendations_url, headers=headers) as resp:
-            await self._raise_for_status(resp)
+        async with self.session.get(personal_recommendations_url, headers=headers) as resp:
+            await self.raise_for_status(resp)
             recommendations_response: dict[str, Any] = await resp.json()
         items = recommendations_response.get("items") or []
 
@@ -1052,6 +1067,84 @@ class StorytelHelper:
             return None
 
         return folder
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Resolve Storytel stream information for an audiobook or podcast episode."""
+        try:
+            stream_info_url = URL_CONSUMABLE_DOWNLOAD_NO_RANGE.replace("{CONSUMABLE_ID}", item_id)
+            headers = self.headers_api()
+            headers[API_HEADER_STORYTEL_MEDIA_ACCEPT] = API_HEADER_STORYTEL_MEDIA_FORMATS
+
+            async with self.session.get(stream_info_url, headers=headers) as stream_info_response:
+                await self.raise_for_status(stream_info_response)
+                response = await stream_info_response.json()
+                stream_url = (response.get("result") or {}).get("signedUrl") or ""
+                if stream_url == "":
+                    self.logger.error("No signed URL returned for %s", item_id)
+                    raise MediaNotFoundError("No signed URL returned")
+                headers.pop("authorization", None)
+                headers["range"] = "bytes=0-1"
+                current_stream_url = URL(stream_url, encoded=True)
+                resolved_stream_url = stream_url
+                stream_headers: dict[str, str] = {}
+                for _redirect_count in range(5):
+                    async with self.session.get(
+                        current_stream_url, headers=headers, allow_redirects=False
+                    ) as stream_response:
+                        if 300 <= stream_response.status < 400:
+                            location = stream_response.headers.get("Location") or ""
+                            if location == "":
+                                await self.raise_for_status(stream_response)
+                            location_url = URL(location, encoded=True)
+                            current_stream_url = (
+                                location_url
+                                if location.startswith("http")
+                                else current_stream_url.join(location_url)
+                            )
+                            resolved_stream_url = str(current_stream_url)
+                            continue
+
+                        await self.raise_for_status(stream_response)
+                        stream_headers = parse_raw_headers(stream_response.raw_headers)
+                        content_type, content_full_size = parse_partial_content_probe(
+                            status_code=stream_response.status,
+                            stream_headers=stream_headers,
+                        )
+                        resolved_stream_url = str(current_stream_url)
+                        break
+                else:
+                    raise UnplayableMediaError("Too many redirects while resolving Storytel stream")
+        except Exception as err:
+            if isinstance(err, LoginFailed):
+                raise
+            self.logger.error("Failed to fetch stream details for %s: %s", item_id, err)
+            raise UnplayableMediaError(f"Failed to fetch stream details: {err}") from err
+
+        mass_content_type: ContentType | None = parse_content_type(content_type)
+        content_duration_seconds: int = int(
+            float(stream_headers.get("x-amz-meta-x-durationseconds", 0))
+        )
+        if content_duration_seconds == 0:
+            if media_type == MediaType.PODCAST_EPISODE:
+                item_details: (
+                    Audiobook | PodcastEpisode
+                ) = await self.provider_instance.get_podcast_episode(item_id)
+            else:
+                item_details = await self.provider_instance.get_audiobook(item_id)
+            content_duration_seconds = item_details.duration or 0
+
+        return StreamDetails(
+            provider=self.provider_id,
+            size=content_full_size,
+            item_id=item_id,
+            audio_format=AudioFormat(content_type=mass_content_type or ContentType.UNKNOWN),
+            media_type=media_type,
+            stream_type=StreamType.HTTP,
+            path=resolved_stream_url,
+            can_seek=True,
+            allow_seek=True,
+            duration=content_duration_seconds,
+        )
 
 
 def parse_raw_headers(raw_headers: tuple[tuple[bytes, bytes], ...]) -> dict[str, str]:

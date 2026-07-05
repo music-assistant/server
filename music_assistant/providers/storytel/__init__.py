@@ -17,10 +17,8 @@ from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
-    ContentType,
     MediaType,
     ProviderFeature,
-    StreamType,
 )
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -28,25 +26,19 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     SetupFailedError,
-    UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
     Audiobook,
-    AudioFormat,
     Podcast,
     PodcastEpisode,
     RecommendationFolder,
     SearchResults,
 )
-from music_assistant_models.streamdetails import StreamDetails
-from yarl import URL
 
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ALL_LANGUAGES,
-    API_HEADER_STORYTEL_MEDIA_ACCEPT,
-    API_HEADER_STORYTEL_MEDIA_FORMATS,
     CACHE_CATEGORY_AUDIOBOOK,
     CACHE_CATEGORY_PODCAST,
     CACHE_CATEGORY_PODCAST_EPISODE,
@@ -55,19 +47,14 @@ from .constants import (
     CONF_PASSWORD,
     CONF_USERNAME,
     DEFAULT_LANGUAGES,
-    URL_CONSUMABLE_DOWNLOAD_NO_RANGE,
 )
-from .storytel_helper import (
-    StorytelHelper,
-    parse_content_type,
-    parse_partial_content_probe,
-    parse_raw_headers,
-)
+from .storytel_helper import StorytelHelper
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -305,7 +292,7 @@ class Storytel(MusicProvider):
         if item_data is None:
             raise MediaNotFoundError(f"Storytel book not found: {prov_audiobook_id}")
 
-        media_item = await self.api._parse_media_item(item_data)
+        media_item = await self.api.parse_media_item(item_data)
 
         await self.mass.cache.set(
             key=prov_audiobook_id,
@@ -330,81 +317,7 @@ class Storytel(MusicProvider):
         if media_type not in {MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}:
             self.logger.error("Unsupported media type for streaming: %s", media_type)
             raise InvalidDataError("Only audiobooks and podcasts are supported")
-        try:
-            stream_info_url = URL_CONSUMABLE_DOWNLOAD_NO_RANGE.replace("{CONSUMABLE_ID}", item_id)
-            headers = self.api._headers_api()
-            headers[API_HEADER_STORYTEL_MEDIA_ACCEPT] = API_HEADER_STORYTEL_MEDIA_FORMATS
-
-            async with self.api._session.get(
-                stream_info_url, headers=headers
-            ) as stream_info_response:
-                await self.api._raise_for_status(stream_info_response)
-                response = await stream_info_response.json()
-                stream_url = (response.get("result") or {}).get("signedUrl") or ""
-                if stream_url == "":
-                    self.logger.error("No signed URL returned for %s", item_id)
-                    raise MediaNotFoundError("No signed URL returned")
-                headers.pop("authorization", None)
-                headers["range"] = "bytes=0-1"
-                current_stream_url = URL(stream_url, encoded=True)
-                resolved_stream_url = stream_url
-                stream_headers: dict[str, str] = {}
-                for _redirect_count in range(5):
-                    async with self.api._session.get(
-                        current_stream_url, headers=headers, allow_redirects=False
-                    ) as stream_response:
-                        if 300 <= stream_response.status < 400:
-                            location = stream_response.headers.get("Location") or ""
-                            if location == "":
-                                await self.api._raise_for_status(stream_response)
-                            location_url = URL(location, encoded=True)
-                            current_stream_url = (
-                                location_url
-                                if location.startswith("http")
-                                else current_stream_url.join(location_url)
-                            )
-                            resolved_stream_url = str(current_stream_url)
-                            continue
-
-                        await self.api._raise_for_status(stream_response)
-                        stream_headers = parse_raw_headers(stream_response.raw_headers)
-                        content_type, content_full_size = parse_partial_content_probe(
-                            status_code=stream_response.status,
-                            stream_headers=stream_headers,
-                        )
-                        resolved_stream_url = str(current_stream_url)
-                        break
-                else:
-                    raise UnplayableMediaError("Too many redirects while resolving Storytel stream")
-        except Exception as err:
-            if isinstance(err, LoginFailed):
-                raise
-            self.logger.error("Failed to fetch stream details for %s: %s", item_id, err)
-            raise UnplayableMediaError(f"Failed to fetch stream details: {err}") from err
-
-        mass_content_type: ContentType | None = parse_content_type(content_type)
-        content_duration_seconds: int = int(
-            float(stream_headers.get("x-amz-meta-x-durationseconds", 0))
-        )
-        if content_duration_seconds == 0:
-            if media_type == MediaType.PODCAST_EPISODE:
-                item_details: Audiobook | PodcastEpisode = await self.get_podcast_episode(item_id)
-            else:
-                item_details = await self.get_audiobook(item_id)
-            content_duration_seconds = item_details.duration or 0
-
-        return StreamDetails(
-            provider=self.instance_id,
-            size=content_full_size,
-            item_id=item_id,
-            audio_format=AudioFormat(content_type=mass_content_type or ContentType.UNKNOWN),
-            media_type=media_type,
-            stream_type=StreamType.HTTP,
-            path=resolved_stream_url,
-            can_seek=True,
-            allow_seek=True,
-            duration=content_duration_seconds,
-        )
+        return await self.api.get_stream_details(item_id, media_type)
 
     @handle_login_failed
     async def get_resume_position(
@@ -491,7 +404,7 @@ class Storytel(MusicProvider):
         if item_data is None:
             raise MediaNotFoundError(f"Storytel podcast not found: {prov_podcast_id}")
 
-        podcast = await self.api._parse_podcast(item_data)
+        podcast = await self.api.parse_podcast(item_data)
 
         await self.mass.cache.set(
             key=prov_podcast_id,
@@ -525,7 +438,7 @@ class Storytel(MusicProvider):
         if item_data is None:
             raise MediaNotFoundError(f"Storytel podcast episode not found: {prov_episode_id}")
 
-        podcast_episode = await self.api._parse_media_item(item_data)
+        podcast_episode = await self.api.parse_media_item(item_data)
 
         await self.mass.cache.set(
             key=prov_episode_id,
