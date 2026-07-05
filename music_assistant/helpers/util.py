@@ -880,6 +880,8 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     """
     Return all IP addresses of all network interfaces.
 
+    Always returns at least one address: when no routable address is found
+    (e.g. offline host), the loopback address is returned as fallback.
     Results are cached for a short while, so an IP/interface change may take up to
     IP_ADDRESSES_CACHE_TTL seconds to be reflected.
 
@@ -964,6 +966,10 @@ def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
                 score = 0
             result.append((score, ip_str))
     result.sort(key=lambda x: x[0], reverse=True)
+    if not result:
+        # no routable addresses found (e.g. offline host with only loopback/link-local):
+        # fall back to loopback so callers that rely on at least one address keep working
+        return ("127.0.0.1",)
     return tuple(ip[1] for ip in result)
 
 

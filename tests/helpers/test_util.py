@@ -176,6 +176,11 @@ class TestGetIpAddresses:
         ) as mock:
             yield mock
 
+    def test_falls_back_to_loopback_without_routable_addresses(self) -> None:
+        """With no routable addresses at all, loopback is returned instead of an empty tuple."""
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=[]):
+            assert util._enumerate_ip_addresses(include_ipv6=True) == ("127.0.0.1",)
+
     @pytest.mark.asyncio
     async def test_concurrent_callers_share_a_single_probe(self, enumerate_mock: MagicMock) -> None:
         """Concurrent callers within the TTL all get the result of one enumeration."""
