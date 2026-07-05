@@ -168,6 +168,45 @@ class WebRadioProvider(PlayerProvider):
         del self._stations[station.slug]
         await self.mass.players.unregister(player_id, True)
 
+    def stop_producer(self, slug: str) -> None:
+        """Terminate a station's broadcast."""
+        station = self._stations.get(slug)
+        if station is None:
+            return
+        station.stop_event.set()
+
+    def set_pending_media(self, slug: str, media: PlayerMedia) -> None:
+        """Hand a new PlayerMedia to a station's producer for broadcast."""
+        station = self._stations.get(slug)
+        if station is None:
+            return
+        station.pending_media = media
+        station.pending_media_event.set()
+
+    def clear_pending_media(self, slug: str) -> None:
+        """Drop a station's stored PlayerMedia."""
+        station = self._stations.get(slug)
+        if station is None:
+            return
+        station.pending_media = None
+        station.pending_media_event.clear()
+
+    def refresh_station_route(self, slug: str) -> None:
+        """Re-register a station's HTTP route after its codec config changed."""
+        station = self._stations.get(slug)
+        if station is None:
+            return
+        codec = self._station_codec(station.player_id)
+        new_path = f"{URL_PATH_PREFIX}{slug}.{codec}"
+        if new_path == station.url_path:
+            return
+        station.unregister_route()
+        station.url_path = new_path
+        station.unregister_route = self.mass.streams.register_dynamic_route(
+            new_path, self._handle_stream_request, "*"
+        )
+        station.player.set_stream_url(self._public_url(new_path))
+
     # ---------------------------------------------------------------
     # Station / route lifecycle
     # ---------------------------------------------------------------
@@ -243,29 +282,6 @@ class WebRadioProvider(PlayerProvider):
         )
         player.set_stream_url(self._public_url(url_path))
 
-    def stop_producer(self, slug: str) -> None:
-        """Terminate a station's broadcast."""
-        station = self._stations.get(slug)
-        if station is None:
-            return
-        station.stop_event.set()
-
-    def set_pending_media(self, slug: str, media: PlayerMedia) -> None:
-        """Hand a new PlayerMedia to a station's producer for broadcast."""
-        station = self._stations.get(slug)
-        if station is None:
-            return
-        station.pending_media = media
-        station.pending_media_event.set()
-
-    def clear_pending_media(self, slug: str) -> None:
-        """Drop a station's stored PlayerMedia."""
-        station = self._stations.get(slug)
-        if station is None:
-            return
-        station.pending_media = None
-        station.pending_media_event.clear()
-
     async def _cancel_producer(self, station: _Station) -> None:
         """Stop a station's producer task and wait for it to finish."""
         task = station.producer_task
@@ -281,22 +297,6 @@ class WebRadioProvider(PlayerProvider):
                 await task
         except asyncio.CancelledError:
             pass
-
-    def refresh_station_route(self, slug: str) -> None:
-        """Re-register a station's HTTP route after its codec config changed."""
-        station = self._stations.get(slug)
-        if station is None:
-            return
-        codec = self._station_codec(station.player_id)
-        new_path = f"{URL_PATH_PREFIX}{slug}.{codec}"
-        if new_path == station.url_path:
-            return
-        station.unregister_route()
-        station.url_path = new_path
-        station.unregister_route = self.mass.streams.register_dynamic_route(
-            new_path, self._handle_stream_request, "*"
-        )
-        station.player.set_stream_url(self._public_url(new_path))
 
     def _station_codec(self, player_id: str) -> str:
         """Return the configured output codec extension for a player, e.g. ``"mp3"``."""
@@ -421,7 +421,8 @@ class WebRadioProvider(PlayerProvider):
                 queue, start_item = self._resolve_pending_media(station)
                 if queue is None or start_item is None:
                     break
-                session_id_at_start = queue.session_id
+                queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
+                session_id_at_start = queue_data.session_id if queue_data else None
                 # Only on first start: catch up to where the broadcast would
                 # be now for a late-joining listener. On a restart MA already
                 # set streamdetails.seek_position to the intended value.
@@ -453,12 +454,12 @@ class WebRadioProvider(PlayerProvider):
                     # A subscriber raced back in while we were exiting.
                     continue
 
-                # exit_reason == "ended". If queue.session_id moved on we
+                # exit_reason == "ended". If the queue's session_id moved on we
                 # were skipped past; otherwise the queue actually ran out.
-                queue = self.mass.player_queues.get(station.player_id)
-                if queue is None:
+                queue_data = self.mass.player_queues.queue_data_or_none(station.player_id)
+                if queue_data is None:
                     break
-                if queue.session_id == session_id_at_start:
+                if queue_data.session_id == session_id_at_start:
                     break
                 # Wait for the new play_media that owns the new session.
                 with suppress(TimeoutError):
