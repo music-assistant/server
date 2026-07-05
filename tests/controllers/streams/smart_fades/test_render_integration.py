@@ -89,10 +89,12 @@ async def _render(
     return np.frombuffer(b"".join(chunks), dtype=np.float32), fade
 
 
-def _thirds(mix: np.ndarray) -> list[np.ndarray]:
-    """Split an interleaved mix into three frame-aligned thirds."""
-    third = len(mix) // 3 // 2 * 2
-    return [mix[i * third : (i + 1) * third] for i in range(3)]
+def _cf_slice(mix: np.ndarray, fade: SmartCrossFade, frac0: float, frac1: float) -> np.ndarray:
+    """Slice the rendered crossfade window between two fractions of its span."""
+    timing = fade.timing_info
+    start_s = timing.pre_crossfade_duration + frac0 * timing.crossfade_duration
+    end_s = timing.pre_crossfade_duration + frac1 * timing.crossfade_duration
+    return mix[int(start_s * SR) * 2 : int(end_s * SR) * 2]
 
 
 @pytest.mark.asyncio
@@ -119,14 +121,18 @@ async def test_bass_swaps_between_tracks() -> None:
     assert open_.plan.eq_plan.low_in is None
     # identical geometry: the band data must only change EQ, never the timing
     assert len(killed_mix) == len(open_mix)
-    killed_thirds, open_thirds = _thirds(killed_mix), _thirds(open_mix)
-    # A's bass is killed where the swap completes (late); B enters bass-ducked
-    # (early); -26dB kill leaves well under 30% of the bypassed render's energy
-    assert _band_rms(killed_thirds[2], 55, 65) < 0.3 * _band_rms(open_thirds[2], 55, 65)
-    assert _band_rms(killed_thirds[0], 85, 95) < 0.3 * _band_rms(open_thirds[0], 85, 95)
+    # measure inside the crossfade window itself: A's bass is killed where the
+    # swap completes (late); B enters bass-ducked (early); -26dB kill leaves
+    # well under 30% of the bypassed render's energy
+    killed_late = _cf_slice(killed_mix, killed, 0.7, 0.95)
+    open_late = _cf_slice(open_mix, open_, 0.7, 0.95)
+    killed_early = _cf_slice(killed_mix, killed, 0.05, 0.3)
+    open_early = _cf_slice(open_mix, open_, 0.05, 0.3)
+    assert _band_rms(killed_late, 55, 65) < 0.3 * _band_rms(open_late, 55, 65)
+    assert _band_rms(killed_early, 85, 95) < 0.3 * _band_rms(open_early, 85, 95)
     # sanity on the killed render alone: A's bass dominates early, B's late
-    assert _band_rms(killed_thirds[0], 55, 65) > 3 * _band_rms(killed_thirds[0], 85, 95)
-    assert _band_rms(killed_thirds[2], 85, 95) > 3 * _band_rms(killed_thirds[2], 55, 65)
+    assert _band_rms(killed_early, 55, 65) > 3 * _band_rms(killed_early, 85, 95)
+    assert _band_rms(killed_late, 85, 95) > 3 * _band_rms(killed_late, 55, 65)
 
 
 @pytest.mark.asyncio
@@ -157,9 +163,13 @@ async def test_mid_swaps_between_tracks() -> None:
     assert open_.plan.eq_plan.mid_in is None
     # identical geometry: the band data must only change EQ, never the timing
     assert len(gated_mix) == len(open_mix)
-    gated_thirds, open_thirds = _thirds(gated_mix), _thirds(open_mix)
     # the -8dB depth is modest, so assert a measurable drop (not dominance):
     # A's 1kHz is attenuated where the swap completes (late); B's 2kHz enters
-    # ducked (early); both measured against the EQ-bypassed render
-    assert _band_rms(gated_thirds[2], 950, 1050) < 0.7 * _band_rms(open_thirds[2], 950, 1050)
-    assert _band_rms(gated_thirds[0], 1950, 2050) < 0.7 * _band_rms(open_thirds[0], 1950, 2050)
+    # ducked (early); both measured against the EQ-bypassed render, inside
+    # the crossfade window itself
+    gated_late = _cf_slice(gated_mix, gated, 0.7, 0.95)
+    open_late = _cf_slice(open_mix, open_, 0.7, 0.95)
+    gated_early = _cf_slice(gated_mix, gated, 0.05, 0.3)
+    open_early = _cf_slice(open_mix, open_, 0.05, 0.3)
+    assert _band_rms(gated_late, 950, 1050) < 0.7 * _band_rms(open_late, 950, 1050)
+    assert _band_rms(gated_early, 1950, 2050) < 0.7 * _band_rms(open_early, 1950, 2050)

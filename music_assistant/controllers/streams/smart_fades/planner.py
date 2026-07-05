@@ -12,14 +12,25 @@ Alternative transition strategies slot in as sibling subclasses of
 
 from __future__ import annotations
 
+import itertools
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.bands import (
+    BandProfile,
+    build_band_profile,
+    loudness_referenced_level,
+    smoothstep,
+    window_duty,
+    window_fraction,
+    window_level,
+)
 from music_assistant.controllers.streams.smart_fades.filters import ShelfType
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
@@ -32,6 +43,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     generate_synthetic_timestamps,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
+    BAND_RMS_BANDS,
     Deck,
     EqPlan,
     FadeOutTrim,
@@ -87,13 +99,68 @@ class SmartCrossFadePlanner(TransitionPlanner):
     bass_swap_fraction: float = 0.5
     bass_swap_min_bars: int = 2
     bass_swap_max_bars: int = 8
+    # decision window for the reciprocal swap depth gates, in A/B-bars
+    bass_swap_window_bars: int = 8
+
+    # reciprocal bass-swap depth gate: each side's low-band power fraction over
+    # the other deck's window is smoothstepped across this corridor to scale
+    # its own kill depth; below eq_bypass_below_db the schedule is dropped
+    low_gate_lo: float = 0.10
+    low_gate_hi: float = 0.25
+    eq_bypass_below_db: float = -6.0
+
+    # reciprocal high-ease depth gate: same reciprocal-window shape as the bass
+    # swap, but on the high band (4kHz+ power fractions are intrinsically
+    # small, hence the low corridor); a deck whose OWN window high level falls
+    # below high_own_side_floor of its own reference gets no shelf at all
+    high_gate_lo: float = 0.02
+    high_gate_hi: float = 0.06
+    high_own_side_floor: float = 0.25
+    # cymbal-wash mode: both decks' own windows read bright and comparably
+    # loud (loudness-normalized playback assumed), so a plain reciprocal ease
+    # would let their highs stack; duck A complementary with B's restore instead
+    wash_duty: float = 0.8
+    wash_depth_db: float = -26.0
+    wash_level_tolerance_db: float = 6.0
+    wash_min_blend_bars: int = 8
+
+    # measured mid-band (vocal) swap: same reciprocal-gate shape as the bass
+    # swap, but on the mid band and gated additionally on how consistently
+    # that band is present (duty), since a single loud mid bar shouldn't
+    # unlock a swap over an otherwise instrumental track
+    mid_freq: int = 1200
+    mid_width_oct: float = 2.5
+    # corpus-tabled placement in the measured gap between instrumental (<=0.15)
+    # and vocal (>=0.26) mid fractions; the panel prior overshot because vocal
+    # fundamentals sit below 400 Hz
+    mid_gate_lo: float = 0.18
+    mid_gate_hi: float = 0.30
+    mid_duty_lo: float = 0.60
+    mid_duty_hi: float = 0.85
+    mid_cap_db: float = -8.0
+    mid_bypass_below_db: float = -1.0
+
+    # plan-time predicted-loudness-dip guard: the combined qsin-weighted power
+    # of both decks' scheduled bands may never sag more than this many dB
+    # below its plateau across the overlap
+    max_predicted_dip_db: float = 3.0
 
     # Working state for one plan() run, (re)set by _prepare_decks
     outgoing: Deck
     incoming: Deck
     effective_end: float
+    # outgoing media time minus buffer-local time, i.e. media_time = buffer_local + offset
+    _buffer_offset: float
     fadeout_trim: FadeOutTrim | None
     extrapolated_downbeats: npt.NDArray[np.float32]
+    outgoing_profile: BandProfile | None
+    incoming_profile: BandProfile | None
+    # incoming groove entry (media time), computed once so the swap point and
+    # the reciprocal decision windows agree
+    _incoming_entry: float
+    # set by _choose_eq: the low crossover's rendered ramp window, exempt from
+    # the dip guard (its notch is the intentional bass-handover gesture)
+    _swap_notch: tuple[float, float]
 
     def plan(
         self,
@@ -147,17 +214,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
         fade_in_analysis: AudioAnalysisData,
         buffer_duration: float,
     ) -> None:
-        """
-        Load both tracks onto the decks and cue the outgoing tail.
-
-        Validates the analysis, derives the usable beat grids and locates the
-        audible end of the outgoing tail.  Raises ``SmartFadeNotApplicable``
-        when the tail is too short to be useful.
-
-        :param fade_out_analysis: Analysis data for the outgoing track.
-        :param fade_in_analysis: Analysis data for the incoming track.
-        :param buffer_duration: Length in seconds of the fade-out holdback buffer.
-        """
+        """Load both tracks onto the decks, cue the outgoing tail and detect B's entry."""
         if (
             fade_out_analysis.bpm is None
             or fade_in_analysis.bpm is None
@@ -189,11 +246,19 @@ class SmartCrossFadePlanner(TransitionPlanner):
                 else np.array([], dtype=np.float32)
             ),
         )
+        self.outgoing_profile = build_band_profile(fade_out_analysis)
+        self.incoming_profile = build_band_profile(fade_in_analysis)
         self._cue_outgoing_tail(buffer_duration)
         self.extrapolated_downbeats = extrapolate_downbeats(
             self.outgoing.downbeats,
             buffer_size=self.effective_end,
             bpm=self.outgoing.bpm,
+        )
+        # Computed once so the swap point and the reciprocal decision windows agree
+        self._incoming_entry = detect_groove_entry(
+            self.incoming.analysis.rms_energy,
+            self.incoming.analysis.duration,
+            self.incoming.downbeats,
         )
         # Additional verbose logging to debug rare failures
         self.logger.log(
@@ -204,17 +269,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
         )
 
     def _cue_outgoing_tail(self, buffer_duration: float) -> None:
-        """
-        Locate the audible end of the outgoing tail and align its grids to it.
-
-        Sets ``self.effective_end``, ``self.fadeout_trim`` (when trailing silence
-        is worth dropping), converts the outgoing deck's grids from full-track to
-        buffer-local coordinates using the actual buffer length, and masks them
-        to the audible window.  Raises ``SmartFadeNotApplicable`` when the tail
-        is too short to be useful.
-
-        :param buffer_duration: Length in seconds of the fade-out holdback buffer.
-        """
+        """Locate the audible end of the outgoing tail and shift its grids to buffer-local time."""
         self.fadeout_trim = None
         self.effective_end = detect_effective_audio_end(
             self.outgoing.analysis.rms_energy,
@@ -241,9 +296,9 @@ class SmartCrossFadePlanner(TransitionPlanner):
         # ACTUAL buffer length: the holdback yield loop leaves up to ~1s less than the
         # constant 45s depending on chunk boundaries, and effective_end above is in real
         # buffer coordinates — a constant-45 shift would misalign every beat by the difference
-        buffer_offset = max(0.0, (self.outgoing.analysis.duration or 0.0) - buffer_duration)
-        beats = self.outgoing.beats - buffer_offset
-        downbeats = self.outgoing.downbeats - buffer_offset
+        self._buffer_offset = max(0.0, (self.outgoing.analysis.duration or 0.0) - buffer_duration)
+        beats = self.outgoing.beats - self._buffer_offset
+        downbeats = self.outgoing.downbeats - self._buffer_offset
 
         # Mask fade-out beats to the audible buffer window; negative timestamps are
         # beats before the buffer, beats past effective_end sit in the silent tail
@@ -531,21 +586,9 @@ class SmartCrossFadePlanner(TransitionPlanner):
         tempo_plan: TempoPlan,
         fadein_trim_start: float | None,
     ) -> EqPlan:
-        """
-        Plan the bass swap between the two tracks.
-
-        B enters bass-killed; both low shelves trade over a proportional window
-        (half the overlap, clamped to 2-8 bars) CENTERED on the swap point, so
-        the handover reads as a morph around the musical moment rather than an
-        event.  Highs ease in before the exchange and out after it.  A-side
-        schedules are in the outgoing track's input time (the renderer places
-        them before the tempo stretch); B-side schedules are in the incoming
-        track's post-trim time, where t=0 equals the crossfade start.
-
-        :param crossfade_duration: Rendered overlap length in seconds.
-        :param tempo_plan: Tempo ramp (maps rendered offsets to A-input offsets).
-        :param fadein_trim_start: Incoming head trim, if beat alignment applied one.
-        """
+        """Plan the low/mid/high EQ handover, centered on the swap point."""
+        # A-side schedules are in A-input time (rendered before the tempo stretch);
+        # B-side schedules are in B's post-trim time, where t=0 is the crossfade start
         bar_in = 4 * 60.0 / self.incoming.bpm
         swap_at = self._choose_swap_point(crossfade_duration, fadein_trim_start)
         swap_len = min(
@@ -565,56 +608,86 @@ class SmartCrossFadePlanner(TransitionPlanner):
         start_in = max(0.0, swap_at - swap_len / 2)
         start_out = max(cf_start_input, swap_at_input - swap_len_input / 2)
 
-        low_out = ShelfSchedule(
-            ShelfType.LOW,
-            self.low_shelf_freq,
-            [(0.0, 0.0), *db_ramp(start_out, swap_len_input, 0.0, self.eq_kill_db)],
+        depth_a, depth_b = self._choose_swap_depths()
+
+        low_out = (
+            ShelfSchedule(
+                ShelfType.LOW,
+                self.low_shelf_freq,
+                [(0.0, 0.0), *db_ramp(start_out, swap_len_input, 0.0, depth_a)],
+            )
+            if abs(depth_a) >= abs(self.eq_bypass_below_db)
+            else None
         )
-        low_in = ShelfSchedule(
-            ShelfType.LOW,
-            self.low_shelf_freq,
-            [(0.0, self.eq_kill_db), *db_ramp(start_in, swap_len, self.eq_kill_db, 0.0)],
+        low_in = (
+            ShelfSchedule(
+                ShelfType.LOW,
+                self.low_shelf_freq,
+                [(0.0, depth_b), *db_ramp(start_in, swap_len, depth_b, 0.0)],
+            )
+            if abs(depth_b) >= abs(self.eq_bypass_below_db)
+            else None
         )
-        high_out = ShelfSchedule(
-            ShelfType.HIGH,
-            self.high_shelf_freq,
-            [
-                (0.0, 0.0),
-                *db_ramp(start_out + swap_len_input, ease * ratio, 0.0, self.high_ease_db),
-            ],
+        high_out, high_in = self._choose_high_swap(
+            start_out, start_in, cf_start_input, swap_len_input, ease, ratio, crossfade_duration
         )
-        high_in = ShelfSchedule(
-            ShelfType.HIGH,
-            self.high_shelf_freq,
-            [
-                (0.0, self.high_ease_db),
-                *db_ramp(max(0.0, start_in - ease), ease, self.high_ease_db, 0.0),
-            ],
+
+        depth_mid_a, depth_mid_b = self._choose_mid_swap_depths()
+        mid_out = (
+            ShelfSchedule(
+                ShelfType.PEAK,
+                self.mid_freq,
+                [(0.0, 0.0), *db_ramp(start_out, swap_len_input, 0.0, depth_mid_a)],
+                width_oct=self.mid_width_oct,
+            )
+            if depth_mid_a is not None
+            else None
         )
-        return EqPlan(
-            swap_at=swap_at, low_out=low_out, low_in=low_in, high_out=high_out, high_in=high_in
+        mid_in = (
+            ShelfSchedule(
+                ShelfType.PEAK,
+                self.mid_freq,
+                [(0.0, depth_mid_b), *db_ramp(start_in, swap_len, depth_mid_b, 0.0)],
+                width_oct=self.mid_width_oct,
+            )
+            if depth_mid_b is not None
+            else None
+        )
+
+        eq_plan = EqPlan(
+            swap_at=swap_at,
+            low_out=low_out,
+            low_in=low_in,
+            high_out=high_out,
+            high_in=high_in,
+            mid_out=mid_out,
+            mid_in=mid_in,
+        )
+        # the low crossover's rendered ramp window; the dip guard exempts it as
+        # the intentional bass-handover gesture, but ONLY when a low swap is
+        # actually engaged — a bass-light pair has no handover to exempt, so
+        # the notch collapses to an interval that never matches a sample time
+        self._swap_notch = (
+            (start_in, start_in + swap_len)
+            if (low_out is not None or low_in is not None)
+            else (-1.0, -1.0)
+        )
+        return self._apply_dip_guard(
+            eq_plan,
+            crossfade_duration=crossfade_duration,
+            cf_start_input=cf_start_input,
+            ratio=ratio,
+            swap_at=swap_at,
+            bar_in=bar_in,
+            notch=self._swap_notch,
         )
 
     def _choose_swap_point(
         self, crossfade_duration: float, fadein_trim_start: float | None
     ) -> float:
-        """
-        Pick the bass-swap moment, in rendered seconds into the crossfade.
-
-        Prefers the incoming track's groove entry (drums coming in) when it lands
-        anywhere inside the overlap; otherwise the incoming downbeat nearest to
-        60% through the overlap.
-
-        :param crossfade_duration: Rendered overlap length in seconds.
-        :param fadein_trim_start: Incoming head trim, if beat alignment applied one.
-        """
+        """Pick the bass-swap moment: B's groove entry when inside the overlap, else 60% through."""
         trim = fadein_trim_start or 0.0
-        entry = detect_groove_entry(
-            self.incoming.analysis.rms_energy,
-            self.incoming.analysis.duration,
-            self.incoming.downbeats,
-        )
-        candidate = entry - trim
+        candidate = self._incoming_entry - trim
         if not 0.0 < candidate <= crossfade_duration:
             candidate = 0.6 * crossfade_duration
         # snap to the incoming grid so the new bassline lands on its own 1
@@ -623,3 +696,336 @@ class SmartCrossFadePlanner(TransitionPlanner):
         if len(post_trim):
             candidate = float(post_trim[np.argmin(np.abs(post_trim - candidate))])
         return candidate
+
+    def _swap_windows(self, window_bars: int) -> tuple[tuple[float, float], tuple[float, float]]:
+        """Reciprocal decision windows for the swap gates: A's outgoing tail, B's incoming head."""
+        bar_out = 4 * 60.0 / self.outgoing.bpm
+        bar_in = 4 * 60.0 / self.incoming.bpm
+        anchor_media = self._buffer_offset + self.effective_end
+        w_a_out = (anchor_media - window_bars * bar_out, anchor_media)
+        entry = self._incoming_entry
+        w_b_in = (entry, entry + window_bars * bar_in)
+        return w_a_out, w_b_in
+
+    def _choose_swap_depths(self) -> tuple[float, float]:
+        """Reciprocally scale each side's bass-kill depth to the other deck's measured bass."""
+        # missing band data on either side keeps the shipped full-depth kill (bit-identical)
+        if self.outgoing_profile is None or self.incoming_profile is None:
+            return self.eq_kill_db, self.eq_kill_db
+        w_a_out, w_b_in = self._swap_windows(self.bass_swap_window_bars)
+        f_low_b_in = window_fraction(self.incoming_profile, "low", *w_b_in)
+        f_low_a_out = window_fraction(self.outgoing_profile, "low", *w_a_out)
+        depth_a = self.eq_kill_db * smoothstep(f_low_b_in, self.low_gate_lo, self.low_gate_hi)
+        depth_b = self.eq_kill_db * smoothstep(f_low_a_out, self.low_gate_lo, self.low_gate_hi)
+        return depth_a, depth_b
+
+    def _choose_high_swap(
+        self,
+        start_out: float,
+        start_in: float,
+        cf_start_input: float,
+        swap_len_input: float,
+        ease: float,
+        ratio: float,
+        crossfade_duration: float,
+    ) -> tuple[ShelfSchedule | None, ShelfSchedule | None]:
+        """Build the high-ease shelves: reciprocal depths, own-side no-op skip, cymbal-wash mode."""
+        wash = False
+        if self.outgoing_profile is None or self.incoming_profile is None:
+            depth_a = depth_b = self.high_ease_db
+        else:
+            w_a_out, w_b_in = self._swap_windows(self.bass_swap_window_bars)
+            f_high_b_in = window_fraction(self.incoming_profile, "high", *w_b_in)
+            f_high_a_out = window_fraction(self.outgoing_profile, "high", *w_a_out)
+            depth_a = self.high_ease_db * smoothstep(
+                f_high_b_in, self.high_gate_lo, self.high_gate_hi
+            )
+            depth_b = self.high_ease_db * smoothstep(
+                f_high_a_out, self.high_gate_lo, self.high_gate_hi
+            )
+
+            own_dark_a = window_level(self.outgoing_profile, "high", *w_a_out) < (
+                self.high_own_side_floor * self.outgoing_profile.reference["high"]
+            )
+            own_dark_b = window_level(self.incoming_profile, "high", *w_b_in) < (
+                self.high_own_side_floor * self.incoming_profile.reference["high"]
+            )
+            if own_dark_a:
+                depth_a = 0.0
+            if own_dark_b:
+                depth_b = 0.0
+
+            wash = self._wash_mode_engages(w_a_out, w_b_in, crossfade_duration)
+            if wash:
+                depth_a = self.wash_depth_db
+
+        high_out = (
+            ShelfSchedule(
+                ShelfType.HIGH,
+                self.high_shelf_freq,
+                self._high_out_steps(
+                    depth_a,
+                    start_out,
+                    start_in,
+                    cf_start_input,
+                    swap_len_input,
+                    ease,
+                    ratio,
+                    wash=wash,
+                ),
+            )
+            if abs(depth_a) >= abs(self.eq_bypass_below_db)
+            else None
+        )
+        high_in = (
+            ShelfSchedule(
+                ShelfType.HIGH,
+                self.high_shelf_freq,
+                [
+                    (0.0, depth_b),
+                    *db_ramp(max(0.0, start_in - ease), ease, depth_b, 0.0),
+                ],
+            )
+            if abs(depth_b) >= abs(self.eq_bypass_below_db)
+            else None
+        )
+        return high_out, high_in
+
+    def _high_out_steps(
+        self,
+        depth_a: float,
+        start_out: float,
+        start_in: float,
+        cf_start_input: float,
+        swap_len_input: float,
+        ease: float,
+        ratio: float,
+        *,
+        wash: bool,
+    ) -> list[tuple[float, float]]:
+        """Build A's high-duck ramp: shipped post-swap placement, or wash mode's mirrored duck."""
+        if wash:
+            # mirror B's restore window; it ends at start_in inside the overlap,
+            # so the duck can never overrun the crossfade end
+            start = cf_start_input + max(0.0, start_in - ease) * ratio
+        else:
+            start = start_out + swap_len_input
+        return [(0.0, 0.0), *db_ramp(start, ease * ratio, 0.0, depth_a)]
+
+    def _wash_mode_engages(
+        self,
+        w_a_out: tuple[float, float],
+        w_b_in: tuple[float, float],
+        crossfade_duration: float,
+    ) -> bool:
+        """Return True when both decks read bright, comparably loud, over a long enough blend."""
+        assert self.outgoing_profile is not None  # narrowed by the caller
+        assert self.incoming_profile is not None
+        bar_out = 4 * 60.0 / self.outgoing.bpm
+        if crossfade_duration < self.wash_min_blend_bars * bar_out:
+            return False
+        # absolute brightness floor: duty vs a track's OWN reference measures
+        # consistency, not brightness — a dark steady track has duty 1.0
+        f_high_a = window_fraction(self.outgoing_profile, "high", *w_a_out)
+        f_high_b = window_fraction(self.incoming_profile, "high", *w_b_in)
+        if f_high_a < self.high_gate_hi or f_high_b < self.high_gate_hi:
+            return False
+        duty_a = window_duty(self.outgoing_profile, "high", *w_a_out, k=0.5)
+        duty_b = window_duty(self.incoming_profile, "high", *w_b_in, k=0.5)
+        if duty_a < self.wash_duty or duty_b < self.wash_duty:
+            return False
+        level_a = loudness_referenced_level(self.outgoing_profile, "high", *w_a_out)
+        level_b = loudness_referenced_level(self.incoming_profile, "high", *w_b_in)
+        if level_a <= 0.0 or level_b <= 0.0:
+            return False
+        # the planner has no access to playback state, so this presumes loudness-
+        # normalized playback; that assumption is strictly more conservative than
+        # a duty-only fallback, which would engage wash mode more often
+        level_gap_db = abs(10.0 * float(np.log10(level_a / level_b)))
+        return level_gap_db <= self.wash_level_tolerance_db
+
+    def _choose_mid_swap_depths(self) -> tuple[float | None, float | None]:
+        """Gate and scale the measured mid-band (vocal) swap depth; ``None`` means bypass."""
+        if self.outgoing_profile is None or self.incoming_profile is None:
+            return None, None
+        w_a_out, w_b_in = self._swap_windows(self.bass_swap_window_bars)
+
+        def _score(profile: BandProfile, window: tuple[float, float]) -> float:
+            f_mid = window_fraction(profile, "mid", *window)
+            duty_mid = window_duty(profile, "mid", *window, k=0.5)
+            return smoothstep(f_mid, self.mid_gate_lo, self.mid_gate_hi) * smoothstep(
+                duty_mid, self.mid_duty_lo, self.mid_duty_hi
+            )
+
+        score_a = _score(self.outgoing_profile, w_a_out)
+        score_b = _score(self.incoming_profile, w_b_in)
+        # the weaker side rules: a swap only reads as a handover when both decks carry a mid element
+        depth = self.mid_cap_db * min(score_a, score_b)
+        if abs(depth) < abs(self.mid_bypass_below_db):
+            return None, None
+        return depth, depth
+
+    def _apply_dip_guard(
+        self,
+        eq_plan: EqPlan,
+        *,
+        crossfade_duration: float,
+        cf_start_input: float,
+        ratio: float,
+        swap_at: float,
+        bar_in: float,
+        notch: tuple[float, float],
+    ) -> EqPlan:
+        """Remediate a predicted outside-notch dip: shrink mid depth, then steepen low ramps."""
+        if self.outgoing_profile is None or self.incoming_profile is None:
+            return eq_plan
+        w_a_out, w_b_in = self._swap_windows(self.bass_swap_window_bars)
+        f_a = {
+            band: window_fraction(self.outgoing_profile, band, *w_a_out) for band in BAND_RMS_BANDS
+        }
+        f_b = {
+            band: window_fraction(self.incoming_profile, band, *w_b_in) for band in BAND_RMS_BANDS
+        }
+
+        def dip_db(plan: EqPlan) -> float:
+            return self._predicted_dip_db(
+                plan, crossfade_duration, cf_start_input, ratio, f_a, f_b, notch
+            )
+
+        if dip_db(eq_plan) <= self.max_predicted_dip_db:
+            return eq_plan
+
+        # (1) reduce mid depth toward bypass, in steps, until the dip clears
+        # or mid is fully bypassed
+        shrink_steps = (0.75, 0.5, 0.25, 0.0)
+        for shrink in shrink_steps:
+            candidate = self._scale_mid_depth(eq_plan, shrink)
+            if dip_db(candidate) <= self.max_predicted_dip_db or shrink == 0.0:
+                eq_plan = candidate
+                break
+        if dip_db(eq_plan) <= self.max_predicted_dip_db:
+            return eq_plan
+
+        # (2) steepen the low ramps to the 2-bar floor; endpoints untouched.
+        # This is the last remediation step (never shallow the low depth —
+        # there is no further knob beyond the floor), so its result is
+        # returned whether or not it fully clears the budget.
+        floor_len = self.bass_swap_min_bars * bar_in
+        eq_plan = self._steepen_low_ramps(eq_plan, swap_at, floor_len, ratio, cf_start_input)
+        # the notch narrowed along with the ramp span; keep it in sync so it
+        # still reflects the plan's actual bass-handover window
+        start_in = max(0.0, swap_at - floor_len / 2)
+        self._swap_notch = (start_in, start_in + floor_len)
+        return eq_plan
+
+    def _predicted_dip_db(
+        self,
+        eq_plan: EqPlan,
+        crossfade_duration: float,
+        cf_start_input: float,
+        ratio: float,
+        f_a: dict[str, float],
+        f_b: dict[str, float],
+        notch: tuple[float, float],
+        n_samples: int = 64,
+    ) -> float:
+        """Max plateau-to-valley drop, in dB, of the predicted combined qsin-weighted power."""
+        # qsin weights match the renderer's acrossfade=...:c1=qsin:c2=qsin curve
+        schedules_a = {"low": eq_plan.low_out, "mid": eq_plan.mid_out, "high": eq_plan.high_out}
+        schedules_b = {"low": eq_plan.low_in, "mid": eq_plan.mid_in, "high": eq_plan.high_in}
+        running_max = 0.0
+        max_drop_db = 0.0
+        for i in range(n_samples + 1):
+            t = crossfade_duration * i / n_samples
+            if notch[0] <= t <= notch[1]:
+                continue
+            w_a = np.cos(np.pi / 2 * t / crossfade_duration) ** 2 if crossfade_duration else 1.0
+            w_b = np.sin(np.pi / 2 * t / crossfade_duration) ** 2 if crossfade_duration else 0.0
+            p_a = sum(
+                f_a[band]
+                * 10.0
+                ** (self._gain_at(schedules_a.get(band), t, cf_start_input, ratio, side="A") / 10.0)
+                for band in BAND_RMS_BANDS
+            )
+            p_b = sum(
+                f_b[band]
+                * 10.0
+                ** (self._gain_at(schedules_b.get(band), t, cf_start_input, ratio, side="B") / 10.0)
+                for band in BAND_RMS_BANDS
+            )
+            power = float(w_a * p_a + w_b * p_b)
+            running_max = max(running_max, power)
+            if running_max > 0.0 and power > 0.0:
+                max_drop_db = max(max_drop_db, 10.0 * float(np.log10(running_max / power)))
+        return max_drop_db
+
+    @staticmethod
+    def _gain_at(
+        schedule: ShelfSchedule | None,
+        t: float,
+        cf_start_input: float,
+        ratio: float,
+        *,
+        side: str,
+    ) -> float:
+        """Interpolate a schedule's gain (dB) at rendered overlap time ``t``; ``None`` is 0dB."""
+        if schedule is None:
+            return 0.0
+        tt = cf_start_input + t * ratio if side == "A" else t
+        steps = schedule.steps
+        if tt <= steps[0][0]:
+            return steps[0][1]
+        if tt >= steps[-1][0]:
+            return steps[-1][1]
+        for (t0, g0), (t1, g1) in itertools.pairwise(steps):
+            if t0 <= tt <= t1:
+                frac = (tt - t0) / (t1 - t0) if t1 > t0 else 0.0
+                return g0 + frac * (g1 - g0)
+        return steps[-1][1]
+
+    def _scale_mid_depth(self, eq_plan: EqPlan, shrink: float) -> EqPlan:
+        """Scale the mid schedules' depth by ``shrink`` (fraction to KEEP); bypass below the floor."""
+        if eq_plan.mid_out is None and eq_plan.mid_in is None:
+            return eq_plan
+        source = eq_plan.mid_out or eq_plan.mid_in
+        assert source is not None  # narrowed by the check above
+        depth = source.steps[-1 if eq_plan.mid_out else 0][1]
+        if shrink <= 0.0 or abs(depth * shrink) < abs(self.mid_bypass_below_db):
+            return replace(eq_plan, mid_out=None, mid_in=None)
+        mid_out = eq_plan.mid_out
+        mid_in = eq_plan.mid_in
+        if mid_out is not None:
+            mid_out = replace(mid_out, steps=[(t, g * shrink) for t, g in mid_out.steps])
+        if mid_in is not None:
+            mid_in = replace(mid_in, steps=[(t, g * shrink) for t, g in mid_in.steps])
+        return replace(eq_plan, mid_out=mid_out, mid_in=mid_in)
+
+    @staticmethod
+    def _steepen_low_ramps(
+        eq_plan: EqPlan,
+        swap_at: float,
+        new_len: float,
+        ratio: float,
+        cf_start_input: float,
+    ) -> EqPlan:
+        """Rebuild the low ramps to span ``new_len`` centered on ``swap_at``; endpoint gains unchanged."""
+        if eq_plan.low_out is None and eq_plan.low_in is None:
+            return eq_plan
+        start_in = max(0.0, swap_at - new_len / 2)
+        new_len_input = new_len * ratio
+        swap_at_input = cf_start_input + swap_at * ratio
+        start_out = max(cf_start_input, swap_at_input - new_len_input / 2)
+
+        low_out = eq_plan.low_out
+        if low_out is not None:
+            depth_a = low_out.steps[-1][1]
+            low_out = replace(
+                low_out, steps=[(0.0, 0.0), *db_ramp(start_out, new_len_input, 0.0, depth_a)]
+            )
+        low_in = eq_plan.low_in
+        if low_in is not None:
+            depth_b = low_in.steps[0][1]
+            low_in = replace(
+                low_in, steps=[(0.0, depth_b), *db_ramp(start_in, new_len, depth_b, 0.0)]
+            )
+        return replace(eq_plan, low_out=low_out, low_in=low_in)
