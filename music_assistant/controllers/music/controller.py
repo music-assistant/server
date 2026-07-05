@@ -113,6 +113,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     domain: str = "music"
     config: CoreConfig
+    # Suppress the sync-completion check while start_sync is still scheduling
+    # tasks, so an early-finishing task (e.g. artists) can't fire
+    # MUSIC_SYNC_COMPLETED before the remaining media types are queued.
+    _sync_starting: bool = False
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -129,10 +133,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.recency = RecencyEngine(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
-        # Suppress the sync-completion check while start_sync is still scheduling
-        # tasks, so an early-finishing task (e.g. artists) can't fire
-        # MUSIC_SYNC_COMPLETED before the remaining media types are queued.
-        self._sync_starting = False
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
