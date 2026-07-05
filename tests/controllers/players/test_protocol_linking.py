@@ -7842,3 +7842,35 @@ class TestDerivedProtocolLinking:
 
         assert derived.protocol_parent_id == "up_aabbccddeeff"
         assert "spb_1" in universal._protocol_player_ids
+
+    def test_save_underlying_player_id_persists_and_clears(self, mock_mass: MagicMock) -> None:
+        """Test the derived edge is persisted, cleared when revoked and skipped otherwise."""
+        controller = PlayerController(mock_mass)
+        derived = self._make_derived_player(mock_mass, "spb_1", "ap_1")
+        conf_key = "players/spb_1/values/underlying_player_id"
+        stored: dict[str, Any] = {"players/spb_1": {"values": {}}}
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: stored.get(key, default)
+        )
+        mock_mass.config.set = MagicMock(side_effect=stored.__setitem__)
+
+        # derived player: edge gets persisted
+        controller._save_underlying_player_id(derived)
+        assert stored[conf_key] == "ap_1"
+
+        # edge revoked (e.g. bridge client turned web player): stale value is cleared
+        derived._attr_underlying_player_id = None
+        controller._save_underlying_player_id(derived)
+        assert stored[conf_key] is None
+
+        # nothing persisted and no edge: no write at all
+        mock_mass.config.set.reset_mock()
+        del stored[conf_key]
+        controller._save_underlying_player_id(derived)
+        mock_mass.config.set.assert_not_called()
+
+        # player config gone: never create partial entries
+        derived._attr_underlying_player_id = "ap_1"
+        del stored["players/spb_1"]
+        controller._save_underlying_player_id(derived)
+        mock_mass.config.set.assert_not_called()

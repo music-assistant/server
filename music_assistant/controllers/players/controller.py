@@ -1637,6 +1637,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.player_id in self._players:
             self._players[player.player_id] = player
             player.update_state()
+            # the derived-transport edge may have been set/revoked after the
+            # initial registration (e.g. via a bridge claim)
+            self._save_underlying_player_id(player)
             # Also schedule update when replacing existing player
             self._schedule_update_all_players()
             return

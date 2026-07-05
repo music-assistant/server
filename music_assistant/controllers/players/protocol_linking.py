@@ -1159,14 +1159,17 @@ class ProtocolLinkingMixin:
         Persist the derived-transport edge of a player to config.
 
         Allows the edge to be resolved (e.g. by the config UI) even while the
-        player is not registered. No-op for players without an underlying player.
+        player is not registered. Clears a previously persisted edge when the
+        player is no longer derived (e.g. a bridge client turned web player).
         """
-        if not player.underlying_player_id:
+        # Only save if the player config still exists to avoid creating partial entries
+        if not self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}"):
             return
-        self.mass.config.set(
-            f"{CONF_PLAYERS}/{player.player_id}/values/{CONF_UNDERLYING_PLAYER_ID}",
-            player.underlying_player_id,
-        )
+        conf_key = f"{CONF_PLAYERS}/{player.player_id}/values/{CONF_UNDERLYING_PLAYER_ID}"
+        if player.underlying_player_id:
+            self.mass.config.set(conf_key, player.underlying_player_id)
+        elif self.mass.config.get(conf_key) is not None:
+            self.mass.config.set(conf_key, None)
 
     def _get_cached_protocol_parent_id(self, protocol_player_id: str) -> str | None:
         """Get cached parent ID for a protocol player from config."""
