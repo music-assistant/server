@@ -268,13 +268,13 @@ class PlaylistMetadataProvider(MetadataProvider):
                 int(min_threshold_val) if isinstance(min_threshold_val, int | float) else 10
             )
             max_genre_count = int(max_genre_val) if isinstance(max_genre_val, int | float) else 3
-            threshold = track_count * (min_threshold_pct / 100)
+            required_count = math.ceil(track_count * min_threshold_pct / 100)
 
             # Get most common genres that meet the threshold
             detected = {
                 genre
                 for genre, count in genre_counter.most_common(max_genre_count)
-                if count >= threshold
+                if count >= required_count
             }
 
             return detected if detected else None
