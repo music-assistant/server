@@ -470,7 +470,8 @@ class PodcastConverter(BaseConverter):
             return await self._convert_radio_show(source_obj)
         if isinstance(source_obj, RadioClip) or self.context.force_type is Track:
             return await self._convert_radio_clip(source_obj)
-        return cast("MAPodcast | MAPodcastEpisode | Track", source_obj)
+        self.logger.error(f"Failed to convert podcast object {type(source_obj)}: {source_obj}")
+        raise ConversionError(f"Browse conversion failed: {source_obj}")
 
     async def _convert_podcast(self, podcast: Podcast | RadioSeries) -> MAPodcast:
         name = self._get_attr(podcast, "titles.primary") or self._get_attr(podcast, "title")
