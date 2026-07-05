@@ -84,7 +84,11 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
+from music_assistant.helpers.util import (
+    format_ip_for_url,
+    get_ip_addresses,
+    sanitize_http_header_value,
+)
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
@@ -551,9 +555,7 @@ class StreamsController(CoreController):
                 head_fmt = ContentType.WAV.value
             headers = {
                 **DEFAULT_STREAM_HEADERS,
-                "icy-name": queue_item.name.replace("\n", " ")
-                .replace("\r", " ")
-                .replace("\t", " "),
+                "icy-name": sanitize_http_header_value(queue_item.name),
                 "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
                 "Content-Type": get_mime_type(head_fmt),
             }
@@ -641,8 +643,10 @@ class StreamsController(CoreController):
             )
 
             # prepare request, add some DLNA/UPNP compatible headers
-            # icy-name is sanitized to avoid a "Potential header injection attack" by aiohttp
+            # icy-name is sanitized (all control chars, not just newlines) to avoid a
+            # "Potential header injection attack" ValueError by aiohttp
             # see https://github.com/music-assistant/support/issues/4913
+            # and https://github.com/music-assistant/support/issues/5791
             # use realtime DLNA flags for radio (sender-paced) since the source delivers slowly
             dlna_features = (
                 DLNA_CONTENT_FEATURES_REALTIME
@@ -651,9 +655,7 @@ class StreamsController(CoreController):
             )
             headers = {
                 **DEFAULT_STREAM_HEADERS,
-                "icy-name": queue_item.name.replace("\n", " ")
-                .replace("\r", " ")
-                .replace("\t", " "),
+                "icy-name": sanitize_http_header_value(queue_item.name),
                 "contentFeatures.dlna.org": dlna_features,
                 "Content-Type": get_mime_type(output_format.output_format_str),
             }
