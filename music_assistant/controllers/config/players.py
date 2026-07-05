@@ -533,6 +533,12 @@ class PlayerConfigMixin:
             self.set(f"{CONF_PLAYERS}/{player_id}/{key}", value)
         else:
             self.set(f"{CONF_PLAYERS}/{player_id}/values/{key}", value)
+            # also update the player's in-place config copy so object-local
+            # value reads stay in sync with raw writes
+            if (player := self.mass.players.get_player(player_id, False)) and (
+                entry := player.config.values.get(key)
+            ):
+                entry.value = value
 
     async def _get_player_config_entries(
         self,

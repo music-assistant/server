@@ -208,7 +208,11 @@ class MusicAssistant:
 
         # setup all core controllers in parallel
         async def setup_controller(controller: CoreController) -> None:
-            await controller.setup(await self.config.get_core_config(controller.domain))
+            config = await self.config.get_core_config(controller.domain)
+            # keep the active config on the controller so internal code can read
+            # config values without rebuilding the config entries
+            controller.config = config
+            await controller.setup(config)
             controller.initialized.set()
 
         # set up the translations catalog first so it is ready before any object is serialized
@@ -236,7 +240,9 @@ class MusicAssistant:
 
         # load webserver/api now that the core controllers are setup and ready to be used
         self._register_api_commands()
-        await self.webserver.setup(await self.config.get_core_config("webserver"))
+        webserver_config = await self.config.get_core_config("webserver")
+        self.webserver.config = webserver_config
+        await self.webserver.setup(webserver_config)
         await setup_controller(self.discovery)
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()

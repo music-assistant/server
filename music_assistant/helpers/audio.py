@@ -23,8 +23,6 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
-    CONF_VOLUME_NORMALIZATION_RADIO,
-    CONF_VOLUME_NORMALIZATION_TRACKS,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
@@ -34,7 +32,6 @@ from .ffmpeg import get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -712,14 +709,15 @@ def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
 
 
 def get_normalization_mode(
-    core_config: CoreConfig,
+    preference: VolumeNormalizationMode,
     volume_normalization_enabled: bool,
     streamdetails: StreamDetails,
 ) -> VolumeNormalizationMode:
     """
     Get the volume normalization mode for a given queue and stream.
 
-    :param core_config: The streams core config (holds the radio/tracks normalization preferences).
+    :param preference: The configured normalization preference for the stream's media type
+        (tracks or radio), from the streams core config.
     :param volume_normalization_enabled: Whether normalization is enabled for the queue, already
         resolved from the per-queue setting and its global (queue controller) fallback.
     :param streamdetails: The stream to evaluate.
@@ -733,16 +731,6 @@ def get_normalization_mode(
     if streamdetails.target_loudness is None:
         # no target loudness set, disable normalization
         return VolumeNormalizationMode.DISABLED
-    # work out preference for track or radio
-    preference = VolumeNormalizationMode(
-        str(
-            core_config.get_value(
-                CONF_VOLUME_NORMALIZATION_RADIO
-                if streamdetails.media_type == MediaType.RADIO
-                else CONF_VOLUME_NORMALIZATION_TRACKS,
-            ),
-        ),
-    )
 
     # handle no measurement available but fallback to dynamic mode is allowed
     if streamdetails.loudness is None and preference == VolumeNormalizationMode.FALLBACK_DYNAMIC:

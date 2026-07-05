@@ -64,9 +64,8 @@ class CoreConfigMixin:
             raw_conf = {}
         if "domain" not in raw_conf:
             raw_conf = {**raw_conf, "domain": domain}
-        # build the schema straight from the controller (no dynamic UI options): CoreConfig.parse
-        # stamps the translation owner itself, and this path must stay cheap because it runs on the
-        # config-value fall-through (get_core_config_value), a hot path on enqueue.
+        # build the schema straight from the controller (no dynamic UI options):
+        # CoreConfig.parse stamps the translation owner itself
         controller: CoreController = getattr(self.mass, domain)
         config_entries = list(await controller.get_config_entries() + DEFAULT_CORE_CONFIG_ENTRIES)
         return cast("CoreConfig", CoreConfig.parse(config_entries, raw_conf))
@@ -238,3 +237,8 @@ class CoreConfigMixin:
             # create base object first if needed
             self.set(f"{CONF_CORE}/{core_module}", CoreConfig({}, core_module).to_raw())
         self.set(f"{CONF_CORE}/{core_module}/values/{key}", value)
+        # also update the controller's in-place config copy (if any) so
+        # object-local value reads stay in sync with raw writes
+        controller = getattr(self.mass, core_module, None)
+        if (config := getattr(controller, "config", None)) and (entry := config.values.get(key)):
+            entry.value = value
