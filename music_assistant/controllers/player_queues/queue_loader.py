@@ -613,7 +613,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
                     else:
                         config_key = f"default_enqueue_option_{media_item.media_type.value}"
-                    config_value = cast("str", self.config.get_value(config_key))
+                    config_value = self.get_config_value(config_key, return_type=str)
                     option = QueueOption(config_value)
                     if option == QueueOption.REPLACE:
                         self.clear(queue_id, skip_stop=True)
