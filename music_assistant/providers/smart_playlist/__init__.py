@@ -727,8 +727,7 @@ class SmartPlaylistProvider(PluginProvider):
                     and t.metadata.popularity >= rules.min_popularity
                 ]
 
-            # Apply explicit filter in library mode
-            tracks = _filter_by_explicit(tracks, rules.explicit)
+            # Explicit filter is now handled at SQL level via _get_library_tracks()
 
             if rules.year_from is not None or rules.year_to is not None:
                 tracks = [
@@ -1101,6 +1100,7 @@ class SmartPlaylistProvider(PluginProvider):
             return await self._get_library_tracks(
                 favorite=None,
                 genre_ids=None,
+                explicit=rules.explicit,
                 limit=min(rules.limit * 3, 2000),
                 user_provider_filter=user_provider_filter,
             )
@@ -1110,6 +1110,7 @@ class SmartPlaylistProvider(PluginProvider):
         base_tracks = await self._get_library_tracks(
             favorite=favorite,
             genre_ids=genre_ids,
+            explicit=rules.explicit,
             limit=min(rules.limit * 5, 2000),
             user_provider_filter=user_provider_filter,
         )
@@ -1152,7 +1153,10 @@ class SmartPlaylistProvider(PluginProvider):
 
         if rules.favorites_only:
             for track in await self._get_library_tracks(
-                favorite=True, limit=fetch_limit, user_provider_filter=user_provider_filter
+                favorite=True,
+                explicit=rules.explicit,
+                limit=fetch_limit,
+                user_provider_filter=user_provider_filter,
             ):
                 if track.uri:
                     track_sets[track.uri] = track
@@ -1160,6 +1164,7 @@ class SmartPlaylistProvider(PluginProvider):
         if rules.genre_ids:
             for track in await self._get_library_tracks(
                 genre_ids=rules.genre_ids,
+                explicit=rules.explicit,
                 limit=fetch_limit,
                 user_provider_filter=user_provider_filter,
             ):
@@ -1168,7 +1173,9 @@ class SmartPlaylistProvider(PluginProvider):
 
         if rules.artist_ids or rules.album_ids:
             all_tracks = await self._get_library_tracks(
-                limit=min(fetch_limit * 2, FETCH_LIMIT), user_provider_filter=user_provider_filter
+                explicit=rules.explicit,
+                limit=min(fetch_limit * 2, FETCH_LIMIT),
+                user_provider_filter=user_provider_filter,
             )
             if rules.artist_ids:
                 artist_id_set = set(rules.artist_ids)
@@ -1199,7 +1206,9 @@ class SmartPlaylistProvider(PluginProvider):
         )
         if no_filters:
             for track in await self._get_library_tracks(
-                limit=fetch_limit, user_provider_filter=user_provider_filter
+                explicit=rules.explicit,
+                limit=fetch_limit,
+                user_provider_filter=user_provider_filter,
             ):
                 if track.uri:
                     track_sets[track.uri] = track
@@ -1210,6 +1219,7 @@ class SmartPlaylistProvider(PluginProvider):
         self,
         favorite: bool | None = None,
         genre_ids: list[int] | None = None,
+        explicit: bool | None = None,
         limit: int = 500,
         user_provider_filter: list[str] | None = None,
     ) -> list[Track]:
@@ -1217,6 +1227,7 @@ class SmartPlaylistProvider(PluginProvider):
         return await self.mass.music.tracks.library_items(
             favorite=favorite,
             genre=genre_ids,
+            explicit=explicit,
             limit=limit,
             order_by="random",
             provider=user_provider_filter,
