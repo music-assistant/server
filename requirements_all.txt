@@ -40,7 +40,7 @@ getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.2.3
 hue-entertainment==0.1.2
-huggingface-hub==1.12.0
+huggingface-hub==1.22.0
 ibroadcastaio==0.8.0
 ifaddr==0.2.0
 liblistenbrainz==0.7.0
