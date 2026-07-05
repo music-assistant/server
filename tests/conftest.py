@@ -4,16 +4,33 @@ import asyncio
 import logging
 import pathlib
 import threading
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
+from music_assistant_models import helpers as models_helpers
 from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.mass import MusicAssistant
+
+
+@pytest.fixture(autouse=True)
+def isolate_models_global_cache() -> Generator[None]:
+    """
+    Reset the models package's process-global cache between tests.
+
+    A full server boot populates module-level globals in music_assistant_models
+    (e.g. ``available_providers``, which drives ``MediaItem.available``). Left in
+    place, they leak into later tests in the same pytest process and change item
+    availability depending on test ordering. Note that an empty cache falls back
+    to permissive defaults, so tests sharing a broader-scoped server instance are
+    unaffected by the per-test clear.
+    """
+    yield
+    models_helpers._global_cache.clear()
 
 
 @pytest.fixture(name="caplog")

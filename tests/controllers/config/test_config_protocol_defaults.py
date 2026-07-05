@@ -18,7 +18,7 @@ import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderType
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
@@ -50,6 +50,14 @@ class _TestProvider:
         self.manifest = MagicMock()
         self.manifest.domain = domain
         self.manifest.name = self.name
+        self.manifest.type = ProviderType.PLAYER
+        # registered in mass._providers, so the stand-in must survive the provider
+        # bookkeeping that mass.stop()/unload_provider applies to every provider
+        self.type = ProviderType.PLAYER
+        self.players: list[Player] = []
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload the provider (nothing to clean up)."""
 
 
 class _TestPlayer(Player):
