@@ -816,6 +816,10 @@ class StorytelHelper:
             for item in items:
                 if item.get("resultType") != "book":
                     continue
+                item_id = str(item.get("id") or "").strip()
+                if not item_id:
+                    self.logger.debug("Skipping recommendation item with missing id")
+                    continue
                 task_results.append(tg.create_task(self._parse_search_audiobook_item(item)))
 
         for task in task_results:
