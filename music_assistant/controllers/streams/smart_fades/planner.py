@@ -104,15 +104,20 @@ class SmartCrossFadePlanner(TransitionPlanner):
 
     # reciprocal bass-swap depth gate: each side's low-band power fraction over
     # the other deck's window is smoothstepped across this corridor to scale
-    # its own kill depth; below eq_bypass_below_db the schedule is dropped
+    # its own kill depth; below eq_bypass_below_db the schedule is dropped.
+    # Corridor from published LTAS integrations over these band edges: dance
+    # masters carry ~0.34-0.45 of their power below 120Hz, mean pop ~0.14,
+    # acoustic genres less (Elowsson & Friberg 2017; Pestana et al. 2013)
     low_gate_lo: float = 0.10
     low_gate_hi: float = 0.25
     eq_bypass_below_db: float = -6.0
 
     # reciprocal high-ease depth gate: same reciprocal-window shape as the bass
-    # swap, but on the high band (4kHz+ power fractions are intrinsically
-    # small, hence the low corridor); a deck whose OWN window high level falls
-    # below high_own_side_floor of its own reference gets no shelf at all
+    # swap, but on the high band. Mean-music LTAS integrates to ~0.02 in
+    # 4-11kHz (Elowsson & Friberg 2017), so lo = an average track earns no
+    # duck and hi = unmistakably brighter than average earns the full ease.
+    # A deck whose OWN window high level falls below high_own_side_floor of
+    # its own reference gets no shelf at all
     high_gate_lo: float = 0.02
     high_gate_hi: float = 0.06
     high_own_side_floor: float = 0.25
@@ -130,9 +135,11 @@ class SmartCrossFadePlanner(TransitionPlanner):
     # unlock a swap over an otherwise instrumental track
     mid_freq: int = 1200
     mid_width_oct: float = 2.5
-    # corpus-tabled placement in the measured gap between instrumental (<=0.15)
-    # and vocal (>=0.26) mid fractions; the panel prior overshot because vocal
-    # fundamentals sit below 400 Hz
+    # Vocal fundamentals sit below 400Hz (~90% of voice power is under 1kHz,
+    # Sundberg-line voice research), so vocal-forward mixes integrate to only
+    # ~0.25-0.45 mid fraction vs ~0.10-0.15 for instrumental dance material
+    # (LTAS: Elowsson & Friberg 2017; Pestana et al. 2013). The corridor sits
+    # in that gap; absolute placement verified on our unweighted pipeline
     mid_gate_lo: float = 0.18
     mid_gate_hi: float = 0.30
     mid_duty_lo: float = 0.60
