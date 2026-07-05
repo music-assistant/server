@@ -809,7 +809,11 @@ class Adaptor:
 
         for converter in converters:
             if converter.can_convert(source_obj):
-                stream_details = await converter.get_stream_details(source_obj)
+                try:
+                    stream_details = await converter.get_stream_details(source_obj)
+                except AttributeError as e:
+                    self.logger.error(f"Error converting object: {e!s}")
+                    return None
                 self.provider.logger.debug(
                     f"Successfully converted {type(source_obj).__name__}"
                     f" to {type(stream_details).__name__}"
@@ -870,7 +874,11 @@ class Adaptor:
         for converter in converters:
             self.logger.debug(f"Checking if converter {converter} can convert {type(source_obj)}")
             if converter.can_convert(source_obj):
-                result = await converter.convert(source_obj)
+                try:
+                    result = await converter.convert(source_obj)
+                except AttributeError as e:
+                    self.logger.error(f"Error converting object: {e!s}")
+                    return None
                 if context.force_type:
                     assert type(result) is context.force_type, (
                         f"Forced type to {context.force_type} but received {type(result)} "
