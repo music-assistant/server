@@ -330,6 +330,7 @@ class Storytel(MusicProvider):
         if not bm:
             self.logger.debug("No bookmark found for %s", item_id)
             return False, 0, None
+        # Storytel returns the position in milliseconds.
         pos = int(bm.get("position") or 0)
         updated_ts = bm.get("updatedTime")
         bookmark_updated_dt: datetime | None = None
