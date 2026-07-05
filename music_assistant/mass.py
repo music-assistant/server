@@ -208,7 +208,11 @@ class MusicAssistant:
 
         # setup all core controllers in parallel
         async def setup_controller(controller: CoreController) -> None:
-            await controller.setup(await self.config.get_core_config(controller.domain))
+            config = await self.config.get_core_config(controller.domain)
+            # keep the active config on the controller so internal code can read
+            # config values without rebuilding the config entries
+            controller.config = config
+            await controller.setup(config)
             controller.initialized.set()
 
         # set up the translations catalog first so it is ready before any object is serialized
@@ -236,7 +240,9 @@ class MusicAssistant:
 
         # load webserver/api now that the core controllers are setup and ready to be used
         self._register_api_commands()
-        await self.webserver.setup(await self.config.get_core_config("webserver"))
+        webserver_config = await self.config.get_core_config("webserver")
+        self.webserver.config = webserver_config
+        await self.webserver.setup(webserver_config)
         await setup_controller(self.discovery)
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
@@ -783,9 +789,7 @@ class MusicAssistant:
                 self.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
                 return
             prov_conf.last_error = _provider_error_from_exc(exc)
-            self.config.set(
-                f"{CONF_PROVIDERS}/{instance_id}/last_error", prov_conf.last_error.to_dict()
-            )
+            self.config.update_provider_last_error(instance_id, prov_conf.last_error)
             LOGGER.warning(
                 "Provider(instance) %s can not run on this system: %s",
                 prov_conf.name or prov_conf.instance_id,
@@ -796,9 +800,7 @@ class MusicAssistant:
             # if loading failed, we store the error in the config object
             # so we can show something useful to the user
             prov_conf.last_error = _provider_error_from_exc(exc)
-            self.config.set(
-                f"{CONF_PROVIDERS}/{instance_id}/last_error", prov_conf.last_error.to_dict()
-            )
+            self.config.update_provider_last_error(instance_id, prov_conf.last_error)
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
@@ -861,7 +863,7 @@ class MusicAssistant:
     async def unload_provider_with_error(self, instance_id: str, error: str) -> None:
         """Unload a provider when it got into trouble which needs user interaction."""
         prov_error = ProviderError(error_code=999, message=error)
-        self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", prov_error.to_dict())
+        self.config.update_provider_last_error(instance_id, prov_error)
         await self.unload_provider(instance_id)
 
     async def run_provider_discovery(self, instance_id: str) -> None:

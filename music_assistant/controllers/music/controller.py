@@ -2260,7 +2260,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         async def run_sync() -> None:
             try:
                 async with self._sync_lock:
-                    await provider.sync_library(media_type)
+                    # suppress per-item events during sync; a large library would otherwise
+                    # emit one (serialized per client) for every item. Subscribers refresh
+                    # on MUSIC_SYNC_COMPLETED and track progress via TASKS_UPDATED instead.
+                    token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+                    try:
+                        await provider.sync_library(media_type)
+                    finally:
+                        SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
             finally:
                 self.mass.call_later(
                     0,

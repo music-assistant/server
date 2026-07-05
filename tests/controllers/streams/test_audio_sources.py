@@ -768,7 +768,9 @@ class TestAudioSourceElapsedTimeOverride:
         mock_mass.player_queues.get = MagicMock(return_value=queue)
 
         protocol_player.update_state(signal_event=False)
-        player.update_state(signal_event=False)
+        # refresh: the mocked queue/protocol player are cross-source state and the
+        # production fan-out (which marks the player dirty) is suppressed here
+        player.refresh_state(signal_event=False)
 
         # The override is layered AFTER protocol/sync resolution, so it wins
         assert player.state.elapsed_time == 42

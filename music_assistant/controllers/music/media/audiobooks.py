@@ -112,6 +112,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         without_collections: bool | None = None,
         **kwargs: Any,
     ) -> list[Audiobook]:
@@ -144,6 +145,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            played_only=played_only,
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:

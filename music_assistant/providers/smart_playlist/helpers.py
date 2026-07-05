@@ -128,6 +128,10 @@ class SmartPlaylistRules:
     album_types: list[str] = field(default_factory=list)
     excluded_album_types: list[str] = field(default_factory=list)
     explicit: bool | None = None
+    min_duration: int | None = None
+    max_duration: int | None = None
+    last_played_before_value: int | None = None
+    last_played_before_unit: str | None = None  # "hours", "days", "weeks", "months"
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -175,6 +179,10 @@ class SmartPlaylistRules:
             "album_types": self.album_types,
             "excluded_album_types": self.excluded_album_types,
             "explicit": self.explicit,
+            "min_duration": self.min_duration,
+            "max_duration": self.max_duration,
+            "last_played_before_value": self.last_played_before_value,
+            "last_played_before_unit": self.last_played_before_unit,
         }
 
     @classmethod
@@ -227,6 +235,12 @@ class SmartPlaylistRules:
                 data.get("excluded_album_types"), "excluded_album_types"
             ),
             explicit=_coerce_optional_bool(data.get("explicit"), "explicit"),
+            min_duration=_coerce_optional_int(data.get("min_duration"), "min_duration"),
+            max_duration=_coerce_optional_int(data.get("max_duration"), "max_duration"),
+            last_played_before_value=_coerce_optional_int(
+                data.get("last_played_before_value"), "last_played_before_value"
+            ),
+            last_played_before_unit=data.get("last_played_before_unit"),
         )
 
     def human_readable(self) -> str:
@@ -274,17 +288,43 @@ class SmartPlaylistRules:
             parts.append(f"Excl. album types: {', '.join(self.excluded_album_types)}")
         if self.min_popularity is not None:
             parts.append(f"Min. popularity: {self.min_popularity}")
-        if self.year_from is not None or self.year_to is not None:
-            if self.year_from is not None and self.year_to is not None:
-                parts.append(f"Year: {self.year_from}-{self.year_to}")
-            elif self.year_from is not None:
-                parts.append(f"Year: from {self.year_from}")
-            else:
-                parts.append(f"Year: to {self.year_to}")
+        if year_range := self._format_year_range():
+            parts.append(year_range)
+        if duration_range := self._format_duration_range():
+            parts.append(duration_range)
+        if last_played_str := self._format_last_played():
+            parts.append(last_played_str)
         if not parts:
             return "No rules (all library tracks)"
         connector = f" {self.logic} "
         return connector.join(parts)
+
+    def _format_year_range(self) -> str | None:
+        """Format year filter as human-readable string."""
+        if self.year_from is not None and self.year_to is not None:
+            return f"Year: {self.year_from}-{self.year_to}"
+        if self.year_from is not None:
+            return f"Year: from {self.year_from}"
+        if self.year_to is not None:
+            return f"Year: to {self.year_to}"
+        return None
+
+    def _format_duration_range(self) -> str | None:
+        """Format duration filter as human-readable string."""
+        if self.min_duration is not None and self.max_duration is not None:
+            return f"Duration: {self.min_duration}-{self.max_duration}s"
+        if self.min_duration is not None:
+            return f"Duration: ≥{self.min_duration}s"
+        if self.max_duration is not None:
+            return f"Duration: ≤{self.max_duration}s"
+        return None
+
+    def _format_last_played(self) -> str | None:
+        """Format last played filter as human-readable string."""
+        if self.last_played_before_value is None or self.last_played_before_unit is None:
+            return None
+        unit_display = self.last_played_before_unit  # hours, days, weeks, months
+        return f"Not played in {self.last_played_before_value} {unit_display}"
 
 
 def validate_rules(rules: SmartPlaylistRules) -> None:
@@ -321,6 +361,37 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
         if at not in valid_album_types:
             msg = f"Invalid excluded_album_types value: {at!r}. Must be one of {sorted(valid_album_types)}"
             raise InvalidDataError(msg)
+    if rules.min_duration is not None and rules.min_duration < 0:
+        msg = f"min_duration must be >= 0, got {rules.min_duration}"
+        raise InvalidDataError(msg)
+    if rules.max_duration is not None and rules.max_duration < 0:
+        msg = f"max_duration must be >= 0, got {rules.max_duration}"
+        raise InvalidDataError(msg)
+    if (
+        rules.min_duration is not None
+        and rules.max_duration is not None
+        and rules.min_duration > rules.max_duration
+    ):
+        msg = f"min_duration must be <= max_duration, got {rules.min_duration}>{rules.max_duration}"
+        raise InvalidDataError(msg)
+
+    # Validate last_played fields
+    if (rules.last_played_before_value is None) != (rules.last_played_before_unit is None):
+        msg = (
+            "last_played_before_value and last_played_before_unit must both be set or both be None"
+        )
+        raise InvalidDataError(msg)
+    if rules.last_played_before_value is not None and rules.last_played_before_value < 1:
+        msg = f"last_played_before_value must be >= 1, got {rules.last_played_before_value}"
+        raise InvalidDataError(msg)
+    if rules.last_played_before_unit is not None and rules.last_played_before_unit not in (
+        "hours",
+        "days",
+        "weeks",
+        "months",
+    ):
+        msg = f"last_played_before_unit must be hours/days/weeks/months, got {rules.last_played_before_unit}"
+        raise InvalidDataError(msg)
 
 
 async def read_json(path: str) -> dict[str, Any]:

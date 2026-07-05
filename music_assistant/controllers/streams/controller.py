@@ -49,6 +49,7 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
+    CONF_PLAYER_QUEUES,
     CONF_PUBLISH_IP,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -213,7 +214,7 @@ class StreamsController(CoreController):
             if self.smart_fades_available
             else CrossfadeMode.STANDARD_CROSSFADE
         )
-        mode = self.mass.config.get_raw_player_queue_config_value(
+        mode = self.mass.config.get_effective_player_queue_config_value(
             queue.queue_id, CONF_CROSSFADE_MODE, default_mode
         )
         if mode == CrossfadeMode.SMART_CROSSFADE and self.smart_fades_available:
@@ -507,7 +508,8 @@ class StreamsController(CoreController):
         if not (queue := self.mass.player_queues.get(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         session_id = request.match_info["session_id"]
-        if queue.session_id and session_id != queue.session_id:
+        pq_data = self.mass.player_queues.queue_data(queue.queue_id)
+        if pq_data.session_id and session_id != pq_data.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
@@ -658,9 +660,7 @@ class StreamsController(CoreController):
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
-            http_profile = await self.mass.config.get_player_config_value(
-                player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-            )
+            http_profile = cast("str", player.config.get_value(CONF_HTTP_PROFILE, "default"))
             if http_profile == "forced_content_length" and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -687,9 +687,10 @@ class StreamsController(CoreController):
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
-                # fallback matches CONF_ENTRY_CROSSFADE_DURATION's default
-                standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
-                    queue.queue_id, CONF_CROSSFADE_DURATION, 8
+                # crossfade duration is a global (queue controller) setting; fallback matches
+                # CONF_ENTRY_CROSSFADE_DURATION's default
+                standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                    CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
                 )
             if (
                 crossfade_mode != CrossfadeMode.DISABLED
@@ -904,9 +905,7 @@ class StreamsController(CoreController):
             headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-        )
+        http_profile = cast("str", player.config.get_value(CONF_HTTP_PROFILE, "default"))
         if http_profile == "forced_content_length":
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -1006,8 +1005,11 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        http_profile = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
+        mass_player = self.mass.players.get_player(player_id)
+        http_profile = (
+            cast("str", mass_player.config.get_value(CONF_HTTP_PROFILE, "default"))
+            if mass_player
+            else "default"
         )
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,

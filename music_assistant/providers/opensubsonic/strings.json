@@ -28,10 +28,6 @@
       "label": "Enable Legacy Auth",
       "description": "Enable OpenSubsonic \"legacy\" auth support"
     },
-    "override_transcode_offest": {
-      "label": "Force Player Provider Seek",
-      "description": "Some Subsonic implementations advertise that they support seeking when they do not always. If seeking does not work for you, enable this."
-    },
     "recommend_favorites": {
       "label": "Recommend Favorites",
       "description": "Should favorited (starred) items be included as recommendations."

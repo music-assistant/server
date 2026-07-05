@@ -198,9 +198,8 @@ class Provider:
 
     def _update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
         """Update a config value."""
+        # the config controller also updates the cached copy within this provider instance
         self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
-        # also update the cached copy within the provider instance
-        self.config.values[key].value = value
 
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
         """Set log level from config."""

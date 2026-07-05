@@ -12,7 +12,7 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import CONF_PLAYER_QUEUES
+from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_GLOBAL
 from music_assistant.controllers.config.constants import (
     PLAYER_QUEUE_CONFIG_OWNER,
     _ConfigValueT,
@@ -102,6 +102,27 @@ class PlayerQueueConfigMixin:
             "ConfigValueType",
             self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}/values/{key}", default),
         )
+
+    def get_effective_player_queue_config_value(
+        self, queue_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return the effective queue config value, following the global (queue controller) value.
+
+        A per-queue value of "global" (or unset) resolves to the matching value on the Player Queues
+        core controller, so a queue can either follow the global default or override it — mirroring
+        the log_level "GLOBAL" pattern.
+
+        :param queue_id: The queue to read the value for.
+        :param key: The config key.
+        :param default: The global (queue-controller) default to fall back to when the value is
+            stored on neither the queue nor the core config.
+        """
+        value = self.get_raw_player_queue_config_value(queue_id, key, CONF_VALUE_GLOBAL)
+        if value in (CONF_VALUE_GLOBAL, None):
+            # self is the ConfigController; go via mass.config for the typed (overloaded) accessor
+            return self.mass.config.get_raw_core_config_value(CONF_PLAYER_QUEUES, key, default)
+        return value
 
     @api_command("config/player_queues/save", required_role="admin")
     async def save_player_queue_config(

@@ -55,9 +55,15 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_FLOW_MODE_SAMPLE_RATE,
     CONF_OUTPUT_CHANNELS,
+    CONF_PLAYER_QUEUES,
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+    CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
+    CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
+    CONF_VOLUME_NORMALIZATION_TRACKS,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -255,9 +261,9 @@ class StreamsAudio:
             assert media_item is not None  # for type checking
             preferred_providers: list[str] = []
             if (
-                (queue := mass.player_queues.get(queue_item.queue_id))
-                and queue.userid
-                and (playback_user := await mass.webserver.auth.get_user(queue.userid))
+                (pq_data := mass.player_queues.queue_data_or_none(queue_item.queue_id))
+                and pq_data.userid
+                and (playback_user := await mass.webserver.auth.get_user(pq_data.userid))
                 and playback_user.provider_filter
             ):
                 # handle steering into user preferred providerinstance
@@ -353,10 +359,8 @@ class StreamsAudio:
         streamdetails.fade_in = fade_in
 
         streamdetails.prefer_album_loudness = prefer_album_loudness
-        queue_settings = mass.config.get_player_queue_config(streamdetails.queue_id)
-        core_config = await mass.config.get_core_config("streams")
         conf_volume_normalization_target = float(
-            str(core_config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
+            str(mass.streams.config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
         )
         # guard against invalid volume normalization values
         # range and default_value are guaranteed to be set for this constant
@@ -374,8 +378,16 @@ class StreamsAudio:
                 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value,
             )
         streamdetails.target_loudness = conf_volume_normalization_target
+        volume_normalization_enabled = (
+            mass.config.get_effective_player_queue_config_value(
+                streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
+            )
+            != CONF_VALUE_DISABLED
+        )
         streamdetails.volume_normalization_mode = get_normalization_mode(
-            core_config, queue_settings, streamdetails
+            self._get_volume_normalization_preference(streamdetails),
+            volume_normalization_enabled,
+            streamdetails,
         )
 
         # attach the DSP details of all group members
@@ -1503,10 +1515,16 @@ class StreamsAudio:
             # re-evaluate normalization mode: the background loudness analyzer may have
             # updated streamdetails.loudness since get_stream_details was called
             if streamdetails.queue_id:
-                core_config = await self.mass.config.get_core_config("streams")
-                queue_settings = self.mass.config.get_player_queue_config(streamdetails.queue_id)
+                volume_normalization_enabled = (
+                    self.mass.config.get_effective_player_queue_config_value(
+                        streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
+                    )
+                    != CONF_VALUE_DISABLED
+                )
                 streamdetails.volume_normalization_mode = get_normalization_mode(
-                    core_config, queue_settings, streamdetails
+                    self._get_volume_normalization_preference(streamdetails),
+                    volume_normalization_enabled,
+                    streamdetails,
                 )
 
         # handle volume normalization
@@ -1523,9 +1541,7 @@ class StreamsAudio:
                 if streamdetails.media_type == MediaType.TRACK
                 else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO
             )
-            gain_value = await self.mass.config.get_core_config_value(
-                "streams", config_key, default=0.0, return_type=float
-            )
+            gain_value = float(str(self.mass.streams.config.get_value(config_key, 0.0)))
             gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
@@ -1614,7 +1630,7 @@ class StreamsAudio:
                     >= streamdetails.duration - 60
                 ):
                     next_buffer_triggered = True
-                    self.mass.player_queues._prepare_next_audio_buffer(queue_item.queue_id)
+                    self.mass.player_queues.prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
             # if we received no audio and the buffer has a producer error,
@@ -2021,10 +2037,11 @@ class StreamsAudio:
         # (rapid track switch, sync-group reform, dynamic leader handoff) the
         # snapshot will no longer match and we exit cleanly on the next yield or
         # playlog append — preventing two producers from writing to the same
-        # queue.flow_mode_stream_log.
-        flow_session_id = queue.session_id
+        # pq_data.flow_mode_stream_log.
+        pq_data = self.mass.player_queues.queue_data(queue.queue_id)
+        flow_session_id = pq_data.session_id
         queue.flow_mode = True
-        queue.flow_mode_stream_log = []
+        pq_data.flow_mode_stream_log = []
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
             return
@@ -2035,9 +2052,10 @@ class StreamsAudio:
             standard_crossfade_duration = 0
         else:
             crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
-            # fallback matches CONF_ENTRY_CROSSFADE_DURATION's default
-            standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 8
+            # crossfade duration is a global (queue controller) setting; fallback matches
+            # CONF_ENTRY_CROSSFADE_DURATION's default
+            standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
         flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
@@ -2062,7 +2080,7 @@ class StreamsAudio:
 
         def _superseded() -> bool:
             """Return True if a newer stream session has taken over this queue."""
-            return queue.session_id != flow_session_id
+            return pq_data.session_id != flow_session_id
 
         while True:
             # bail out early if a newer producer has taken over this queue,
@@ -2073,7 +2091,7 @@ class StreamsAudio:
                     "- exiting before next track",
                     queue.display_name,
                     flow_session_id,
-                    queue.session_id,
+                    pq_data.session_id,
                 )
                 return
             # get (next) queue item to stream
@@ -2175,7 +2193,7 @@ class StreamsAudio:
                 )
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
-            queue.flow_mode_stream_log.append(play_log_entry)
+            pq_data.flow_mode_stream_log.append(play_log_entry)
 
             bytes_written = 0
             crossfade_buffer = bytearray()
@@ -2585,6 +2603,23 @@ class StreamsAudio:
             await writer.wait_closed()
 
     # --- Private methods ---
+
+    def _get_volume_normalization_preference(
+        self, streamdetails: StreamDetails
+    ) -> VolumeNormalizationMode:
+        """Return the configured normalization preference for the stream's media type."""
+        conf_key = (
+            CONF_VOLUME_NORMALIZATION_RADIO
+            if streamdetails.media_type == MediaType.RADIO
+            else CONF_VOLUME_NORMALIZATION_TRACKS
+        )
+        return VolumeNormalizationMode(
+            str(
+                self.mass.streams.config.get_value(
+                    conf_key, VolumeNormalizationMode.FALLBACK_DYNAMIC.value
+                )
+            )
+        )
 
     def _update_radio_stream_metadata(
         self,

@@ -7,6 +7,7 @@ import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 
 from music_assistant.providers.airplay.constants import (
+    CONF_AIRPLAY_PROTOCOL,
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
     StreamingProtocol,
@@ -151,6 +152,46 @@ async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlaye
     """The ignore_volume setting must be offered in the player config entries."""
     entries = await airplay_player.get_config_entries()
     assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
+
+
+def _set_discovery_info(player: AirPlayPlayer, *, raop: bool, airplay: bool) -> None:
+    """Attach (empty-property) discovery mocks so the device advertises the given protocols."""
+    for enabled, attr in ((raop, "raop_discovery_info"), (airplay, "airplay_discovery_info")):
+        if enabled:
+            info = MagicMock()
+            info.properties = {}
+            setattr(player, attr, info)
+        else:
+            setattr(player, attr, None)
+
+
+@pytest.mark.asyncio
+async def test_airplay_protocol_options_disabled_when_not_advertised(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol the device does not advertise is offered but disabled, never omitted."""
+    _set_discovery_info(airplay_player, raop=False, airplay=False)
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_AIRPLAY_PROTOCOL)
+    options = {option.value: option for option in entry.options}
+    assert options[StreamingProtocol.RAOP.value].disabled is True
+    assert options[StreamingProtocol.AIRPLAY2.value].disabled is True
+    # the automatic option stays enabled and remains the (safe) default
+    assert options[0].disabled is False
+    assert entry.default_value == 0
+
+
+@pytest.mark.asyncio
+async def test_airplay_protocol_option_enabled_when_advertised(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An advertised protocol is offered as a selectable (enabled) option."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True)
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_AIRPLAY_PROTOCOL)
+    options = {option.value: option for option in entry.options}
+    assert options[StreamingProtocol.RAOP.value].disabled is False
+    assert options[StreamingProtocol.AIRPLAY2.value].disabled is False
 
 
 # --- Volume and Mute tests ---

@@ -61,7 +61,6 @@ from music_assistant.constants import (
     ATTR_ACTIVE_SOURCE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_AVAILABLE,
-    ATTR_ELAPSED_TIME,
     ATTR_ENABLED,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
@@ -132,6 +131,15 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 CACHE_CATEGORY_PLAYER_POWER = 1
+
+# state keys that carry the current_media playback-position anchor; these only
+# change on discrete position events (play/pause/seek/track change/buffer correction)
+POSITION_ANCHOR_KEYS = frozenset(
+    {
+        "current_media.elapsed_time",
+        "current_media.elapsed_time_last_updated",
+    }
+)
 
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
@@ -1642,6 +1650,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
         if not (player := self.get_player(player_id)):
             return
+        # mark dirty right away (not at execution): a trigger means state the player
+        # derives from changed, and a direct update_state call may come in before
+        # the debounced one runs
+        player.mark_state_dirty()
         task_id = f"player_update_state_{player_id}"
         self.mass.call_later(
             debounce_delay,
@@ -1760,12 +1772,30 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # volume limit enforcement
         return ((device_volume - min_volume) * 100) // volume_range
 
+    def on_player_position_jumped(self, player: Player) -> None:
+        """
+        Handle a discrete jump of a player's corrected playback position.
+
+        Called by a Player when its corrected position moved significantly
+        outside regular playback progression (seek or buffer correction). This
+        is not an event by itself: it re-bases the active queue's timing on the
+        fresh position and nudges related players so derived positions stay in
+        sync; current_media then re-anchors from the corrected queue time on
+        the follow-up update, which emits the actual update event.
+        """
+        if self.mass.closing:
+            return
+        self.mass.player_queues.on_player_elapsed_time_corrected(player)
+        self.trigger_player_update(player.player_id)
+        self._forward_state_update(player, {})
+
     def signal_player_state_update(
         self,
         player: Player,
         changed_values: dict[str, tuple[Any, Any]],
         force_update: bool = False,
         skip_forward: bool = False,
+        media_position_jumped: bool = False,
     ) -> None:
         """
         Signal a player state update.
@@ -1781,32 +1811,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not player.state.enabled and ATTR_ENABLED not in changed_values:
             return
 
-        # to prevent spamming the eventbus on small changes (e.g. elapsed time),
-        # we check if there are only changes in the elapsed time and send
-        # a lightweight event.
-        clean_changed_keys = set(changed_values.keys()) - {
-            "current_media.elapsed_time",
-            "elapsed_time_last_updated",
-        }
-        if len(clean_changed_keys) == 0 and not force_update:
-            # nothing changed
-            return
-
-        if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
-            now = time.time()
-            prev_elapsed, new_elapsed = changed_values[ATTR_ELAPSED_TIME]
-            prev_updated, new_updated = changed_values.get("elapsed_time_last_updated", (now, now))
-            prev_corrected = (prev_elapsed or 0) + (now - (prev_updated or now))
-            new_corrected = (new_elapsed or 0) + (now - (new_updated or now))
-            if abs(prev_corrected - new_corrected) > 1.0:
-                # Significant elapsed_time drift / seek / jump - notify the queue and
-                # fan out to related players so derived elapsed_time on parents/groups
-                # stays in sync. Skipping the forward on small ticks avoids a per-second
-                # cascade through group → children → group.
-                self.mass.player_queues.on_player_elapsed_time_corrected(player)
-                if not skip_forward or force_update:
-                    self._forward_state_update(player, changed_values)
-            return
+        # The current_media position anchor only changes on discrete events
+        # (play/pause/seek/track change/buffer correction), so a change set holding
+        # only anchor keys represents a position correction rather than a regular
+        # state change.
+        non_anchor_keys = changed_values.keys() - POSITION_ANCHOR_KEYS
+        if len(non_anchor_keys) == 0 and not force_update:
+            if not media_position_jumped:
+                # anchor adoption without a significant corrected-position change
+                return
+            # current_media's corrected position jumped (seek or buffer correction
+            # reached the current media): emit the full player update below so
+            # consumers see the fresh position
 
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.log(
@@ -1850,7 +1866,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             removed_members = set(prev_group_members or []) - set(new_group_members or [])
             for _removed_player_id in removed_members:
                 if removed_player := self.get_player(_removed_player_id):
-                    removed_player.update_state()
+                    removed_player.refresh_state()
 
         # detect when active_source changes to
         # something external while we have a grouped protocol active
@@ -1953,7 +1969,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.volume_control,
                 player.state.mute_control,
             ):
-                self.mass.loop.call_soon(player.update_state)
+                self.mass.loop.call_soon(player.refresh_state)
 
     def remove_player_control(self, control_id: str) -> None:
         """Remove a player_control from the player manager."""
@@ -2520,6 +2536,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Forward a player state update to related players (groups, sync parent, protocols)."""
+        # TODO: make this fan-out change-aware (skip relatives that derive nothing from
+        # the changed fields) once reverse indexes for synced_to/active_group exist.
         # Propagate group or sync-leader updates to child players.
         if player.state.group_members:
             for child_player in self.iter_group_members(player, exclude_self=True):
@@ -3683,7 +3701,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
         # always trigger a state update to update the UI
-        player.update_state()
+        player.refresh_state()
 
         # handle 'auto play on power on' feature
         if (

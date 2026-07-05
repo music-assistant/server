@@ -40,6 +40,12 @@
         "relative": "Relative volume increase",
         "percentual": "Volume increase by fixed percentage",
         "none": "Do not adjust volume"
+      },
+      "option_descriptions": {
+        "absolute": "Play announcements at the fixed volume set below, ignoring the player's current volume.",
+        "relative": "Raise the current volume by the amount set below while the announcement plays.",
+        "percentual": "Raise the current volume by the percentage set below while the announcement plays.",
+        "none": "Leave the volume unchanged; play the announcement at the player's current volume."
       }
     },
     "auto_play": {
@@ -57,6 +63,11 @@
         "disabled": "Disabled - do not send ICY metadata",
         "basic": "Profile 1 - basic info",
         "full": "Profile 2 - full info (including image)"
+      },
+      "option_descriptions": {
+        "disabled": "Don't inject metadata; the player won't show track info during flow mode.",
+        "basic": "Send title and artist only. Lightweight and widely compatible.",
+        "full": "Also send album name and cover art. Richer, but some players mishandle it — use Basic if you see playback issues."
       }
     },
     "flow_mode": {
@@ -65,13 +76,20 @@
     },
     "flow_mode_sample_rate": {
       "label": "Flow Mode sample rate",
-      "description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.\n\n- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first track. Subsequent tracks with an equal or lower sample rate are upsampled to match; if the next track has a higher sample rate, the flow stream is restarted at that higher rate. This is the best balance between quality and seamless playback.\n- 'Bit-perfect (no resampling)': Never resamples audio (unless the player does not support the track's sample rate). Playback is restarted between queue tracks when their sample rates differ, which disables gapless and crossfade between those tracks.\n- '48 kHz': Resamples all audio to a fixed 48 kHz (or the closest rate supported by the player) using a high quality resampler. A good compromise of quality and bandwidth.\n- '96 kHz': Resamples all audio to a fixed 96 kHz (or the closest rate supported by the player) using a high quality resampler.\n- 'Highest supported by player': Resamples all audio to the highest sample rate the player supports. Note that this can waste a lot of bandwidth.",
+      "description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.",
       "options": {
-        "smart": "Smart (upsample only)",
-        "bit_perfect": "Bit-perfect (no resampling)",
-        "48000": "48 kHz (balanced quality and bandwidth)",
-        "96000": "96 kHz (high quality)",
+        "smart": "Smart",
+        "bit_perfect": "Bit-perfect",
+        "48000": "48 kHz",
+        "96000": "96 kHz",
         "highest": "Highest supported by player"
+      },
+      "option_descriptions": {
+        "smart": "Starts at the first track's rate; upsamples lower-rate tracks to match, and restarts the stream only when a track has a higher rate. Best balance of quality and seamless playback.",
+        "bit_perfect": "Never resamples. Playback restarts between tracks of differing sample rates, which disables gapless and crossfade across those transitions.",
+        "48000": "Resamples everything to a fixed 48 kHz (or the closest rate the player supports). A good compromise of quality and bandwidth.",
+        "96000": "Resamples everything to a fixed 96 kHz (or the closest rate the player supports).",
+        "highest": "Resamples everything to the highest rate the player supports. Best quality, but can waste a lot of bandwidth."
       }
     },
     "http_profile": {
@@ -81,6 +99,11 @@
         "chunked": "Profile 1 - chunked",
         "no_content_length": "Profile 2 - no content length",
         "forced_content_length": "Profile 3 - forced content length"
+      },
+      "option_descriptions": {
+        "chunked": "Send audio using chunked transfer encoding, without a fixed length up front.",
+        "no_content_length": "Stream without a Content-Length header. Works for most players (the default).",
+        "forced_content_length": "Send an estimated Content-Length header. Some players need this to start playback or to seek."
       }
     },
     "icon": {
@@ -173,6 +196,12 @@
         "mp3": "MP3 (lossy)",
         "aac": "AAC (lossy)",
         "wav": "WAV (lossless, uncompressed)"
+      },
+      "option_descriptions": {
+        "flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
+        "mp3": "Lossy — smaller bitrate at some quality cost. Use for players that can't play FLAC, or to save bandwidth.",
+        "aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
+        "wav": "Lossless but uncompressed — highest bandwidth. Only needed for players that can't handle FLAC."
       }
     },
     "output_limiter": {
@@ -253,6 +282,9 @@
         "native": "Native power control",
         "none": "None",
         "fake": "Fake power control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native power control."
       }
     },
     "volume_control": {
@@ -261,6 +293,9 @@
         "native": "Native volume control",
         "follow_protocol": "Auto-select (based on active/preferred protocol)",
         "none": "None"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native volume control."
       }
     },
     "mute_control": {
@@ -270,6 +305,9 @@
         "follow_protocol": "Auto-select (based on active/preferred protocol)",
         "none": "None",
         "fake": "Fake mute control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native mute control."
       }
     },
     "preferred_output_protocol": {
@@ -319,6 +357,8 @@
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
     "playback": "Queue Playback",
+    "items_to_select": "Items to select",
+    "default_enqueue_option": "Default enqueue option",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
     "smart_shuffle": "Smart shuffle",

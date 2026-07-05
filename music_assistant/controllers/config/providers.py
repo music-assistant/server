@@ -11,6 +11,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
     ProviderConfig,
+    ProviderError,
 )
 from music_assistant_models.enums import (
     EventType,
@@ -304,6 +305,19 @@ class ProviderConfigMixin:
         conf_key = f"{CONF_PROVIDERS}/{instance_id}/default_name"
         self.set(conf_key, default_name)
 
+    def update_provider_last_error(self, instance_id: str, error: ProviderError | None) -> None:
+        """
+        Persist (or clear) a provider's last_error.
+
+        Only writes if the provider config still exists; this avoids re-creating a
+        config entry that was removed while a load was still in flight, which would
+        leave a stub entry without a domain. See #5728.
+        """
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        if not self.get(conf_key):
+            return
+        self.set(f"{conf_key}/last_error", error.to_dict() if error else None)
+
     async def create_builtin_provider_config(self, provider_domain: str) -> None:
         """
         Create builtin ProviderConfig.
@@ -399,6 +413,12 @@ class ProviderConfigMixin:
             self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
             return
         self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value)
+        # also update the provider's in-place config copy (if loaded) so
+        # object-local value reads stay in sync with raw writes
+        if (provider := self.mass.get_provider(provider_instance)) and (
+            entry := provider.config.values.get(key)
+        ):
+            entry.value = value
 
     @api_command("config/providers/reload", required_role="admin")
     async def _reload_provider(self, instance_id: str) -> None:

@@ -437,7 +437,6 @@ class SqueezelitePlayer(Player):
             # We need this because some players (e.g. WiiM) keep sending increasing elapsed time
             self._attr_elapsed_time_last_updated = time.time()
         # Update current media if available
-        old_item_id = self._attr_current_media.queue_item_id if self._attr_current_media else None
         if self.client.current_media and (metadata := self.client.current_media.metadata):
             self._attr_current_media = PlayerMedia(
                 uri=metadata.get("item_id"),
@@ -451,11 +450,6 @@ class SqueezelitePlayer(Player):
             )
         else:
             self._attr_current_media = None
-        new_item_id = self._attr_current_media.queue_item_id if self._attr_current_media else None
-        if old_item_id is not None and new_item_id is not None and old_item_id != new_item_id:
-            # elapsed still reflects the previous track until the next STMt heartbeat (support#3704)
-            self._attr_elapsed_time = 0
-            self._attr_elapsed_time_last_updated = time.time()
 
     async def _handle_play_url_for_slimplayer(
         self,

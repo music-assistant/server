@@ -183,6 +183,7 @@ class TracksController(MediaControllerBase[Track]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -225,6 +226,7 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            played_only=played_only,
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
