@@ -14,17 +14,29 @@
       },
       "option_descriptions": {
         "album_grid": "Album covers arranged in a grid.",
-        "album_fan": "Album covers stacked as framed photo cards, slightly rotated (Apple Music style).",
-        "album_grid_tilted": "A grid with white gaps, tilted ~15° (Apple Music tilted-collage style).",
+        "album_fan": "Album covers stacked as framed photo cards, slightly rotated.",
+        "album_grid_tilted": "A grid with white gaps, tilted ~15°.",
         "artist_mosaic": "The most-played artist large in the centre, others as smaller tiles.",
         "artist_grid": "Up to four unique artist images in equal tiles.",
         "artist_radio": "The main artist centred on a solid background with overlapping circles.",
-        "artist_banner": "The playlist name over a full-bleed artist image (Tidal / Essentials style)."
+        "artist_banner": "The playlist name over a full-bleed artist image."
       }
     },
     "skip_provider_playlists": {
       "label": "Skip provider playlists",
-      "description": "When enabled, provider playlists (e.g. from Spotify or Tidal) that already have their own artwork are skipped. Playlists without any artwork still receive a generated collage."
+      "description": "When enabled, provider playlists that already have their own artwork are skipped. Playlists without any artwork still receive a generated collage."
+    },
+    "enable_genre_detection": {
+      "label": "Enable genre detection",
+      "description": "Automatically detect and assign genres based on track metadata."
+    },
+    "genre_min_threshold": {
+      "label": "Genre minimum threshold (%)",
+      "description": "Minimum percentage of tracks that must have a genre for it to be included."
+    },
+    "genre_max_count": {
+      "label": "Maximum number of genres",
+      "description": "Maximum number of genres to assign to a playlist."
     }
   }
 }
