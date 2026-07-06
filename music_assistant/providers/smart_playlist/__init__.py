@@ -1253,11 +1253,7 @@ class SmartPlaylistProvider(PluginProvider):
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
         if not seeds:
             return []
-        # Build a separate pool per seed (its own base tracks plus tracks similar to them), then
-        # round-robin across those pools so every seed contributes evenly - a single large seed
-        # can no longer fill the whole pool before the others are reached. A shared `seen` set ties
-        # each track to the first seed that yields it. Downstream post-filtering, dedup, shuffle and
-        # limit shape this pool into the final playlist.
+        # round-robin each seed's own pool so seeds contribute evenly; `seen` dedupes across them
         pool_cap = target_size * 3
         per_seed_cap = -(-pool_cap // len(seeds))  # ceil, so the pools can still fill the cap
         seen: set[Track] = set()
