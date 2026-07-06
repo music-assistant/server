@@ -11,15 +11,12 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from libopensonic.media.media_types import InternetRadioStation
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import ActionUnavailable, MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping, Radio
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.opensubsonic import SUPPORTED_FEATURES
-from music_assistant.providers.opensubsonic.sonic_provider import (
-    CONF_ENABLE_RADIOS,
-    OpenSonicProvider,
-)
+from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
 
 
 def _station(iid: str, name: str, url: str, *, cover: str | None = None) -> InternetRadioStation:
@@ -40,14 +37,12 @@ _STATIONS = [
 ]
 
 
-def _make_provider(*, enable_radios: bool = True) -> OpenSonicProvider:
+def _make_provider() -> OpenSonicProvider:
     """
     Build an OpenSonicProvider with a mocked connection (no network).
 
     The base provider reads config values at construction (notably log_level),
-    so config.get_value must return real values, not bare Mocks. enable_radios
-    drives the CONF_ENABLE_RADIOS toggle (mirrors the podcasts _enable_podcasts
-    config-time gate).
+    so config.get_value must return real values, not bare Mocks.
     """
     mass = Mock()
     manifest = Mock()
@@ -56,21 +51,17 @@ def _make_provider(*, enable_radios: bool = True) -> OpenSonicProvider:
     config.instance_id = "xx-instance-id-xx"
     config.get_value.side_effect = lambda key, default=None: {
         "log_level": "INFO",
-        "enable_radios": enable_radios,
     }.get(key, default)
     prov = OpenSonicProvider(mass, manifest, config, SUPPORTED_FEATURES)
     # instance_id is a read-only property derived from config (set above).
     prov.conn = Mock()
-    # the toggle is normally set in handle_async_init; set it directly here so
-    # the per-method early-out is exercised without standing up a live init.
-    prov._enable_radios = enable_radios
     return prov
 
 
 @pytest.fixture
 def provider() -> OpenSonicProvider:
-    """Return an OpenSonicProvider with radio enabled (the default case)."""
-    return _make_provider(enable_radios=True)
+    """Return an OpenSonicProvider with a mocked connection."""
+    return _make_provider()
 
 
 # --- feature flag -----------------------------------------------------------
@@ -79,18 +70,6 @@ def provider() -> OpenSonicProvider:
 def test_radio_feature_declared() -> None:
     """LIBRARY_RADIOS must be advertised so MA surfaces the Radios browse node."""
     assert ProviderFeature.LIBRARY_RADIOS in SUPPORTED_FEATURES
-
-
-def test_radio_config_key_wired() -> None:
-    """
-    Pin the CONF_ENABLE_RADIOS key string contract.
-
-    This key is the contract between the config UI (the __init__.py ConfigEntry)
-    and what handle_async_init reads. The toggle tests force-set _enable_radios
-    and so can't catch a wrong key string; this pins it directly, mirroring
-    CONF_ENABLE_PODCASTS == "enable_podcasts".
-    """
-    assert CONF_ENABLE_RADIOS == "enable_radios"
 
 
 # --- get_library_radios -----------------------------------------------------
@@ -111,20 +90,6 @@ async def test_get_library_radios_empty(provider: OpenSonicProvider) -> None:
     provider.conn.get_internet_radio_stations = AsyncMock(return_value=[])
     results = [r async for r in provider.get_library_radios()]
     assert results == []
-
-
-async def test_get_library_radios_disabled_yields_nothing() -> None:
-    """
-    Disabling CONF_ENABLE_RADIOS short-circuits before touching the server.
-
-    Mirrors the podcasts _enable_podcasts config-time gate.
-    """
-    prov = _make_provider(enable_radios=False)
-    prov.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
-    results = [r async for r in prov.get_library_radios()]
-    assert results == []
-    # disabled means no server call at all (not "fetch then drop").
-    prov.conn.get_internet_radio_stations.assert_not_awaited()
 
 
 # --- get_radio (single item) ------------------------------------------------
@@ -151,16 +116,6 @@ async def test_get_radio_not_found(provider: OpenSonicProvider) -> None:
     provider.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
     with pytest.raises(MediaNotFoundError):
         await provider.get_radio("does-not-exist")
-
-
-async def test_get_radio_disabled_raises() -> None:
-    """When enable_radios is off, a by-id get_radio refuses (mirrors get_podcast)."""
-    prov = _make_provider(enable_radios=False)
-    prov.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
-    with pytest.raises(ActionUnavailable):
-        await prov.get_radio("v1.chan.streamer")
-    # refused before hitting the server:
-    prov.conn.get_internet_radio_stations.assert_not_awaited()
 
 
 # --- get_stream_details(RADIO) ----------------------------------------------

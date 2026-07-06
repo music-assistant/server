@@ -85,7 +85,6 @@ if TYPE_CHECKING:
 
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
-CONF_ENABLE_RADIOS = "enable_radios"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 CONF_RECO_FAVES = "recommend_favorites"
 CONF_NEW_ALBUMS = "recommend_new"
@@ -106,7 +105,6 @@ class OpenSonicProvider(MusicProvider):
 
     conn: SonicConnection
     _enable_podcasts: bool = True
-    _enable_radios: bool = True
     _show_faves: bool = True
     _show_new: bool = True
     _show_played: bool = True
@@ -146,7 +144,6 @@ class OpenSonicProvider(MusicProvider):
                 translation_args=[self.config.get_value(CONF_BASE_URL)],
             ) from e
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
-        self._enable_radios = bool(self.config.get_value(CONF_ENABLE_RADIOS))
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
             for entry in extensions:
@@ -505,18 +502,11 @@ class OpenSonicProvider(MusicProvider):
 
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Yield the internet radio stations in the user's library."""
-        # Keep this enable_radios gate: when off we yield nothing, which is what
-        # drives MA's sync to purge already-synced stations (orphan removal).
-        # Looks redundant with library_sync_radios, but isn't.
-        if self._enable_radios:
-            for station in await self.conn.get_internet_radio_stations():
-                yield parse_radio(self.instance_id, station)
+        for station in await self.conn.get_internet_radio_stations():
+            yield parse_radio(self.instance_id, station)
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Return the requested internet radio station."""
-        if not self._enable_radios:
-            msg = "Internet radio is currently disabled in the provider configuration"
-            raise ActionUnavailable(msg)
         return parse_radio(self.instance_id, await self._find_radio_station(prov_radio_id))
 
     @use_cache(3600 * 3)  # cache for 3 hours

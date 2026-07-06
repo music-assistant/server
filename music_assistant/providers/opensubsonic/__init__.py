@@ -13,7 +13,6 @@ from .sonic_provider import (
     CONF_BASE_URL,
     CONF_ENABLE_LEGACY_AUTH,
     CONF_ENABLE_PODCASTS,
-    CONF_ENABLE_RADIOS,
     CONF_NEW_ALBUMS,
     CONF_PAGE_SIZE,
     CONF_PLAYED_ALBUMS,
@@ -95,12 +94,6 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=CONF_ENABLE_PODCASTS,
-            type=ConfigEntryType.BOOLEAN,
-            required=True,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_RADIOS,
             type=ConfigEntryType.BOOLEAN,
             required=True,
             default_value=True,
