@@ -21,6 +21,13 @@ CONF_PLEX_FAVORITE_THRESHOLD = "plex_favorite_threshold"
 CONF_PLEX_UNLIKE_RATING = "plex_unlike_rating"
 CONF_HUB_ITEMS_LIMIT = "hub_items_limit"
 CONF_EXTENDED_RECOMMENDATIONS = "extended_recommendations"
+CONF_STREAM_QUALITY = "stream_quality"
+
+STREAM_QUALITY_ORIGINAL = "original"
+STREAM_QUALITY_96 = "96"
+STREAM_QUALITY_128 = "128"
+STREAM_QUALITY_192 = "192"
+STREAM_QUALITY_320 = "320"
 
 FAKE_ARTIST_PREFIX = "_fake://"
 

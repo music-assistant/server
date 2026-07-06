@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiofiles
 import aiofiles.os
@@ -963,10 +963,8 @@ class StreamsAudio:
                 reverse=True,
             )
         substream = substreams[0]
-        if not substream.path.startswith("http"):
-            # path is relative, stitch it together
-            base_path = url.rsplit("/", 1)[0]
-            substream.path = base_path + "/" + substream.path
+        if not urlparse(substream.path).scheme:
+            substream.path = urljoin(url, substream.path)
         return substream
 
     async def get_http_stream(
