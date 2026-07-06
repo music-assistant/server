@@ -714,6 +714,17 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
+    # Only 46/47 DBs seeded their genres before icons existed; a ≤45 upgrade seeds
+    # them (with icons) in the earlier step, so it doesn't need this refresh.
+    if 46 <= prev_version <= 47:
+        # podcast/audiobook genre icons were added this release; re-run the partial restore so
+        # already-seeded default genres pick up their (now-present) icon metadata. Non-fatal.
+        await database.commit()
+        try:
+            await mass.music.genres.restore_default_genres(full_restore=False)
+        except Exception as err:
+            logger.warning("Could not refresh default genre icons: %s", err)
+
     # save changes
     await database.commit()
 

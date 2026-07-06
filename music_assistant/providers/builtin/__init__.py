@@ -69,7 +69,7 @@ from music_assistant.helpers.playlists import (
     parse_m3u_playlist_image,
     parse_m3u_playlist_name,
 )
-from music_assistant.helpers.security import is_safe_name
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
 from music_assistant.helpers.uri import parse_uri
@@ -799,9 +799,10 @@ class BuiltinProvider(MusicProvider):
             return VARIOUS_ARTISTS_FANART
         if path.startswith(f"{GENRE_ICONS_DIR_NAME}/"):
             icon_name = path[len(GENRE_ICONS_DIR_NAME) + 1 :]
-            if not is_safe_name(icon_name):
+            icons_base = RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME)
+            if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
-            return str(RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, icon_name))
+            return str(icons_base.joinpath(icon_name))
         return path
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
