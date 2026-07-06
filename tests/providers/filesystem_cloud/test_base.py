@@ -344,6 +344,7 @@ async def test_enumerate_stops_on_directory_cycle() -> None:
     scanned: list[str] = []
 
     async def fake_scandir(path: str, use_cache: bool = True) -> list[FileSystemItem]:
+        assert use_cache is False
         scanned.append(path)
         return listing[path]
 
