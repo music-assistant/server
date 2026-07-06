@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any
@@ -55,7 +56,10 @@ DB_SCHEMA_VERSION = 5
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
-TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
+TOKEN_LONG_LIVED_EXPIRATION = 365  # Long-lived tokens (1 year, no auto-renewal)
+# Max days a sliding short-lived session may live from creation before re-auth.
+TOKEN_ABSOLUTE_MAX_EXPIRATION = 90
+TOKEN_GUEST_EXPIRATION = 1  # Guest sessions: short fixed lifetime, no renewal
 
 # Join code constants (short codes for QR/link-based login)
 JOIN_CODE_LENGTH = 12
@@ -415,15 +419,20 @@ class AuthenticationManager:
         try:
             payload = self.jwt_helper.decode_token(token, verify_exp=True)
             token_id = payload.get("jti")
-            user_id = payload.get("sub")
-            is_long_lived = payload.get("is_long_lived", False)
+            token_user_id = payload.get("sub")
 
-            if not token_id or not user_id:
+            if not token_id or not token_user_id:
                 return None
 
             token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
             if not token_row:
                 return None
+
+            # Database is source of truth for token metadata, not the (immutable) JWT payload.
+            # A payload/row mismatch means a tampered or stale token: reject rather than trust it.
+            if token_user_id != token_row["user_id"]:
+                return None
+            is_long_lived = bool(token_row["is_long_lived"])
 
             # Database expiration is source of truth
             if token_row["expires_at"]:
@@ -432,23 +441,21 @@ class AuthenticationManager:
                     await self.database.delete("auth_tokens", {"token_id": token_id})
                     return None
 
-            # Update last used timestamp
-            now = utc()
-            updates = {"last_used_at": now.isoformat()}
+            user = await self.get_user(token_row["user_id"])
+            if not user:
+                return None
 
-            if not is_long_lived:
-                # Short-lived token: extend expiration on each use (sliding window)
-                new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-                updates["expires_at"] = new_expires_at.isoformat()
+            updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
+            if updates is None:
+                return None
 
-            # Update database
             await self.database.update(
                 "auth_tokens",
                 {"token_id": token_id},
                 updates,
             )
 
-            return await self.get_user(user_id)
+            return user
 
         except pyjwt.ExpiredSignatureError:
             if token_id := self.jwt_helper.get_token_id(token):
@@ -473,25 +480,22 @@ class AuthenticationManager:
                 await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
                 return None
 
-        # Implement sliding expiration for short-lived tokens
+        user = await self.get_user(token_row["user_id"])
+        if not user:
+            return None
+
         is_long_lived = bool(token_row["is_long_lived"])
-        now = utc()
-        legacy_updates: dict[str, str] = {"last_used_at": now.isoformat()}
+        legacy_updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
+        if legacy_updates is None:
+            return None
 
-        if not is_long_lived and token_row["expires_at"]:
-            # Short-lived token: extend expiration on each use (sliding window)
-            new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-            legacy_updates["expires_at"] = new_expires_at.isoformat()
-
-        # Update last used timestamp and potentially expiration
         await self.database.update(
             "auth_tokens",
             {"token_id": token_row["token_id"]},
             legacy_updates,
         )
 
-        # Get user
-        return await self.get_user(token_row["user_id"])
+        return user
 
     async def get_token_id_from_token(self, token: str) -> str | None:
         """
@@ -886,8 +890,10 @@ class AuthenticationManager:
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., device name).
         :param is_long_lived: Whether this is a long-lived token (default: False).
-            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
-            Long-lived tokens (True): No auto-renewal, expire after 10 years.
+            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity,
+            capped at an absolute maximum lifetime from creation (see TOKEN_ABSOLUTE_MAX_EXPIRATION).
+            Tokens for guest users get a short fixed lifetime instead and never renew.
+            Long-lived tokens (True): No auto-renewal, expire after 1 year.
         :return: JWT token string.
         """
         # Generate unique token ID
@@ -896,18 +902,24 @@ class AuthenticationManager:
         # Calculate expiration based on token type
         created_at = utc()
         if is_long_lived:
-            # Long-lived tokens expire after 10 years (no auto-renewal)
+            # Long-lived tokens expire after 1 year (no auto-renewal)
             expires_at = created_at + timedelta(days=TOKEN_LONG_LIVED_EXPIRATION)
+            jwt_expires_at = expires_at
+        elif user.role == UserRole.GUEST:
+            expires_at = created_at + timedelta(days=TOKEN_GUEST_EXPIRATION)
+            jwt_expires_at = expires_at
         else:
             # Short-lived tokens expire after 30 days (with auto-renewal on use)
             expires_at = created_at + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+            # The exp claim must carry the absolute cap, or it would cut off sliding renewals
+            jwt_expires_at = created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)
 
         # Generate JWT token
         token = self.jwt_helper.encode_token(
             user=user,
             token_id=token_id,
             token_name=name,
-            expires_at=expires_at,
+            expires_at=jwt_expires_at,
             is_long_lived=is_long_lived,
         )
 
@@ -978,6 +990,7 @@ class AuthenticationManager:
             "DELETE FROM auth_tokens WHERE user_id = :user_id",
             {"user_id": user.user_id},
         )
+        await self.database.commit()
 
         self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
         return len(token_rows)
@@ -1274,7 +1287,7 @@ class AuthenticationManager:
         Create a new long-lived access token for current user or another user (admin only).
 
         Long-lived tokens are intended for external integrations and API access.
-        They expire after 10 years and do NOT auto-renew on use.
+        They expire after 1 year and do NOT auto-renew on use.
 
         Short-lived tokens (for regular user sessions) are only created during login
         and auto-renew on each use (sliding 30-day expiration window).
@@ -1856,3 +1869,30 @@ class AuthenticationManager:
         await self.database.delete("join_codes", {"code_id": code_id})
         await self.database.commit()
         self.logger.info("Join code revoked (code_id=%s)", code_id)
+
+    async def _refresh_token_expiration(
+        self, token_row: Mapping[str, Any], user: User, is_long_lived: bool
+    ) -> dict[str, str] | None:
+        """
+        Build the on-use column updates for a token, enforcing the absolute lifetime cap.
+
+        :param token_row: The auth_tokens row for the token being used.
+        :param user: The user owning the token.
+        :param is_long_lived: Whether the token is long-lived.
+        :return: Column updates to apply, or None if the token exceeded its max lifetime
+            (in which case the token row is deleted).
+        """
+        now = utc()
+        updates = {"last_used_at": now.isoformat()}
+
+        if not is_long_lived:
+            created_at = datetime.fromisoformat(token_row["created_at"])
+            if now > created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION):
+                await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+                return None
+            if user.role != UserRole.GUEST:
+                # Short-lived token: extend expiration on each use (sliding window)
+                new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+                updates["expires_at"] = new_expires_at.isoformat()
+
+        return updates
