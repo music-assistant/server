@@ -658,8 +658,8 @@ class OpenSonicProvider(MusicProvider):
             )
         elif media_type == MediaType.RADIO:
             # Unbounded live stream with an unknown container, so content type is unknown.
-            stream_url = await self._resolve_radio_stream(item_id)
             self.logger.debug("Fetching stream details for radio station %s", item_id)
+            stream_url = await self._resolve_radio_stream(item_id)
             return StreamDetails(
                 item_id=item_id,
                 provider=self.instance_id,
@@ -971,11 +971,13 @@ class OpenSonicProvider(MusicProvider):
         library_item = await self.mass.music.radio.get_library_item_by_prov_id(
             prov_radio_id, self.instance_id
         )
-        if library_item is not None:
-            for mapping in library_item.provider_mappings:
-                if mapping.provider_instance == self.instance_id and mapping.details:
-                    return mapping.details
-        msg = f"Radio station {prov_radio_id} not found"
+        if library_item is None:
+            msg = f"Radio station {prov_radio_id} not found in library"
+            raise MediaNotFoundError(msg)
+        for mapping in library_item.provider_mappings:
+            if mapping.provider_instance == self.instance_id and mapping.details:
+                return mapping.details
+        msg = f"Radio station {prov_radio_id} has no stored stream URL"
         raise MediaNotFoundError(msg)
 
     async def _find_radio_station(self, prov_radio_id: str) -> SonicInternetRadioStation:
