@@ -94,6 +94,34 @@ def test_existing_secrets_migrated_off_legacy_key(tmp_path: Path) -> None:
         _legacy_fernet(server_id).decrypt(token)
 
 
+def test_invalid_stored_key_regenerates_without_crash(tmp_path: Path) -> None:
+    """A corrupted/invalid stored encryption_key must not crash startup; a new key is generated."""
+    controller = _make_controller(tmp_path)
+    controller.set(CONF_SERVER_ID, uuid4().hex)
+    controller.set(CONF_ENCRYPTION_KEY, "not-a-valid-fernet-key")
+
+    controller._init_encryption()
+
+    new_key = controller.get(CONF_ENCRYPTION_KEY)
+    assert new_key != "not-a-valid-fernet-key"
+    round_tripped = controller.decrypt_string(controller.encrypt_string("s3cr3t"))
+    assert round_tripped == "s3cr3t"
+
+
+def test_legacy_secret_survives_invalid_stored_key(tmp_path: Path) -> None:
+    """Even with an invalid stored key, legacy server_id-encrypted secrets must still decrypt."""
+    controller = _make_controller(tmp_path)
+    server_id = uuid4().hex
+    controller.set(CONF_SERVER_ID, server_id)
+    controller.set(CONF_ENCRYPTION_KEY, "")
+    legacy_value = ENCRYPT_SUFFIX + _legacy_fernet(server_id).encrypt(b"old-secret").decode()
+    controller.set("providers/foo/token", legacy_value)
+
+    controller._init_encryption()
+
+    assert controller.decrypt_string(controller.get("providers/foo/token")) == "old-secret"
+
+
 def test_new_encryption_not_readable_with_legacy_key(tmp_path: Path) -> None:
     """New values must be encrypted with the new key, not the public legacy one."""
     controller = _make_controller(tmp_path)

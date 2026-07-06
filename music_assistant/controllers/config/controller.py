@@ -212,12 +212,27 @@ class ConfigController(
         """
         server_id: str = self.get(CONF_SERVER_ID)
         assert server_id
-        self.set_default(CONF_ENCRYPTION_KEY, Fernet.generate_key().decode())
-        encryption_key: str = self.get(CONF_ENCRYPTION_KEY)
-        primary = Fernet(encryption_key.encode())
+        primary = self._load_or_create_primary_key()
         legacy_key = base64.urlsafe_b64encode(server_id.encode()[:32])
         self._fernet = MultiFernet([primary, Fernet(legacy_key)])
         self._migrate_secrets(primary)
+
+    def _load_or_create_primary_key(self) -> Fernet:
+        """
+        Return the dedicated Fernet key, generating a new one if it is absent or invalid.
+
+        A missing or corrupted key must never crash startup or block legacy decryption, so we
+        fall back to a fresh key while the legacy server_id key stays available for decrypt.
+        """
+        encryption_key: str = self.get(CONF_ENCRYPTION_KEY, "")
+        if encryption_key:
+            try:
+                return Fernet(encryption_key.encode())
+            except ValueError:
+                LOGGER.warning("Stored encryption key is invalid; generating a new one")
+        encryption_key = Fernet.generate_key().decode()
+        self.set(CONF_ENCRYPTION_KEY, encryption_key)
+        return Fernet(encryption_key.encode())
 
     def _migrate_secrets(self, primary: Fernet) -> None:
         """
