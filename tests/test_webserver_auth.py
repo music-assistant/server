@@ -5,7 +5,7 @@ import hashlib
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 
 import pytest
@@ -14,7 +14,14 @@ from music_assistant_models.errors import InsufficientPermissions, InvalidDataEr
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
-from music_assistant.controllers.webserver.auth import JOIN_CODE_LENGTH, AuthenticationManager
+from music_assistant.controllers.webserver.auth import (
+    JOIN_CODE_LENGTH,
+    TOKEN_ABSOLUTE_MAX_EXPIRATION,
+    TOKEN_GUEST_EXPIRATION,
+    TOKEN_LONG_LIVED_EXPIRATION,
+    TOKEN_SHORT_LIVED_EXPIRATION,
+    AuthenticationManager,
+)
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -717,6 +724,160 @@ async def test_long_lived_token_no_auto_renewal(auth_manager: AuthenticationMana
 
     # Expiration should remain the same for long-lived tokens
     assert updated_expires_at == initial_expires_at
+
+
+async def test_long_lived_token_default_is_one_year() -> None:
+    """Test that the long-lived token default lifetime is 365 days."""
+    assert TOKEN_LONG_LIVED_EXPIRATION == 365
+
+
+async def test_token_absolute_max_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a short-lived token past its absolute max lifetime cannot be renewed.
+
+    The sliding window keeps a session alive on use, but a token created longer than
+    the absolute maximum ago must be rejected regardless of the sliding expiration.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="absmaxuser", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "Abs Max Test", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+
+    # Created past the absolute max but with a future sliding expires_at, so only the cap can reject it.
+    created_at = utc() - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)
+    future_expires = utc() + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_row["token_id"]},
+        {"created_at": created_at.isoformat(), "expires_at": future_expires.isoformat()},
+    )
+
+    # Token must be rejected and the row deleted.
+    authenticated_user = await auth_manager.authenticate_with_token(token)
+    assert authenticated_user is None
+
+    deleted_row = await auth_manager.database.get_row(
+        "auth_tokens", {"token_id": token_row["token_id"]}
+    )
+    assert deleted_row is None
+
+
+async def test_legacy_token_absolute_max_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the absolute max lifetime is also enforced on the legacy hash-token path.
+
+    Legacy (non-JWT) tokens authenticate via a hash lookup that shares the same cap logic,
+    so a hash token created past the absolute maximum must be rejected and its row deleted.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="legacyabsmax", role=UserRole.USER)
+
+    # A non-JWT token string forces the legacy hash-based lookup path.
+    raw_token = "legacy-hash-token-absmax"
+    token_id = "legacy-absmax-token-id"
+    # Created past the absolute max but with a future sliding expires_at, so only the cap can reject it.
+    created_at = utc() - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)
+    future_expires = utc() + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+    await auth_manager.database.insert(
+        "auth_tokens",
+        {
+            "token_id": token_id,
+            "user_id": user.user_id,
+            "token_hash": hashlib.sha256(raw_token.encode()).hexdigest(),
+            "name": "Legacy Abs Max Test",
+            "created_at": created_at.isoformat(),
+            "expires_at": future_expires.isoformat(),
+            "is_long_lived": 0,
+        },
+    )
+
+    # Token must be rejected and the row deleted.
+    assert await auth_manager.authenticate_with_token(raw_token) is None
+    assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
+
+
+async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that revoke_tokens_for_user commits so the tokens no longer authenticate.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="guestrevoke", role=UserRole.GUEST)
+    token = await auth_manager.create_token(user, "Guest Token", is_long_lived=False)
+
+    # Token works before revocation
+    assert await auth_manager.authenticate_with_token(token) is not None
+
+    revoked = await auth_manager.revoke_tokens_for_user(user)
+    assert revoked == 1
+
+    # Reopen the raw connection to roll back any uncommitted tx: an uncommitted DELETE would resurrect the row.
+    await auth_manager.database._db.close()
+    await auth_manager.database.setup()
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    assert await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash}) is None
+    assert await auth_manager.authenticate_with_token(token) is None
+
+
+async def test_short_lived_jwt_exp_carries_absolute_max(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a short-lived JWT's exp claim equals the absolute max lifetime.
+
+    The database expires_at enforces the sliding idle window; an exp claim shorter
+    than the absolute max would cut off active sessions before renewal can happen.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="jwtexpuser", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "JWT Exp Test", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    created_at = datetime.fromisoformat(token_row["created_at"])
+
+    payload = auth_manager.jwt_helper.decode_token(token, verify_exp=False)
+    expected = created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)
+    assert payload["exp"] == int(expected.timestamp())
+
+    # The database keeps the shorter sliding window as source of truth
+    expires_at = datetime.fromisoformat(token_row["expires_at"])
+    assert expires_at - created_at == timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+
+
+async def test_guest_token_fixed_short_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that guest tokens get a short fixed lifetime and never renew on use.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="guestexpiry", role=UserRole.GUEST)
+    token = await auth_manager.create_token(user, "Guest Session", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    created_at = datetime.fromisoformat(token_row["created_at"])
+    expires_at = datetime.fromisoformat(token_row["expires_at"])
+    assert expires_at - created_at == timedelta(days=TOKEN_GUEST_EXPIRATION)
+
+    # The JWT exp claim must match the fixed window, not the absolute max
+    payload = auth_manager.jwt_helper.decode_token(token, verify_exp=False)
+    assert payload["exp"] == int(expires_at.timestamp())
+
+    # Authenticating must not extend the expiration (no sliding window for guests)
+    assert await auth_manager.authenticate_with_token(token) is not None
+    updated_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert updated_row is not None
+    assert updated_row["expires_at"] == token_row["expires_at"]
 
 
 async def test_username_case_insensitive_creation(auth_manager: AuthenticationManager) -> None:
