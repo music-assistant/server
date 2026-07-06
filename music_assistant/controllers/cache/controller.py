@@ -124,31 +124,68 @@ class CacheController(CoreController):
         :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
         :param base_class: If provided, reconstruct data using base_class.from_dict().
         :param allow_expired_cache: If True, also return entries past their expiration
-            time instead of treating them as cache misses. Used by the
-            stale-while-revalidate path of `@use_cache`.
+            time instead of treating them as cache misses.
+        """
+        data, _, found = await self.get_with_freshness(
+            key,
+            provider=provider,
+            category=category,
+            checksum=checksum,
+            allow_bypass=allow_bypass,
+            base_class=base_class,
+            include_expired=allow_expired_cache,
+        )
+        return data if found else default
+
+    async def get_with_freshness(
+        self,
+        key: str,
+        provider: str = "default",
+        category: int = 0,
+        checksum: str | int | None = None,
+        allow_bypass: bool | None = None,
+        base_class: Any = None,
+        include_expired: bool = False,
+    ) -> tuple[Any, bool, bool]:
+        """
+        Get data from cache together with the freshness and presence of the entry.
+
+        Returns a (data, is_fresh, found) tuple. found is False when there is no usable
+        entry, in which case data is None; is_fresh is False when the entry is expired.
+        Because a stored None value is returned as-is, use the found flag to tell a cache
+        miss from a cached None.
+
+        :param key: The (unique) lookup key of the cache object.
+        :param provider: Provider id to group cache objects.
+        :param category: Category to group cache objects.
+        :param checksum: If provided, only return data if the stored checksum matches.
+        :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
+        :param base_class: If provided, reconstruct data using base_class.from_dict().
+        :param include_expired: If False (default), an expired entry is reported as not found
+            and is not deserialized; set True to also return expired entries as stale data.
         """
         assert self.database is not None
         assert key, "No key provided"
         if allow_bypass and BYPASS_CACHE.get():
-            return default
+            return None, False, False
         cur_time = int(time.time())
         if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
         if (
-            (
-                db_row := await self.database.get_row(
-                    DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
-                )
+            db_row := await self.database.get_row(
+                DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
             )
-            and (db_row["expires"] >= cur_time or allow_expired_cache)
-            and (not checksum or db_row["checksum"] == checksum)
-        ):
+        ) and (not checksum or db_row["checksum"] == checksum):
             # if allow_bypass is not explicitly set,
             # determine it based on the 'persistent' flag of the cache entry
             if allow_bypass is None:
                 allow_bypass = not bool(db_row["persistent"])
             if allow_bypass and BYPASS_CACHE.get():
-                return default
+                return None, False, False
+            is_fresh = bool(db_row["expires"] >= cur_time)
+            # skip deserialization for an expired entry the caller will not use
+            if not is_fresh and not include_expired:
+                return None, False, False
             try:
                 data = await async_json_loads(db_row["data"])
             except Exception as exc:
@@ -163,10 +200,10 @@ class CacheController(CoreController):
             else:
                 if base_class is not None and data is not None:
                     if isinstance(data, list):
-                        return [base_class.from_dict(item) for item in data]
-                    return base_class.from_dict(data)
-                return data
-        return default
+                        return [base_class.from_dict(item) for item in data], is_fresh, True
+                    return base_class.from_dict(data), is_fresh, True
+                return data, is_fresh, True
+        return None, False, False
 
     async def set(
         self,

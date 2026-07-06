@@ -143,7 +143,8 @@ class WikipediaMetadataProvider(MetadataProvider):
                 result[lang] = title
         return result
 
-    @use_cache(86400 * 90, persistent=True)
+    # None can signal a fetch failure as well as a missing bio, so don't cache it
+    @use_cache(86400 * 90, persistent=True, cache_none=False)
     async def _fetch_bio(self, lang: str, title: str) -> str | None:
         """
         Return the plain-text lead section of a Wikipedia article.

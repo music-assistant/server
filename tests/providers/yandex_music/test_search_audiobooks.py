@@ -57,6 +57,7 @@ def provider_mock() -> Mock:
     provider.mass = Mock()
     provider.mass.cache = AsyncMock()
     provider.mass.cache.get = AsyncMock(return_value=None)
+    provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
     return provider
 

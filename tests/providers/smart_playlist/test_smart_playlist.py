@@ -1073,7 +1073,7 @@ async def test_get_playlist_tracks_dynamic_cold_evaluates_and_caches(tmp_path: A
     """On a fully-cold cache the sample is evaluated and a store task is scheduled."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
-    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.create_task = MagicMock(side_effect=_swallow_task)
     manifest = MagicMock()
@@ -1104,7 +1104,7 @@ async def test_get_playlist_tracks_dynamic_returns_fresh_cache(tmp_path: Any) ->
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     cached = [_make_mock_track(str(i), f"library://track/cached-{i}") for i in range(3)]
-    mass.cache.get = AsyncMock(return_value=cached)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(cached, True, True))
     mass.cache.set = AsyncMock()
     mass.create_task = MagicMock()
     manifest = MagicMock()
@@ -1121,8 +1121,8 @@ async def test_get_playlist_tracks_dynamic_returns_fresh_cache(tmp_path: Any) ->
     result = await plugin.get_playlist_tracks("abc")
     assert result == cached
     evaluate_mock.assert_not_awaited()
-    # Only the fresh lookup runs; no stale lookup, no scheduled refresh.
-    mass.cache.get.assert_awaited_once()
+    # A single freshness lookup runs; no scheduled refresh.
+    mass.cache.get_with_freshness.assert_awaited_once()
     mass.create_task.assert_not_called()
 
 
@@ -1132,8 +1132,8 @@ async def test_get_playlist_tracks_dynamic_serves_stale_and_refreshes(tmp_path: 
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     stale = [_make_mock_track(str(i), f"library://track/stale-{i}") for i in range(3)]
-    # First (fresh) lookup misses, second (stale-allowed) lookup returns the expired entry.
-    mass.cache.get = AsyncMock(side_effect=[None, stale])
+    # The single freshness lookup returns the expired entry (a stale hit).
+    mass.cache.get_with_freshness = AsyncMock(return_value=(stale, False, True))
     mass.cache.set = AsyncMock()
     mass.create_task = MagicMock(side_effect=_swallow_task)
     manifest = MagicMock()
