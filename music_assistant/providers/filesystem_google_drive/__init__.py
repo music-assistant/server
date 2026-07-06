@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.filesystem_local.constants import (
-    CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -84,18 +85,7 @@ async def get_config_entries(
             mass, str(values["session_id"]), client_id, client_secret
         )
 
-    return (
-        ConfigEntry(
-            key=CONF_CONTENT_TYPE,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption("music"),
-                ConfigValueOption("audiobooks"),
-                ConfigValueOption("podcasts"),
-            ],
-            default_value="music",
-            hidden=instance_id is not None,
-        ),
+    base_entries = (
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.STRING,
@@ -134,4 +124,15 @@ async def get_config_entries(
         CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
         CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
         CONF_ENTRY_PROPAGATE_GENRES,
+    )
+
+    # content type is only choosable at initial setup; read-only afterwards
+    if instance_id is None:
+        return (
+            CONF_ENTRY_CONTENT_TYPE,
+            *base_entries,
+        )
+    return (
+        *base_entries,
+        CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     )
