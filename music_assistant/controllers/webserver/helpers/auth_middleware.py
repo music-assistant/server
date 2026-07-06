@@ -234,6 +234,8 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
     user_arg = args.pop("user", None)
     # username is accepted as (deprecated) alias for user
     username_arg = args.pop("username", None)
+    # deliberately treat None and empty string as "no impersonation requested":
+    # optional fields in automations/scripts commonly template to an empty string
     if target := user_arg or username_arg:
         return await resolve_impersonated_user(mass, str(target))
     return None

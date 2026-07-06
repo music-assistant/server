@@ -1590,6 +1590,12 @@ async def test_resolve_command_impersonation(auth_manager: AuthenticationManager
     assert await resolve_command_impersonation(auth_manager.mass, args) is None
     assert args == {"queue_id": "abc"}
 
+    # an empty string is deliberately treated as "no impersonation requested"
+    # (optional fields in automations/scripts commonly template to an empty string)
+    args = {"queue_id": "abc", "user": ""}
+    assert await resolve_command_impersonation(auth_manager.mass, args) is None
+    assert args == {"queue_id": "abc"}
+
     # the user argument is popped and resolved (by username)
     args = {"queue_id": "abc", "user": "user_a"}
     resolved = await resolve_command_impersonation(auth_manager.mass, args)
