@@ -152,7 +152,8 @@ class LrclibProvider(MetadataProvider):
             )
         return None
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    # None can signal a fetch/parse failure as well as "no lyrics", so don't cache it
+    @use_cache(3600 * 24 * 14, cache_none=False)  # Cache for 14 days
     @throttle_with_retries
     async def _get_data(self, **params: Any) -> dict[str, Any] | None:
         """Get data from LRCLib API with throttling and retries."""

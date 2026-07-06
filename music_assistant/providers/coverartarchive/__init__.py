@@ -88,7 +88,8 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
             )
         )
 
-    @use_cache(86400 * 30)
+    # None can signal a network failure as well as "no cover art", so don't cache it
+    @use_cache(86400 * 30, cache_none=False)
     async def _get_cover_art_url(self, release_group_id: str) -> str | None:
         """
         Retrieve cover art URL for a release group.

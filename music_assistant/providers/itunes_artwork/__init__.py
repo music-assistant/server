@@ -92,7 +92,8 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
             )
         )
 
-    @use_cache(86400 * 30)
+    # None can signal a network failure as well as "no artwork", so don't cache it
+    @use_cache(86400 * 30, cache_none=False)
     async def _get_artwork_url(self, barcode: str) -> str | None:
         """
         Look up album artwork URL from iTunes by UPC barcode.

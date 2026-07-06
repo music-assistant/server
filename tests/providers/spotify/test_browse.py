@@ -65,6 +65,7 @@ def provider(get_data: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> SpotifyPro
     mass.metadata.locale = "de_DE"
     # bypass the use_cache decorator: always miss, swallow the background store task
     mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.create_task = MagicMock(side_effect=lambda coro, **_: coro.close())
     prov.mass = mass
