@@ -643,17 +643,15 @@ class TestScaleMidDepth:
 
     def test_shrink_below_bypass_floor_yields_none_not_a_shallow_schedule(self) -> None:
         """Shrinking -2dB by 0.25 (-0.5dB, under the -1dB floor) bypasses instead of shipping it."""
-        planner = SmartCrossFadePlanner(LOGGER)
         eq = self._plan_with_mid(-2.0)
-        candidate = planner._scale_mid_depth(eq, 0.25)
+        candidate = eq.with_mid_depth_scaled(0.25, bypass_below_db=-1.0)
         assert candidate.mid_out is None
         assert candidate.mid_in is None
 
     def test_shrink_at_the_bypass_floor_is_kept(self) -> None:
         """Shrinking -2dB by 0.5 (exactly -1dB, at the floor) is kept, not bypassed."""
-        planner = SmartCrossFadePlanner(LOGGER)
         eq = self._plan_with_mid(-2.0)
-        candidate = planner._scale_mid_depth(eq, 0.5)
+        candidate = eq.with_mid_depth_scaled(0.5, bypass_below_db=-1.0)
         assert candidate.mid_out is not None
         assert candidate.mid_out.steps[-1][1] == pytest.approx(-1.0)
 

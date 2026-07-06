@@ -9,30 +9,18 @@ cross-track-comparable quantity the stored data supports.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
-from music_assistant.controllers.streams.smart_fades.models import BAND_RMS_BANDS
+from music_assistant.controllers.streams.smart_fades.models import BAND_RMS_BANDS, BandProfile
 
 if TYPE_CHECKING:
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 # bars quieter than 1/16th of the track's p95 power carry no usable signal
 _ACTIVE_FLOOR_FRACTION = 0.0625
-
-
-@dataclass(slots=True)
-class BandProfile:
-    """Bar-level band-power view of one track, on its own downbeat grid."""
-
-    bar_starts: npt.NDArray[np.float64]
-    bar_power: dict[str, npt.NDArray[np.float64]]
-    total_power: npt.NDArray[np.float64]
-    active: npt.NDArray[np.bool_]
-    reference: dict[str, float]
 
 
 def build_band_profile(analysis: AudioAnalysisData) -> BandProfile | None:
