@@ -798,8 +798,6 @@ class BuiltinProvider(MusicProvider):
         if path in ("fanart.jpg", "fallback_fanart.jpeg"):
             return VARIOUS_ARTISTS_FANART
         if path.startswith(f"{GENRE_ICONS_DIR_NAME}/"):
-            # is_safe_path allows a taxonomy subfolder (podcast/audiobook) while keeping the
-            # resolved file contained inside the genres dir (blocks ../ traversal).
             icon_name = path[len(GENRE_ICONS_DIR_NAME) + 1 :]
             icons_base = RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME)
             if not is_safe_path(icon_name, str(icons_base)):
