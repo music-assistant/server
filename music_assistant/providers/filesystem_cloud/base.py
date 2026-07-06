@@ -25,8 +25,11 @@ from music_assistant.controllers.tasks.context import update_current_task_progre
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
+    AUDIOBOOK_EXTENSIONS,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
+    TRACK_EXTENSIONS,
 )
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
@@ -41,6 +44,10 @@ if TYPE_CHECKING:
 
 # (id, name, is_dir, checksum, size) as returned by _api_list_children
 RawItem = tuple[str, str, bool, str, int | None]
+
+# extensions the stream route will serve; playlists/cue/images are read
+# server-side and never fetched over HTTP, so audio is all it needs to proxy
+AUDIO_STREAM_EXTENSIONS = TRACK_EXTENSIONS | AUDIOBOOK_EXTENSIONS | PODCAST_EPISODE_EXTENSIONS
 
 
 class CloudFileSystemProvider(LocalFileSystemProvider):
@@ -288,6 +295,12 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         path = self._normalize_path(request.query.get("path") or "")
         if not path:
             raise web.HTTPBadRequest(text="Missing path")
+        # the streamserver is unauthenticated: only proxy audio files so this route
+        # can't be used to download arbitrary files from the cloud account
+        # (same 404 as a missing file, so blocked paths are indistinguishable)
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        if ext not in AUDIO_STREAM_EXTENSIONS:
+            raise web.HTTPNotFound(text="File not found")
         try:
             file_id = await self._resolve_id(path)
         except MediaNotFoundError as err:

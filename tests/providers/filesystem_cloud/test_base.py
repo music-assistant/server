@@ -390,6 +390,19 @@ async def test_stream_request_unknown_path_is_not_found() -> None:
         await provider._handle_stream_request(request)
 
 
+@pytest.mark.parametrize("path", ["cover.jpg", "notes.txt", "playlist.m3u"])
+async def test_stream_request_non_audio_extension_is_not_found(path: str) -> None:
+    """The stream route refuses non-audio files so it can't leak arbitrary cloud files."""
+    provider = _make_provider()
+    request = make_mocked_request("GET", f"/{INSTANCE_ID}_stream?path={quote(path)}")
+
+    with pytest.raises(web.HTTPNotFound):
+        await provider._handle_stream_request(request)
+
+    # rejected before any cloud API lookup
+    assert provider.list_calls == []
+
+
 async def test_stream_request_forwards_range_and_maps_api_failure() -> None:
     """The Range header is forwarded to the download; API failure becomes a 502."""
     provider = _make_provider()
