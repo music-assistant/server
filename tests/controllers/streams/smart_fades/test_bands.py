@@ -28,8 +28,11 @@ class TestBandProfile:
         """Scaling all envelopes by a constant leaves fractions unchanged."""
         a1 = _analysis_with_bands(0.4, 0.1, 0.2, 0.05)
         a2 = _analysis_with_bands(0.2, 0.05, 0.1, 0.025)
-        f1 = window_fraction(build_band_profile(a1), "mid", 0.0, 60.0)
-        f2 = window_fraction(build_band_profile(a2), "mid", 0.0, 60.0)
+        p1, p2 = build_band_profile(a1), build_band_profile(a2)
+        assert p1 is not None
+        assert p2 is not None
+        f1 = window_fraction(p1, "mid", 0.0, 60.0)
+        f2 = window_fraction(p2, "mid", 0.0, 60.0)
         assert f1 == pytest.approx(f2, abs=1e-6)
 
     def test_missing_band_rms_returns_none(self) -> None:
@@ -45,6 +48,7 @@ class TestBandProfile:
     def test_too_few_downbeats_returns_none(self) -> None:
         """Fewer than 8 downbeats leaves no usable bar grid, so the profile is None."""
         a = _analysis_with_bands(0.3, 0.1, 0.1, 0.05)
+        assert a.downbeats is not None
         a.downbeats = a.downbeats[:7]
         assert build_band_profile(a) is None
 
@@ -57,15 +61,18 @@ class TestBandProfile:
     def test_empty_window_is_zero(self) -> None:
         """A window past the track end returns 0.0, never NaN."""
         p = build_band_profile(_analysis_with_bands(0.3, 0.1, 0.1, 0.05))
+        assert p is not None
         assert window_fraction(p, "low", 500.0, 600.0) == 0.0
         assert window_duty(p, "low", 500.0, 600.0) == 0.0
 
     def test_duty_counts_bars_above_reference_fraction(self) -> None:
         """Duty = share of window bars at >= k x the track's sustained band power."""
         a = _analysis_with_bands(0.3, 0.1, 0.1, 0.05)
+        assert a.extra_data is not None
         bands = a.extra_data["band_rms"]
         bands["mid"] = ([0.0] * 900) + ([0.4] * 900)  # mid silent first half
         p = build_band_profile(a)
+        assert p is not None
         assert window_duty(p, "mid", 0.0, 120.0) == pytest.approx(0.0, abs=0.05)
         assert window_duty(p, "mid", 120.0, 240.0) == pytest.approx(1.0, abs=0.05)
 
@@ -87,16 +94,21 @@ class TestLoudnessReferencedLevel:
         """Scaling all envelopes by a constant leaves the referenced level unchanged."""
         a1 = _analysis_with_bands(0.4, 0.1, 0.2, 0.05)
         a2 = _analysis_with_bands(0.2, 0.05, 0.1, 0.025)
-        r1 = loudness_referenced_level(build_band_profile(a1), "mid", 0.0, 60.0)
-        r2 = loudness_referenced_level(build_band_profile(a2), "mid", 0.0, 60.0)
+        p1, p2 = build_band_profile(a1), build_band_profile(a2)
+        assert p1 is not None
+        assert p2 is not None
+        r1 = loudness_referenced_level(p1, "mid", 0.0, 60.0)
+        r2 = loudness_referenced_level(p2, "mid", 0.0, 60.0)
         assert r1 == pytest.approx(r2, abs=1e-6)
 
     def test_louder_window_scores_higher(self) -> None:
         """A window with more low-band power than the track average scores > 1."""
         a = _analysis_with_bands(0.1, 0.1, 0.1, 0.1)
+        assert a.extra_data is not None
         bands = a.extra_data["band_rms"]
         bands["low"] = ([0.1] * 900) + ([0.5] * 900)  # louder low band, second half
         p = build_band_profile(a)
+        assert p is not None
         quiet = loudness_referenced_level(p, "low", 0.0, 120.0)
         loud = loudness_referenced_level(p, "low", 120.0, 240.0)
         assert loud > quiet

@@ -69,6 +69,10 @@ class TestSmartCrossFadePlanner:
         assert isinstance(plan, TransitionPlan)
         assert plan.crossfade_duration > 0
         eq = plan.eq_plan
+        assert eq.low_out is not None
+        assert eq.low_in is not None
+        assert eq.high_out is not None
+        assert eq.high_in is not None
         assert eq.low_out.shelf_type is ShelfType.LOW
         assert eq.low_in.shelf_type is ShelfType.LOW
         assert eq.high_out.shelf_type is ShelfType.HIGH
@@ -147,6 +151,8 @@ class TestSmartCrossFadePlanner:
         bins[t < 20.0] = 0.05
         inc.rms_energy = bins
         plan = _plan(_analysis(120.0, duration=240.0), inc)
+        assert plan.eq_plan.low_in is not None
+        assert plan.eq_plan.low_out is not None
         # B's bass must be fully restored before the rendered mix ends
         assert plan.eq_plan.low_in.steps[-1][0] <= plan.crossfade_duration + 1e-6
         # A's bass kill must complete before A's audible end
@@ -157,6 +163,7 @@ class TestSmartCrossFadePlanner:
         plan = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
         bar = 4 * 60.0 / 120.0
         expected = min(max(plan.crossfade_duration / 2, 2 * bar), 8 * bar)
+        assert plan.eq_plan.low_in is not None
         ramp = plan.eq_plan.low_in.steps[1:]  # steps[0] is the (0.0, kill) pin
         span = ramp[-1][0] - ramp[0][0]
         assert span == pytest.approx(expected, rel=0.05)

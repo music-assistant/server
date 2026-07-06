@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -13,7 +15,7 @@ def _envelope(value: float | list[float] | np.ndarray) -> list[float]:
         arr = np.asarray(value, dtype=np.float32)
         if len(arr) != 1800:
             raise ValueError(f"band envelope arrays must have 1800 bins, got {len(arr)}")
-        return arr.tolist()
+        return cast("list[float]", arr.tolist())
     return np.full(1800, value, dtype=np.float32).tolist()
 
 
