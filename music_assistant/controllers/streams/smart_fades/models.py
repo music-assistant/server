@@ -24,6 +24,16 @@ if TYPE_CHECKING:
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
+# Band edges (Hz) of the smart_fades ``extra_data["band_rms"]`` envelopes; None = up to Nyquist.
+# Stored rows keep whatever bands their analysis_version wrote — read historical rows by shape.
+BAND_RMS_BANDS: dict[str, tuple[float, float | None]] = {
+    "low": (20.0, 120.0),
+    "low_mid": (120.0, 400.0),
+    "mid": (400.0, 4000.0),
+    "high": (4000.0, None),
+}
+
+
 class SmartFadeNotApplicable(Exception):
     """Raised when the tracks cannot yield a smart crossfade and the caller should fall back."""
 
