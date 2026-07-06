@@ -899,6 +899,49 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tracks_from_seeds_samples_evenly_across_seeds() -> None:
+    """A large seed must not crowd the pool: each seed contributes evenly (round-robin)."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    seed_a = _make_mock_track("seed_a", "library://track/seed_a")
+    seed_b = _make_mock_track("seed_b", "library://track/seed_b")
+    base_a = _make_mock_track("base_a", "library://track/base_a")
+    base_b = _make_mock_track("base_b", "library://track/base_b")
+    # Seed A yields far more similar tracks than seed B; the old sequential fill let A alone
+    # reach the pool cap so B never contributed a single track.
+    a_similar = [_make_mock_track(f"a_sim_{i}", f"library://track/a_sim_{i}") for i in range(30)]
+    b_similar = [_make_mock_track("b_sim_0", "library://track/b_sim_0")]
+
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(side_effect=[seed_a, seed_b])
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+    mass.player_queues.get_tracks_for_playback = AsyncMock(
+        side_effect=lambda seed: {seed_a: [base_a], seed_b: [base_b]}[seed]
+    )
+    mass.music.tracks.similar_tracks = AsyncMock(
+        side_effect=lambda item_id, _provider: {"base_a": a_similar, "base_b": b_similar}[item_id]
+    )
+
+    result = await plugin._tracks_from_seeds(
+        ["library://track/seed_a", "library://track/seed_b"], target_size=4
+    )
+
+    ids = {track.item_id for track in result}
+    # seed B's tracks must survive even though seed A dwarfs it
+    assert "base_b" in ids
+    assert "b_sim_0" in ids
+    assert "base_a" in ids
+    # round-robin, not concatenation: A and B alternate at the head of the pool
+    head = [track.item_id for track in result[:2]]
+    assert head == ["base_a", "base_b"]
+
+
+@pytest.mark.asyncio
 async def test_exclusion_filters_out_excluded_artist() -> None:
     """Tracks from excluded artists are removed from the result."""
     mass = MagicMock()

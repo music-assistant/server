@@ -19,6 +19,7 @@ import uuid as _uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace as dc_replace
+from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -1250,30 +1251,40 @@ class SmartPlaylistProvider(PluginProvider):
                 seeds.append(await ctrl.get(item_id, provider))
             except Exception as exc:
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
-        # each seed contributes its own (base) tracks plus tracks similar to them; downstream
-        # post-filtering, dedup, shuffle and limit shape this pool into the final playlist
-        pool: list[Track] = []
+        if not seeds:
+            return []
+        # Build a separate pool per seed (its own base tracks plus tracks similar to them), then
+        # round-robin across those pools so every seed contributes evenly - a single large seed
+        # can no longer fill the whole pool before the others are reached. A shared `seen` set ties
+        # each track to the first seed that yields it. Downstream post-filtering, dedup, shuffle and
+        # limit shape this pool into the final playlist.
+        pool_cap = target_size * 3
+        per_seed_cap = -(-pool_cap // len(seeds))  # ceil, so the pools can still fill the cap
         seen: set[Track] = set()
+        per_seed_pools: list[list[Track]] = []
         for seed in seeds:
-            if len(pool) >= target_size * 3:
-                break
+            seed_pool: list[Track] = []
             with suppress(MusicAssistantError):
                 for base in await self.mass.player_queues.get_tracks_for_playback(seed):
-                    if len(pool) >= target_size * 3:
+                    if len(seed_pool) >= per_seed_cap:
                         break
                     if base not in seen:
                         seen.add(base)
-                        pool.append(base)
+                        seed_pool.append(base)
                     with suppress(MusicAssistantError):
                         for track in await self.mass.music.tracks.similar_tracks(
                             base.item_id, base.provider
                         ):
-                            if len(pool) >= target_size * 3:
+                            if len(seed_pool) >= per_seed_cap:
                                 break
                             if track not in seen:
                                 seen.add(track)
-                                pool.append(track)
-        return pool
+                                seed_pool.append(track)
+            per_seed_pools.append(seed_pool)
+        pool: list[Track] = []
+        for round_tracks in zip_longest(*per_seed_pools):
+            pool.extend(track for track in round_tracks if track is not None)
+        return pool[:pool_cap]
 
     async def _update_playlist_description(
         self, library_item_id: int | str, description: str
