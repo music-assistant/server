@@ -145,7 +145,6 @@ class AuthenticationManager:
             payload = self.jwt_helper.decode_token(token, verify_exp=True)
             token_id = payload.get("jti")
             user_id = payload.get("sub")
-            is_long_lived = payload.get("is_long_lived", False)
 
             if not token_id or not user_id:
                 return None
@@ -153,6 +152,9 @@ class AuthenticationManager:
             token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
             if not token_row:
                 return None
+
+            # Database is source of truth for token metadata, not the (immutable) JWT payload.
+            is_long_lived = bool(token_row["is_long_lived"])
 
             # Database expiration is source of truth
             if token_row["expires_at"]:
