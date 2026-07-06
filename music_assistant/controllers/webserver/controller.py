@@ -70,6 +70,7 @@ from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, CoreConfig
+    from music_assistant_models.event import MassEvent
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.api import APICommandHandler
@@ -112,6 +113,10 @@ class WebserverController(CoreController):
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
         self.clients: set[WebsocketClientHandler] = set()
+        # render cache so event JSON is serialized once per (event, locale)
+        # instead of once per connected websocket client
+        self._event_render_event: MassEvent | None = None
+        self._event_renders: dict[str | None, str] = {}
         # the URL that the "auto" base_url setting resolves to, detected at setup
         self._auto_base_url: str = ""
         self.manifest.name = "Web Server (frontend and api)"
@@ -383,6 +388,40 @@ class WebserverController(CoreController):
     def unregister_websocket_client(self, client: WebsocketClientHandler) -> None:
         """Unregister a WebSocket client."""
         self.clients.discard(client)
+
+    def render_event_message(self, event: MassEvent, locale: str | None) -> str:
+        """
+        Render a MassEvent to its JSON wire format, memoized per (event, locale).
+
+        All connected websocket clients receive the exact same event object, so the
+        rendered JSON is shared between clients using the same locale instead of
+        being serialized once per client (event payloads such as the full player or
+        queue state can be multiple KBs and serialization runs on the event loop).
+
+        :param event: The MassEvent to render (as received from mass.subscribe).
+        :param locale: The locale to localize human-readable fields for.
+        """
+        # Only renders of the most recent event are kept: fan-out to all clients happens
+        # back-to-back on the event loop, so by the time the next event arrives the cached
+        # renders can never be needed again. The strong reference to the cached event makes
+        # the identity check safe: it cannot be garbage collected while cached, so its id()
+        # cannot be reused by a newly allocated event object.
+        if self._event_render_event is not event:
+            self._event_render_event = event
+            self._event_renders.clear()
+        if (cached := self._event_renders.get(locale)) is not None:
+            return cached
+        token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+        token_loc = TRANSLATION_RESOLVER.set(
+            partial(self.mass.translations.get_translation, locale=locale)
+        )
+        try:
+            rendered = event.to_json()
+        finally:
+            IMAGE_PROXY_ID_RESOLVER.reset(token)
+            TRANSLATION_RESOLVER.reset(token_loc)
+        self._event_renders[locale] = rendered
+        return rendered
 
     def disconnect_websockets_for_token(self, token_id: str) -> None:
         """Disconnect all WebSocket clients using a specific token."""
