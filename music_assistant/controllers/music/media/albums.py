@@ -6,6 +6,7 @@ import contextlib
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
@@ -49,8 +50,12 @@ class AlbumsController(MediaControllerBase[Album]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
-        self.mass.register_api_command(f"music/{api_base}/album_versions", self.versions)
+        self.mass.register_api_command(
+            f"music/{api_base}/album_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/album_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
 
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:

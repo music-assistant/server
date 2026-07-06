@@ -12,6 +12,7 @@ from time import time
 from typing import TYPE_CHECKING, cast
 from uuid import NAMESPACE_URL, uuid5
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, ProviderType
@@ -184,7 +185,7 @@ class MetaDataController(
         )
         return str(value)
 
-    @api_command("metadata/set_default_preferred_language")
+    @api_command("metadata/set_default_preferred_language", required_scope=Scope.CONFIG_CORE_WRITE)
     def set_default_preferred_language(self, lang: str) -> None:
         """
         Set the default preferred language.
@@ -198,7 +199,7 @@ class MetaDataController(
             return  # already set
         self.set_preferred_language(lang)
 
-    @api_command("metadata/set_preferred_language")
+    @api_command("metadata/set_preferred_language", required_scope=Scope.LIBRARY_MANAGE)
     def set_preferred_language(self, lang: str) -> None:
         """
         Set the preferred language.
@@ -228,7 +229,7 @@ class MetaDataController(
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
 
-    @api_command("metadata/update_metadata")
+    @api_command("metadata/update_metadata", required_scope=Scope.LIBRARY_MANAGE)
     async def update_metadata(
         self, item: str | MediaItemType, force_refresh: bool = False
     ) -> MediaItemType:
@@ -293,7 +294,7 @@ class MetaDataController(
             },
         )
 
-    @api_command("metadata/get_track_lyrics")
+    @api_command("metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ)
     async def get_track_lyrics(
         self,
         track: Track,

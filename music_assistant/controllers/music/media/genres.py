@@ -8,6 +8,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
 from music_assistant_models.enums import EventType, ImageType, MediaType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
@@ -119,90 +120,100 @@ class GenreController(MediaControllerBase[Genre]):
 
         # register extra api handlers
         self.mass.register_api_command(
-            "music/genres/add_alias", self.add_alias, required_role="admin"
+            "music/genres/add_alias", self.add_alias, required_scope=Scope.LIBRARY_MANAGE
         )
         self.mass.register_api_command(
-            "music/genres/remove_alias", self.remove_alias, required_role="admin"
+            "music/genres/remove_alias", self.remove_alias, required_scope=Scope.LIBRARY_MANAGE
         )
         self.mass.register_api_command(
-            "music/genres/add_media_mapping", self.add_media_mapping, required_role="admin"
+            "music/genres/add_media_mapping",
+            self.add_media_mapping,
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/remove_media_mapping",
             self.remove_media_mapping,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/promote_alias",
             self.promote_alias_to_genre,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/restore_defaults",
             self.restore_default_genres,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/add",
             self.add_item_to_library,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/overview",
             self.get_overview,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             "music/genres/tracks",
             self.tracks,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             "music/genres/albums",
             self.albums,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             "music/genres/scan_mappings",
             self.scan_mappings,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/scanner_status",
             self.get_scanner_status,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             "music/genres/genres_for_media_item",
             self.get_genres_for_media_item,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             "music/genres/genre_exclusions_for_media_item",
             self.get_genre_exclusions_for_media_item,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             "music/genres/exclude_genre_from_media_item",
             self.exclude_genre_from_media_item,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/remove_genre_exclusion",
             self.remove_genre_exclusion,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/merge",
             self.merge_genres,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
             "music/genres/media_counts",
             self.get_genre_media_counts,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             "music/genres/global_exclusions",
             self.get_global_genre_exclusions,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             "music/genres/remove_global_exclusion",
             self.remove_global_genre_exclusion,
-            required_role="admin",
+            required_scope=Scope.LIBRARY_MANAGE,
         )
 
         # Run genre mapping scanner after library sync completes

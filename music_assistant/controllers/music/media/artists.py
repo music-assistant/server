@@ -7,6 +7,7 @@ import contextlib
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     AlbumType,
     ArtistType,
@@ -67,12 +68,28 @@ class ArtistsController(MediaControllerBase[Artist]):
         self._db_add_lock = asyncio.Lock()
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/artist_albums", self.albums)
-        self.mass.register_api_command(f"music/{api_base}/artist_tracks", self.tracks)
-        self.mass.register_api_command(f"music/{api_base}/top_tracks", self.top_tracks)
-        self.mass.register_api_command(f"music/{api_base}/top_albums", self.top_albums)
-        self.mass.register_api_command(f"music/{api_base}/artist_audiobooks", self.audiobooks)
-        self.mass.register_api_command(f"music/{api_base}/similar_artists", self.similar_artists)
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_albums", self.albums, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/top_tracks", self.top_tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/top_albums", self.top_albums, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_audiobooks",
+            self.audiobooks,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/similar_artists",
+            self.similar_artists,
+            required_scope=Scope.LIBRARY_READ,
+        )
 
     async def library_count(
         self,

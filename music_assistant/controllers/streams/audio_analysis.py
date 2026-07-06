@@ -15,6 +15,7 @@ from math import inf
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
@@ -752,7 +753,7 @@ class AudioAnalysisController:
             if merged is not None:
                 yield (*current_key, merged)
 
-    @api_command("audio_analysis/coverage")
+    @api_command("audio_analysis/coverage", required_scope=Scope.SYSTEM_MANAGE)
     async def get_coverage(self, aa_domain: str) -> AudioAnalysisCoverage:
         """
         Return analysis-coverage health counts for an AA provider.
@@ -796,7 +797,7 @@ class AudioAnalysisController:
             analysis_version=provider.analysis_version,
         )
 
-    @api_command("audio_analysis/failures")
+    @api_command("audio_analysis/failures", required_scope=Scope.SYSTEM_MANAGE)
     async def get_failures(self, aa_domain: str | None = None) -> list[dict[str, Any]]:
         """
         Return recorded analysis failures, optionally filtered by AA provider domain.
@@ -819,7 +820,7 @@ class AudioAnalysisController:
             for r in rows
         ]
 
-    @api_command("audio_analysis/failures/clear")
+    @api_command("audio_analysis/failures/clear", required_scope=Scope.SYSTEM_MANAGE)
     async def clear_failures(
         self,
         item_id: str | None = None,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping, UniqueList
@@ -41,9 +42,15 @@ class PodcastsController(MediaControllerBase[Podcast]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/podcast_episodes", self.episodes)
-        self.mass.register_api_command(f"music/{api_base}/podcast_episode", self.episode)
-        self.mass.register_api_command(f"music/{api_base}/podcast_versions", self.versions)
+        self.mass.register_api_command(
+            f"music/{api_base}/podcast_episodes", self.episodes, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/podcast_episode", self.episode, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/podcast_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
 
     async def library_items(
         self,

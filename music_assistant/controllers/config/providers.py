@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import shortuuid
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -74,7 +75,7 @@ class ProviderConfigMixin:
 
         async def set_onboard_complete(self) -> None: ...  # noqa: D102
 
-    @api_command("config/providers")
+    @api_command("config/providers", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
@@ -105,7 +106,7 @@ class ProviderConfigMixin:
             configs.append(conf)
         return configs
 
-    @api_command("config/providers/get")
+    @api_command("config/providers/get", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -157,7 +158,7 @@ class ProviderConfigMixin:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/providers/get_value")
+    @api_command("config/providers/get_value", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config_value(
         self,
         instance_id: str,
@@ -192,7 +193,7 @@ class ProviderConfigMixin:
             else conf.values[key].default_value
         )
 
-    @api_command("config/providers/get_entries")
+    @api_command("config/providers/get_entries", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config_entries(
         self,
         provider_domain: str,
@@ -241,7 +242,7 @@ class ProviderConfigMixin:
         ]
         return _with_translation_owner(all_entries, f"provider.{provider_domain}", action, values)
 
-    @api_command("config/providers/save", required_role="admin")
+    @api_command("config/providers/save", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def save_provider_config(
         self,
         provider_domain: str,
@@ -262,7 +263,7 @@ class ProviderConfigMixin:
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)
 
-    @api_command("config/providers/remove", required_role="admin")
+    @api_command("config/providers/remove", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def remove_provider_config(self, instance_id: str) -> None:
         """Remove ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
@@ -420,7 +421,7 @@ class ProviderConfigMixin:
         ):
             entry.value = value
 
-    @api_command("config/providers/reload", required_role="admin")
+    @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def _reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
         try:

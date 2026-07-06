@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
 import aiofiles
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import (
     ContentType,
@@ -182,8 +183,12 @@ class BuiltinProvider(MusicProvider):
             initial_delay=60,
         )
         # register API commands for manual item management
-        self.mass.register_api_command("builtin/add_radio", self.add_radio)
-        self.mass.register_api_command("builtin/add_track", self.add_track)
+        self.mass.register_api_command(
+            "builtin/add_radio", self.add_radio, required_scope=Scope.LIBRARY_WRITE
+        )
+        self.mass.register_api_command(
+            "builtin/add_track", self.add_track, required_scope=Scope.LIBRARY_WRITE
+        )
 
     @property
     def is_streaming_provider(self) -> bool:

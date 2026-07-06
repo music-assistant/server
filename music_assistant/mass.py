@@ -15,7 +15,7 @@ from uuid import uuid4
 import aiofiles
 from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ProviderError
 from music_assistant_models.enums import CoreState, EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
@@ -49,7 +49,10 @@ from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
@@ -341,12 +344,12 @@ class MusicAssistant:
             status=self._state,
         )
 
-    @api_command("providers/manifests")
+    @api_command("providers/manifests", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifests(self) -> list[ProviderManifest]:
         """Return all Provider manifests."""
         return list(self._provider_manifests.values())
 
-    @api_command("providers/manifests/get")
+    @api_command("providers/manifests/get", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifest(self, instance_id_or_domain: str) -> ProviderManifest:
         """Return Provider manifests of single provider(domain)."""
         if instance_id_or_domain in self._provider_manifests:
@@ -355,7 +358,7 @@ class MusicAssistant:
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
 
-    @api_command("providers")
+    @api_command("providers", required_scope=Scope.PROVIDERS_READ)
     def get_providers(
         self, provider_type: ProviderType | None = None
     ) -> list[ProviderInstanceType]:
@@ -367,7 +370,7 @@ class MusicAssistant:
         """
         user = get_current_user()
         user_provider_filter = (
-            user.provider_filter if user and user.role != UserRole.ADMIN else None
+            user.provider_filter if user and not has_scope(user, Scope.ALL) else None
         )
         return [
             x
@@ -381,7 +384,7 @@ class MusicAssistant:
             )
         ]
 
-    @api_command("logging/get", required_role=UserRole.ADMIN)
+    @api_command("logging/get", required_scope=Scope.SYSTEM_MANAGE)
     async def get_application_log(self) -> str:
         """Return the application log from file."""
         logfile = os.path.join(self.storage_path, "musicassistant.log")
@@ -697,7 +700,8 @@ class MusicAssistant:
         command: str,
         handler: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
-        required_role: str | None = None,
+        required_scope: Scope | None = None,
+        allow_impersonation: bool = False,
         alias: bool = False,
     ) -> Callable[[], None]:
         """
@@ -706,8 +710,10 @@ class MusicAssistant:
         :param command: The command name/path.
         :param handler: The function to handle the command.
         :param authenticated: Whether authentication is required (default: True).
-        :param required_role: Required user role ("admin" or "user")
+        :param required_scope: Scope required to execute the command,
             None means any authenticated user.
+        :param allow_impersonation: Whether the command accepts a 'user' argument
+            to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).
             Aliases are not shown in API documentation but remain functional.
 
@@ -717,7 +723,7 @@ class MusicAssistant:
             msg = f"Command {command} is already registered"
             raise RuntimeError(msg)
         self.command_handlers[command] = APICommandHandler.parse(
-            command, handler, authenticated, required_role, alias
+            command, handler, authenticated, required_scope, allow_impersonation, alias
         )
 
         def unregister() -> None:
@@ -931,9 +937,12 @@ class MusicAssistant:
                 if hasattr(obj, "api_cmd"):
                     # method is decorated with our api decorator
                     authenticated = getattr(obj, "api_authenticated", True)
-                    required_role = getattr(obj, "api_required_role", None)
+                    required_scope = getattr(obj, "api_required_scope", None)
+                    allow_impersonation = getattr(obj, "api_allow_impersonation", False)
                     alias = getattr(obj, "api_alias", False)
-                    self.register_api_command(obj.api_cmd, obj, authenticated, required_role, alias)
+                    self.register_api_command(
+                        obj.api_cmd, obj, authenticated, required_scope, allow_impersonation, alias
+                    )
 
     async def _load_builtin_providers(self) -> None:
         """

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -399,23 +399,33 @@ class PartyPlugin(PluginProvider):
         """Call after the provider has been loaded."""
         # Register API commands and store unregister handles
         self._unregister_handles.append(
-            self.mass.register_api_command("party/url", self.get_party_url, required_role="user")
+            self.mass.register_api_command(
+                "party/url", self.get_party_url, required_scope=Scope.USERS_INVITE
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/player", self.get_party_player)
+            self.mass.register_api_command(
+                "party/player", self.get_party_player, required_scope=Scope.PLAYERS_READ
+            )
         )
         self._unregister_handles.append(
             self.mass.register_api_command("party/config", self.get_party_config)
         )
         # Guest action commands - these are called by the guest frontend
         self._unregister_handles.append(
-            self.mass.register_api_command("party/add_to_queue", self.add_to_queue)
+            self.mass.register_api_command(
+                "party/add_to_queue", self.add_to_queue, required_scope=Scope.QUEUES_CONTROL
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/boost_queue_item", self.boost_queue_item)
+            self.mass.register_api_command(
+                "party/boost_queue_item", self.boost_queue_item, required_scope=Scope.QUEUES_CONTROL
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/skip", self.skip_current)
+            self.mass.register_api_command(
+                "party/skip", self.skip_current, required_scope=Scope.QUEUES_CONTROL
+            )
         )
 
     async def unload(self, is_removed: bool = False) -> None:
