@@ -27,6 +27,7 @@ from music_assistant.controllers.cache.constants import (
     DEFAULT_CACHE_EXPIRATION,
     LOGGER,
     MAX_CACHE_DB_SIZE_MB,
+    SWR_FALLBACK_MAX_AGE,
     SerializableType,
 )
 from music_assistant.controllers.tasks.context import (
@@ -205,7 +206,9 @@ class CacheController(CoreController):
         # always serialize to JSON to ensure data is serializable
         # this raises if the data contains non-serializable objects
         data = await asyncio.to_thread(json_dumps, data)
-        await self.database.insert_or_replace(
+        # upsert (update in place on the UNIQUE(category, key, provider) conflict) instead of
+        # INSERT OR REPLACE, which deletes and re-inserts the row and so rewrites every index
+        await self.database.upsert(
             DB_TABLE_CACHE,
             {
                 "category": category,
@@ -262,11 +265,15 @@ class CacheController(CoreController):
         self.logger.debug("Running automatic cleanup...")
         update_current_task_progress_text("Removing expired cache records")
         cur_timestamp = int(time.time())
-        # clean up db cache object only if expired; entries marked with
-        # allow_expired_cache are kept as fallback for stale-while-revalidate
+        # remove expired entries; allow_expired_cache entries are kept as stale-while-revalidate
+        # fallback, but only until they are expired beyond SWR_FALLBACK_MAX_AGE - past that their
+        # key is clearly no longer requested and the row would otherwise live forever
+        swr_cutoff = cur_timestamp - SWR_FALLBACK_MAX_AGE
         cursor = await self.database.execute(
-            f"DELETE FROM {DB_TABLE_CACHE} WHERE expires < :timestamp AND allow_expired_cache = 0",
-            {"timestamp": cur_timestamp},
+            f"DELETE FROM {DB_TABLE_CACHE} WHERE "
+            "(expires < :timestamp AND allow_expired_cache = 0) "
+            "OR (expires < :swr_cutoff AND allow_expired_cache = 1)",
+            {"timestamp": cur_timestamp, "swr_cutoff": swr_cutoff},
         )
         await self.database.commit()
         cleaned_records = cursor.rowcount
@@ -388,29 +395,11 @@ class CacheController(CoreController):
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
         assert self.database is not None
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_category_idx "
-            f"ON {DB_TABLE_CACHE}(category);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx ON {DB_TABLE_CACHE}(key);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_provider_idx "
-            f"ON {DB_TABLE_CACHE}(provider);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_category_key_idx "
-            f"ON {DB_TABLE_CACHE}(category,key);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_category_provider_idx "
-            f"ON {DB_TABLE_CACHE}(category,provider);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_category_key_provider_idx "
-            f"ON {DB_TABLE_CACHE}(category,key,provider);"
-        )
+        # The UNIQUE(category, key, provider) constraint already provides an index that serves
+        # every point lookup (get() matches exactly those three columns) and any delete that
+        # includes the category. The only access pattern its column order cannot serve is a
+        # delete that filters by (key, provider) without a category, so that is the single
+        # secondary index kept here.
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_provider_idx "
             f"ON {DB_TABLE_CACHE}(key,provider);"
@@ -428,6 +417,20 @@ class CacheController(CoreController):
                 f"ALTER TABLE {DB_TABLE_CACHE} "
                 "ADD COLUMN allow_expired_cache INTEGER NOT NULL DEFAULT 0"
             )
+        if prev_version <= 8:
+            # drop the redundant secondary indexes: they either duplicate the
+            # UNIQUE(category, key, provider) autoindex or are a left-prefix of it, so the
+            # autoindex already serves their lookups. The (key, provider) index is (re)created
+            # by __create_database_indexes and intentionally kept.
+            for index_name in (
+                "category_idx",
+                "key_idx",
+                "provider_idx",
+                "category_key_idx",
+                "category_provider_idx",
+                "category_key_provider_idx",
+            ):
+                await self.database.execute(f"DROP INDEX IF EXISTS {DB_TABLE_CACHE}_{index_name}")
         await self.database.commit()
 
     def _register_cleanup_task(self) -> None:
