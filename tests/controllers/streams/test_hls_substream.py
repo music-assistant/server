@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Self
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,10 +17,10 @@ class _ResponseContext:
         self.charset = "utf-8"
         self._playlist = playlist
 
-    async def __aenter__(self) -> _ResponseContext:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *_exc_info: Any) -> None:
+    async def __aexit__(self, *_exc_info: object) -> None:
         return None
 
     def raise_for_status(self) -> None:
@@ -47,8 +47,7 @@ async def test_get_hls_substream_resolves_root_relative_child() -> None:
     )
 
     assert (
-        substream.path
-        == "http://plex.local:32400/music/:/transcode/session/children/stream.m3u8?"
+        substream.path == "http://plex.local:32400/music/:/transcode/session/children/stream.m3u8?"
         "X-Plex-Token=token"
     )
 
