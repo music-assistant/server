@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
@@ -35,6 +36,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     HomeAssistantOAuthProvider,
     HomeAssistantProviderConfig,
     LoginProvider,
+    LoginRateLimiter,
     normalize_username,
 )
 from music_assistant.helpers.api import api_command
@@ -56,9 +58,11 @@ TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
 TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
 
 # Join code constants (short codes for QR/link-based login)
-JOIN_CODE_LENGTH = 6
+JOIN_CODE_LENGTH = 12
 JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
 JOIN_CODE_DEFAULT_EXPIRY_HOURS = 8
+# No source IP available here, so throttle failed exchanges globally under one key.
+JOIN_CODE_RATE_LIMIT_KEY = "join_code_exchange"
 
 
 class AuthenticationManager:
@@ -77,6 +81,9 @@ class AuthenticationManager:
         self.logger = LOGGER
         self._has_users: bool = False
         self.jwt_helper: JWTHelper = None  # type: ignore[assignment]
+        self._join_code_rate_limiter = LoginRateLimiter()
+        # Stops concurrent exchanges from passing the rate limit check before failures land
+        self._join_code_exchange_lock = asyncio.Lock()
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -1781,13 +1788,31 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        token = await self._exchange_join_code(code)
+        async with self._join_code_exchange_lock:
+            allowed, remaining_delay = await self._join_code_rate_limiter.check_rate_limit(
+                JOIN_CODE_RATE_LIMIT_KEY
+            )
+            if not allowed:
+                self.logger.warning(
+                    "Join code exchange rate limit exceeded. %d seconds remaining.", remaining_delay
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Too many failed attempts. Please try again in {remaining_delay} seconds."
+                    ),
+                }
 
-        if not token:
-            return {
-                "success": False,
-                "error": "Invalid or expired join code",
-            }
+            token = await self._exchange_join_code(code)
+
+            if not token:
+                await self._join_code_rate_limiter.record_failed_attempt(JOIN_CODE_RATE_LIMIT_KEY)
+                return {
+                    "success": False,
+                    "error": "Invalid or expired join code",
+                }
+
+        # No clear_attempts on success: any valid-code holder could reset the global counter
 
         # Decode token to get user info
         try:

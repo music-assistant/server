@@ -14,7 +14,7 @@ from music_assistant_models.errors import InsufficientPermissions, InvalidDataEr
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
-from music_assistant.controllers.webserver.auth import AuthenticationManager
+from music_assistant.controllers.webserver.auth import JOIN_CODE_LENGTH, AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -930,7 +930,7 @@ async def test_generate_join_code(auth_manager: AuthenticationManager) -> None:
     )
 
     assert code is not None
-    assert len(code) == 6  # JOIN_CODE_LENGTH
+    assert len(code) == JOIN_CODE_LENGTH
     assert code.isalnum()
     assert expires_at is not None
     assert expires_at > utc()
@@ -1276,3 +1276,76 @@ async def test_username_workaround(auth_manager: AuthenticationManager) -> None:
     # but passing their own username is a no-op
     await resolve_username_workaround(mass, "music/search", {"username": "user_a"})
     assert get_current_user() == standard_user
+
+
+async def test_join_code_length_at_least_12() -> None:
+    """Verify join codes are long enough to resist brute force (security finding 7.3.2)."""
+    assert JOIN_CODE_LENGTH >= 12
+
+
+async def test_exchange_join_code_rate_limited(auth_manager: AuthenticationManager) -> None:
+    """
+    Verify repeated failed join code exchanges get throttled (security finding 7.3.2).
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    # Three failures trip the progressive delay threshold.
+    for _ in range(3):
+        result = await auth_manager.exchange_join_code("WRONGCODE123")
+        assert result["success"] is False
+
+    # The next attempt must be rejected for rate limiting, not just "invalid".
+    result = await auth_manager.exchange_join_code("WRONGCODE123")
+    assert result["success"] is False
+    assert "too many" in result["error"].lower()
+
+
+async def test_exchange_join_code_rate_limit_concurrent_burst(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify concurrent failed exchanges cannot race past the rate limiter.
+
+    Without serialization, parallel requests all pass the rate limit check
+    before any of them records a failure, allowing brute-force bursts.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    results = await asyncio.gather(
+        *(auth_manager.exchange_join_code("WRONGCODE123") for _ in range(10))
+    )
+
+    assert all(result["success"] is False for result in results)
+    # Only the first 3 attempts may reach the actual code check; the rest must be throttled.
+    invalid_count = sum(1 for result in results if "invalid" in result["error"].lower())
+    throttled_count = sum(1 for result in results if "too many" in result["error"].lower())
+    assert invalid_count == 3
+    assert throttled_count == 7
+
+
+async def test_exchange_join_code_success_does_not_reset_rate_limit(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify a successful exchange does not clear the failed-attempt counter.
+
+    The rate limit key is global, so clearing on success would let an attacker
+    holding any valid code reset the counter at will and bypass throttling.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="norstuser", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    # A couple of failures, still below the throttle threshold.
+    for _ in range(2):
+        assert (await auth_manager.exchange_join_code("NOPE12345678"))["success"] is False
+
+    # A valid exchange still succeeds but must not wipe the counter.
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+    # The third failure trips the threshold, throttling further attempts.
+    assert (await auth_manager.exchange_join_code("NOPE12345678"))["success"] is False
+    result = await auth_manager.exchange_join_code(code)
+    assert result["success"] is False
+    assert "too many" in result["error"].lower()
