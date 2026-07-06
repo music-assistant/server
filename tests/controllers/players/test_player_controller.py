@@ -18,7 +18,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -30,7 +30,12 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import CONF_HIDE_IN_UI
+from music_assistant.constants import (
+    CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+    CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+    CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
+    CONF_HIDE_IN_UI,
+)
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
 
@@ -246,14 +251,15 @@ class TestRegisterOrUpdate:
         player_id: str,
         provider: MockProvider,
         *,
+        default_name: str = "Default Player",
         name: str | None = None,
-        values: dict[str, bool] | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> PlayerConfig:
         """Build a player config with the settings relevant to replacement tests."""
         raw_config: dict[str, object] = {
             "player_id": player_id,
             "provider": provider.instance_id,
-            "default_name": "Default Player",
+            "default_name": default_name,
             "player_type": PlayerType.PLAYER,
             "enabled": True,
             "values": values or {},
@@ -269,7 +275,10 @@ class TestRegisterOrUpdate:
                         type=ConfigEntryType.BOOLEAN,
                         default_value=False,
                         required=False,
-                    )
+                    ),
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+                    CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
                 ],
                 raw_config,
             ),
@@ -299,6 +308,47 @@ class TestRegisterOrUpdate:
         assert replacement.state.name == "Custom Player"
         assert replacement.state.hide_in_ui is True
         assert replacement.initialized.is_set()
+        mock_mass.config.get_player_config.assert_awaited_once_with(player_id)
+        controller._evaluate_protocol_links.assert_called_once_with(replacement)
+
+    async def test_squeezelite_universal_player_replacement_preserves_reported_settings(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """Regression for support#5745's Squeezelite universal-player config shape."""
+        provider = MockProvider("universal_player", instance_id="universal_player", mass=mock_mass)
+        player_id = "up_issue_5745_squeezelite"
+        default_name = "default-squeezelite-player"
+        custom_values: dict[str, ConfigValueType] = {
+            CONF_HIDE_IN_UI: True,
+            CONF_ENTRY_ANNOUNCE_VOLUME_MIN.key: 55,
+            CONF_ENTRY_ANNOUNCE_VOLUME_MAX.key: 98,
+            CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP.key: False,
+        }
+        original = MockPlayer(provider, player_id, "Existing Universal Player")
+        controller._players = {player_id: original}
+        mock_mass.players = controller
+
+        replacement = MockPlayer(provider, player_id, default_name)
+        replacement.set_config(self._player_config(player_id, provider, default_name=default_name))
+        full_config = self._player_config(
+            player_id,
+            provider,
+            default_name=default_name,
+            name="Custom Squeezelite Player",
+            values=custom_values,
+        )
+        mock_mass.config.get_player_config = AsyncMock(return_value=full_config)
+        controller._evaluate_protocol_links = MagicMock()  # type: ignore[method-assign]
+
+        await controller.register_or_update(replacement)
+
+        assert controller.get_player(player_id) is replacement
+        assert replacement.config is full_config
+        assert replacement.state.name == "Custom Squeezelite Player"
+        assert replacement.state.hide_in_ui is True
+        assert replacement.config.get_value(CONF_ENTRY_ANNOUNCE_VOLUME_MIN.key) == 55
+        assert replacement.config.get_value(CONF_ENTRY_ANNOUNCE_VOLUME_MAX.key) == 98
+        assert replacement.config.get_value(CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP.key) is False
         mock_mass.config.get_player_config.assert_awaited_once_with(player_id)
         controller._evaluate_protocol_links.assert_called_once_with(replacement)
 
