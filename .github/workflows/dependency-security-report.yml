@@ -17,6 +17,18 @@
 # Because a workflow_run job is not itself a PR status check, the merge gate is
 # re-established by posting a commit status ("Dependency Security Review") to the
 # PR head commit. Configure that context as a required check in branch protection.
+#
+# Status semantics:
+#   success — no dependency changes, or changes reviewed/auto-approved
+#   pending — dependency changes detected, analysis in progress (set by init job)
+#   failure — awaiting maintainer review (overridable via /approve-dependencies)
+#   error   — analysis failed, high-risk packages or known vulnerabilities
+#             (NOT overridable via /approve-dependencies; requires a re-run or fix)
+#
+# The `init` job runs on `pull_request_target` for EVERY PR (the analysis
+# workflow is path-filtered, so without it non-dependency PRs would never
+# receive the required status). It is safe despite the privileged trigger
+# because it never checks out or executes PR code — it only calls the API.
 
 name: Dependency Security Report
 
@@ -24,14 +36,57 @@ on:
   workflow_run:
     workflows: ["Dependency Security Check"]
     types: [completed]
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches:
+      - stable
+      - dev
 
 permissions:
   contents: read
 
 jobs:
+  # Seed the commit status for every PR so the required check never hangs in
+  # "Expected": success for PRs without dependency changes, pending for PRs
+  # that will be analysed. The report job later posts the final state.
+  # SECURITY: privileged trigger, but no checkout — API calls only.
+  init:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Post initial commit status
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: pr.number, per_page: 100,
+            });
+            const isDepFile = (f) =>
+              f === 'requirements_all.txt' ||
+              f === 'pyproject.toml' ||
+              f === 'manifest.json' ||
+              f.endsWith('/manifest.json');
+            const depsChanged = files.some(f => isDepFile(f.filename));
+
+            await github.rest.repos.createCommitStatus({
+              owner, repo, sha: pr.head.sha,
+              state: depsChanged ? 'pending' : 'success',
+              context: 'Dependency Security Review',
+              description: depsChanged
+                ? 'Dependency security analysis in progress'
+                : 'No dependency changes to review',
+            });
+
   report:
     # Only report for runs triggered by pull requests
-    if: github.event.workflow_run.event == 'pull_request'
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,13 +95,6 @@ jobs:
       issues: write
       statuses: write
     steps:
-      - name: Download security reports
-        uses: actions/download-artifact@v8
-        with:
-          name: security-reports
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
       # Resolve the PR and all trusted facts from the head commit. head_sha is
       # set by GitHub from the workflow_run event and cannot be forged by the PR.
       - name: Resolve pull request (trusted)
@@ -57,10 +105,11 @@ jobs:
             const { owner, repo } = context.repo;
             const headSha = context.payload.workflow_run.head_sha;
 
-            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner, repo, commit_sha: headSha,
-            });
-            const pr = prs.data.find(p =>
+            const prs = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              { owner, repo, commit_sha: headSha, per_page: 100 },
+            );
+            const pr = prs.find(p =>
               p.state === 'open' &&
               p.head.sha === headSha &&
               ['dev', 'stable'].includes(p.base.ref)
@@ -93,13 +142,24 @@ jobs:
             core.setOutput('deps_changed', depsChanged ? 'true' : 'false');
             core.setOutput('is_automated', isAutomated ? 'true' : 'false');
 
+      # Download the analysis artifact. Only meaningful when the analysis run
+      # succeeded; a failed run may have partial or missing results, which the
+      # status step reports as an error instead.
+      - name: Download security reports
+        if: steps.resolve.outputs.found == 'true' && github.event.workflow_run.conclusion == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: security-reports
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # Parse the UNTRUSTED status.env against a strict allowlist. Only known keys
       # with lowercase-letter/underscore values are accepted, and results are
       # written to step outputs (data), never sourced into $GITHUB_ENV. This
       # neutralises env-injection via crafted step outputs from the analysis job.
       - name: Parse analysis results
         id: results
-        if: steps.resolve.outputs.found == 'true'
+        if: steps.resolve.outputs.found == 'true' && github.event.workflow_run.conclusion == 'success'
         run: |
           if [ ! -f status.env ]; then
             echo "status.env not found; treating results as empty"
@@ -119,7 +179,7 @@ jobs:
       # Combine report fragments into a single security report. The .md fragments
       # are untrusted but only ever posted as comment text (never executed).
       - name: Create combined security report
-        if: steps.resolve.outputs.found == 'true'
+        if: steps.resolve.outputs.found == 'true' && github.event.workflow_run.conclusion == 'success'
         env:
           DEPS_CHANGED: ${{ steps.resolve.outputs.deps_changed }}
           IS_AUTOMATED: ${{ steps.resolve.outputs.is_automated }}
@@ -238,7 +298,7 @@ jobs:
 
       # Post the combined report as a PR comment (targeting the trusted PR number)
       - name: Post security report to PR
-        if: steps.resolve.outputs.found == 'true'
+        if: steps.resolve.outputs.found == 'true' && github.event.workflow_run.conclusion == 'success'
         uses: actions/github-script@v9
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
@@ -270,7 +330,9 @@ jobs:
       # Gate the merge via a commit status on the PR head, and auto-approve
       # automated PRs. All gate-relevant inputs are trusted (API-derived); the
       # scan results (high risk / vulnerabilities) are advisory and can only make
-      # the gate stricter, never bypass the review requirement.
+      # the gate stricter, never bypass the review requirement. A failed analysis
+      # run is reported as an 'error' status: scan results are then unavailable,
+      # so nothing may be approved (fail closed).
       - name: Report security status
         if: steps.resolve.outputs.found == 'true'
         uses: actions/github-script@v9
@@ -280,6 +342,7 @@ jobs:
           LABELS: ${{ steps.resolve.outputs.labels }}
           DEPS_CHANGED: ${{ steps.resolve.outputs.deps_changed }}
           IS_AUTOMATED: ${{ steps.resolve.outputs.is_automated }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           SAFETY_STATUS: ${{ steps.results.outputs.SAFETY_STATUS }}
           PIP_AUDIT: ${{ steps.results.outputs.PIP_AUDIT }}
         with:
@@ -291,17 +354,21 @@ jobs:
             const depsChanged = process.env.DEPS_CHANGED === 'true';
             const isAutomated = process.env.IS_AUTOMATED === 'true';
             const hasReviewLabel = labels.includes('dependencies-reviewed');
+            const analysisOk = process.env.RUN_CONCLUSION === 'success';
             const isHighRisk = process.env.SAFETY_STATUS === 'high_risk';
             const hasVulns = process.env.PIP_AUDIT === 'fail';
 
             let state = 'success';
             let description = 'No dependency changes to review';
 
-            if (isHighRisk) {
-              state = 'failure';
+            if (!analysisOk) {
+              state = 'error';
+              description = 'Dependency security analysis failed - re-run the Dependency Security Check workflow';
+            } else if (isHighRisk) {
+              state = 'error';
               description = 'High-risk packages detected - security review required';
             } else if (hasVulns) {
-              state = 'failure';
+              state = 'error';
               description = 'Known vulnerabilities detected';
             } else if (depsChanged) {
               if (isAutomated || hasReviewLabel) {
@@ -320,12 +387,12 @@ jobs:
               context: 'Dependency Security Review', description,
             });
 
-            if (depsChanged && isAutomated && !hasReviewLabel && !isHighRisk && !hasVulns) {
+            if (analysisOk && depsChanged && isAutomated && !hasReviewLabel && !isHighRisk && !hasVulns) {
               await github.rest.issues.addLabels({
                 owner, repo, issue_number: prNumber, labels: ['dependencies-reviewed'],
               });
             }
 
-            if (state === 'failure') {
+            if (state !== 'success') {
               core.setFailed(description);
             }
