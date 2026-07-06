@@ -255,10 +255,12 @@ jobs:
 
           cat safety_report.md
 
-      # Step 5: Persist status and PR metadata for the reporting workflow.
-      # The report runs via workflow_run and cannot see the pull_request event
-      # or this job's outputs, so everything it needs is passed via the artifact.
-      - name: Persist status and PR metadata
+      # Step 5: Persist analysis results for the reporting workflow.
+      # The report runs via workflow_run and cannot see this job's outputs, so
+      # the result strings are passed via the artifact. This data is UNTRUSTED
+      # (produced by fork code); the reporting workflow validates it and derives
+      # all PR identity/labels from the GitHub API, never from this artifact.
+      - name: Persist analysis results
         if: always()
         run: |
           {
@@ -272,13 +274,7 @@ jobs:
             echo "LICENSE=${{ steps.safety_check.outputs.license }}"
           } > status.env
 
-          jq -n \
-            --argjson number '${{ github.event.pull_request.number }}' \
-            --arg author '${{ github.event.pull_request.user.login }}' \
-            --argjson labels '${{ toJson(github.event.pull_request.labels.*.name) }}' \
-            '{number: $number, author: $author, labels: $labels}' > pr_meta.json
-
-      # Step 6: Hand off report fragments and metadata to the reporting workflow
+      # Step 6: Hand off report fragments and results to the reporting workflow
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -291,6 +287,5 @@ jobs:
             manifest_report.md
             safety_report.md
             status.env
-            pr_meta.json
           if-no-files-found: ignore
           retention-days: 1
