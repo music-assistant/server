@@ -15,14 +15,22 @@ import contextlib
 import time
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import EventType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
 from music_assistant_models.player import PlayerSource
 
+from music_assistant.constants import CONF_HIDE_IN_UI
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
 
@@ -228,6 +236,140 @@ class TestPlayerAvailability:
         # This should either skip the unavailable player or raise an exception
         with contextlib.suppress(Exception):
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
+
+
+class TestRegisterOrUpdate:
+    """Test player replacement registration behavior."""
+
+    @staticmethod
+    def _player_config(
+        player_id: str,
+        provider: MockProvider,
+        *,
+        name: str | None = None,
+        values: dict[str, bool] | None = None,
+    ) -> PlayerConfig:
+        """Build a player config with the settings relevant to replacement tests."""
+        raw_config: dict[str, object] = {
+            "player_id": player_id,
+            "provider": provider.instance_id,
+            "default_name": "Default Player",
+            "player_type": PlayerType.PLAYER,
+            "enabled": True,
+            "values": values or {},
+        }
+        if name is not None:
+            raw_config["name"] = name
+        return cast(
+            "PlayerConfig",
+            PlayerConfig.parse(
+                [
+                    ConfigEntry(
+                        key=CONF_HIDE_IN_UI,
+                        type=ConfigEntryType.BOOLEAN,
+                        default_value=False,
+                        required=False,
+                    )
+                ],
+                raw_config,
+            ),
+        )
+
+    async def test_existing_player_replacement_keeps_full_config(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Replacing an existing player applies persisted config before state is published."""
+        player_id = "player_1"
+        original = MockPlayer(provider, player_id, "Original Player")
+        controller._players = {player_id: original}
+        mock_mass.players = controller
+
+        replacement = MockPlayer(provider, player_id, "Default Player")
+        replacement.set_config(self._player_config(player_id, provider))
+        full_config = self._player_config(
+            player_id, provider, name="Custom Player", values={CONF_HIDE_IN_UI: True}
+        )
+        mock_mass.config.get_player_config = AsyncMock(return_value=full_config)
+        controller._evaluate_protocol_links = MagicMock()  # type: ignore[method-assign]
+
+        await controller.register_or_update(replacement)
+
+        assert controller.get_player(player_id) is replacement
+        assert replacement.config is full_config
+        assert replacement.state.name == "Custom Player"
+        assert replacement.state.hide_in_ui is True
+        assert replacement.initialized.is_set()
+        mock_mass.config.get_player_config.assert_awaited_once_with(player_id)
+        controller._evaluate_protocol_links.assert_called_once_with(replacement)
+
+    async def test_overlapping_replacements_are_serialized(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Replacement setup cannot overlap and run hooks on stale players."""
+        player_id = "player_1"
+        controller._players = {player_id: MockPlayer(provider, player_id, "Original Player")}
+        mock_mass.players = controller
+        first_replacement = MockPlayer(provider, player_id, "First Player")
+        second_replacement = MockPlayer(provider, player_id, "Second Player")
+        first_config = self._player_config(player_id, provider, name="First Player")
+        second_config = self._player_config(player_id, provider, name="Second Player")
+        first_config_hook_started = asyncio.Event()
+        release_first_config_hook = asyncio.Event()
+        config_call_count = 0
+
+        async def get_player_config(_player_id: str) -> PlayerConfig:
+            nonlocal config_call_count
+            config_call_count += 1
+            if config_call_count == 1:
+                return first_config
+            return second_config
+
+        async def first_on_config_updated() -> None:
+            first_config_hook_started.set()
+            await release_first_config_hook.wait()
+
+        mock_mass.config.get_player_config = AsyncMock(side_effect=get_player_config)
+        first_replacement.on_config_updated = first_on_config_updated  # type: ignore[method-assign]
+        controller._evaluate_protocol_links = MagicMock()  # type: ignore[method-assign]
+
+        first_task = asyncio.create_task(controller.register_or_update(first_replacement))
+        await first_config_hook_started.wait()
+        second_task = asyncio.create_task(controller.register_or_update(second_replacement))
+        await asyncio.sleep(0)
+
+        assert not second_task.done()
+        assert controller.get_player(player_id) is first_replacement
+
+        release_first_config_hook.set()
+        await first_task
+        await second_task
+
+        assert controller.get_player(player_id) is second_replacement
+        assert first_replacement.config is first_config
+        assert first_replacement.initialized.is_set()
+        assert second_replacement.config is second_config
+        assert second_replacement.initialized.is_set()
+        assert controller._evaluate_protocol_links.call_args_list == [
+            call(first_replacement),
+            call(second_replacement),
+        ]
+
+    async def test_existing_player_same_instance_update_stays_lightweight(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Updating the already-registered object avoids a redundant config reload."""
+        player_id = "player_1"
+        player = MockPlayer(provider, player_id, "Existing Player")
+        controller._players = {player_id: player}
+        mock_mass.players = controller
+        mock_mass.config.get_player_config = AsyncMock()
+        controller._evaluate_protocol_links = MagicMock()  # type: ignore[method-assign]
+
+        await controller.register_or_update(player)
+
+        assert controller.get_player(player_id) is player
+        mock_mass.config.get_player_config.assert_not_awaited()
+        controller._evaluate_protocol_links.assert_not_called()
 
 
 class TestStateForwarding:

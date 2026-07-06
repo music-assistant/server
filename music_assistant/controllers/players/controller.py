@@ -1593,24 +1593,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # We use the 'initialized' attribute to indicate that the player
             # is still in the process of being registered so we can filter it out where needed.
             self._players[player_id] = player
-            # update state to ensure player.state reflects the final attributes
-            # (e.g. player type) set after super().__init__() in the player subclass,
-            # before we fetch config (which relies on state.type for entry resolution)
-            player.update_state(signal_event=False)
-            # ensure we fetch and set the latest/full config for the player
-            player_config = await self.mass.config.get_player_config(player_id)
-            player.set_config(player_config)
-            # update state again now that config is loaded
-            player.update_state(signal_event=False)
-            self._save_underlying_player_id(player)
-            # call hook after the player is registered and config is set
-            await player.on_config_updated()
-
-            # Handle protocol linking
-            self._evaluate_protocol_links(player)
-
-            # now we're ready to signal the player is added and available
-            player.set_initialized()
+            await self._setup_registered_player(player, signal_state_event=False)
             self.logger.info(
                 "Player (type %s) registered: %s/%s",
                 player.state.type.value,
@@ -1635,15 +1618,29 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if self.mass.closing:
             return
 
-        if player.player_id in self._players:
-            self._players[player.player_id] = player
-            player.update_state()
-            # the derived-transport edge may have been set/revoked after the
-            # initial registration (e.g. via a bridge claim)
-            self._save_underlying_player_id(player)
-            # Also schedule update when replacing existing player
-            self._schedule_update_all_players()
-            return
+        if previous_player := self._players.get(player.player_id):
+            if previous_player is player:
+                player.update_state()
+                # the derived-transport edge may have been set/revoked after the
+                # initial registration (e.g. via a bridge claim)
+                self._save_underlying_player_id(player)
+                # Also schedule update when updating existing player
+                self._schedule_update_all_players()
+                return
+
+            async with self._register_lock:
+                if current_player := self._players.get(player.player_id):
+                    if current_player is player:
+                        player.update_state()
+                        # the derived-transport edge may have been set/revoked after the
+                        # initial registration (e.g. via a bridge claim)
+                        self._save_underlying_player_id(player)
+                    else:
+                        self._players[player.player_id] = player
+                        await self._setup_registered_player(player, signal_state_event=True)
+                    # Also schedule update when updating existing player
+                    self._schedule_update_all_players()
+                    return
 
         await self.register(player)
 
@@ -2350,6 +2347,27 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
         return iter(self._players.values())
+
+    async def _setup_registered_player(self, player: Player, *, signal_state_event: bool) -> None:
+        """Load config and run common setup for a player present in the registry."""
+        # update state to ensure player.state reflects the final attributes
+        # (e.g. player type) set after super().__init__() in the player subclass,
+        # before we fetch config (which relies on state.type for entry resolution)
+        player.update_state(signal_event=False)
+        # ensure we fetch and set the latest/full config for the player
+        player_config = await self.mass.config.get_player_config(player.player_id)
+        player.set_config(player_config)
+        # update state again now that config is loaded
+        player.update_state(signal_event=signal_state_event)
+        self._save_underlying_player_id(player)
+        # call hook after the player is registered and config is set
+        await player.on_config_updated()
+
+        # Handle protocol linking
+        self._evaluate_protocol_links(player)
+
+        # now we're ready to signal the player is added and available
+        player.set_initialized()
 
     async def _release_player_for_play_media(self, player: Player) -> None:
         """
