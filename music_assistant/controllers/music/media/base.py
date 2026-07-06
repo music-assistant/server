@@ -997,7 +997,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self._apply_filters(
                 query_parts=query_parts,
                 query_params=query_params,
-                join_parts=join_parts,
                 favorite=favorite,
                 search=search,
                 genre_ids=genre_ids,
@@ -1007,7 +1006,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         # build and execute final query
         sql_query, base_query_params = self._build_final_query(query_parts, join_parts, order_by)
-        query_params.update(base_query_params)
+        # base query params act as defaults: callers may override them via extra_query_params
+        for key, value in base_query_params.items():
+            query_params.setdefault(key, value)
 
         return [
             cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
@@ -1141,7 +1142,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self._apply_filters(
             query_parts=sub_query_parts,
             query_params=query_params,
-            join_parts=sub_join_parts,
             favorite=favorite,
             search=search,
             genre_ids=genre_ids,
@@ -1172,7 +1172,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         query_parts: list[str],
         query_params: dict[str, Any],
-        join_parts: list[str],
         favorite: bool | None,
         search: str | None,
         genre_ids: list[int] | None,
@@ -1203,6 +1202,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "AND gm.genre_id IN :genre_ids)"
             )
         # Apply the provider filter
+        # NOTE: provider mapping filters are applied as a correlated EXISTS subquery
+        # instead of a JOIN + GROUP BY, so SQLite can stream results straight from the
+        # sort index instead of materializing/sorting the whole (deduped) result set.
         if provider_filter:
             provider_conditions = []
             for idx, prov in enumerate(provider_filter):
@@ -1211,18 +1213,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 query_params[param_name] = prov
             query_params["provider_media_type"] = self.media_type.value
             in_library_clause = "AND provider_mappings.in_library = 1 " if in_library_only else ""
-            join_parts.append(
-                f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
+            query_parts.append(
+                "EXISTS(SELECT 1 FROM provider_mappings "
+                f"WHERE provider_mappings.item_id = {self.db_table}.item_id "
                 "AND provider_mappings.media_type = :provider_media_type "
                 f"{in_library_clause}"
-                f"AND ({' OR '.join(provider_conditions)})"
+                f"AND ({' OR '.join(provider_conditions)}))"
             )
         elif in_library_only:
             query_params["provider_media_type"] = self.media_type.value
-            join_parts.append(
-                f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
+            query_parts.append(
+                "EXISTS(SELECT 1 FROM provider_mappings "
+                f"WHERE provider_mappings.item_id = {self.db_table}.item_id "
                 "AND provider_mappings.media_type = :provider_media_type "
-                "AND provider_mappings.in_library = 1"
+                "AND provider_mappings.in_library = 1)"
             )
 
     @final
@@ -1244,8 +1248,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # prevent duplicate where statement
             sql_query += " WHERE " + " AND ".join(self._clean_query_parts(query_parts))
 
-        # Add grouping and ordering
-        sql_query += f" GROUP BY {self.db_table}.item_id"
+        # Add grouping (only needed when caller-provided joins can fan out rows)
+        # and ordering. Without a GROUP BY, SQLite can stream results directly
+        # from the sort index instead of sorting the whole result set.
+        if join_parts:
+            sql_query += f" GROUP BY {self.db_table}.item_id"
 
         if order_by:
             if sort_key := SORT_KEYS.get(order_by):
