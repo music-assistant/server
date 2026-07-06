@@ -10,6 +10,7 @@ own auth/setup.
 from __future__ import annotations
 
 import posixpath
+import time
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -47,6 +48,10 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     # cloud APIs generally struggle with the default 16 parallel tag-parse downloads
     _SYNC_CONCURRENCY = 4
+    # how long a folder listing may be served from cache; keeps interactive
+    # browsing snappy (no API round trip per click). Library syncs always fetch
+    # fresh listings, so new cloud content is never missed because of this.
+    _DIR_CACHE_TTL = 300
 
     def __init__(
         self,
@@ -68,6 +73,9 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         # every path->id lookup is answered from here, so sibling probes by the
         # inherited logic (artwork, lyrics, playlists) cost no extra API calls
         self._dir_cache: dict[str, dict[str, tuple[str, FileSystemItem]]] = {}
+        # monotonic deadline per folder path until which _scandir may serve the
+        # cached listing; path->id lookups deliberately never expire (IDs are stable)
+        self._dir_cache_expiry: dict[str, float] = {}
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -152,13 +160,23 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
     # filesystem hooks (these are what the parent calls)
     # ------------------------------------------------------------------
 
-    async def _scandir(self, path: str) -> list[FileSystemItem]:
+    async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """
         List the children of a cloud folder.
 
         `path` is the relative path of the folder ("" means this provider's root).
+        `use_cache` allows serving a recent cached listing; pass False to force
+        a fresh fetch from the cloud API.
         """
         path = self._normalize_path(path)
+        # serve recently fetched listings from cache so browsing back and forth
+        # through folders doesn't cost an API round trip per click
+        if (
+            use_cache
+            and (cached := self._dir_cache.get(path)) is not None
+            and time.monotonic() < self._dir_cache_expiry.get(path, 0)
+        ):
+            return [entry[1] for entry in cached.values()]
         folder_id = await self._resolve_id(path)
         children: dict[str, tuple[str, FileSystemItem]] = {}
         items: list[FileSystemItem] = []
@@ -177,6 +195,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             children[name] = (raw[0], item)
             items.append(item)
         self._dir_cache[path] = children
+        self._dir_cache_expiry[path] = time.monotonic() + self._DIR_CACHE_TTL
         return items
 
     async def _enumerate_files_for_sync(
@@ -205,7 +224,9 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                 return
             visited.add(path)
             try:
-                items = await self._scandir(path)
+                # always fetch fresh during a sync so new cloud content is
+                # picked up no matter how recently a folder was browsed
+                items = await self._scandir(path, use_cache=False)
             except ProviderUnavailableError as err:
                 # only a root-level failure aborts the sync; subfolder failures
                 # are logged and skipped, matching the local-filesystem walker

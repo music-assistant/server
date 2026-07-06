@@ -65,6 +65,7 @@ def _make_provider(tree: dict[str, list[RawItem]] | None = None) -> _StubCloudPr
     provider = _StubCloudProvider.__new__(_StubCloudProvider)
     provider.root_folder_id = ROOT_ID
     provider._dir_cache = {}
+    provider._dir_cache_expiry = {}
     provider._unregister_stream_route = None
     provider.logger = MagicMock()
     provider.media_content_type = "music"
@@ -140,6 +141,40 @@ async def test_scandir_sanitizes_slashes_in_names() -> None:
     items = await provider._scandir("")
 
     assert items[0].relative_path == "AC_DC"
+
+
+async def test_scandir_serves_recent_listing_from_cache() -> None:
+    """Re-listing a folder within the TTL must not hit the API again."""
+    provider = _make_provider()
+
+    first = await provider._scandir("")
+    second = await provider._scandir("")
+
+    assert provider.list_calls == [ROOT_ID]
+    assert [item.relative_path for item in second] == [item.relative_path for item in first]
+
+
+async def test_scandir_refetches_after_ttl_expiry() -> None:
+    """An expired listing is fetched fresh from the API."""
+    provider = _make_provider()
+
+    await provider._scandir("")
+    provider._dir_cache_expiry[""] = 0.0
+    await provider._scandir("")
+
+    assert provider.list_calls == [ROOT_ID, ROOT_ID]
+
+
+async def test_sync_walk_bypasses_listing_cache() -> None:
+    """A sync must always fetch fresh listings, even right after browsing."""
+    provider = _make_provider()
+    provider._classify_scan_item = MagicMock()  # type: ignore[method-assign]
+
+    await provider._scandir("")
+    await _run_enumerate(provider)
+
+    # root listed once by browse and again (fresh) by the sync walk
+    assert provider.list_calls.count(ROOT_ID) == 2
 
 
 async def test_lookup_answers_from_cache() -> None:
@@ -308,7 +343,7 @@ async def test_enumerate_stops_on_directory_cycle() -> None:
     }
     scanned: list[str] = []
 
-    async def fake_scandir(path: str) -> list[FileSystemItem]:
+    async def fake_scandir(path: str, use_cache: bool = True) -> list[FileSystemItem]:
         scanned.append(path)
         return listing[path]
 
