@@ -942,6 +942,36 @@ async def test_tracks_from_seeds_samples_evenly_across_seeds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tracks_from_seeds_shuffles_seed_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Base tracks are drawn from across the seed, not just its first few (stored-order) items."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # a large seed whose tracks resolve in stored order; without shuffling only t0.. would be used
+    seed_tracks = [_make_mock_track(f"t{i}", f"library://track/t{i}") for i in range(20)]
+
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(return_value=_make_mock_track("seed", "library://track/seed"))
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=seed_tracks)
+    mass.music.tracks.similar_tracks = AsyncMock(return_value=[])
+    # deterministic "shuffle": reverse in place, so tail tracks land at the head
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.random.shuffle", lambda seq: seq.reverse()
+    )
+
+    result = await plugin._tracks_from_seeds(["library://track/seed"], target_size=2)
+
+    ids = {track.item_id for track in result}
+    assert "t19" in ids
+    assert "t0" not in ids
+
+
+@pytest.mark.asyncio
 async def test_exclusion_filters_out_excluded_artist() -> None:
     """Tracks from excluded artists are removed from the result."""
     mass = MagicMock()
