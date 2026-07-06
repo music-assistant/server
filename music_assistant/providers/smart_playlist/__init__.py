@@ -1277,8 +1277,7 @@ class SmartPlaylistProvider(PluginProvider):
             seed_pool: list[Track] = []
             with suppress(MusicAssistantError):
                 seed_tracks = await self.mass.player_queues.get_tracks_for_playback(seed)
-                # draw base tracks from across the whole seed, not just its first few items
-                # (playlists resolve in stored order), so re-generations vary the seeds used
+                # shuffle so seeds are drawn from across the whole playlist, not just its top
                 random.shuffle(seed_tracks)
                 for base in seed_tracks:
                     if len(seed_pool) >= per_seed_cap:
