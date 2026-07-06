@@ -151,9 +151,9 @@ class AuthenticationManager:
         try:
             payload = self.jwt_helper.decode_token(token, verify_exp=True)
             token_id = payload.get("jti")
-            user_id = payload.get("sub")
+            token_user_id = payload.get("sub")
 
-            if not token_id or not user_id:
+            if not token_id or not token_user_id:
                 return None
 
             token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
@@ -161,6 +161,9 @@ class AuthenticationManager:
                 return None
 
             # Database is source of truth for token metadata, not the (immutable) JWT payload.
+            # A payload/row mismatch means a tampered or stale token: reject rather than trust it.
+            if token_user_id != token_row["user_id"]:
+                return None
             is_long_lived = bool(token_row["is_long_lived"])
 
             # Database expiration is source of truth
@@ -170,7 +173,7 @@ class AuthenticationManager:
                     await self.database.delete("auth_tokens", {"token_id": token_id})
                     return None
 
-            user = await self.get_user(user_id)
+            user = await self.get_user(token_row["user_id"])
             if not user:
                 return None
 

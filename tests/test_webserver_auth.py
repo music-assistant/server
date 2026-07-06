@@ -794,6 +794,41 @@ async def test_token_absolute_max_lifetime(auth_manager: AuthenticationManager) 
     assert deleted_row is None
 
 
+async def test_legacy_token_absolute_max_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the absolute max lifetime is also enforced on the legacy hash-token path.
+
+    Legacy (non-JWT) tokens authenticate via a hash lookup that shares the same cap logic,
+    so a hash token created past the absolute maximum must be rejected and its row deleted.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="legacyabsmax", role=UserRole.USER)
+
+    # A non-JWT token string forces the legacy hash-based lookup path.
+    raw_token = "legacy-hash-token-absmax"
+    token_id = "legacy-absmax-token-id"
+    # Created past the absolute max but with a future sliding expires_at, so only the cap can reject it.
+    created_at = utc() - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)
+    future_expires = utc() + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+    await auth_manager.database.insert(
+        "auth_tokens",
+        {
+            "token_id": token_id,
+            "user_id": user.user_id,
+            "token_hash": hashlib.sha256(raw_token.encode()).hexdigest(),
+            "name": "Legacy Abs Max Test",
+            "created_at": created_at.isoformat(),
+            "expires_at": future_expires.isoformat(),
+            "is_long_lived": 0,
+        },
+    )
+
+    # Token must be rejected and the row deleted.
+    assert await auth_manager.authenticate_with_token(raw_token) is None
+    assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
+
+
 async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManager) -> None:
     """
     Test that revoke_tokens_for_user commits so the tokens no longer authenticate.
