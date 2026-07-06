@@ -21,8 +21,6 @@ from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from music_assistant.helpers.datetime import now
-
 from ..debug.event_buffer import EventBuffer
 from ..debug.inspect_serializer import dump
 from ..debug.log_reader import SafeLogTail
@@ -44,7 +42,12 @@ from ..models import (
     RouteList,
 )
 from ..tags import Tag
-from ._common import TIMEOUT_FAST, TIMEOUT_INTERACTIVE, confirm_or_raise
+from ._common import (
+    TIMEOUT_FAST,
+    TIMEOUT_INTERACTIVE,
+    confirm_or_raise,
+    lean_schema_view,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -214,6 +217,7 @@ def build_debug_server(
     event_buffer: EventBuffer | None = None,
     logs_enabled: bool = True,
     reload_lock: asyncio.Lock | None = None,
+    lean_schema: bool = False,
 ) -> FastMCP:
     """
     Build the ``debug`` sub-server.
@@ -230,19 +234,22 @@ def build_debug_server(
     :param reload_lock: Lock serialising ``debug_reload_provider`` for this
         runtime. Defaults to a fresh per-server lock so independent servers
         (e.g. test instances) never serialise against one another.
+    :param lean_schema: When True, tools omit their ``outputSchema`` to shrink
+        the namespace's context footprint for hosts without tool-search.
     """
     sub = FastMCP(name="debug")
-    _register_inspect_tools(sub, mass)
-    _register_logs_tool(sub, mass)
-    _register_events_tools(sub, mass, event_buffer)
-    _register_providers_tools(sub, mass)
+    target = lean_schema_view(sub) if lean_schema else sub
+    _register_inspect_tools(target, mass)
+    _register_logs_tool(target, mass)
+    _register_events_tools(target, mass, event_buffer)
+    _register_providers_tools(target, mass)
     _register_reload_tool(
-        sub,
+        target,
         mass,
         require_confirmation=require_confirmation,
         reload_lock=reload_lock if reload_lock is not None else asyncio.Lock(),
     )
-    _register_health_tool(sub, mass, buffer=event_buffer, logs_enabled=logs_enabled)
+    _register_health_tool(target, mass, buffer=event_buffer, logs_enabled=logs_enabled)
     return sub
 
 
@@ -599,10 +606,12 @@ def _register_health_tool(
             else:
                 from datetime import datetime  # noqa: PLC0415
 
+                from music_assistant.helpers.datetime import now as ma_now  # noqa: PLC0415
+
                 subscribed_at = datetime.fromisoformat(stats.subscribed_since)
                 elapsed_min = max(
                     1.0 / 60,
-                    (now() - subscribed_at).total_seconds() / 60.0,
+                    (ma_now() - subscribed_at).total_seconds() / 60.0,
                 )
                 events_per_min = {
                     et: round(count / elapsed_min, 2) for et, count in stats.by_type.items()

@@ -656,7 +656,34 @@ def test_to_brief_queue_with_items() -> None:
     assert brief.shuffle is True
     assert brief.repeat == "off"
     assert len(brief.items) == 2
+    assert brief.items[0].index == 0
+    assert brief.items[1].index == 1
     assert brief.items[0].artists == ["A1"]
+
+
+def test_to_brief_queue_exposes_insert_index_fields() -> None:
+    """``to_brief_queue`` sets index metadata for agent insert planning."""
+    queue = SimpleNamespace(
+        queue_id="kitchen",
+        current_index=2,
+        index_in_buffer=4,
+        items=10,
+        shuffle_enabled=True,
+        repeat_mode=SimpleNamespace(value="off"),
+    )
+    items = [
+        SimpleNamespace(
+            queue_item_id="i1",
+            name="One",
+            duration=120,
+            media_item=SimpleNamespace(artists=[SimpleNamespace(name="A1")]),
+        ),
+    ]
+    brief = to_brief_queue(queue, items=items, items_offset=5)
+    assert brief.index_in_buffer == 4
+    assert brief.next_insertable_index == 5
+    assert brief.items_start_index == 5
+    assert brief.items[0].index == 5
 
 
 def test_to_brief_queue_uses_canonical_items_int_for_count() -> None:

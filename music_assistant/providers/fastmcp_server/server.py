@@ -12,6 +12,7 @@ from .constants import (
     CONF_DEBUG_EVENTS,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
+    CONF_LEAN_ADMIN_SCHEMA,
     CONF_MOUNT_PATH,
     CONF_REQUIRE_AUTH,
     CONF_REQUIRE_CONFIRMATION,
@@ -144,9 +145,16 @@ class MCPServerRuntime:
         )
 
         require_confirmation = bool(self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False)
+        lean_admin_schema = bool(self._config.get_value(CONF_LEAN_ADMIN_SCHEMA) or False)
+        from .tags import Tag  # noqa: PLC0415
+
         mcp.mount(build_library_server(self._mass), namespace="library")
         mcp.mount(
-            build_queue_server(self._mass, require_confirmation=require_confirmation),
+            build_queue_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                delete_queue_enabled=Tag.DELETE_QUEUE in enabled_tags(self._config),
+            ),
             namespace="queue",
         )
         mcp.mount(build_playback_server(self._mass), namespace="playback")
@@ -163,7 +171,6 @@ class MCPServerRuntime:
         mcp.mount(build_metadata_server(self._mass), namespace="metadata")
 
         from .debug.event_buffer import EventBuffer  # noqa: PLC0415
-        from .tags import Tag  # noqa: PLC0415
         from .tools import build_debug_server  # noqa: PLC0415
 
         if bool(self._config.get_value(CONF_DEBUG_EVENTS)):
@@ -179,6 +186,7 @@ class MCPServerRuntime:
                 event_buffer=self._event_buffer,
                 logs_enabled=Tag.DEBUG_LOGS in enabled_tags(self._config),
                 reload_lock=self._reload_lock,
+                lean_schema=lean_admin_schema,
             ),
             namespace="debug",
         )
@@ -193,6 +201,7 @@ class MCPServerRuntime:
                 secret_writes_enabled=lambda: bool(
                     self._config.get_value(CONF_CONFIG_WRITE_SECRET)
                 ),
+                lean_schema=lean_admin_schema,
             ),
             namespace="config",
         )

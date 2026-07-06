@@ -22,6 +22,24 @@ class TrackBrief:
     artists: list[str] = field(default_factory=list)
     album: str | None = None
     duration: int | None = None
+    disc_number: int | None = None
+    track_number: int | None = None
+
+
+@dataclass
+class AlbumTracksResult:
+    """An album summary plus its track listing in disc/track order."""
+
+    album: AlbumBrief
+    tracks: list[TrackBrief] = field(default_factory=list)
+
+
+@dataclass
+class ArtistAlbumsResult:
+    """An artist summary plus their album discography."""
+
+    artist: ArtistBrief
+    albums: list[AlbumBrief] = field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +106,7 @@ class QueueItemBrief:
 
     item_id: str
     name: str
+    index: int
     duration: int | None = None
     artists: list[str] = field(default_factory=list)
 
@@ -110,6 +129,20 @@ class QueueBrief:
     repeat: str
     items: list[QueueItemBrief] = field(default_factory=list)
     available: bool = True
+    index_in_buffer: int | None = None
+    next_insertable_index: int | None = None
+    items_start_index: int = 0
+
+
+@dataclass
+class AddToQueueResult:
+    """Confirmation of a successful ``add_to_queue`` call."""
+
+    item_id: str
+    uri: str
+    name: str
+    option: str
+    index: int | None = None
 
 
 @dataclass
@@ -339,7 +372,7 @@ class ConfigEntryDump:
 
     key: str
     type: str
-    label: str
+    label: str | None
     default_value: Any
     required: bool
     description: str | None

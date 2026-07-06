@@ -41,7 +41,12 @@ from ..models import (
     SetValueResult,
 )
 from ..tags import Tag
-from ._common import TIMEOUT_FAST, TIMEOUT_INTERACTIVE, confirm_or_raise
+from ._common import (
+    TIMEOUT_FAST,
+    TIMEOUT_INTERACTIVE,
+    confirm_or_raise,
+    lean_schema_view,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -103,9 +108,13 @@ def _values_from_raw(raw: dict[str, Any]) -> tuple[list[ConfigValueDump], bool]:
     return out, truncated
 
 
-def _entry_dump(mass: MusicAssistant, entry: ConfigEntry, current: Any) -> ConfigEntryDump:
+def _entry_dump(entry: ConfigEntry, current: Any) -> ConfigEntryDump:
     """Map a ConfigEntry + current value to ConfigEntryDump."""
     opts = [o.value for o in entry.options] if entry.options else None
+    # Label/description are resolved from the translations at serialization
+    # (server-category entries leave the raw attributes None), so read the
+    # localized values via to_dict() instead of the bare attributes.
+    localized = entry.to_dict()
     # Mask secrets: _resolve_entries reads raw ConfigEntry.value, bypassing
     # the to_dict()/__post_serialize__ hook the sibling read tools use.
     current_value = (
@@ -113,26 +122,13 @@ def _entry_dump(mass: MusicAssistant, entry: ConfigEntry, current: Any) -> Confi
         if entry.type == ConfigEntryType.SECURE_STRING and current is not None
         else current
     )
-    # label/description are no longer hardcoded on the entry; resolve them from the
-    # translations the same way __post_serialize__ does (bypassed here, see above).
-    base = entry.translation_key or f"config_entries.{entry.key}"
-    label = (
-        entry.label
-        or mass.translations.get_translation(
-            f"{base}.label", owner=entry.translation_owner, params=entry.translation_params
-        )
-        or entry.key
-    )
-    description = entry.description or mass.translations.get_translation(
-        f"{base}.description", owner=entry.translation_owner, params=entry.translation_params
-    )
     return ConfigEntryDump(
         key=entry.key,
         type=entry.type.value,
-        label=label,
+        label=localized.get("label"),
         default_value=entry.default_value,
         required=entry.required,
-        description=description,
+        description=localized.get("description"),
         options=opts,
         range=entry.range,
         advanced=getattr(entry, "advanced", False),
@@ -378,6 +374,7 @@ def build_config_server(
     *,
     require_confirmation: bool = True,
     secret_writes_enabled: bool | Callable[[], bool] = True,
+    lean_schema: bool = False,
 ) -> FastMCP:
     """
     Build the ``config`` sub-server.
@@ -389,23 +386,26 @@ def build_config_server(
         When False (or the callable returns False), SECURE_STRING writes are
         rejected. The runtime passes a callable so a hot-swapped permission
         toggle takes effect on the next request without a rebuild.
+    :param lean_schema: When True, tools omit their ``outputSchema`` to shrink
+        the namespace's context footprint for hosts without tool-search.
     """
     sub = FastMCP(name="config")
-    _register_read_tools(sub, mass)
+    target = lean_schema_view(sub) if lean_schema else sub
+    _register_read_tools(target, mass)
     _register_provider_write_tools(
-        sub,
+        target,
         mass,
         require_confirmation=require_confirmation,
         secret_writes_enabled=secret_writes_enabled,
     )
     _register_core_write_tools(
-        sub,
+        target,
         mass,
         require_confirmation=require_confirmation,
         secret_writes_enabled=secret_writes_enabled,
     )
     _register_player_write_tools(
-        sub,
+        target,
         mass,
         require_confirmation=require_confirmation,
         secret_writes_enabled=secret_writes_enabled,
@@ -549,7 +549,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         :param action: Optional action key to activate dynamic entries.
         """
         entries, current = await _resolve_entries(mass, target_type, target_id, action)
-        dumps = [_entry_dump(mass, e, current.get(e.key)) for e in entries]
+        dumps = [_entry_dump(e, current.get(e.key)) for e in entries]
         return ConfigEntryList(
             target_type=target_type, target_id=target_id, entries=dumps, truncated=False
         )
@@ -706,7 +706,7 @@ def _register_provider_write_tools(
         return ActionResult(
             instance_id=instance_id,
             action_key=action_key,
-            new_entries=[_entry_dump(mass, e, getattr(e, "value", None)) for e in entries],
+            new_entries=[_entry_dump(e, getattr(e, "value", None)) for e in entries],
             extra_data={},
             audit_log_id=audit,
         )
