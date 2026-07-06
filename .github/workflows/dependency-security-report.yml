@@ -1,0 +1,277 @@
+# Dependency Security Report Workflow
+#
+# Companion to `dependency-security.yml`. That workflow analyses (possibly
+# untrusted) PR code in an unprivileged `pull_request` context and uploads its
+# findings as an artifact. This workflow runs afterwards via `workflow_run` with
+# write permissions to comment on the PR and gate merging, WITHOUT ever checking
+# out untrusted code — it only consumes the pre-computed report artifact.
+#
+# Because a workflow_run job is not itself a PR status check, the merge gate is
+# re-established by posting a commit status ("Dependency Security Review") to the
+# PR head commit. Configure that context as a required check in branch protection.
+
+name: Dependency Security Report
+
+on:
+  workflow_run:
+    workflows: ["Dependency Security Check"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    # Only report for runs triggered by pull requests
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    steps:
+      - name: Download security reports
+        uses: actions/download-artifact@v8
+        with:
+          name: security-reports
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load analysis status
+        run: cat status.env >> "$GITHUB_ENV"
+
+      - name: Detect automated dependency PRs
+        id: pr_type
+        run: |
+          PR_AUTHOR=$(jq -r '.author' pr_meta.json)
+          PR_LABELS=$(jq -r '.labels | join(",")' pr_meta.json)
+
+          if [[ "$PR_AUTHOR" == "dependabot[bot]" ]] || \
+             [[ "$PR_AUTHOR" == "renovate[bot]" ]] || \
+             echo "$PR_LABELS" | grep -q "auto-merge"; then
+            echo "is_automated=true" >> $GITHUB_OUTPUT
+            echo "✅ Detected automated dependency update PR"
+          else
+            echo "is_automated=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Combine all report fragments into a single security report
+      - name: Create combined security report
+        env:
+          IS_AUTOMATED: ${{ steps.pr_type.outputs.is_automated }}
+        run: |
+          echo "# 🔒 Dependency Security Report" > security_report.md
+          echo "" >> security_report.md
+
+          if [ "$DEPS_CHANGES" == "true" ] || [ "$MANIFEST_CHANGES" == "true" ]; then
+            # 1. Show sync status if out of sync
+            if [ "$REQ_SYNC" == "out_of_sync" ] && [ -f sync_report.md ]; then
+              cat sync_report.md >> security_report.md
+              echo "" >> security_report.md
+              echo "---" >> security_report.md
+              echo "" >> security_report.md
+            fi
+
+            # 2. Modified Dependencies Section (consolidated)
+            echo "## 📦 Modified Dependencies" >> security_report.md
+            echo "" >> security_report.md
+
+            # Combine requirements_all.txt and manifest changes
+            HAS_DEPS=false
+
+            if [ "$MANIFEST_CHANGES" == "true" ] && [ -f manifest_report.md ]; then
+              cat manifest_report.md | grep -v "^## " >> security_report.md
+              HAS_DEPS=true
+            fi
+
+            if [ "$DEPS_CHANGES" == "true" ] && [ -f deps_report.md ]; then
+              if [ "$HAS_DEPS" = "true" ]; then
+                echo "" >> security_report.md
+              fi
+              cat deps_report.md | grep -v "^## " >> security_report.md
+            fi
+
+            echo "" >> security_report.md
+            echo "---" >> security_report.md
+            echo "" >> security_report.md
+
+            # 3. Vulnerability Scan Results
+            if [ -f audit_report.md ]; then
+              cat audit_report.md >> security_report.md
+            fi
+            echo "" >> security_report.md
+            echo "---" >> security_report.md
+            echo "" >> security_report.md
+
+            # 4. Automated Security Checks
+            echo "### Automated Security Checks" >> security_report.md
+            echo "" >> security_report.md
+
+            # Vulnerability scan check
+            if [ "$PIP_AUDIT" == "fail" ]; then
+              echo "- ❌ **Vulnerability Scan**: Failed - Known vulnerabilities detected" >> security_report.md
+            else
+              echo "- ✅ **Vulnerability Scan**: Passed - No known vulnerabilities" >> security_report.md
+            fi
+
+            # Trusted sources check
+            if [ "$TRUSTED_SOURCES" == "fail" ]; then
+              echo "- ❌ **Trusted Sources**: Some packages missing source repository" >> security_report.md
+            else
+              echo "- ✅ **Trusted Sources**: All packages have verified source repositories" >> security_report.md
+            fi
+
+            # Typosquatting check
+            if [ "$TYPOSQUATTING" == "fail" ]; then
+              echo "- ❌ **Typosquatting Check**: Suspicious package names detected!" >> security_report.md
+            else
+              echo "- ✅ **Typosquatting Check**: No suspicious package names detected" >> security_report.md
+            fi
+
+            # License compatibility check
+            if [ "$LICENSE" == "fail" ]; then
+              echo "- ⚠️  **License Compatibility**: Some licenses may not be compatible" >> security_report.md
+            else
+              echo "- ✅ **License Compatibility**: All licenses are OSI-approved and compatible" >> security_report.md
+            fi
+
+            # Supply chain risk check
+            if [ "$SAFETY_STATUS" == "high_risk" ]; then
+              echo "- ❌ **Supply Chain Risk**: High risk packages detected" >> security_report.md
+            elif [ "$SAFETY_STATUS" == "medium_risk" ]; then
+              echo "- ⚠️  **Supply Chain Risk**: Medium risk - review recommended" >> security_report.md
+            else
+              echo "- ✅ **Supply Chain Risk**: Passed - packages appear mature and maintained" >> security_report.md
+            fi
+
+            echo "" >> security_report.md
+
+            # Check if automated PR
+            if [ "$IS_AUTOMATED" == "true" ]; then
+              echo "> 🤖 **Automated dependency update** - This PR is from a trusted source (dependabot/renovate) and will be auto-approved if all checks pass." >> security_report.md
+              echo "" >> security_report.md
+            fi
+
+            echo "### Manual Review" >> security_report.md
+            echo "" >> security_report.md
+            echo "**Maintainer approval required:**" >> security_report.md
+            echo "" >> security_report.md
+            echo "- [ ] **I have reviewed the changes above and approve these dependency updates**" >> security_report.md
+            echo "" >> security_report.md
+
+            if [ "$IS_AUTOMATED" == "true" ]; then
+              echo "_Automated PRs with all checks passing will be auto-approved._" >> security_report.md
+            else
+              echo "**To approve:** Comment \`/approve-dependencies\` or manually add the \`dependencies-reviewed\` label." >> security_report.md
+            fi
+          else
+            echo "✅ No dependency changes detected in this PR." >> security_report.md
+          fi
+
+          cat security_report.md
+
+          # Add to GitHub job summary
+          cat security_report.md >> $GITHUB_STEP_SUMMARY
+
+      # Post the combined report as a PR comment
+      - name: Post security report to PR
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('security_report.md', 'utf8');
+            const meta = JSON.parse(fs.readFileSync('pr_meta.json', 'utf8'));
+
+            // Find existing bot comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: meta.number,
+            });
+
+            const botComment = comments.data.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('🔒 Dependency Security Report')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: report
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: meta.number,
+                body: report
+              });
+            }
+
+      # Gate the merge via a commit status on the PR head, and auto-approve
+      # automated PRs by adding the review label.
+      - name: Report security status
+        uses: actions/github-script@v9
+        env:
+          IS_AUTOMATED: ${{ steps.pr_type.outputs.is_automated }}
+        with:
+          script: |
+            const fs = require('fs');
+            const meta = JSON.parse(fs.readFileSync('pr_meta.json', 'utf8'));
+
+            const headSha = context.payload.workflow_run.head_sha;
+            const isAutomated = process.env.IS_AUTOMATED === 'true';
+            const isHighRisk = process.env.SAFETY_STATUS === 'high_risk';
+            const hasVulns = process.env.PIP_AUDIT === 'fail';
+            const depsChanged =
+              process.env.DEPS_CHANGES === 'true' ||
+              process.env.MANIFEST_CHANGES === 'true';
+            const hasReviewLabel = (meta.labels || []).includes('dependencies-reviewed');
+
+            let state = 'success';
+            let description = 'No dependency changes to review';
+
+            if (isHighRisk) {
+              state = 'failure';
+              description = 'High-risk packages detected - security review required';
+            } else if (hasVulns) {
+              state = 'failure';
+              description = 'Known vulnerabilities detected';
+            } else if (depsChanged) {
+              if (isAutomated || hasReviewLabel) {
+                state = 'success';
+                description = isAutomated
+                  ? 'Automated dependency update - approved'
+                  : 'Dependency changes reviewed';
+              } else {
+                state = 'failure';
+                description = 'Awaiting maintainer review (add "dependencies-reviewed" label)';
+              }
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: headSha,
+              state,
+              context: 'Dependency Security Review',
+              description,
+            });
+
+            // Auto-approve automated PRs by applying the review label
+            if (depsChanged && isAutomated && !hasReviewLabel && !isHighRisk && !hasVulns) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: meta.number,
+                labels: ['dependencies-reviewed'],
+              });
+            }
+
+            if (state === 'failure') {
+              core.setFailed(description);
+            }
