@@ -68,14 +68,16 @@ class DBNDownBeatTracker:
                 }
             )
 
-    def __call__(self, activations: NDArray[np.float64]) -> NDArray[np.float64]:
+    def __call__(self, activations: NDArray[np.float64]) -> tuple[NDArray[np.float64], int]:
         """
         Run DBN decoding on beat/downbeat activations.
 
         :param activations: Shape (T, 2), columns [beat_act, downbeat_act].
             Values should be probabilities in (0, 1).
-        :return: Shape (M, 2) array of [time_seconds, beat_position].
-            beat_position is 1 for downbeats, 2..num_beats for other beats.
+        :return: Tuple of (beats, num_beats).
+            beats: Shape (M, 2) array of [time_seconds, beat_position].
+                beat_position is 1 for downbeats, 2..num_beats for other beats.
+            num_beats: Beats per bar of the winning meter hypothesis (0 if no beats found).
         """
         # Threshold: trim leading/trailing silence
         first = 0
@@ -116,12 +118,12 @@ class DBNDownBeatTracker:
             beats = np.nonzero(np.diff(beat_numbers))[0] + 1
 
         if len(beats) == 0:
-            return np.empty((0, 2), dtype=np.float64)
+            return np.empty((0, 2), dtype=np.float64), 0
 
         beat_times = (beats + first) / self.fps
         beat_positions = beat_numbers[beats]
 
-        return np.column_stack([beat_times, beat_positions])
+        return np.column_stack([beat_times, beat_positions]), int(best_hmm["num_beats"])
 
     @staticmethod
     def _build_bar_state_space(

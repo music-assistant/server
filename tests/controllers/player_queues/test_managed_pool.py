@@ -8,7 +8,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
+from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows, song_keys
 from music_assistant.controllers.player_queues.managed_pool import (
     DynamicFillMode,
     DynamicSource,
@@ -45,6 +45,29 @@ def _artist_track(item_id: str, artist: str) -> Track:
         item_id=item_id,
         provider="test",
         name=f"Track {item_id}",
+        duration=60,
+        artists=UniqueList(
+            [
+                ItemMapping(
+                    item_id=artist.lower(),
+                    provider="test",
+                    name=artist,
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        ),
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def _version_track(item_id: str, name: str, artist: str) -> Track:
+    """Build a Track with an explicit title and single named artist."""
+    return Track(
+        item_id=item_id,
+        provider="test",
+        name=name,
         duration=60,
         artists=UniqueList(
             [
@@ -230,6 +253,49 @@ def test_pool_keys_excluded() -> None:
     )
     assert "b" not in _ids(result)
     assert set(_ids(result)) == {"a", "c"}
+
+
+def test_pool_song_keys_exclude_other_version() -> None:
+    """A different catalog version of an already-queued song is skipped too."""
+    queued = _version_track("amber-1", "Amber", "The Thrillseekers")
+    other_version = _version_track("amber-2", "Amber", "The Thrillseekers")
+    fresh = _version_track("other", "Two Bodies", "Flight Facilities")
+    source = DynamicSource(
+        media_item=_track("seed"),
+        multiplicity=1,
+        fill_mode=DynamicFillMode.TRACKS,
+        candidates=[other_version, fresh],
+    )
+    result = allocate_refill(
+        [source],
+        slots=10,
+        pool_keys={queued},
+        pool_song_keys=song_keys(queued),
+        snapshot=_snapshot(),
+        windows=RecencyWindows(),
+    )
+    assert _ids(result) == ["other"]
+
+
+def test_batch_never_contains_two_versions_of_same_song() -> None:
+    """Two catalog versions of the same song offered in one refill yield only one pick."""
+    sources = [
+        DynamicSource(
+            media_item=_track("seed"),
+            multiplicity=1,
+            fill_mode=DynamicFillMode.DYNAMIC,
+            candidates=[
+                _version_track("amber-1", "Amber", "The Thrillseekers"),
+                _version_track("amber-2", "Amber (Remastered 2019)", "The Thrillseekers"),
+                _version_track("other", "Two Bodies", "Flight Facilities"),
+            ],
+        )
+    ]
+    result = allocate_refill(
+        sources, slots=10, pool_keys=set(), snapshot=_snapshot(), windows=RecencyWindows()
+    )
+    assert len([tid for tid in _ids(result) if tid.startswith("amber")]) == 1
+    assert "other" in _ids(result)
 
 
 def test_never_exceeds_slots() -> None:

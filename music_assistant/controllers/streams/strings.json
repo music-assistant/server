@@ -19,7 +19,7 @@
     },
     "publish_ip": {
       "label": "Published IP address",
-      "description": "This IP address is communicated to players where to find this server.\nMake sure that this IP can be reached by players on the local network, otherwise audio streaming will not work."
+      "description": "This IP address is communicated to players where to find this server.\nThe default \"auto\" automatically selects the server's primary IP address at startup.\nSet an explicit IP address if the auto-detected one cannot be reached by players on the local network (for example when running in Docker with bridged networking), otherwise audio streaming will not work."
     },
     "volume_normalization_radio": {
       "label": "Volume normalization method for radio streams"

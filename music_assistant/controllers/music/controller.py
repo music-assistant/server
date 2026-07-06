@@ -1193,6 +1193,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "media_type": media_item.media_type.value,
             "name": media_item.name,
             "image": serialize_to_json(media_item.image.to_dict()) if media_item.image else None,
+            # store lightweight artist mappings so playlog rows can later be matched or
+            # resolved by artist without an extra provider lookup
+            "artists": serialize_to_json(
+                [ItemMapping.from_item(artist).to_dict() for artist in artists]
+            )
+            if (artists := getattr(media_item, "artists", None))
+            else None,
             "fully_played": fully_played,
             "seconds_played": seconds_played,
             "timestamp": timestamp,
@@ -1621,7 +1628,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return self.podcasts
         if media_type == MediaType.GENRE:
             return self.genres
-        raise NotImplementedError
+        raise NotImplementedError(
+            f"No media controller available for media type: {media_type.value}"
+        )
 
     def get_provider_instances(
         self, domain: str, return_unavailable: bool = False
@@ -2260,7 +2269,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         async def run_sync() -> None:
             try:
                 async with self._sync_lock:
-                    await provider.sync_library(media_type)
+                    # suppress per-item events during sync; a large library would otherwise
+                    # emit one (serialized per client) for every item. Subscribers refresh
+                    # on MUSIC_SYNC_COMPLETED and track progress via TASKS_UPDATED instead.
+                    token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+                    try:
+                        await provider.sync_library(media_type)
+                    finally:
+                        SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
             finally:
                 self.mass.call_later(
                     0,

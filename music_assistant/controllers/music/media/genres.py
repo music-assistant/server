@@ -1037,52 +1037,55 @@ class GenreController(MediaControllerBase[Genre]):
         media_id_int = int(media_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
 
-        # Build target set: (genre_id, alias_name) from incoming names.
-        # One alias can map to multiple genres (n:n). Genres resolve within the taxonomy
-        # the item belongs to, so a podcast tag never lands on a music genre.
-        content_type = genre_content_type_for(media_type)
-        target_mappings: dict[int, str] = {}
-        for name in genre_names:
-            normalized = self._normalize_genre_name(name)
-            if not normalized:
-                continue
-            genre_ids = await self._find_genres_for_alias(normalized[0], content_type)
-            for gid in genre_ids:
-                if gid not in target_mappings:
-                    target_mappings[gid] = normalized[0]
+        # batch the (possible) genre creations and mapping changes into a single commit
+        async with self.mass.music.database.deferred_commit():
+            # Build target set: (genre_id, alias_name) from incoming names.
+            # One alias can map to multiple genres (n:n). Genres resolve within the taxonomy
+            # the item belongs to, so a podcast tag never lands on a music genre.
+            content_type = genre_content_type_for(media_type)
+            target_mappings: dict[int, str] = {}
+            for name in genre_names:
+                normalized = self._normalize_genre_name(name)
+                if not normalized:
+                    continue
+                genre_ids = await self._find_genres_for_alias(normalized[0], content_type)
+                for gid in genre_ids:
+                    if gid not in target_mappings:
+                        target_mappings[gid] = normalized[0]
 
-        # Get current genre_ids from database
-        rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT genre_id FROM {gm} WHERE media_type = :media_type AND media_id = :media_id",
-            {"media_type": media_type.value, "media_id": media_id_int},
-            limit=0,
-        )
-        existing_genre_ids = {int(row["genre_id"]) for row in rows}
-
-        to_add = set(target_mappings.keys()) - existing_genre_ids
-        to_remove = existing_genre_ids - set(target_mappings.keys())
-
-        for genre_id in to_remove:
-            await self.mass.music.database.delete(
-                gm,
-                {
-                    "genre_id": genre_id,
-                    "media_id": media_id_int,
-                    "media_type": media_type.value,
-                },
+            # Get current genre_ids from database
+            rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT genre_id FROM {gm} "
+                "WHERE media_type = :media_type AND media_id = :media_id",
+                {"media_type": media_type.value, "media_id": media_id_int},
+                limit=0,
             )
+            existing_genre_ids = {int(row["genre_id"]) for row in rows}
 
-        for genre_id in to_add:
-            await self.mass.music.database.insert(
-                gm,
-                {
-                    "genre_id": genre_id,
-                    "media_id": media_id_int,
-                    "media_type": media_type.value,
-                    "alias": target_mappings[genre_id],
-                },
-                allow_replace=True,
-            )
+            to_add = set(target_mappings.keys()) - existing_genre_ids
+            to_remove = existing_genre_ids - set(target_mappings.keys())
+
+            for genre_id in to_remove:
+                await self.mass.music.database.delete(
+                    gm,
+                    {
+                        "genre_id": genre_id,
+                        "media_id": media_id_int,
+                        "media_type": media_type.value,
+                    },
+                )
+
+            for genre_id in to_add:
+                await self.mass.music.database.insert(
+                    gm,
+                    {
+                        "genre_id": genre_id,
+                        "media_id": media_id_int,
+                        "media_type": media_type.value,
+                        "alias": target_mappings[genre_id],
+                    },
+                    allow_replace=True,
+                )
 
     def register_scheduled_scan_task(self) -> BackgroundTask:
         """Register the recurring genre mapping scan task."""

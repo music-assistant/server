@@ -730,8 +730,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
         # NCM often returns http://p*.music.126.net links.
         # In secure/ingress contexts these can be blocked as mixed content,
         # which makes the frontend fall back to a generic provider icon.
-        if url.startswith("http://") and "music.126.net" in url:
-            return "https://" + url[len("http://") :]
+        if url.startswith("http://"):
+            host = urlparse(url).hostname or ""
+            if host == "music.126.net" or host.endswith(".music.126.net"):
+                return "https://" + url[len("http://") :]
         return url
 
     def _make_image_list(

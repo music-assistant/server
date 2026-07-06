@@ -370,6 +370,7 @@ def _make_mock_track(
     provider_instance: str = "library",
     duration: int | None = None,
     last_played: int = 0,
+    explicit: bool | None = None,
 ) -> MagicMock:
     """Build a minimal mock Track object."""
     track = MagicMock()
@@ -396,6 +397,7 @@ def _make_mock_track(
 
     track.metadata = MagicMock()
     track.metadata.popularity = popularity
+    track.metadata.explicit = explicit
 
     return track
 
@@ -518,6 +520,135 @@ async def test_favorites_only_filter() -> None:
     uris = [t.uri for t in result]
     assert "library://track/1" in uris
     assert "library://track/2" not in uris
+
+
+@pytest.mark.asyncio
+async def test_explicit_only_filter() -> None:
+    """explicit=True passes explicit=True to _get_library_tracks for SQL filtering."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    explicit_track = _make_mock_track("1", uri="library://track/1", explicit=True)
+    clean_track = _make_mock_track("2", uri="library://track/2", explicit=False)
+    unknown_track = _make_mock_track("3", uri="library://track/3", explicit=None)
+
+    async def mock_get_library(**kwargs: Any) -> list[MagicMock]:
+        explicit_filter = kwargs.get("explicit")
+        all_tracks = [explicit_track, clean_track, unknown_track]
+        if explicit_filter is True:
+            # Simulate SQL filter: json_extract(...) = 1
+            return [t for t in all_tracks if t.metadata.explicit is True]
+        if explicit_filter is False:
+            # Simulate SQL filter: IS NULL OR = 0
+            return [t for t in all_tracks if t.metadata.explicit is not True]
+        return all_tracks
+
+    cast("Any", plugin)._get_library_tracks = mock_get_library
+
+    # Test explicit only
+    rules = SmartPlaylistRules(explicit=True, logic=LOGIC_AND, limit=10)
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris
+    assert "library://track/2" not in uris
+    assert "library://track/3" not in uris
+
+
+@pytest.mark.asyncio
+async def test_no_explicit_filter() -> None:
+    """explicit=False excludes explicit tracks via SQL filtering."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    explicit_track = _make_mock_track("1", uri="library://track/1", explicit=True)
+    clean_track = _make_mock_track("2", uri="library://track/2", explicit=False)
+    unknown_track = _make_mock_track("3", uri="library://track/3", explicit=None)
+
+    async def mock_get_library(**kwargs: Any) -> list[MagicMock]:
+        explicit_filter = kwargs.get("explicit")
+        all_tracks = [explicit_track, clean_track, unknown_track]
+        if explicit_filter is True:
+            return [t for t in all_tracks if t.metadata.explicit is True]
+        if explicit_filter is False:
+            # Simulate SQL filter: IS NULL OR = 0
+            return [t for t in all_tracks if t.metadata.explicit is not True]
+        return all_tracks
+
+    cast("Any", plugin)._get_library_tracks = mock_get_library
+
+    # Test no explicit
+    rules = SmartPlaylistRules(explicit=False, logic=LOGIC_AND, limit=10)
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" not in uris
+    assert "library://track/2" in uris
+    assert "library://track/3" in uris
+
+
+@pytest.mark.asyncio
+async def test_allow_explicit_filter() -> None:
+    """explicit=None returns all tracks regardless of explicit flag."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    explicit_track = _make_mock_track("1", uri="library://track/1", explicit=True)
+    clean_track = _make_mock_track("2", uri="library://track/2", explicit=False)
+    unknown_track = _make_mock_track("3", uri="library://track/3", explicit=None)
+
+    all_tracks = [explicit_track, clean_track, unknown_track]
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=all_tracks)
+
+    # Test allow explicit (no filter)
+    rules = SmartPlaylistRules(explicit=None, logic=LOGIC_AND, limit=10)
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris
+    assert "library://track/2" in uris
+    assert "library://track/3" in uris
+
+
+@pytest.mark.asyncio
+async def test_explicit_filter_generates_sql_query_parts() -> None:
+    """_get_library_tracks passes explicit parameter correctly to library_items."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # Mock tracks.library_items to capture kwargs
+    library_items_mock = AsyncMock(return_value=[])
+    mass.music.tracks.library_items = library_items_mock
+
+    # Test explicit=True passes correctly
+    await plugin._get_library_tracks(explicit=True, limit=10)
+    call_kwargs = library_items_mock.call_args.kwargs
+    assert call_kwargs["explicit"] is True
+
+    # Test explicit=False passes correctly
+    library_items_mock.reset_mock()
+    await plugin._get_library_tracks(explicit=False, limit=10)
+    call_kwargs = library_items_mock.call_args.kwargs
+    assert call_kwargs["explicit"] is False
+
+    # Test explicit=None passes correctly
+    library_items_mock.reset_mock()
+    await plugin._get_library_tracks(explicit=None, limit=10)
+    call_kwargs = library_items_mock.call_args.kwargs
+    assert call_kwargs["explicit"] is None
 
 
 @pytest.mark.asyncio
@@ -1036,10 +1167,10 @@ async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) 
 
 
 @pytest.mark.asyncio
-async def test_get_playlist_copies_library_artwork(
+async def test_get_playlist_loads_library_artwork(
     tmp_path: Any,
 ) -> None:
-    """get_playlist copies artwork from library item when available."""
+    """get_playlist loads artwork from the library when available."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     manifest = MagicMock()
@@ -1051,26 +1182,28 @@ async def test_get_playlist_copies_library_artwork(
 
     plugin._rules_store["abc"] = SmartPlaylistRules(limit=10, is_dynamic=False)
 
-    # Create library item with artwork
+    # Mock library item with artwork
     library_artwork = MediaItemImage(
         type=ImageType.THUMB,
         path="generated_artwork.jpg",
         provider="playlist_art",
         remotely_accessible=False,
     )
-    library_item_with_artwork = MagicMock()
-    library_item_with_artwork.metadata.images = UniqueList([library_artwork])
+    library_playlist = MagicMock()
+    library_playlist.metadata.images = UniqueList([library_artwork])
 
-    # Mock get_library_item_by_prov_id to return library item with artwork
-    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
-        return_value=library_item_with_artwork
-    )
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=library_playlist)
 
     playlist = await plugin.get_playlist("abc")
     assert playlist.metadata.images is not None
     assert len(playlist.metadata.images) == 1
     assert playlist.metadata.images[0].path == "generated_artwork.jpg"
     assert playlist.metadata.images[0].provider == "playlist_art"
+
+    # Verify library lookup was called
+    mass.music.playlists.get_library_item_by_prov_id.assert_awaited_once_with(
+        "abc", plugin.instance_id
+    )
 
 
 @pytest.mark.asyncio
@@ -1650,6 +1783,7 @@ def _make_ai_plugin(
     mass.storage_path = str(tmp_path)
     mass.cache.clear = AsyncMock()
     mass.metadata.locale = "en_US"
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
     providers = [ai_provider] if ai_provider is not None else []
     mass.get_providers_supporting_feature = MagicMock(return_value=providers)
     manifest = MagicMock()
@@ -1797,7 +1931,7 @@ async def test_build_playlist_uses_stored_ai_description(tmp_path: Any) -> None:
     plugin._names_store["abc"] = "My List"
     plugin._descriptions_store["abc"] = "Hand-crafted AI summary."
 
-    playlist = plugin._build_playlist("abc", SmartPlaylistRules(favorites_only=True))
+    playlist = await plugin._build_playlist("abc", SmartPlaylistRules(favorites_only=True))
 
     assert playlist.metadata.description == "Hand-crafted AI summary."
 
@@ -1811,7 +1945,7 @@ async def test_build_playlist_ignores_stored_description_when_disabled(tmp_path:
     plugin._descriptions_store["abc"] = "Old AI text."
     rules = SmartPlaylistRules(favorites_only=True)
 
-    playlist = plugin._build_playlist("abc", rules)
+    playlist = await plugin._build_playlist("abc", rules)
 
     assert playlist.metadata.description == f"[Smart Playlist] {rules.human_readable()}"
 
@@ -1824,7 +1958,7 @@ async def test_build_playlist_falls_back_to_human_readable(tmp_path: Any) -> Non
     plugin._names_store["abc"] = "My List"
     rules = SmartPlaylistRules(favorites_only=True)
 
-    playlist = plugin._build_playlist("abc", rules)
+    playlist = await plugin._build_playlist("abc", rules)
 
     assert playlist.metadata.description == f"[Smart Playlist] {rules.human_readable()}"
 

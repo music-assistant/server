@@ -61,7 +61,9 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
+    CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
+    CONF_VOLUME_NORMALIZATION_TRACKS,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -357,9 +359,8 @@ class StreamsAudio:
         streamdetails.fade_in = fade_in
 
         streamdetails.prefer_album_loudness = prefer_album_loudness
-        core_config = await mass.config.get_core_config("streams")
         conf_volume_normalization_target = float(
-            str(core_config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
+            mass.streams.get_config_value(CONF_VOLUME_NORMALIZATION_TARGET, return_type=int)
         )
         # guard against invalid volume normalization values
         # range and default_value are guaranteed to be set for this constant
@@ -384,7 +385,9 @@ class StreamsAudio:
             != CONF_VALUE_DISABLED
         )
         streamdetails.volume_normalization_mode = get_normalization_mode(
-            core_config, volume_normalization_enabled, streamdetails
+            self._get_volume_normalization_preference(streamdetails),
+            volume_normalization_enabled,
+            streamdetails,
         )
 
         # attach the DSP details of all group members
@@ -1512,7 +1515,6 @@ class StreamsAudio:
             # re-evaluate normalization mode: the background loudness analyzer may have
             # updated streamdetails.loudness since get_stream_details was called
             if streamdetails.queue_id:
-                core_config = await self.mass.config.get_core_config("streams")
                 volume_normalization_enabled = (
                     self.mass.config.get_effective_player_queue_config_value(
                         streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
@@ -1520,7 +1522,9 @@ class StreamsAudio:
                     != CONF_VALUE_DISABLED
                 )
                 streamdetails.volume_normalization_mode = get_normalization_mode(
-                    core_config, volume_normalization_enabled, streamdetails
+                    self._get_volume_normalization_preference(streamdetails),
+                    volume_normalization_enabled,
+                    streamdetails,
                 )
 
         # handle volume normalization
@@ -1537,9 +1541,7 @@ class StreamsAudio:
                 if streamdetails.media_type == MediaType.TRACK
                 else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO
             )
-            gain_value = await self.mass.config.get_core_config_value(
-                "streams", config_key, default=0.0, return_type=float
-            )
+            gain_value = self.mass.streams.get_config_value(config_key, return_type=float)
             gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
@@ -2601,6 +2603,19 @@ class StreamsAudio:
             await writer.wait_closed()
 
     # --- Private methods ---
+
+    def _get_volume_normalization_preference(
+        self, streamdetails: StreamDetails
+    ) -> VolumeNormalizationMode:
+        """Return the configured normalization preference for the stream's media type."""
+        conf_key = (
+            CONF_VOLUME_NORMALIZATION_RADIO
+            if streamdetails.media_type == MediaType.RADIO
+            else CONF_VOLUME_NORMALIZATION_TRACKS
+        )
+        return VolumeNormalizationMode(
+            self.mass.streams.get_config_value(conf_key, return_type=str)
+        )
 
     def _update_radio_stream_metadata(
         self,

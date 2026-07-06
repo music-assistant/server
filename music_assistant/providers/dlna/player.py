@@ -255,9 +255,7 @@ class DLNAPlayer(Player):
         """Send PAUSE command to given player."""
         assert self.device is not None  # for type checking
 
-        replace_pause_with_stop: bool = await self.mass.config.get_player_config_value(
-            self.player_id, "replace_pause_with_stop"
-        )
+        replace_pause_with_stop = self.get_config_value("replace_pause_with_stop", return_type=bool)
 
         if replace_pause_with_stop and self.device.can_stop:
             await self.stop()

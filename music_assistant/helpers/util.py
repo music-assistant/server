@@ -21,7 +21,6 @@ import urllib.request
 import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
-from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
@@ -54,11 +53,9 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderModuleType
 
-from dataclasses import fields, is_dataclass
 
 LOGGER = logging.getLogger(__name__)
 
-T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
 
 
@@ -577,6 +574,16 @@ def filename_from_string(string: str) -> str:
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
 
 
+# aiohttp rejects the full C0 control character range plus DEL in response headers
+# to prevent header injection attacks (see aiohttp http_writer._FORBIDDEN_HEADER_CHARS_RE)
+_FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def sanitize_http_header_value(value: str) -> str:
+    """Replace control characters that are not allowed in HTTP header values."""
+    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+
+
 def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
     """Try to parse an int."""
     try:
@@ -872,67 +879,108 @@ def clean_stream_title(line: str) -> str:
     return line
 
 
-async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
-    """Return all IP-adresses of all network interfaces."""
+# cache for get_ip_addresses: enumerating the network adapters involves a thread hop,
+# socket probes and a full adapter walk, while the result rarely (if ever) changes
+IP_ADDRESSES_CACHE_TTL = 30
+_ip_addresses_cache: dict[bool, tuple[float, tuple[str, ...]]] = {}
+_ip_addresses_pending: dict[bool, asyncio.Task[tuple[str, ...]]] = {}
 
-    def call() -> tuple[str, ...]:
-        result: list[tuple[int, str]] = []
-        # try to get the primary IP address
-        # this is the IP address of the default route
-        primary_ip = ""
-        # try IPv4 first
-        _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _sock.settimeout(0)
+
+async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
+    """
+    Return all IP addresses of all network interfaces.
+
+    Always returns at least one address: when no routable address is found
+    (e.g. offline host), the loopback address is returned as fallback.
+    Results are cached for a short while, so an IP/interface change may take up to
+    IP_ADDRESSES_CACHE_TTL seconds to be reflected.
+
+    :param include_ipv6: Whether to include IPv6 addresses in the result.
+    """
+    if cached := _ip_addresses_cache.get(include_ipv6):
+        cached_at, addresses = cached
+        if (time.monotonic() - cached_at) < IP_ADDRESSES_CACHE_TTL:
+            return addresses
+
+    async def _probe() -> tuple[str, ...]:
         try:
-            # doesn't even have to be reachable
-            _sock.connect(("10.254.254.254", 1))
-            primary_ip = _sock.getsockname()[0]
+            addresses = await asyncio.to_thread(_enumerate_ip_addresses, include_ipv6)
+            _ip_addresses_cache[include_ipv6] = (time.monotonic(), addresses)
+            return addresses
+        finally:
+            _ip_addresses_pending.pop(include_ipv6, None)
+
+    # single-flight: no await between the pending-check and storing the task,
+    # so concurrent callers always end up awaiting the same probe
+    if not (pending := _ip_addresses_pending.get(include_ipv6)):
+        pending = asyncio.create_task(_probe())
+        _ip_addresses_pending[include_ipv6] = pending
+    # shield the shared probe: a caller awaiting a task holds it as its fut_waiter,
+    # so cancelling that caller would otherwise cancel the probe for all other callers
+    return await asyncio.shield(pending)
+
+
+def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
+    """Enumerate all IP addresses of all network interfaces (blocking)."""
+    result: list[tuple[int, str]] = []
+    # try to get the primary IP address
+    # this is the IP address of the default route
+    primary_ip = ""
+    # try IPv4 first
+    _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    _sock.settimeout(0)
+    try:
+        # doesn't even have to be reachable
+        _sock.connect(("10.254.254.254", 1))
+        primary_ip = _sock.getsockname()[0]
+    except Exception:
+        primary_ip = ""
+    finally:
+        _sock.close()
+    # fall back to IPv6 if no IPv4 primary found (e.g. IPv6-only networks)
+    if not primary_ip:
+        _sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        _sock6.settimeout(0)
+        try:
+            _sock6.connect(("2001:db8::1", 1))
+            primary_ip = _sock6.getsockname()[0]
         except Exception:
             primary_ip = ""
         finally:
-            _sock.close()
-        # fall back to IPv6 if no IPv4 primary found (e.g. IPv6-only networks)
-        if not primary_ip:
-            _sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-            _sock6.settimeout(0)
-            try:
-                _sock6.connect(("2001:db8::1", 1))
-                primary_ip = _sock6.getsockname()[0]
-            except Exception:
-                primary_ip = ""
-            finally:
-                _sock6.close()
-        # get all IP addresses of all network interfaces
-        adapters = ifaddr.get_adapters()
-        for adapter in adapters:
-            for ip in adapter.ips:
-                if ip.is_IPv6 and not include_ipv6:
-                    continue
-                # ifaddr returns IPv6 addresses as (address, flowinfo, scope_id) tuples
-                ip_str = ip.ip[0] if isinstance(ip.ip, tuple) else ip.ip
-                if ip_str.startswith(("127", "169.254")):
-                    # filter out IPv4 loopback/APIPA address
-                    continue
-                if ip_str.startswith(("::1", "::ffff:", "fe80")):
-                    # filter out IPv6 loopback/link-local address
-                    continue
-                if ip_str == primary_ip:
-                    score = 10
-                elif ip_str.startswith(("192.168.",)):
-                    # we rank the 192.168 range a bit higher as its most
-                    # often used as the private network subnet
-                    score = 2
-                elif ip_str.startswith(("172.", "10.", "192.")):
-                    # we rank the 172 range a bit lower as its most
-                    # often used as the private docker network
-                    score = 1
-                else:
-                    score = 0
-                result.append((score, ip_str))
-        result.sort(key=lambda x: x[0], reverse=True)
-        return tuple(ip[1] for ip in result)
-
-    return await asyncio.to_thread(call)
+            _sock6.close()
+    # get all IP addresses of all network interfaces
+    adapters = ifaddr.get_adapters()
+    for adapter in adapters:
+        for ip in adapter.ips:
+            if ip.is_IPv6 and not include_ipv6:
+                continue
+            # ifaddr returns IPv6 addresses as (address, flowinfo, scope_id) tuples
+            ip_str = ip.ip[0] if isinstance(ip.ip, tuple) else ip.ip
+            if ip_str.startswith(("127", "169.254")):
+                # filter out IPv4 loopback/APIPA address
+                continue
+            if ip_str.startswith(("::1", "::ffff:", "fe80")):
+                # filter out IPv6 loopback/link-local address
+                continue
+            if ip_str == primary_ip:
+                score = 10
+            elif ip_str.startswith(("192.168.",)):
+                # we rank the 192.168 range a bit higher as its most
+                # often used as the private network subnet
+                score = 2
+            elif ip_str.startswith(("172.", "10.", "192.")):
+                # we rank the 172 range a bit lower as its most
+                # often used as the private docker network
+                score = 1
+            else:
+                score = 0
+            result.append((score, ip_str))
+    result.sort(key=lambda x: x[0], reverse=True)
+    if not result:
+        # no routable addresses found (e.g. offline host with only loopback/link-local):
+        # fall back to loopback so callers that rely on at least one address keep working
+        return ("127.0.0.1",)
+    return tuple(ip[1] for ip in result)
 
 
 def interface_name_for_ip(ip: str) -> str | None:
@@ -1154,38 +1202,6 @@ def get_changed_dict_values(
     return changed_values
 
 
-def get_changed_dataclass_values(
-    obj1: T,
-    obj2: T,
-    recursive: bool = False,
-) -> dict[str, tuple[Any, Any]]:
-    """
-    Compare 2 dataclass instances of the same type and return dict of changed field values.
-
-    dict key is the changed field name, value is tuple of old and new values.
-    """
-    if not (is_dataclass(obj1) and is_dataclass(obj2)):
-        raise ValueError("Both objects must be dataclass instances")
-
-    changed_values: dict[str, tuple[Any, Any]] = {}
-    for field in fields(obj1):
-        val1 = getattr(obj1, field.name, None)
-        val2 = getattr(obj2, field.name, None)
-        if recursive and is_dataclass(val1) and is_dataclass(val2):
-            sub_changes = get_changed_dataclass_values(val1, val2, recursive)
-            for sub_field, sub_value in sub_changes.items():
-                changed_values[f"{field.name}.{sub_field}"] = sub_value
-            continue
-        if recursive and isinstance(val1, dict) and isinstance(val2, dict):
-            sub_changes = get_changed_dict_values(val1, val2, recursive=recursive)
-            for sub_field, sub_value in sub_changes.items():
-                changed_values[f"{field.name}.{sub_field}"] = sub_value
-            continue
-        if val1 != val2:
-            changed_values[field.name] = (val1, val2)
-    return changed_values
-
-
 def empty_queue[T](q: asyncio.Queue[T]) -> None:
     """Empty an asyncio Queue."""
     for _ in range(q.qsize()):
@@ -1239,10 +1255,13 @@ async def is_hass_supervisor() -> bool:
     return await asyncio.to_thread(_check)
 
 
+# requirements verified this session, so repeated (config) loads skip the version check
+_checked_requirements: set[str] = set()
+
+
 async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
     """Return module for given provider domain and make sure the requirements are met."""
 
-    @lru_cache
     def _get_provider_module(domain: str) -> ProviderModuleType:
         return cast(
             "ProviderModuleType", importlib.import_module(f".{domain}", "music_assistant.providers")
@@ -1250,16 +1269,22 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
 
     # ensure module requirements are met
     for requirement in requirements:
+        if requirement in _checked_requirements:
+            continue
         if "==" not in requirement:
             # we should really get rid of unpinned requirements
             continue
         package_name, version = requirement.split("==", 1)
+        # importlib.metadata can't resolve extras (e.g. aiosendspin[server]), so strip them
+        package_name = package_name.split("[", 1)[0]
         installed_version = await get_package_version(package_name)
         if installed_version == "0.0.0":
             # ignore editable installs
+            _checked_requirements.add(requirement)
             continue
         if installed_version != version:
             await install_package(requirement)
+        _checked_requirements.add(requirement)
 
     # try to load the module
     try:

@@ -178,6 +178,9 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125, f"Expected BPM ~120, got {analysis.bpm:.1f}"
 
+    # the 120 BPM fixture is common time
+    assert analysis.beats_per_bar == 4
+
 
 async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock: Mock) -> None:
     """Test that extended analysis fields (energy, centroid, key) are populated."""
@@ -246,6 +249,17 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125
 
+    # v2: per-band RMS envelopes in extra_data, normalized by the full-band peak
+    assert analysis.extra_data is not None
+    band_rms = analysis.extra_data["band_rms"]
+    assert set(band_rms) == {"low", "low_mid", "mid", "high"}
+    for band in band_rms.values():
+        assert len(band) == 1800
+        assert all(v >= 0.0 for v in band)
+    # music with drums has real low-band content; bands are lists (JSON-safe)
+    assert isinstance(band_rms["low"], list)
+    assert max(band_rms["low"]) > 0.05
+
 
 async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider) -> None:
     """Test that _finalize returns an AudioAnalysisData on success."""
@@ -313,7 +327,7 @@ async def test_finalize_raises_when_not_enough_beats(provider: SmartFadesProvide
         patch.object(
             provider,
             "_infer_beat_timings",
-            return_value=(np.array([0.5]), np.array([])),
+            return_value=(np.array([0.5]), np.array([]), 4),
         ),
         pytest.raises(AudioAnalysisError, match="beat"),
     ):
@@ -334,3 +348,8 @@ async def test_setup_raises_when_requirements_not_met(
         pytest.raises(SetupFailedError),
     ):
         await smart_fades.setup(mass_mock, manifest_mock, config_mock)
+
+
+async def test_analysis_version_is_2(provider: SmartFadesProvider) -> None:
+    """v2 = anti-aliased bins + band_rms extra_data + beats_per_bar."""
+    assert provider.analysis_version == 2
