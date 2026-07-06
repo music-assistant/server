@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from json import loads as json_loads
 from typing import TYPE_CHECKING, Any
 
@@ -35,9 +36,11 @@ from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.util import parse_optional_bool
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MediaControllerBase
+from .base import AudiobookSyncDetails, MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant_models.auth import User
 
     from music_assistant import MusicAssistant
@@ -554,3 +557,53 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         for row in rows:
             result.update(json_loads(row[column]))
         return UniqueList(sorted(result))
+
+    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+        """Return extra (columns, joins, params) for the audiobooks sync-details query."""
+        # the sync loop needs the (str vs Artist) type of the stored authors/narrators
+        # plus the user-scoped resume state to detect changes on the provider side
+        extra_columns = f"""
+            , EXISTS (
+                SELECT 1 FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
+                JOIN artists ON artists.item_id = audiobook_artists.artist_id
+                WHERE audiobook_artists.audiobook_id = audiobooks.item_id
+                AND artists.artist_type = '{ArtistType.AUTHOR.value}'
+            ) AS has_author_artists
+            , EXISTS (
+                SELECT 1 FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
+                JOIN artists ON artists.item_id = audiobook_artists.artist_id
+                WHERE audiobook_artists.audiobook_id = audiobooks.item_id
+                AND artists.artist_type = '{ArtistType.NARRATOR.value}'
+            ) AS has_narrator_artists
+            , json_type(audiobooks.authors, '$[0]') AS first_author_type
+            , json_type(audiobooks.narrators, '$[0]') AS first_narrator_type
+            , playlog.fully_played AS fully_played
+            , playlog.seconds_played * 1000 AS resume_position_ms
+        """
+        extra_joins = (
+            f"LEFT JOIN {DB_TABLE_PLAYLOG} ON playlog.item_id = audiobooks.item_id "
+            "AND playlog.media_type = 'audiobook'"
+        )
+        params: dict[str, Any] = {}
+        if session_user := get_current_user():
+            extra_joins += " AND playlog.userid = :playlog_userid"
+            params["playlog_userid"] = session_user.user_id
+        return extra_columns, extra_joins, params
+
+    def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> AudiobookSyncDetails:
+        """Parse a raw sync-details db row into an AudiobookSyncDetails object."""
+        # authors/narrators hydrate as str only when there are no linked Artist records
+        # and the stored JSON column holds plain strings (mirrors _parse_db_row)
+        resume_position_ms = db_row["resume_position_ms"]
+        return AudiobookSyncDetails(
+            item_id=db_row["item_id"],
+            favorite=bool(db_row["favorite"]),
+            date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
+            provider_mappings=self._parse_sync_details_mappings(db_row),
+            author_is_str=not db_row["has_author_artists"]
+            and db_row["first_author_type"] == "text",
+            narrator_is_str=not db_row["has_narrator_artists"]
+            and db_row["first_narrator_type"] == "text",
+            fully_played=parse_optional_bool(db_row["fully_played"]),
+            resume_position_ms=int(resume_position_ms) if resume_position_ms is not None else None,
+        )

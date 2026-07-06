@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import urllib.parse
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
@@ -39,9 +40,11 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MediaControllerBase
+from .base import MediaControllerBase, TrackSyncDetails
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.plugin import PluginProvider
@@ -793,3 +796,26 @@ class TracksController(MediaControllerBase[Track]):
             },
         )
         return ItemMapping.from_item(db_artist)
+
+    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+        """Return extra (columns, joins, params) for the tracks sync-details query."""
+        # the sync loop needs to know if the track has a (valid) album link
+        # to be able to backfill a missing album on existing library tracks
+        extra_columns = """
+            , EXISTS (
+                SELECT 1 FROM album_tracks
+                JOIN albums ON albums.item_id = album_tracks.album_id
+                WHERE album_tracks.track_id = tracks.item_id
+            ) AS has_album
+        """
+        return extra_columns, "", {}
+
+    def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> TrackSyncDetails:
+        """Parse a raw sync-details db row into a TrackSyncDetails object."""
+        return TrackSyncDetails(
+            item_id=db_row["item_id"],
+            favorite=bool(db_row["favorite"]),
+            date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
+            provider_mappings=self._parse_sync_details_mappings(db_row),
+            has_album=bool(db_row["has_album"]),
+        )

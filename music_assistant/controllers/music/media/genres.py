@@ -1048,6 +1048,25 @@ class GenreController(MediaControllerBase[Genre]):
         media_id_int = int(media_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
 
+        # cheap short-circuit for the (very common) unchanged case:
+        # stored alias values are the normalized incoming names from a previous run,
+        # so if those match exactly there is nothing to resolve or write.
+        # rows with a NULL alias (derived mappings) always take the full path.
+        incoming_aliases = {
+            normalized[0]
+            for name in genre_names
+            if (normalized := self._normalize_genre_name(name))
+        }
+        stored_rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT DISTINCT alias FROM {gm} "
+            "WHERE media_type = :media_type AND media_id = :media_id",
+            {"media_type": media_type.value, "media_id": media_id_int},
+            limit=0,
+        )
+        stored_aliases = {row["alias"] for row in stored_rows}
+        if None not in stored_aliases and stored_aliases == incoming_aliases:
+            return
+
         # batch the (possible) genre creations and mapping changes into a single commit
         async with self.mass.music.database.deferred_commit():
             # Build target set: (genre_id, alias_name) from incoming names.
