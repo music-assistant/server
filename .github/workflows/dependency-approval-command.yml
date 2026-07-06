@@ -1,5 +1,13 @@
 # Dependency Approval via Comment Command
 # Allows maintainers to approve dependency changes by commenting /approve-dependencies
+#
+# Besides adding the `dependencies-reviewed` label, this workflow also flips the
+# "Dependency Security Review" commit status to success. Events created with the
+# default GITHUB_TOKEN (like this label add) cannot trigger other workflows, so
+# the dependency-security workflows will NOT re-run — the status must be updated
+# here directly. Only a 'failure' (awaiting review) status is flipped; 'error'
+# states (failed analysis, high-risk packages, known vulnerabilities) cannot be
+# overridden by this command.
 
 name: Dependency Approval Command
 
@@ -10,6 +18,7 @@ on:
 permissions:
   issues: write
   pull-requests: write
+  statuses: write
 
 jobs:
   approve-via-command:
@@ -49,34 +58,95 @@ jobs:
               return;
             }
 
-            // Check if already approved
+            // Check if already approved (label add is skipped below, but the
+            // status flip still runs so the command can repair a stuck status)
             const labels = context.payload.issue.labels.map(l => l.name);
             const alreadyApproved = labels.includes('dependencies-reviewed');
 
-            if (alreadyApproved) {
-              await github.rest.issues.createComment({
+            if (!alreadyApproved) {
+              // Add the dependencies-reviewed label
+              await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: `ℹ️  Dependencies already approved - \`dependencies-reviewed\` label is present.`
+                labels: ['dependencies-reviewed']
               });
-              return;
             }
 
-            // Add the dependencies-reviewed label
-            await github.rest.issues.addLabels({
+            // Flip the "Dependency Security Review" commit status. The label add
+            // above uses GITHUB_TOKEN and therefore cannot re-trigger the
+            // dependency-security workflows, so the status is updated here. This
+            // runs even when the label was already present, so the command can
+            // repair a stuck failing (or missing) status.
+            // Only 'failure' (awaiting review) or missing statuses may be
+            // flipped; 'error' (failed analysis / high risk / vulnerabilities)
+            // must be resolved by a re-run or a fix and cannot be approved away.
+            const statusContext = 'Dependency Security Review';
+            const pr = (await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: ['dependencies-reviewed']
+              pull_number: context.issue.number,
+            })).data;
+
+            // The commit status is per-SHA: if other open PRs share this head
+            // commit, flipping it here would greenlight them too. Only flip when
+            // every such PR carries the review label.
+            const assoc = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: pr.head.sha,
+                per_page: 100,
+              },
+            );
+            const unapprovedSibling = assoc.find(p =>
+              p.number !== pr.number &&
+              p.state === 'open' &&
+              p.head.sha === pr.head.sha &&
+              !p.labels.map(l => l.name).includes('dependencies-reviewed')
+            );
+
+            const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: pr.head.sha,
+              per_page: 100,
             });
+            // Statuses are newest-first; the first match is the current state.
+            const current = statuses.find(s => s.context === statusContext);
+
+            let statusNote = '';
+            if (current && current.state === 'error') {
+              statusNote = `⚠️ The security check reported an error ("${current.description}") which cannot be overridden by this command. Resolve it or re-run the Dependency Security Check workflow.`;
+            } else if (current && current.state === 'pending') {
+              statusNote = 'The dependency security analysis is still running; the status will reflect the approval once it completes.';
+            } else if (current && current.state === 'success') {
+              statusNote = 'The security check is already passing.';
+            } else if (unapprovedSibling) {
+              statusNote = `⚠️ The commit status was not updated: PR #${unapprovedSibling.number} shares the same head commit and has not been approved yet. Approve it as well, or re-run the Dependency Security Check workflow.`;
+            } else {
+              // 'failure' (awaiting review) or no status yet: publish approval
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha: pr.head.sha,
+                state: 'success',
+                context: statusContext,
+                description: `Dependency changes reviewed (approved by @${comment.user.login})`,
+              });
+              statusNote = 'Security checks will now pass and this PR can be merged.';
+            }
 
             // Add a confirmation comment
+            const labelNote = alreadyApproved
+              ? 'The `dependencies-reviewed` label was already present.'
+              : 'The `dependencies-reviewed` label has been added.';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `✅ **Dependencies approved** by @${comment.user.login}\n\nThe \`dependencies-reviewed\` label has been added. Security checks will now pass and this PR can be merged.`
+              body: `✅ **Dependencies approved** by @${comment.user.login}\n\n${labelNote} ${statusNote}`
             });
 
             // Add a reaction to the command comment
