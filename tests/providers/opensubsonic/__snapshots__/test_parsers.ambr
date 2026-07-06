@@ -2217,7 +2217,12 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
-      'links': None,
+      'links': list([
+        dict({
+          'type': 'website',
+          'url': 'http://www.hbr1.com/',
+        }),
+      ]),
       'lrc_lyrics': None,
       'lyrics': None,
       'mood': None,
@@ -2290,7 +2295,12 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
-      'links': None,
+      'links': list([
+        dict({
+          'type': 'website',
+          'url': 'https://radio.example.com/some-station',
+        }),
+      ]),
       'lrc_lyrics': None,
       'lyrics': None,
       'mood': None,

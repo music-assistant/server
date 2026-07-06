@@ -504,6 +504,7 @@ class OpenSonicProvider(MusicProvider):
         for station in await self.conn.get_internet_radio_stations():
             yield parse_radio(self.instance_id, station)
 
+    @use_cache(3600 * 3)  # cache for 3 hours
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Return the requested internet radio station."""
         return parse_radio(self.instance_id, await self._find_radio_station(prov_radio_id))
@@ -658,6 +659,7 @@ class OpenSonicProvider(MusicProvider):
         elif media_type == MediaType.RADIO:
             # Unbounded live stream with an unknown container, so content type is unknown.
             stream_url = await self._resolve_radio_stream(item_id)
+            self.logger.debug("Fetching stream details for radio station %s", item_id)
             return StreamDetails(
                 item_id=item_id,
                 provider=self.instance_id,

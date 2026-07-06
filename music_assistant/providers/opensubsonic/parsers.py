@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType, ImageType, MediaType
+from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -14,6 +14,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemImage,
+    MediaItemLink,
     MediaItemMetadata,
     Playlist,
     Podcast,
@@ -304,6 +305,9 @@ def parse_radio(instance_id: str, sonic_radio: SonicInternetRadioStation) -> Rad
                 remotely_accessible=False,
             )
         )
+
+    if sonic_radio.home_page_url:
+        metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=sonic_radio.home_page_url)}
 
     return Radio(
         item_id=sonic_radio.id,

@@ -45,6 +45,8 @@ def _make_provider() -> OpenSonicProvider:
     so config.get_value must return real values, not bare Mocks.
     """
     mass = Mock()
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
     manifest = Mock()
     manifest.domain = "opensubsonic"
     config = Mock()
