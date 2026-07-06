@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.filesystem_local.constants import (
@@ -37,12 +37,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-
-SUPPORTED_FEATURES = {
-    ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
-}
 
 
 async def setup(
