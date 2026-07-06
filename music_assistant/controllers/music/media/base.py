@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     EventType,
     ExternalID,
@@ -120,18 +121,34 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
         # register (base) api handlers
         self.api_base = api_base = f"{self.media_type}s"
-        self.mass.register_api_command(f"music/{api_base}/count", self.library_count)
-        self.mass.register_api_command(f"music/{api_base}/library_items", self.library_items)
-        self.mass.register_api_command(f"music/{api_base}/get", self.get)
+        self.mass.register_api_command(
+            f"music/{api_base}/count", self.library_count, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/library_items",
+            self.library_items,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
+        )
         # Backward compatibility alias - prefer the generic "get" endpoint
         self.mass.register_api_command(
-            f"music/{api_base}/get_{self.media_type}", self.get, alias=True
+            f"music/{api_base}/get_{self.media_type}",
+            self.get,
+            required_scope=Scope.LIBRARY_READ,
+            alias=True,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/update", self.update_item_in_library, required_role="admin"
+            f"music/{api_base}/update",
+            self.update_item_in_library,
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/remove", self.remove_item_from_library, required_role="admin"
+            f"music/{api_base}/remove",
+            self.remove_item_from_library,
+            required_scope=Scope.LIBRARY_MANAGE,
         )
         self._db_add_lock = asyncio.Lock()
 

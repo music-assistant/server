@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -73,16 +74,34 @@ class PlaylistController(MediaControllerBase[Playlist]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/create_playlist", self.create_playlist)
-        self.mass.register_api_command("music/playlists/playlist_tracks", self.tracks)
         self.mass.register_api_command(
-            "music/playlists/add_playlist_tracks", self.add_playlist_tracks
+            f"music/{api_base}/create_playlist",
+            self.create_playlist,
+            required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
-            "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
+            "music/playlists/playlist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
         )
-        self.mass.register_api_command("music/playlists/export_playlist", self.export_playlist)
-        self.mass.register_api_command("music/playlists/import_playlist", self.import_playlist)
+        self.mass.register_api_command(
+            "music/playlists/add_playlist_tracks",
+            self.add_playlist_tracks,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+        self.mass.register_api_command(
+            "music/playlists/remove_playlist_tracks",
+            self.remove_playlist_tracks,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+        self.mass.register_api_command(
+            "music/playlists/export_playlist",
+            self.export_playlist,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
+            "music/playlists/import_playlist",
+            self.import_playlist,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
 
     async def tracks(
         self,

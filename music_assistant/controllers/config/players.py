@@ -7,6 +7,7 @@ import logging
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -112,7 +113,7 @@ class PlayerConfigMixin:
 
         def remove(self, key: str) -> None: ...  # noqa: D102
 
-    @api_command("config/players")
+    @api_command("config/players", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_configs(
         self,
         provider: str | None = None,
@@ -161,7 +162,7 @@ class PlayerConfigMixin:
                 result.append(cast("PlayerConfig", PlayerConfig.parse([], raw_conf)))
         return result
 
-    @api_command("config/players/get")
+    @api_command("config/players/get", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_config(
         self,
         player_id: str,
@@ -210,7 +211,7 @@ class PlayerConfigMixin:
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
 
-    @api_command("config/players/get_entries")
+    @api_command("config/players/get_entries", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_config_entries(
         self,
         player_id: str,
@@ -306,7 +307,7 @@ class PlayerConfigMixin:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/players/get_value")
+    @api_command("config/players/get_value", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_config_value(
         self,
         player_id: str,
@@ -389,7 +390,7 @@ class PlayerConfigMixin:
             }
         return cast("PlayerConfig", PlayerConfig.parse([], raw_conf))
 
-    @api_command("config/players/save", required_role="admin")
+    @api_command("config/players/save", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
@@ -437,7 +438,7 @@ class PlayerConfigMixin:
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
-    @api_command("config/players/remove", required_role="admin")
+    @api_command("config/players/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_player_config(self, player_id: str) -> None:
         """Remove PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{player_id}"

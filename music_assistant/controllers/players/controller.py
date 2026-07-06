@@ -24,7 +24,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
@@ -98,6 +98,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     get_sendspin_player_id,
+    has_scope,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
@@ -309,7 +310,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         current_user = get_current_user()
         user_filter = (
             current_user.player_filter
-            if current_user and current_user.role != UserRole.ADMIN
+            if current_user and not has_scope(current_user, Scope.ALL)
             else None
         )
         current_sendspin_player = get_sendspin_player_id()
@@ -328,7 +329,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             and (return_protocol_players or player.state.type != PlayerType.PROTOCOL)
         ]
 
-    @api_command("players/all")
+    @api_command("players/all", required_scope=Scope.PLAYERS_READ)
     def all_player_states(
         self,
         return_unavailable: bool = True,
@@ -380,7 +381,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             raise PlayerUnavailableError(msg)
         return None
 
-    @api_command("players/get")
+    @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(
         self,
         player_id: str,
@@ -398,7 +399,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         current_user = get_current_user()
         user_filter = (
             current_user.player_filter
-            if current_user and current_user.role != UserRole.ADMIN
+            if current_user and not has_scope(current_user, Scope.ALL)
             else None
         )
         current_sendspin_player = get_sendspin_player_id()
@@ -449,7 +450,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         return matches[0]
 
-    @api_command("players/get_by_name")
+    @api_command("players/get_by_name", required_scope=Scope.PLAYERS_READ)
     def get_player_state_by_name(self, name: str) -> PlayerState | None:
         """
         Return PlayerState by name.
@@ -460,7 +461,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         current_user = get_current_user()
         user_filter = (
             current_user.player_filter
-            if current_user and current_user.role != UserRole.ADMIN
+            if current_user and not has_scope(current_user, Scope.ALL)
             else None
         )
         current_sendspin_player = get_sendspin_player_id()
@@ -476,14 +477,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return player.state
         return None
 
-    @api_command("players/player_controls")
+    @api_command("players/player_controls", required_scope=Scope.PLAYERS_READ)
     def player_controls(
         self,
     ) -> list[PlayerControl]:
         """Return all registered playercontrols."""
         return list(self._controls.values())
 
-    @api_command("players/player_control")
+    @api_command("players/player_control", required_scope=Scope.PLAYERS_READ)
     def get_player_control(
         self,
         control_id: str,
@@ -498,7 +499,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return control
         return None
 
-    @api_command("players/sleep_timer/get")
+    @api_command("players/sleep_timer/get", required_scope=Scope.PLAYERS_READ)
     def get_sleep_timer(self, player_id: str) -> float | None:
         """
         Return the active sleep timer expiry timestamp for the player.
@@ -508,7 +509,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self._get_player_with_redirect(player_id)
         return player.sleep_timer_expires_at
 
-    @api_command("players/sleep_timer/set")
+    @api_command("players/sleep_timer/set", required_scope=Scope.PLAYERS_CONTROL)
     def set_sleep_timer(self, player_id: str, seconds: int) -> float:
         """
         Set a sleep timer for the player.
@@ -537,7 +538,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         )
         return expires_at
 
-    @api_command("players/sleep_timer/clear")
+    @api_command("players/sleep_timer/clear", required_scope=Scope.PLAYERS_CONTROL)
     def clear_sleep_timer(self, player_id: str) -> None:
         """
         Clear the active sleep timer for the player.
@@ -549,7 +550,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     # Player commands
 
-    @api_command("players/cmd/stop")
+    @api_command("players/cmd/stop", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_stop(self, player_id: str) -> None:
         """
@@ -565,7 +566,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Delegate to internal handler for actual implementation
         await self._handle_cmd_stop(player.player_id)
 
-    @api_command("players/cmd/play")
+    @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_play(self, player_id: str) -> None:
         """
@@ -589,7 +590,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Delegate to internal handler for actual implementation
         await self._handle_cmd_play(player.player_id)
 
-    @api_command("players/cmd/pause")
+    @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_pause(self, player_id: str) -> None:
         """
@@ -605,7 +606,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Delegate to internal handler for actual implementation
         await self._handle_cmd_pause(player.player_id)
 
-    @api_command("players/cmd/play_pause")
+    @api_command("players/cmd/play_pause", required_scope=Scope.PLAYERS_CONTROL)
     async def cmd_play_pause(self, player_id: str) -> None:
         """
         Toggle play/pause on given player.
@@ -618,7 +619,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         else:
             await self.cmd_play(player.player_id)
 
-    @api_command("players/cmd/resume")
+    @api_command("players/cmd/resume", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
@@ -634,7 +635,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         await self._handle_cmd_resume(player_id, source, media)
 
-    @api_command("players/cmd/seek")
+    @api_command("players/cmd/seek", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_seek(self, player_id: str, position: int) -> None:
         """
@@ -670,7 +671,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # handle command on player directly
         await player.seek(position)
 
-    @api_command("players/cmd/next")
+    @api_command("players/cmd/next", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_next_track(self, player_id: str) -> None:
         """Handle NEXT TRACK command for given player."""
@@ -700,7 +701,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         msg = f"Player {player.state.name} does not support skipping to the next track."
         raise UnsupportedFeaturedException(msg)
 
-    @api_command("players/cmd/previous")
+    @api_command("players/cmd/previous", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_previous_track(self, player_id: str) -> None:
         """Handle PREVIOUS TRACK command for given player."""
@@ -730,7 +731,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         msg = f"Player {player.state.name} does not support skipping to the previous track."
         raise UnsupportedFeaturedException(msg)
 
-    @api_command("players/cmd/power")
+    @api_command("players/cmd/power", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """
@@ -744,7 +745,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # play_media / cmd_resume / cmd_set_members on the same player.
         await self._handle_cmd_power(player_id, powered)
 
-    @api_command("players/cmd/volume_set")
+    @api_command("players/cmd/volume_set", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(lock=PlayerLockPurpose.VOLUME)
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """
@@ -760,7 +761,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if (player := self.get_player(player_id)) and player.type != PlayerType.GROUP:
             self._invalidate_group_volume_snapshot(player_id)
 
-    @api_command("players/cmd/volume_up")
+    @api_command("players/cmd/volume_up", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_volume_up(self, player_id: str) -> None:
         """
@@ -783,7 +784,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         new_volume = min(100, current_volume + step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
-    @api_command("players/cmd/volume_down")
+    @api_command("players/cmd/volume_down", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_volume_down(self, player_id: str) -> None:
         """
@@ -806,7 +807,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         new_volume = max(0, current_volume - step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
-    @api_command("players/cmd/group_volume")
+    @api_command("players/cmd/group_volume", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_group_volume(
         self,
@@ -834,7 +835,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # treat as normal player volume change
         await self.cmd_volume_set(player_id, volume_level)
 
-    @api_command("players/cmd/group_volume_up")
+    @api_command("players/cmd/group_volume_up", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_group_volume_up(self, player_id: str) -> None:
         """
@@ -856,7 +857,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         new_volume = min(100, cur_volume + step_size)
         await self.cmd_group_volume(player_id, new_volume)
 
-    @api_command("players/cmd/group_volume_down")
+    @api_command("players/cmd/group_volume_down", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_group_volume_down(self, player_id: str) -> None:
         """
@@ -878,7 +879,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         new_volume = max(0, cur_volume - step_size)
         await self.cmd_group_volume(player_id, new_volume)
 
-    @api_command("players/cmd/group_volume_mute")
+    @api_command("players/cmd/group_volume_mute", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_group_volume_mute(self, player_id: str, muted: bool) -> None:
         """
@@ -898,7 +899,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 coros.append(self.cmd_volume_mute(child_player.player_id, muted))
             await asyncio.gather(*coros)
 
-    @api_command("players/cmd/volume_mute")
+    @api_command("players/cmd/volume_mute", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(lock=PlayerLockPurpose.VOLUME)
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """
@@ -965,7 +966,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await protocol_player.volume_mute(muted)
             return
 
-    @api_command("players/cmd/play_announcement")
+    @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def play_announcement(
         self,
@@ -1114,7 +1115,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_play_media(player.player_id, media)
 
-    @api_command("players/cmd/select_sound_mode")
+    @api_command("players/cmd/select_sound_mode", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def select_sound_mode(self, player_id: str, sound_mode: str) -> None:
         """
@@ -1144,7 +1145,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # forward to player
         await player.select_sound_mode(sound_mode)
 
-    @api_command("players/cmd/set_option")
+    @api_command("players/cmd/set_option", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def set_option(
         self, player_id: str, option_key: str, option_value: PlayerOptionValueType
@@ -1178,7 +1179,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # forward to player
         await player.set_option(option_key=option_key, option_value=option_value)
 
-    @api_command("players/cmd/select_source")
+    @api_command("players/cmd/select_source", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def select_source(self, player_id: str, source: str | None) -> None:
         """
@@ -1238,7 +1239,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Delegate to internal handler for actual implementation
         await self._handle_enqueue_next_media(player_id, media)
 
-    @api_command("players/cmd/set_members")
+    @api_command("players/cmd/set_members", required_scope=Scope.PLAYERS_CONTROL)
     async def cmd_set_members(
         self,
         target_player: str,
@@ -1292,7 +1293,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         async with self.get_player_lock(parent_player.player_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
-    @api_command("players/cmd/group")
+    @api_command("players/cmd/group", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_group(self, player_id: str, target_player: str) -> None:
         """
@@ -1314,7 +1315,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         await self.cmd_set_members(target_player, player_ids_to_add=[player_id])
 
-    @api_command("players/cmd/group_many")
+    @api_command("players/cmd/group_many", required_scope=Scope.PLAYERS_CONTROL)
     async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
         """
         Join given player(s) to target player.
@@ -1324,7 +1325,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         await self.cmd_set_members(target_player, player_ids_to_add=child_player_ids)
 
-    @api_command("players/cmd/ungroup")
+    @api_command("players/cmd/ungroup", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_ungroup(self, player_id: str) -> None:
         """
@@ -1388,13 +1389,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 await self.cmd_set_members(player.player_id, player_ids_to_remove=[player_id])
                 return
 
-    @api_command("players/cmd/ungroup_many")
+    @api_command("players/cmd/ungroup_many", required_scope=Scope.PLAYERS_CONTROL)
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
         """Handle UNGROUP command for all the given players."""
         for player_id in list(player_ids):
             await self.cmd_ungroup(player_id)
 
-    @api_command("players/create_group_player", required_role="admin")
+    @api_command("players/create_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def create_group_player(
         self, provider: str, name: str, members: list[str], dynamic: bool = True
     ) -> Player:
@@ -1415,7 +1416,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
         return await provider_instance.create_group_player(name, members, dynamic)
 
-    @api_command("players/remove_group_player", required_role="admin")
+    @api_command("players/remove_group_player", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_group_player(self, player_id: str) -> None:
         """Remove a group player."""
         if not (player := self.get_player(player_id)):
@@ -1427,7 +1428,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player.provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
         await player.provider.remove_group_player(player_id)
 
-    @api_command("players/add_currently_playing_to_favorites")
+    @api_command("players/add_currently_playing_to_favorites", required_scope=Scope.LIBRARY_WRITE)
     async def add_currently_playing_to_favorites(self, player_id: str) -> None:
         """
         Add the currently playing item/track on given player to the favorites.
@@ -1712,7 +1713,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Schedule debounced update of all players since can_group_with values may change
         self._schedule_update_all_players()
 
-    @api_command("players/remove", required_role="admin")
+    @api_command("players/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove(self, player_id: str) -> None:
         """
         Remove a player from a provider.

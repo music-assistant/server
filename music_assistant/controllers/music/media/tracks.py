@@ -6,6 +6,7 @@ import urllib.parse
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -58,10 +59,20 @@ class TracksController(MediaControllerBase[Track]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/track_versions", self.versions)
-        self.mass.register_api_command(f"music/{api_base}/track_albums", self.albums)
-        self.mass.register_api_command(f"music/{api_base}/preview", self.get_preview_url)
-        self.mass.register_api_command(f"music/{api_base}/similar_tracks", self.similar_tracks)
+        self.mass.register_api_command(
+            f"music/{api_base}/track_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/track_albums", self.albums, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/preview", self.get_preview_url, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/similar_tracks",
+            self.similar_tracks,
+            required_scope=Scope.LIBRARY_READ,
+        )
 
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:

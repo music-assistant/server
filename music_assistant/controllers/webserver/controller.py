@@ -27,6 +27,7 @@ from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
@@ -55,8 +56,12 @@ from .api_docs import generate_commands_json, generate_openapi_spec, generate_sc
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
+    has_scope,
     is_request_from_ingress,
+    resolve_command_impersonation,
+    set_current_token,
     set_current_user,
+    set_impersonated_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .remote_access import RemoteAccessManager
@@ -67,6 +72,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, CoreConfig
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.api import APICommandHandler
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
@@ -531,33 +537,16 @@ class WebserverController(CoreController):
             return web.Response(status=400, text=error)
 
         # Check authentication if required
-        if handler.authenticated or handler.required_role:
-            try:
-                user = await get_authenticated_user(request)
-            except Exception as e:
-                self.logger.exception("Authentication error: %s", e)
-                return web.Response(
-                    status=401,
-                    text="Authentication failed",
-                    headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
-                )
-
-            if not user:
-                return web.Response(
-                    status=401,
-                    text="Authentication required",
-                    headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
-                )
-
-            # Set user in context and check role
-            set_current_user(user)
-            if handler.required_role == "admin" and user.role != UserRole.ADMIN:
-                return web.Response(
-                    status=403,
-                    text="Admin access required",
-                )
+        if error_response := await self._authenticate_api_command(request, handler):
+            return error_response
 
         try:
+            # handle the optional impersonation argument for impersonation-enabled commands
+            if handler.allow_impersonation and command_msg.args:
+                if impersonation_user := await resolve_command_impersonation(
+                    self.mass, command_msg.args
+                ):
+                    set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
@@ -570,6 +559,10 @@ class WebserverController(CoreController):
             locale = _locale_from_request(request)
             await self.mass.translations.ensure_locale_loaded(locale)
             return self._localized_json_response(result, locale)
+        except InsufficientPermissions as e:
+            return web.Response(status=403, text=str(e))
+        except InvalidDataError as e:
+            return web.Response(status=400, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -577,6 +570,46 @@ class WebserverController(CoreController):
             error = f"{error_type}: {error_msg}"
             self.logger.exception("Error executing command %s: %s", command_msg.command, error)
             return web.Response(status=500, text="Internal server error")
+
+    async def _authenticate_api_command(
+        self, request: web.Request, handler: APICommandHandler
+    ) -> web.Response | None:
+        """
+        Authenticate the request and check the handler's required scope.
+
+        Sets the authenticated user in context and returns an error response
+        if authentication or the scope check failed, None otherwise.
+        """
+        if not (handler.authenticated or handler.required_scope):
+            return None
+        try:
+            user = await get_authenticated_user(request)
+        except Exception as e:
+            self.logger.exception("Authentication error: %s", e)
+            return web.Response(
+                status=401,
+                text="Authentication failed",
+                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            )
+
+        if not user:
+            return web.Response(
+                status=401,
+                text="Authentication required",
+                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            )
+
+        # Set user and token in context and check the required scope
+        set_current_user(user)
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            set_current_token(auth_header[7:])
+        if handler.required_scope and not has_scope(user, handler.required_scope):
+            return web.Response(
+                status=403,
+                text=f"This command requires the {handler.required_scope} scope",
+            )
+        return None
 
     def _localized_json_response(self, result: Any, locale: str | None) -> web.Response:
         """

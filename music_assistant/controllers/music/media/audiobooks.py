@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from json import loads as json_loads
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
 from music_assistant_models.media_items import (
     Artist,
@@ -54,8 +55,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
-        self.mass.register_api_command(f"music/{api_base}/collections", self.collections)
+        self.mass.register_api_command(
+            f"music/{api_base}/audiobook_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/collections", self.collections, required_scope=Scope.LIBRARY_READ
+        )
 
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:

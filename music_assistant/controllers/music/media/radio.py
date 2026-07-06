@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import ProviderMapping, Radio
@@ -40,9 +41,17 @@ class RadioController(MediaControllerBase[Radio]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/radio_versions", self.versions)
-        self.mass.register_api_command(f"music/{api_base}/export_radios", self.export_radios)
-        self.mass.register_api_command(f"music/{api_base}/import_radios", self.import_radios)
+        self.mass.register_api_command(
+            f"music/{api_base}/radio_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/export_radios", self.export_radios, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/import_radios",
+            self.import_radios,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""

@@ -16,6 +16,7 @@ from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
 from .constants import (
@@ -1035,9 +1036,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 player._skip_ws_notify = True
 
             try:
-                await self.provider.mass.player_queues.play_media(
-                    player_id, uri, username=await self.provider.get_owner_username()
-                )
+                async with ImpersonatedUser(
+                    self.provider.mass, await self.provider.get_owner_username()
+                ):
+                    await self.provider.mass.player_queues.play_media(player_id, uri)
             finally:
                 if from_playlist:
                     player._skip_ws_notify = False
@@ -2046,9 +2048,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
 
-        await self.provider.mass.player_queues.play_media(
-            player_id, track_uri, username=await self.provider.get_owner_username()
-        )
+        async with ImpersonatedUser(self.provider.mass, await self.provider.get_owner_username()):
+            await self.provider.mass.player_queues.play_media(player_id, track_uri)
         return web.json_response({"status": "ok"})
 
     async def _handle_pause(self, request: web.Request) -> web.Response:

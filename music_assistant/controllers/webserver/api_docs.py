@@ -1114,7 +1114,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
         ],
         "return_type": str,  # Return type
         "authenticated": bool,  # Whether authentication is required
-        "required_role": str | None,  # Required user role (if any)
+        "required_scope": str | None,  # Required scope (if any)
     }
     """
     commands_data = []
@@ -1159,6 +1159,21 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                 }
             )
 
+        if handler.allow_impersonation:
+            # the 'user' argument is injected by the command dispatch
+            parameters.append(
+                {
+                    "name": "user",
+                    "type": "string",
+                    "required": False,
+                    "description": (
+                        "Optional user_id or username of the user to execute this "
+                        "command on behalf of. Requires the users.impersonate scope "
+                        "when targeting another user."
+                    ),
+                }
+            )
+
         commands_data.append(
             {
                 "command": command,
@@ -1168,7 +1183,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                 "parameters": parameters,
                 "return_type": return_type_str,
                 "authenticated": handler.authenticated,
-                "required_role": handler.required_role,
+                "required_scope": str(handler.required_scope) if handler.required_scope else None,
             }
         )
 

@@ -11,6 +11,7 @@ from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -74,10 +75,7 @@ from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.controllers.music.recency import RecencyEngine
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    ImpersonatedUser,
-    get_current_user,
-)
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.database import UNSET, DatabaseConnection
@@ -218,7 +216,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ],
         )
 
-    @api_command("music/sync")
+    @api_command("music/sync", required_scope=Scope.LIBRARY_MANAGE)
     async def start_sync(
         self,
         media_types: list[MediaType] | None = None,
@@ -279,7 +277,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
         ]
 
-    @api_command("music/search")
+    @api_command("music/search", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def search(
         self,
         search_query: str,
@@ -484,7 +482,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     result.podcasts = cast("list[Podcast]", search_results)
         return result
 
-    @api_command("music/browse")
+    @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
     async def browse(
         self, path: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -567,7 +565,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         prov_items = await cast("MusicProvider", browse_prov).browse(path=path)
         return [*prepend_items, *prov_items]
 
-    @api_command("music/recently_played_items")
+    @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
         self,
         limit: int = 10,
@@ -647,12 +645,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         return result
 
-    @api_command("music/recently_added_tracks")
+    @api_command("music/recently_added_tracks", required_scope=Scope.LIBRARY_READ)
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
         return await self.tracks.library_items(limit=limit, order_by="timestamp_added_desc")
 
-    @api_command("music/in_progress_items")
+    @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
     async def in_progress_items(
         self, limit: int = 10, all_users: bool = False
     ) -> list[ItemMapping]:
@@ -767,7 +765,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         return result
 
-    @api_command("music/item_by_uri")
+    @api_command("music/item_by_uri", required_scope=Scope.LIBRARY_READ)
     async def get_item_by_uri(
         self, uri: str, allow_update_metadata: bool = False
     ) -> MediaItemType | BrowseFolder:
@@ -780,7 +778,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/recommendations")
+    @api_command("music/recommendations", required_scope=Scope.LIBRARY_READ)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations."""
         providers_with_recommendations = self.mass.get_providers_supporting_feature(
@@ -800,7 +798,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # so the result is sorted as each provider delivered
         return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
 
-    @api_command("music/item")
+    @api_command("music/item", required_scope=Scope.LIBRARY_READ)
     async def get_item(
         self,
         media_type: MediaType,
@@ -845,7 +843,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/get_library_item")
+    @api_command("music/get_library_item", required_scope=Scope.LIBRARY_READ)
     async def get_library_item_by_prov_id(
         self,
         media_type: MediaType,
@@ -859,7 +857,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
 
-    @api_command("music/favorites/add_item")
+    @api_command("music/favorites/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_favorites(
         self,
         item: str | MediaItemType | ItemMapping,
@@ -911,7 +909,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
 
-    @api_command("music/favorites/remove_item")
+    @api_command("music/favorites/remove_item", required_scope=Scope.LIBRARY_WRITE)
     async def remove_item_from_favorites(
         self,
         media_type: MediaType,
@@ -935,7 +933,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
 
-    @api_command("music/library/remove_item")
+    @api_command("music/library/remove_item", required_scope=Scope.LIBRARY_WRITE)
     async def remove_item_from_library(
         self, media_type: MediaType, library_item_id: str | int, recursive: bool = True
     ) -> None:
@@ -962,7 +960,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # remove from library
         await ctrl.remove_item_from_library(library_item_id, recursive)
 
-    @api_command("music/library/add_item")
+    @api_command("music/library/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_library(
         self, item: str | MediaItemType | ItemMapping, overwrite_existing: bool = False
     ) -> MediaItemType:
@@ -1042,7 +1040,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for media_item in items:
                 tg.create_task(self.refresh_item(media_item))
 
-    @api_command("music/refresh_item")
+    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_MANAGE)
     async def refresh_item(  # noqa: PLR0915
         self,
         media_item: str | MediaItemType,
@@ -1151,7 +1149,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         return library_item
 
-    @api_command("music/mark_played")
+    @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_played(
         self,
         media_item: MediaItemType,
@@ -1330,7 +1328,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 ids.add(db_artist.item_id)
         return ids
 
-    @api_command("music/mark_unplayed")
+    @api_command("music/mark_unplayed", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_unplayed(
         self,
         media_item: MediaItemType,
@@ -1400,7 +1398,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
             await self.database.commit()
 
-    @api_command("music/track_by_name")
+    @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
         self,
         track_name: str,
@@ -1853,7 +1851,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 mappings_added = True
         return mappings_added
 
-    @api_command("music/add_provider_mapping")
+    @api_command("music/add_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)
     async def add_provider_mapping(
         self, media_type: MediaType, db_id: str, mapping: ProviderMapping
     ) -> None:
@@ -1861,7 +1859,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
-    @api_command("music/remove_provider_mapping")
+    @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)
     async def remove_provider_mapping(
         self, media_type: MediaType, db_id: str, mapping: ProviderMapping
     ) -> None:
@@ -1869,7 +1867,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.remove_provider_mapping(db_id, mapping.provider_instance, mapping.item_id)
 
-    @api_command("music/match_providers")
+    @api_command("music/match_providers", required_scope=Scope.LIBRARY_MANAGE)
     async def match_providers(self, media_type: MediaType, db_id: str) -> None:
         """Search for mappings on all providers for the given library item."""
         ctrl = self.get_controller(media_type)
@@ -2008,30 +2006,27 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         return bool(conf_value)
 
-    @api_command("music/item_by_name")
+    @api_command("music/item_by_name", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_item_by_name(
         self,
         name: str,
         artist: str | None = None,
         album: str | None = None,
         media_type: MediaType | None = None,
-        username: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name."""
-        async with ImpersonatedUser(self.mass, username):
-            return await self._get_item_by_name(name, artist, album, media_type)
+        return await self._get_item_by_name(name, artist, album, media_type)
 
-    @api_command("music/verify_item_uri")
-    async def verify_item_uri(self, uri: str, username: str | None = None) -> bool:
+    @api_command(
+        "music/verify_item_uri", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
+    async def verify_item_uri(self, uri: str) -> bool:
         """
         Verify whether a uri points to a valid, accessible item.
 
         :param uri: The uri to verify.
-        :param username: Optional user to additionally verify access for. Requires
-            the authenticated caller to also have access to the item.
         """
-        async with ImpersonatedUser(self.mass, username):
-            return await self._handle_verify_item_uri(uri)
+        return await self._handle_verify_item_uri(uri)
 
     def _apply_user_provider_filter(
         self,

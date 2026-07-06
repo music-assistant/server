@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 
 import aiofiles
 from aiohttp import web
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
@@ -232,7 +233,7 @@ class ImageProxyMixin:
             return f"{base_url}/imageproxy/{image_id}?size={size}&fmt={image_format}"
         return image.path
 
-    @api_command("metadata/get_image_palette")
+    @api_command("metadata/get_image_palette", required_scope=Scope.LIBRARY_READ)
     async def get_image_palette(self, image_id: str) -> MediaItemPalette | None:
         """
         Get the color palette extracted from a (proxied) image.
