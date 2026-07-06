@@ -9,6 +9,7 @@ and listens for player commands.
 
 import json
 import logging
+import os
 import socket
 import sys
 import threading
@@ -78,6 +79,9 @@ class MusicAssistantControl:
         logger.info("Shutdown requested by server")
         self.stop()
         self._shutdown_event.set()
+        # force exit; the main thread is blocked in sys.stdin.readline()
+        sys.stdout.flush()
+        os._exit(0)
 
     def handle_snapcast_request(self, request: dict[str, Any]) -> None:
         """Handle (JSON RPC) message from Snapcast."""
@@ -236,7 +240,7 @@ class MusicAssistantControl:
             logger.error(f"Invalid JSON: {e}")
             return
 
-        if data.get("command") == "shutdown":
+        if data.get("event") == "shutdown":
             self.shutdown()
             return
 
