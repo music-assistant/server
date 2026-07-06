@@ -481,6 +481,11 @@ class WiimPlayer(Player):
         if (media := self.device.current_media) is not None and media.position is not None:
             self._attr_elapsed_time = media.position
             self._attr_elapsed_time_last_updated = time.time()
+        elif (position := self.device._state_source_device()._current_position) is not None:
+            # No media info from UPnP events (e.g. NOTIFY callbacks blocked by
+            # a firewall) - fall back to the position we just polled.
+            self._attr_elapsed_time = position
+            self._attr_elapsed_time_last_updated = time.time()
         self._update_ma_state_from_sdk_cache()
 
     async def _refresh_multiroom(self) -> None:
