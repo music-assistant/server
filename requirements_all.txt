@@ -55,6 +55,7 @@ mutagen==1.47.0
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3
 numpy==2.3.5
+onedrive-personal-sdk==0.1.7
 orjson==3.11.6
 pillow==12.3.0
 pkce==1.0.3
