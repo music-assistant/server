@@ -191,6 +191,23 @@ async def test_lookup_answers_from_cache() -> None:
     assert len(provider.list_calls) == calls_after_first
 
 
+async def test_parent_folder_helpers_usable_on_cloud_items() -> None:
+    """
+    Parent-folder helpers must work although absolute_path is a stream URL.
+
+    The audiobook/podcast logic in LocalFileSystemProvider scans an item's
+    parent folder and uses its name; both must be based on the relative path.
+    """
+    provider = _make_provider()
+
+    track = await provider.resolve("Artist/track.mp3")
+
+    assert track.relative_parent_path == "Artist"
+    assert track.parent_name == "Artist"
+    items = await provider._scandir(track.relative_parent_path)
+    assert [item.filename for item in items] == ["track.mp3"]
+
+
 async def test_resolve_id_of_root_and_unknown_path() -> None:
     """The empty path is the root folder; unknown paths raise MediaNotFoundError."""
     provider = _make_provider()
