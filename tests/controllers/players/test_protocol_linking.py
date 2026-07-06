@@ -8001,7 +8001,8 @@ class TestLocalAudioStubMigration:
                     "enabled": False,
                     "name": "Kitchen Output",
                     "values": {
-                        "linked_protocol_ids": [self.DEVICE_UUID, "spb_1"],
+                        # ghost_spb has no config anymore (device gone) - must not crash
+                        "linked_protocol_ids": [self.DEVICE_UUID, "spb_1", "ghost_spb"],
                         "device_identifiers": {"uuid": self.DEVICE_UUID},
                         "device_info": {"model": "Dummy Output", "manufacturer": "Local Audio"},
                         "expose_to_ha": False,
@@ -8052,7 +8053,7 @@ class TestLocalAudioStubMigration:
         assert "protocol_parent_id" not in values
         assert values["expose_to_ha"] is False
         assert values["hide_in_ui"] is True
-        assert values["linked_protocol_ids"] == ["spb_1"]
+        assert values["linked_protocol_ids"] == ["spb_1", "ghost_spb"]
         assert "device_identifiers" not in values
         assert "device_info" not in values
 

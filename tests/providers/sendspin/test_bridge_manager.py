@@ -303,6 +303,30 @@ class TestLocalAudioBridgeManager:
         manager._devices = {TestLocalAudioBridgeManager.DEVICE_UUID: device}
         return manager, mass, player
 
+    @staticmethod
+    def _make_discover_environment() -> tuple[MagicMock, MagicMock, dict[str, Any]]:
+        """
+        Build the mocked environment for discover_and_register tests.
+
+        :return: Tuple of (mass, provider, registered players dict).
+        """
+        registered: dict[str, Any] = {}
+        mass = MagicMock()
+        mass.subscribe = MagicMock(return_value=MagicMock())
+        sendspin_provider = MagicMock()
+        sendspin_provider.server_api = MagicMock()
+        mass.get_provider = MagicMock(
+            side_effect=lambda domain: sendspin_provider if domain == "sendspin" else None
+        )
+        mass.players.get_player = MagicMock(side_effect=registered.get)
+        mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+
+        provider = MagicMock()
+        provider.mass = mass
+        provider.logger = logging.getLogger("test.local_audio_bridge_manager")
+        provider.config.get_value = MagicMock(return_value="auto")
+        return mass, provider, registered
+
     def test_policy_requires_enumerated_device(self) -> None:
         """Test a bridge is only wanted for devices present in the last enumeration."""
         manager, _, player = self._make_local_environment()
@@ -366,16 +390,7 @@ class TestLocalAudioBridgeManager:
     @pytest.mark.asyncio
     async def test_discover_rebinds_player_after_provider_reload(self) -> None:
         """Test discovery re-registers a player left behind by a previous provider instance."""
-        registered: dict[str, Any] = {}
-        mass = MagicMock()
-        mass.subscribe = MagicMock(return_value=MagicMock())
-        sendspin_provider = MagicMock()
-        sendspin_provider.server_api = MagicMock()
-        mass.get_provider = MagicMock(
-            side_effect=lambda domain: sendspin_provider if domain == "sendspin" else None
-        )
-        mass.players.get_player = MagicMock(side_effect=registered.get)
-        mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mass, provider, registered = self._make_discover_environment()
         base_config = MagicMock()
         base_config.name = None
         base_config.default_name = "Dummy Output"
@@ -385,11 +400,6 @@ class TestLocalAudioBridgeManager:
             registered[player.player_id] = player
 
         mass.players.register_or_update = AsyncMock(side_effect=fake_register_or_update)
-
-        provider = MagicMock()
-        provider.mass = mass
-        provider.logger = logging.getLogger("test.local_audio_bridge_manager")
-        provider.config.get_value = MagicMock(return_value="auto")
 
         device = {"name": "sink1", "description": "Dummy Output", "hostapi": 0}
         device_uuid = get_device_uuid("sink1", 0)
@@ -412,3 +422,27 @@ class TestLocalAudioBridgeManager:
         assert fresh_player is not stale_player
         assert fresh_player.provider is provider
         assert manager.get_bridge(device_uuid) is not None
+
+    @pytest.mark.asyncio
+    async def test_discover_handles_enumeration_failure(self) -> None:
+        """Test a failing device enumeration registers nothing and keeps the manager idle."""
+        mass, provider, registered = self._make_discover_environment()
+        mass.loop.run_in_executor = AsyncMock(side_effect=RuntimeError("enumeration failed"))
+        manager = LocalAudioBridgeManager(provider)
+
+        await manager.discover_and_register()
+
+        assert not registered
+        assert manager._devices == {}
+
+    @pytest.mark.asyncio
+    async def test_discover_without_devices(self) -> None:
+        """Test discovery on a host without output devices registers nothing."""
+        mass, provider, registered = self._make_discover_environment()
+        mass.loop.run_in_executor = AsyncMock(return_value=("alsa", []))
+        manager = LocalAudioBridgeManager(provider)
+
+        await manager.discover_and_register()
+
+        assert not registered
+        assert manager._devices == {}
