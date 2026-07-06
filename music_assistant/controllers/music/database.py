@@ -28,6 +28,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -129,6 +130,12 @@ class MusicDatabaseSetupMixin:
                 f"WHERE media_type = '{ctrl.media_type}')"
             )
             await self.database.delete_where_query(ctrl.db_table, query)
+            # External id lookup rows where the db item is removed
+            query = (
+                f"item_id not in (SELECT item_id from {ctrl.db_table}) "
+                f"AND media_type = '{ctrl.media_type}'"
+            )
+            await self.database.delete_where_query(DB_TABLE_EXTERNAL_ID_LOOKUP, query)
             # Cleanup removed db items from the playlog
             where_clause = (
                 f"media_type = '{ctrl.media_type}' AND provider = 'library' "
@@ -467,6 +474,16 @@ class MusicDatabaseSetupMixin:
             );"""
         )
         await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_EXTERNAL_ID_LOOKUP}(
+            [media_type] TEXT NOT NULL,
+            [external_id_type] TEXT NOT NULL,
+            [external_id] TEXT NOT NULL COLLATE NOCASE,
+            [item_id] INTEGER NOT NULL,
+            UNIQUE(media_type, external_id, external_id_type, item_id)
+            );"""
+        )
+        await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}(
             [track_id] INTEGER NOT NULL,
             [artist_id] INTEGER NOT NULL,
@@ -556,11 +573,6 @@ class MusicDatabaseSetupMixin:
                 f"CREATE INDEX IF NOT EXISTS {db_table}_search_sort_name_idx "
                 f"ON {db_table}(search_sort_name);"
             )
-            # index on external_ids
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_external_ids_idx "
-                f"ON {db_table}(external_ids);"
-            )
             # index on timestamp_added
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_timestamp_added_idx "
@@ -602,6 +614,14 @@ class MusicDatabaseSetupMixin:
             "CREATE INDEX IF NOT EXISTS "
             f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_instance_library_idx "
             f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,in_library);"
+        )
+
+        # index on external_id_lookup table to serve the per-item delete/rewrite path;
+        # the typed and untyped external id lookups are served by the table's unique
+        # index, which is deliberately ordered (media_type,external_id,...) for that
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
+            f"on {DB_TABLE_EXTERNAL_ID_LOOKUP}(media_type,item_id);"
         )
 
         # indexes on track_artists table

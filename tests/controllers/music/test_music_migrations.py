@@ -6,11 +6,20 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MusicAssistantError
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import (
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
+    DB_TABLE_PLAYLOG,
+    DB_TABLE_SETTINGS,
+)
+from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.migrations import migrate_database
 from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.mass import MusicAssistant
+
+from .test_external_id_lookup import ISRC, _create_track
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -22,6 +31,28 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
     """Return an initialized DatabaseConnection backed by a temp file."""
     db = DatabaseConnection(str(tmp_path / "library.db"))
     await db.setup()
+    # minimal stand-ins for the tables that create_tables() would provide, so
+    # migration steps other than the one under test can run against this bare db
+    for table in (
+        "artists",
+        "albums",
+        "tracks",
+        "playlists",
+        "radios",
+        "audiobooks",
+        "podcasts",
+        "genres",
+    ):
+        await db.execute(
+            f"CREATE TABLE {table}([item_id] INTEGER PRIMARY KEY, "
+            "[external_ids] json NOT NULL DEFAULT '[]')"
+        )
+    await db.execute(
+        f"CREATE TABLE {DB_TABLE_EXTERNAL_ID_LOOKUP}([media_type] TEXT NOT NULL, "
+        "[external_id_type] TEXT NOT NULL, [external_id] TEXT NOT NULL, "
+        "[item_id] INTEGER NOT NULL)"
+    )
+    await db.commit()
     yield db
     await db.close()
 
@@ -182,3 +213,46 @@ async def test_migrate_database_rejects_too_old_schema() -> None:
         )
     # the guard fires before any schema work happens
     create_tables.assert_not_awaited()
+
+
+async def test_migrate_database_backfills_external_id_lookup(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A v49 database with populated external_ids upgrades cleanly and lookups resolve."""
+    # populate a fresh library database with a track carrying external ids
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+    await music._setup_database()
+    library_track = await music.tracks.add_item_to_library(_create_track("spotify_1", "track_abc"))
+    db_id = int(library_track.item_id)
+    # revert the database to its (pre lookup table) v49 state
+    await music.database.execute(f"DROP TABLE {DB_TABLE_EXTERNAL_ID_LOOKUP}")
+    for table in ("tracks", "artists"):
+        await music.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {table}_external_ids_idx on {table}(external_ids)"
+        )
+    await music.database.insert_or_replace(
+        DB_TABLE_SETTINGS, {"key": "version", "value": "49", "type": "str"}
+    )
+    await music.database.commit()
+    await music.database.close()
+
+    # setting up the database again triggers the migration
+    mass_minimal.cache.clear = AsyncMock()  # type: ignore[method-assign]
+    await music._setup_database()
+
+    # the lookup table is backfilled from the external_ids JSON columns
+    lookup_rows = await music.database.get_rows(DB_TABLE_EXTERNAL_ID_LOOKUP)
+    assert {
+        (x["media_type"], x["external_id_type"], x["external_id"], x["item_id"])
+        for x in lookup_rows
+    } == {("track", str(ExternalID.ISRC), ISRC, db_id)}
+    match = await music.tracks.get_library_item_by_external_id(ISRC, ExternalID.ISRC)
+    assert match is not None
+    assert int(match.item_id) == db_id
+    # the old (unusable) external_ids indexes are dropped
+    old_indexes = await music.database.get_rows_from_query(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%_external_ids_idx'"
+    )
+    assert not old_indexes
+    await music.database.close()
