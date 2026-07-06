@@ -925,6 +925,10 @@ class SmartCrossFadePlanner(TransitionPlanner):
         # This is the last remediation step (never shallow the low depth —
         # there is no further knob beyond the floor), so its result is
         # returned whether or not it fully clears the budget.
+        if eq_plan.low_out is None and eq_plan.low_in is None:
+            # a bass-light pair has no low handover to tighten and no notch to
+            # narrow; mid-scaling was the only lever, so leave the sentinel notch
+            return eq_plan
         floor_len = self.bass_swap_min_bars * bar_in
         eq_plan = eq_plan.with_low_ramps_steepened(swap_at, floor_len, ratio, cf_start_input)
         # the notch narrowed along with the ramp span; keep it in sync so it

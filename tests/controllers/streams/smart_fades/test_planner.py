@@ -623,6 +623,22 @@ def _wash_low_stack_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
     return out, inc
 
 
+def _wash_no_low_stack_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
+    """
+    Like ``_wash_low_stack_pair`` but bass-light, so the low swap stays bypassed.
+
+    The deep wash overruns the budget even after mid bypass, so remediation
+    reaches step 2 with no low schedules to steepen — the fixture for the
+    "step 2 must not fabricate an in-overlap notch exemption" regression.
+    """
+    amps = (0.05**0.5, 0.05**0.5, 0.25**0.5, 0.55**0.5)
+    out = _analysis_with_bands(*amps, duration=240.0)
+    inc = _analysis_with_bands(*amps, duration=240.0)
+    t = np.linspace(0, 240.0, 1800)
+    inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32)
+    return out, inc
+
+
 def _unguarded_plan(
     out: AudioAnalysisData, inc: AudioAnalysisData
 ) -> tuple[SmartCrossFadePlanner, TransitionPlan]:
@@ -781,6 +797,22 @@ class TestPredictedDipGuard:
         assert plan.eq_plan.low_out is None
         assert plan.eq_plan.low_in is None
         # the notch must not swallow any real sample in [0, crossfade_duration]
+        assert not (0.0 <= planner._swap_notch[0] <= plan.crossfade_duration) or not (
+            0.0 <= planner._swap_notch[1] <= plan.crossfade_duration
+        )
+
+    def test_step2_on_bass_light_pair_keeps_the_sentinel_notch(self) -> None:
+        """Reaching step 2 with no low swap must not fabricate an in-overlap notch exemption."""
+        out, inc = _wash_no_low_stack_pair()
+        _, unguarded = _unguarded_plan(out, inc)
+        # the mid swap engaged and remediation had to fire (deep wash dip)...
+        assert unguarded.eq_plan.mid_out is not None
+        planner = SmartCrossFadePlanner(LOGGER)
+        plan = planner.plan(out, inc, 45.0)
+        # ...on a bass-light pair, so there are no low schedules to steepen
+        assert plan.eq_plan.low_out is None
+        assert plan.eq_plan.low_in is None
+        # the notch must stay the sentinel: no real sample in [0, crossfade_duration]
         assert not (0.0 <= planner._swap_notch[0] <= plan.crossfade_duration) or not (
             0.0 <= planner._swap_notch[1] <= plan.crossfade_duration
         )
