@@ -527,10 +527,10 @@ class SqueezelitePlayer(Player):
             # Some players keep sending heartbeat with increasing elapsed time
             # even when paused (e.g. WiiM)
             return
-        # elapsed time change on the player will be auto picked up
-        # by the player manager.
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
+        # update_state re-bases the position anchor if the elapsed time diverged (e.g. buffering)
+        self.update_state()
 
         # handle sync
         if self.synced_to:
