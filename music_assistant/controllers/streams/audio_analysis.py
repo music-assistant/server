@@ -19,6 +19,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.media_items import AudioMetadata
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
@@ -79,7 +80,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.media_items import AudioFormat
+    from music_assistant_models.media_items import AudioFormat, Track
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -516,6 +517,53 @@ class AudioAnalysisController:
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
         }
         return _merged_from_rows(rows, available_aa_domains, priority)
+
+    async def get_track_audio_metadata(self, track: Track) -> AudioMetadata | None:
+        """
+        Return AudioMetadata (bpm, musical key) for a track, or None when no analysis exists.
+
+        Provider mappings are tried best-quality first; per field the Smart Fades AA
+        provider is preferred over other AA providers.
+
+        :param track: The track to look up stored analysis data for.
+        """
+        priority = self._aa_domains_preferring(SMART_FADES_ANALYSIS_DOMAIN)
+        for mapping in sorted(track.provider_mappings, key=lambda m: m.quality, reverse=True):
+            analysis = await self.get_audio_analysis(
+                mapping.item_id, mapping.provider_instance, priority=priority
+            )
+            if analysis is None or (analysis.bpm is None and analysis.key is None):
+                continue
+            musical_key: str | None = None
+            if analysis.key is not None:
+                musical_key = f"{analysis.key} {analysis.mode}" if analysis.mode else analysis.key
+            return AudioMetadata(bpm=analysis.bpm, musical_key=musical_key)
+        return None
+
+    @api_command("audio_analysis/wave_form")
+    async def get_wave_form(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[float] | None:
+        """
+        Return the RMS energy waveform for a track, or None when no analysis exists.
+
+        The waveform is a fixed array of 1800 bins (normalized 0.0-1.0) evenly covering
+        the track duration. Values come from the Smart Fades AA provider when available,
+        falling back to any other AA provider that stored RMS energy.
+
+        :param item_id: Provider-native item ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        """
+        analysis = await self.get_audio_analysis(
+            item_id,
+            provider_instance_id_or_domain,
+            priority=self._aa_domains_preferring(SMART_FADES_ANALYSIS_DOMAIN),
+        )
+        if analysis is None or analysis.rms_energy is None:
+            return None
+        return [float(value) for value in analysis.rms_energy]
 
     async def set_track_loudness(
         self,
@@ -1373,6 +1421,15 @@ class AudioAnalysisController:
                 self._finalize_providers(session_key)
             else:
                 self._cancel_providers(session_key)
+
+    def _aa_domains_preferring(self, preferred: str) -> tuple[str, ...]:
+        """Return all AA provider domains ordered with the preferred domain first."""
+        others = sorted(
+            p.domain
+            for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
+            if p.domain != preferred
+        )
+        return (preferred, *others)
 
     def _cpu_count(self) -> int:
         """Return the CPU core count available to this process (fallback 4 when unknown)."""

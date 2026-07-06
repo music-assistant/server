@@ -141,6 +141,9 @@ class TracksController(MediaControllerBase[Track]):
             provider_instance_id_or_domain,
             allow_update_metadata=allow_update_metadata,
         )
+        track.audio_metadata = await self.mass.streams.audio_analysis.get_track_audio_metadata(
+            track
+        )
         if not recursive and album_uri is None:
             # return early if we do not want recursive full details and no album uri is provided
             return track
