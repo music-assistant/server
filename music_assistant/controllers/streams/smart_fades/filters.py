@@ -126,10 +126,11 @@ class FadeOutTrimFilter(Filter):
 
 
 class ShelfType(StrEnum):
-    """Shelving EQ band; values are the ffmpeg filter names."""
+    """EQ band for a scheduled-gain filter; values are the ffmpeg filter names."""
 
     LOW = "lowshelf"
     HIGH = "highshelf"
+    PEAK = "equalizer"
 
 
 class ShelfFilter(Filter):
@@ -188,6 +189,62 @@ class ShelfFilter(Filter):
         """Return string representation of ShelfFilter."""
         gains = f"{self.gain_steps[0][1]:.0f}->{self.gain_steps[-1][1]:.0f}dB"
         return f"Shelf({self.shelf_type}@{self.frequency}Hz {self.stream_type} {gains})"
+
+
+class PeakFilter(Filter):
+    """Parametric peak EQ (mid swap) whose gain follows a scheduled ramp (asendcmd-driven)."""
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        frequency: int,
+        width_oct: float,
+        gain_steps: list[tuple[float, float]],
+        stream_type: str,
+    ):
+        """
+        Initialize peak filter.
+
+        :param frequency: Peak center frequency in Hz.
+        :param width_oct: Peak bandwidth in octaves.
+        :param gain_steps: Schedule of (time_seconds, gain_db); the first step at
+            t=0 sets the initial gain.
+        :param stream_type: 'fadeout' or 'fadein' - which stream to process.
+        """
+        self.frequency = frequency
+        self.width_oct = width_oct
+        self.gain_steps = gain_steps
+        self.stream_type = stream_type
+        if stream_type == "fadeout":
+            self.output_fadeout_label = "fadeout_midswap"
+            self.output_fadein_label = "fadein_pt_midswap"
+        else:
+            self.output_fadeout_label = "fadeout_pt_midswap"
+            self.output_fadein_label = "fadein_midswap"
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Generate the peak EQ chain on this filter's stream and passthrough on the other."""
+        if self.stream_type == "fadeout":
+            input_label, output_label = input_fadeout_label, self.output_fadeout_label
+            pass_in, pass_out = input_fadein_label, self.output_fadein_label
+        else:
+            input_label, output_label = input_fadein_label, self.output_fadein_label
+            pass_in, pass_out = input_fadeout_label, self.output_fadeout_label
+        instance = f"{ShelfType.PEAK}@{self.stream_type}_mid"
+        cmd = "; ".join(f"{t:.3f} {instance} g {g:.2f}" for t, g in self.gain_steps)
+        initial = self.gain_steps[0][1]
+        return [
+            f"{pass_in}anull[{pass_out}]",  # codespell:ignore anull
+            f"{input_label}asendcmd=c='{cmd}',"
+            f"{instance}=g={initial:.2f}:f={self.frequency}:width_type=o:width={self.width_oct}"
+            f"[{output_label}]",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of PeakFilter."""
+        gains = f"{self.gain_steps[0][1]:.0f}->{self.gain_steps[-1][1]:.0f}dB"
+        return f"Peak({self.frequency}Hz {self.stream_type} {gains})"
 
 
 class CrossfadeFilter(Filter):
