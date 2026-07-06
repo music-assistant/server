@@ -47,6 +47,11 @@ UPNP_DISCOVERY_BROADCAST_TARGET = (str(IPv4Address("255.255.255.255")), 1900)
 UPNP_DISCOVERY_TASK_ID = "discovery_upnp_cycle"
 UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
 
+# Re-announce daily so the HA integration token is rotated (and pushed to HA via
+# Supervisor discovery) before it expires, also on long uptimes without restarts.
+HA_ANNOUNCE_INTERVAL = 86400
+HA_ANNOUNCE_TIMER_ID = "discovery_ha_announce_timer"
+
 
 async def async_upnp_search(*args: Any, **kwargs: Any) -> None:
     """Run async_upnp_client SSDP search with lazy import."""
@@ -93,6 +98,7 @@ class DiscoveryController(CoreController):
         if self.mass.running_as_hass_addon:
             # (re)announce to HA supervisor to make sure that HA picks it up
             await self._announce_to_homeassistant()
+            self._schedule_periodic_ha_announce()
         self._schedule_periodic_upnp_discovery()
 
     async def get_config_entries(
@@ -116,6 +122,7 @@ class DiscoveryController(CoreController):
         """Handle logic on server stop."""
         self.mass.cancel_timer(UPNP_DISCOVERY_TIMER_ID)
         self.mass.cancel_task(UPNP_DISCOVERY_TASK_ID)
+        self.mass.cancel_timer(HA_ANNOUNCE_TIMER_ID)
 
         await self._cancel_mdns_browser()
 
@@ -441,7 +448,13 @@ class DiscoveryController(CoreController):
                 )
 
     async def _announce_to_homeassistant(self) -> None:
-        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
+        """
+        Announce Music Assistant Ingress server to Home Assistant via Supervisor API.
+
+        Safe to repeat: the announced token only changes when it is due for rotation,
+        the Supervisor dedupes identical payloads and the HA integration only reloads
+        when the payload actually changed.
+        """
         supervisor_token = os.environ["SUPERVISOR_TOKEN"]
         addon_hostname = os.environ["HOSTNAME"]
         ha_integration_token = await self.mass.webserver.auth.get_homeassistant_system_user_token()
@@ -468,3 +481,16 @@ class DiscoveryController(CoreController):
                 )
         except Exception as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
+
+    def _schedule_periodic_ha_announce(self) -> None:
+        """Schedule the periodic (re)announce to Home Assistant."""
+
+        def run_announce() -> None:
+            self.mass.create_task(self._announce_to_homeassistant())
+            self._schedule_periodic_ha_announce()
+
+        self.mass.call_later(
+            HA_ANNOUNCE_INTERVAL,
+            run_announce,
+            task_id=HA_ANNOUNCE_TIMER_ID,
+        )
