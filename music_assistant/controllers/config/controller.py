@@ -229,8 +229,8 @@ class ConfigController(
         A missing or corrupted key must never crash startup or block legacy decryption, so we
         fall back to a fresh key while the legacy server_id key stays available for decrypt.
         """
-        encryption_key: str = self.get(CONF_ENCRYPTION_KEY, "")
-        if encryption_key:
+        encryption_key: Any = self.get(CONF_ENCRYPTION_KEY, "")
+        if isinstance(encryption_key, str) and encryption_key:
             try:
                 return Fernet(encryption_key.encode())
             except ValueError:

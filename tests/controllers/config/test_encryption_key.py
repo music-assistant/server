@@ -113,6 +113,19 @@ def test_invalid_stored_key_regenerates_without_crash(tmp_path: Path) -> None:
     assert round_tripped == "s3cr3t"
 
 
+def test_non_string_stored_key_regenerates_without_crash(tmp_path: Path) -> None:
+    """A non-string encryption_key (e.g. settings hand-edited to a number) must not crash startup."""
+    controller = _make_controller(tmp_path)
+    controller.set(CONF_SERVER_ID, uuid4().hex)
+    controller.set(CONF_ENCRYPTION_KEY, 12345)
+
+    controller._init_encryption()
+
+    new_key = controller.get(CONF_ENCRYPTION_KEY)
+    assert isinstance(new_key, str)
+    assert controller.decrypt_string(controller.encrypt_string("s3cr3t")) == "s3cr3t"
+
+
 def test_legacy_secret_survives_invalid_stored_key(tmp_path: Path) -> None:
     """Even with an invalid stored key, legacy server_id-encrypted secrets must still decrypt."""
     controller = _make_controller(tmp_path)
