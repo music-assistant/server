@@ -11,6 +11,8 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
@@ -2812,3 +2814,55 @@ class TestDefaultTaxonomySeeding:
         podcast = await genre_ctrl.library_items(content_type="podcast", hide_empty=False, limit=0)
         music_ids = {g.item_id for g in music}
         assert not any(g.item_id in music_ids for g in podcast)
+
+
+class TestGenreIconMetadata:
+    """_get_genre_icon_metadata prefers a taxonomy subfolder icon, falling back to flat."""
+
+    @staticmethod
+    def _make_icons(tmp_path: Path, *rel_paths: str) -> None:
+        for rel in rel_paths:
+            icon = tmp_path / "genres" / rel
+            icon.parent.mkdir(parents=True, exist_ok=True)
+            icon.write_text("<svg/>")
+
+    def test_subfolder_icon_preferred(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """A taxonomy-specific icon wins over the flat one."""
+        self._make_icons(tmp_path, "history.svg", "podcast/history.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("history", MediaType.PODCAST)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/podcast/history.svg"
+
+    def test_falls_back_to_flat(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Without a taxonomy override, the flat/shared icon is used."""
+        self._make_icons(tmp_path, "history.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("history", MediaType.PODCAST)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/history.svg"
+
+    def test_music_uses_flat(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Music genres (content_type None) resolve to the flat path."""
+        self._make_icons(tmp_path, "blues.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("blues", None)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/blues.svg"
+
+    def test_missing_icon_returns_none(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """No matching SVG (subfolder or flat) yields no metadata."""
+        self._make_icons(tmp_path)
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        assert GenreController._get_genre_icon_metadata("nope", MediaType.PODCAST) is None
