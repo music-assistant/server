@@ -65,13 +65,13 @@ class DSPConfigMixin:
         )
         return config
 
-    @api_command("config/dsp_presets/get", required_scope=Scope.CONFIG_CORE_READ)
+    @api_command("config/dsp_presets/get", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_dsp_presets(self) -> list[DSPConfigPreset]:
         """Return all user-defined DSP presets."""
         raw_presets = self.get(CONF_PLAYER_DSP_PRESETS, {})
         return [DSPConfigPreset.from_dict(preset) for preset in raw_presets.values()]
 
-    @api_command("config/dsp_presets/save", required_scope=Scope.CONFIG_CORE_WRITE)
+    @api_command("config/dsp_presets/save", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def save_dsp_presets(self, preset: DSPConfigPreset) -> DSPConfigPreset:
         """
         Save/update a user-defined DSP presets.
@@ -96,7 +96,7 @@ class DSPConfigMixin:
 
         return preset
 
-    @api_command("config/dsp_presets/remove", required_scope=Scope.CONFIG_CORE_WRITE)
+    @api_command("config/dsp_presets/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_dsp_preset(self, preset_id: str) -> None:
         """Remove a user-defined DSP preset."""
         self.mass.config.remove(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset_id}")
