@@ -108,8 +108,12 @@ def compute_band_rms_frames(
     for window in windows:
         spectrum = np.fft.rfft(window.astype(np.float64))
         freqs = np.fft.rfftfreq(len(window), 1.0 / sample_rate)
-        # Parseval: mean-square of the window = 2 * sum(|X|^2) / N^2 (single-sided)
-        power = 2.0 * np.abs(spectrum) ** 2 / len(window) ** 2
+        # Parseval, single-sided: double every bin except DC (and Nyquist for even N),
+        # which are not mirrored in the negative-frequency half.
+        power = np.abs(spectrum) ** 2 / len(window) ** 2
+        power[1:] *= 2.0
+        if len(window) % 2 == 0:
+            power[-1] /= 2.0
         for name, (lo, hi) in BAND_RMS_BANDS.items():
             mask = (freqs >= lo) & (freqs < hi if hi is not None else np.ones_like(freqs, bool))
             out[name].append(float(np.sqrt(power[mask].sum())))
