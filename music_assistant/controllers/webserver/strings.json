@@ -6,7 +6,7 @@
     },
     "base_url": {
       "label": "Base URL",
-      "description": "The (base) URL to reach this webserver in the network. \nOverride this in advanced scenarios where for example you're running the webserver behind a reverse proxy."
+      "description": "The (base) URL to reach this webserver in the network. \nThe default \"auto\" automatically resolves to the server's primary IP address and the configured port at startup. \nOverride this in advanced scenarios where for example you're running the webserver behind a reverse proxy."
     },
     "bind_port": {
       "label": "[%key:common::config_entries::bind_port::label%]",

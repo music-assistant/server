@@ -14,11 +14,11 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
-from music_assistant_models.enums import IdentifierType, PlayerType
+from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_PLAYERS
 from music_assistant.models.player import Player
+from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -209,6 +209,11 @@ class SendspinLocalAudioBridge:
             sendspin_prov.register_bridge_identifiers(
                 self._bridge_client_id,
                 {IdentifierType.UUID: self._device_uuid},
+            )
+            # The local audio device player (registered under the bare device
+            # uuid) is the player this bridge runs on top of.
+            sendspin_prov.register_bridge_underlying_player(
+                self._bridge_client_id, self._device_uuid
             )
 
         # Restore cached volume/mute state from a previous session.
@@ -766,77 +771,62 @@ class SendspinLocalAudioBridge:
             self._write_queue.get_nowait()
 
 
-class LocalAudioBridgeManager:
+class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge]):
     """Manages Sendspin bridges for all local audio output devices."""
 
     def __init__(self, provider: LocalAudioProvider) -> None:
         """Initialize the bridge manager."""
-        self.provider = provider
-        self.mass = provider.mass
-        self.logger = provider.logger.getChild("bridge_manager")
-        self._bridges: dict[str, SendspinLocalAudioBridge] = {}
-        self._lock = asyncio.Lock()
+        super().__init__(provider)
+        self._discover_lock = asyncio.Lock()
         self._volume_controller: PAVolumeController | None = None
+        # player_id (device uuid) -> device info dict from the last enumeration
+        self._devices: dict[str, dict[str, Any]] = {}
+        self._backend: str = AUDIO_BACKEND_AUTO
+        # master sink names with at least one remap-sink child (see _remap_master_sinks)
+        self._remap_masters: set[str] = set()
         # sink_name -> PA module index, for sinks local_audio created via
         # _ensure_remap_topology(). Unloaded on stop_all().
         self._loaded_remap_modules: dict[str, int] = {}
 
-    @property
-    def sendspin_server(self) -> SendspinServer | None:
-        """Get the Sendspin server if available."""
-        if provider := cast("SendspinProvider | None", self.mass.get_provider("sendspin")):
-            return provider.server_api
-        return None
-
     async def discover_and_register(self) -> None:
-        """Enumerate output devices and register Sendspin bridges."""
-        sendspin_server = self.sendspin_server
-        if not sendspin_server:
+        """Enumerate output devices, register their players and set up the bridges."""
+        if not self.sendspin_server:
             self.logger.debug("Sendspin provider not available, skipping device enumeration")
             return
 
-        # Read audio backend config (Linux only; ignored on Darwin)
-        configured_backend: str = str(
-            self.provider.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
-        )
-
-        try:
-            resolved_backend, devices = await self.mass.loop.run_in_executor(
-                None, self._enumerate_output_devices, configured_backend
+        async with self._discover_lock:
+            # Read audio backend config (Linux only; ignored on Darwin)
+            configured_backend: str = str(
+                self.provider.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
             )
-        except Exception as err:
-            self.logger.warning("Failed to enumerate audio devices: %s", err)
-            return
+            try:
+                resolved_backend, devices = await self.mass.loop.run_in_executor(
+                    None, self._enumerate_output_devices, configured_backend
+                )
+            except Exception as err:
+                self.logger.warning("Failed to enumerate audio devices: %s", err)
+                return
 
-        self.logger.info(
-            "Found %d local audio output device(s) via %s backend",
-            len(devices),
-            resolved_backend,
-        )
+            self.logger.info(
+                "Found %d local audio output device(s) via %s backend",
+                len(devices),
+                resolved_backend,
+            )
+            if not devices:
+                self.logger.info("No local audio output devices found")
+                return
 
-        if not devices:
-            self.logger.info("No local audio output devices found")
-            return
+            await self._ensure_volume_controller(resolved_backend)
+            if resolved_backend == "pulse":
+                devices = await self._refresh_after_remap_topology(devices)
 
-        await self._ensure_volume_controller(resolved_backend)
-        if resolved_backend == "pulse":
-            devices = await self._refresh_after_remap_topology(devices)
+            self._backend = resolved_backend
+            self._remap_masters = self._remap_master_sinks(devices)
+            passthrough_masters = self._remap_masters_with_passthrough(devices)
 
-        remap_masters = self._remap_master_sinks(devices)
-        passthrough_masters = self._remap_masters_with_passthrough(devices)
-
-        async with self._lock:
+            device_map: dict[str, dict[str, Any]] = {}
             for device in devices:
                 device_name: str = device["name"]
-                display_name: str = device.get("description", device_name)
-                hostapi_index: int = device.get("hostapi", 0)
-                device_uuid = get_device_uuid(device_name, hostapi_index)
-                client_id = bridge_client_id_from_uuid(device_uuid)
-
-                if client_id in self._bridges:
-                    self.logger.debug("Bridge already exists for %s", display_name)
-                    continue
-
                 # A master sink fully covered by its own remap-sink topology
                 # (per-zone sinks plus a full-passthrough
                 # "_multichannel_stereo" sink) isn't registered as its own
@@ -844,50 +834,48 @@ class LocalAudioBridgeManager:
                 # all outputs" with independent hardware volume control.
                 if not device.get("is_remap", False) and device_name in passthrough_masters:
                     self.logger.debug(
-                        "Skipping %s — covered by its remap-sink topology", display_name
+                        "Skipping %s — covered by its remap-sink topology",
+                        device.get("description", device_name),
                     )
                     continue
+                device_map[get_device_uuid(device_name, device.get("hostapi", 0))] = device
+            self._devices = device_map
 
-                protocol_player = await self._register_protocol_player(device_uuid, display_name)
-
-                bridge = SendspinLocalAudioBridge(
-                    self.provider,
-                    device,
-                    sendspin_server,
-                    backend=resolved_backend,
-                    volume_controller=self._volume_controller,
-                    has_remap_children=device_name in remap_masters,
-                )
-                try:
-                    await bridge.start()
-                except Exception:
-                    self.logger.warning("Failed to start bridge for %s", device_name)
-                    with suppress(OSError):
-                        await bridge.stop()
-                    protocol_player._attr_available = False
-                    protocol_player.update_state()
+            for device_uuid, device in self._devices.items():
+                player = self.mass.players.get_player(device_uuid)
+                if player is None or player.provider is not self.provider:
+                    # not registered yet, or a stale player object left behind by a
+                    # previous provider instance (players survive a provider reload):
+                    # (re)register so the player is bound to this provider instance
+                    player = await self._register_player(
+                        device_uuid, device.get("description", device["name"])
+                    )
+                if player is None:
+                    # registration skipped - the player is disabled
                     continue
+                await self.evaluate_bridge(player)
 
-                if not bridge.is_registered:
-                    protocol_player._attr_available = False
-                    protocol_player.update_state()
-                    continue
+    async def evaluate_bridge(self, player: Player) -> None:
+        """
+        Reconcile the Sendspin bridge for a player and update the player's availability.
 
-                self._bridges[client_id] = bridge
-                self.logger.info(
-                    "Bridge created for %s (backend=%s, pa_sink=%s)",
-                    device_name,
-                    resolved_backend,
-                    device.get("pa_sink_name") or "n/a",
-                )
+        A local audio player has no playback path other than its bridge, so a
+        bridge that should exist but failed to start marks the player
+        unavailable (and a successful rebuild restores it).
+
+        :param player: The player to evaluate.
+        """
+        await super().evaluate_bridge(player)
+        if not (self._should_have_bridge(player) and self._lifecycle_allows_bridge(player)):
+            return
+        available = self._has_bridge(player.player_id)
+        if player.available != available:
+            player._attr_available = available
+            player.update_state()
 
     async def stop_all(self) -> None:
         """Stop all Sendspin bridges and unload any remap sinks we created."""
-        async with self._lock:
-            for bridge in list(self._bridges.values()):
-                with suppress(OSError):
-                    await bridge.stop()
-            self._bridges.clear()
+        await super().stop_all()
         if self._loaded_remap_modules:
             # Give PA a moment to release active streams on the remap sinks
             # before unloading their modules — unload-module fails if a stream
@@ -906,7 +894,6 @@ class LocalAudioBridgeManager:
             with suppress(OSError):
                 await self.mass.loop.run_in_executor(None, self._volume_controller.close)
             self._volume_controller = None
-        self.logger.debug("All local audio bridges stopped")
 
     async def _ensure_volume_controller(self, resolved_backend: str) -> None:
         """
@@ -1061,38 +1048,49 @@ class LocalAudioBridgeManager:
 
         return loaded_any
 
-    async def _register_protocol_player(self, device_uuid: str, display_name: str) -> Player:
-        """
-        Register the local_audio-owned PROTOCOL attribution-stub player.
+    def _bridge_client_id(self, player: Player) -> str | None:
+        """Return the Sendspin client_id used to bridge a local audio player."""
+        return bridge_client_id_from_uuid(player.player_id)
 
-        Gives Universal Player a local_audio domain link so the wrapped
-        up_... player is attributed to the Local Audio Out provider filter
-        in the MA UI. Mirrors the pattern used by AirPlay — the bare UUID
-        player_id is what provides this link.
-        """
-        # Force-enable the attribution stub *before* constructing/registering
-        # the player. PlayerController.register() reads the persisted
-        # "enabled" config value and silently skips registration entirely if
-        # it's False — so re-enabling after register_or_update() has already
-        # been awaited is too late, the player has already been dropped.
-        # config.set() (not a mutation of the dict from config.get()) is
-        # required for the change to actually persist across restarts.
-        enabled_key = f"{CONF_PLAYERS}/{device_uuid}/enabled"
-        if self.mass.config.get(enabled_key, True) is False:
-            self.logger.debug("Re-enabling disabled attribution stub for %s", display_name)
-            self.mass.config.set(enabled_key, True)
-
-        protocol_player = Player(self.provider, device_uuid)
-        protocol_player._attr_type = PlayerType.PROTOCOL
-        protocol_player._attr_name = display_name
-        protocol_player._attr_available = True
-        protocol_player._attr_hidden_by_default = True  # attribution stub — hide from UI
-        protocol_player._attr_supported_features = set()  # no direct playback capability
-        protocol_player._attr_device_info = DeviceInfo(
-            model=display_name, manufacturer="Local Audio"
+    def _create_bridge(self, player: Player) -> SendspinLocalAudioBridge:
+        """Create a bridge instance for a local audio player."""
+        sendspin_server = self.sendspin_server
+        assert sendspin_server is not None  # guaranteed by _lifecycle_allows_bridge
+        device = self._devices[player.player_id]
+        return SendspinLocalAudioBridge(
+            cast("LocalAudioProvider", self.provider),
+            device,
+            sendspin_server,
+            backend=self._backend,
+            volume_controller=self._volume_controller,
+            has_remap_children=device["name"] in self._remap_masters,
         )
-        await self.mass.players.register_or_update(protocol_player)
-        return protocol_player
+
+    def _should_have_bridge(self, player: Player) -> bool:
+        """Return whether a local audio player should have a Sendspin bridge."""
+        return player.player_id in self._devices
+
+    async def _register_player(self, device_uuid: str, display_name: str) -> Player | None:
+        """
+        Register a local audio output device as a regular, visible player.
+
+        The player has no native playback features of its own — the Sendspin
+        bridge provides its (single) output protocol — and its enabled flag
+        is the on/off toggle for the device.
+
+        :param device_uuid: The stable device UUID, used as player_id.
+        :param display_name: The human friendly device name.
+        :return: The registered player, or None when the player is disabled
+            (registration of disabled players is skipped).
+        """
+        player = Player(self.provider, device_uuid)
+        player._attr_name = display_name
+        player._attr_available = True
+        player._attr_supported_features = set()  # no direct playback capability
+        player._attr_device_info = DeviceInfo(model=display_name, manufacturer="Local Audio")
+        player._attr_device_info.add_identifier(IdentifierType.UUID, device_uuid)
+        await self.mass.players.register_or_update(player)
+        return self.mass.players.get_player(device_uuid)
 
     async def _refresh_after_remap_topology(
         self, devices: list[dict[str, Any]]

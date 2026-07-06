@@ -144,6 +144,9 @@ CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast 
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
     "protocol_parent_id"  # cached native player ID for protocol player
 )
+CONF_UNDERLYING_PLAYER_ID: Final[str] = (
+    "underlying_player_id"  # player this (bridge) protocol player is derived from
+)
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
@@ -168,6 +171,11 @@ CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
 CONF_VALUE_GLOBAL: Final[str] = "global"
 CONF_VALUE_ENABLED: Final[str] = "enabled"
 CONF_VALUE_DISABLED: Final[str] = "disabled"
+
+# Sentinel option VALUE for network settings that are resolved at runtime when not explicitly
+# set (e.g. streams publish_ip / webserver base_url resolve to the server's primary IP at
+# startup), keeping the config entry defaults static/deterministic.
+CONF_VALUE_AUTO: Final[str] = "auto"
 
 
 def _default_background_scan_concurrency() -> int:
@@ -880,7 +888,6 @@ ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
 ATTR_LAST_POLL: Final[str] = "last_poll"
 ATTR_GROUP_MEMBERS: Final[str] = "group_members"
 ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
-ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
 ATTR_POWERED: Final[str] = "powered"

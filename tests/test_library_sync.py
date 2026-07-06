@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock, patch
+import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, ProviderType
+from music_assistant_models.enums import EventType, MediaType, ProviderType
 from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_BACK
 from music_assistant.controllers.music import MusicController
-from music_assistant.controllers.music.media.base import MediaControllerBase
+from music_assistant.controllers.music.media.base import (
+    SUPPRESS_MEDIA_ITEM_UPDATES,
+    MediaControllerBase,
+)
 from music_assistant.models.music_provider import (
     CACHE_CATEGORY_PREV_LIBRARY_IDS,
     MusicProvider,
@@ -70,6 +76,12 @@ def create_mock_album(
     album.favorite = favorite
     album.provider_mappings = UniqueList(provider_mappings or [])
     return album
+
+
+@asynccontextmanager
+async def _noop_deferred_commit() -> AsyncGenerator[None]:
+    """Stand-in for DatabaseConnection.deferred_commit on mocked databases."""
+    yield
 
 
 # --- Group 1: Optimistic in_library on add ---
@@ -789,7 +801,7 @@ def mock_controller() -> Mock:
     ctrl.media_type = MediaType.ALBUM
     ctrl.mass = Mock()
     ctrl.mass.music.database.delete = AsyncMock()
-    ctrl.mass.music.database.upsert = AsyncMock()
+    ctrl.mass.music.database.upsert_many = AsyncMock()
     ctrl.set_provider_mappings = MediaControllerBase.set_provider_mappings.__get__(ctrl)
     return ctrl
 
@@ -807,7 +819,7 @@ async def test_set_provider_mappings_overwrite_deletes_and_reinserts(
     await mock_controller.set_provider_mappings(1, [mapping], overwrite=True)
 
     mock_controller.mass.music.database.delete.assert_called_once()
-    mock_controller.mass.music.database.upsert.assert_called_once()
+    mock_controller.mass.music.database.upsert_many.assert_called_once()
 
 
 async def test_set_provider_mappings_upsert_preserves_null_in_library(
@@ -825,9 +837,10 @@ async def test_set_provider_mappings_upsert_preserves_null_in_library(
 
     await mock_controller.set_provider_mappings(1, [mapping], overwrite=False)
 
-    upsert_call = mock_controller.mass.music.database.upsert.call_args
-    upsert_dict = upsert_call[0][1]
-    assert "in_library" not in upsert_dict
+    upsert_call = mock_controller.mass.music.database.upsert_many.call_args
+    upsert_rows = upsert_call[0][1]
+    assert len(upsert_rows) == 1
+    assert "in_library" not in upsert_rows[0]
 
 
 async def test_set_provider_mappings_upsert_writes_explicit_in_library(
@@ -844,9 +857,10 @@ async def test_set_provider_mappings_upsert_writes_explicit_in_library(
 
     await mock_controller.set_provider_mappings(1, [mapping], overwrite=False)
 
-    upsert_call = mock_controller.mass.music.database.upsert.call_args
-    upsert_dict = upsert_call[0][1]
-    assert upsert_dict["in_library"] is True
+    upsert_call = mock_controller.mass.music.database.upsert_many.call_args
+    upsert_rows = upsert_call[0][1]
+    assert len(upsert_rows) == 1
+    assert upsert_rows[0]["in_library"] is True
 
 
 # --- Group 6: library_items filtering ---
@@ -1063,6 +1077,7 @@ async def test_update_item_in_library_skips_non_music_providers() -> None:
     mass = Mock()
     mass.music = Mock()
     mass.music.match_provider_instances = Mock()
+    mass.music.database.deferred_commit = _noop_deferred_commit
     mass.signal_event = Mock()
     mass.get_provider = Mock(return_value=Mock(type=ProviderType.PLUGIN))
     ctrl.mass = mass
@@ -1077,3 +1092,84 @@ async def test_update_item_in_library_skips_non_music_providers() -> None:
     ctrl._update_library_item.assert_called_once()
     mass.music.match_provider_instances.assert_called_once_with(update)
     mass.get_provider.assert_called_once_with("smart_playlist_1")
+
+
+# --- Group 7: Per-item event suppression during provider sync ---
+
+
+def _create_event_capture_controller(
+    library_item: Mock, events: list[EventType]
+) -> tuple[Mock, Mock]:
+    """Build a controller mock with real add/update methods bound; events records signalled types."""
+    mass = Mock()
+    mass.signal_event = Mock(side_effect=lambda event, *_args, **_kwargs: events.append(event))
+    mass.music.database.deferred_commit = _noop_deferred_commit
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = mass
+    ctrl._db_add_lock = asyncio.Lock()
+    ctrl._get_library_item_by_match = AsyncMock(return_value=None)
+    ctrl._add_library_item = AsyncMock(return_value=1)
+    ctrl._update_library_item = AsyncMock()
+    ctrl.get_library_item = AsyncMock(return_value=library_item)
+    ctrl.add_item_to_library = MediaControllerBase.add_item_to_library.__get__(ctrl)
+    ctrl.update_item_in_library = MediaControllerBase.update_item_in_library.__get__(ctrl)
+    return ctrl, mass
+
+
+async def test_add_and_update_item_emit_events_outside_sync() -> None:
+    """Regular add/update calls emit per-item events and run the provider write-back."""
+    mapping = create_provider_mapping()
+    library_item = create_mock_album(provider="library", provider_mappings=[mapping])
+    library_item.uri = "library://album/1"
+    events: list[EventType] = []
+    ctrl, mass = _create_event_capture_controller(library_item, events)
+
+    provider = Mock(type=ProviderType.MUSIC)
+    provider.on_item_updated = AsyncMock()
+    mass.get_provider.return_value = provider
+
+    await ctrl.add_item_to_library(create_mock_album(provider="spotify"))
+    assert events == [EventType.MEDIA_ITEM_ADDED]
+
+    await ctrl.update_item_in_library(1, create_mock_album(provider="spotify"))
+    assert events == [EventType.MEDIA_ITEM_ADDED, EventType.MEDIA_ITEM_UPDATED]
+    provider.on_item_updated.assert_awaited_once_with(library_item)
+
+
+async def test_provider_sync_suppresses_per_item_events() -> None:
+    """A provider sync emits only MUSIC_SYNC_COMPLETED; per-item events resume afterwards."""
+    library_item = create_mock_album(provider="library")
+    library_item.uri = "library://album/1"
+    events: list[EventType] = []
+    ctrl, mass = _create_event_capture_controller(library_item, events)
+    # run the deferred completion check inline instead of on the event loop
+    mass.call_later = Mock(side_effect=lambda _delay, target, **_kwargs: target())
+
+    music_ctrl = MusicController.__new__(MusicController)
+    music_ctrl.mass = mass
+    music_ctrl._sync_lock = asyncio.Lock()
+
+    provider = Mock()
+
+    async def fake_sync_library(_media_type: MediaType) -> None:
+        # stand in for the per-mediatype sync loops adding/updating items
+        await ctrl.add_item_to_library(create_mock_album(provider="spotify"))
+        await ctrl.update_item_in_library(1, create_mock_album(provider="spotify"))
+
+    provider.sync_library = fake_sync_library
+
+    run_sync = music_ctrl._create_provider_sync_handler(provider, MediaType.ALBUM)
+    with (
+        patch.object(MusicController, "active_sync_tasks", new_callable=PropertyMock) as tasks,
+        patch.object(music_ctrl, "_queue_database_cleanup_task"),
+    ):
+        tasks.return_value = []
+        await run_sync()
+
+    assert events == [EventType.MUSIC_SYNC_COMPLETED]
+    # write-back was skipped too (provider lookup never happened)
+    mass.get_provider.assert_not_called()
+    # suppression must not leak past the handler
+    assert SUPPRESS_MEDIA_ITEM_UPDATES.get() is False
+    await ctrl.add_item_to_library(create_mock_album(provider="spotify"))
+    assert events == [EventType.MUSIC_SYNC_COMPLETED, EventType.MEDIA_ITEM_ADDED]

@@ -125,7 +125,7 @@ class AirPlayProvider(PlayerProvider):
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
-            await bridge_manager.stop_all()
+            await bridge_manager.close()
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
@@ -237,7 +237,7 @@ class AirPlayProvider(PlayerProvider):
         await self.mass.players.register(player)
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
-        await self._bridge_manager.setup_bridge(player)
+        await self._bridge_manager.evaluate_bridge(player)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

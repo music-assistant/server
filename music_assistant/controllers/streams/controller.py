@@ -51,6 +51,7 @@ from music_assistant.constants import (
     CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
     CONF_PUBLISH_IP,
+    CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
@@ -84,7 +85,11 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
+from music_assistant.helpers.util import (
+    format_ip_for_url,
+    get_ip_addresses,
+    sanitize_http_header_value,
+)
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
@@ -285,7 +290,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_PUBLISH_IP,
                 type=ConfigEntryType.STRING,
-                default_value=ip_addresses[0],
+                default_value=CONF_VALUE_AUTO,
                 required=False,
                 category="generic",
                 advanced=True,
@@ -339,7 +344,11 @@ class StreamsController(CoreController):
         await check_ffmpeg_version()
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT, DEFAULT_PORT)
-        self.publish_ip = config.get_value(CONF_PUBLISH_IP)
+        publish_ip = str(config.get_value(CONF_PUBLISH_IP) or CONF_VALUE_AUTO)
+        if publish_ip == CONF_VALUE_AUTO:
+            # resolve the "auto" default (or an unset value) to this server's primary IP
+            publish_ip = (await get_ip_addresses(include_ipv6=True))[0]
+        self.publish_ip = publish_ip
         self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
@@ -551,9 +560,7 @@ class StreamsController(CoreController):
                 head_fmt = ContentType.WAV.value
             headers = {
                 **DEFAULT_STREAM_HEADERS,
-                "icy-name": queue_item.name.replace("\n", " ")
-                .replace("\r", " ")
-                .replace("\t", " "),
+                "icy-name": sanitize_http_header_value(queue_item.name),
                 "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
                 "Content-Type": get_mime_type(head_fmt),
             }
@@ -641,8 +648,10 @@ class StreamsController(CoreController):
             )
 
             # prepare request, add some DLNA/UPNP compatible headers
-            # icy-name is sanitized to avoid a "Potential header injection attack" by aiohttp
+            # icy-name is sanitized (all control chars, not just newlines) to avoid a
+            # "Potential header injection attack" ValueError by aiohttp
             # see https://github.com/music-assistant/support/issues/4913
+            # and https://github.com/music-assistant/support/issues/5791
             # use realtime DLNA flags for radio (sender-paced) since the source delivers slowly
             dlna_features = (
                 DLNA_CONTENT_FEATURES_REALTIME
@@ -651,18 +660,14 @@ class StreamsController(CoreController):
             )
             headers = {
                 **DEFAULT_STREAM_HEADERS,
-                "icy-name": queue_item.name.replace("\n", " ")
-                .replace("\r", " ")
-                .replace("\t", " "),
+                "icy-name": sanitize_http_header_value(queue_item.name),
                 "contentFeatures.dlna.org": dlna_features,
                 "Content-Type": get_mime_type(output_format.output_format_str),
             }
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
-            http_profile = await self.mass.config.get_player_config_value(
-                player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-            )
+            http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
             if http_profile == "forced_content_length" and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -907,9 +912,7 @@ class StreamsController(CoreController):
             headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-        )
+        http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
         if http_profile == "forced_content_length":
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -1009,8 +1012,9 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        http_profile = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
+        mass_player = self.mass.players.get_player(player_id)
+        http_profile = (
+            mass_player.get_config_value(CONF_HTTP_PROFILE, "default") if mass_player else "default"
         )
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,

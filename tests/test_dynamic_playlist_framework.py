@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant_models.enums import MediaType
@@ -22,6 +23,12 @@ def _controller() -> MetaDataController:
 def _provider() -> MusicProvider:
     """Create a bare MusicProvider without running __init__."""
     return MusicProvider.__new__(MusicProvider)
+
+
+@asynccontextmanager
+async def _noop_deferred_commit() -> AsyncGenerator[None]:
+    """Stand-in for DatabaseConnection.deferred_commit on mocked databases."""
+    yield
 
 
 def _provider_mapping(item_id: str = "station_1") -> ProviderMapping:
@@ -136,6 +143,7 @@ def _build_sync_fixture(
 
     mass = Mock()
     mass.music.playlists = playlists_ctrl
+    mass.music.database.deferred_commit = _noop_deferred_commit
 
     provider = _provider()
     provider.mass = mass

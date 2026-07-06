@@ -34,6 +34,7 @@ from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_VALUE_AUTO,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
@@ -105,6 +106,8 @@ class WebserverController(CoreController):
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
         self.clients: set[WebsocketClientHandler] = set()
+        # the URL that the "auto" base_url setting resolves to, detected at setup
+        self._auto_base_url: str = ""
         self.manifest.name = "Web Server (frontend and api)"
         self.manifest.description = (
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
@@ -120,7 +123,10 @@ class WebserverController(CoreController):
         config = getattr(self, "config", None)
         if config is None:
             return ""
-        return str(config.get_value(CONF_BASE_URL)).removesuffix("/")
+        base_url = str(config.get_value(CONF_BASE_URL) or CONF_VALUE_AUTO)
+        if base_url == CONF_VALUE_AUTO:
+            return self._auto_base_url
+        return base_url.removesuffix("/")
 
     async def get_config_entries(
         self,
@@ -129,7 +135,6 @@ class WebserverController(CoreController):
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
-        default_publish_ip = ip_addresses[0]
 
         # Handle verify SSL action
         ssl_verify_result = ""
@@ -140,12 +145,6 @@ class WebserverController(CoreController):
             )
             ssl_verify_result = format_certificate_info(cert_info)
 
-        # Determine if SSL is enabled from values
-        ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
-        protocol = "https" if ssl_enabled else "http"
-        default_base_url = (
-            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{DEFAULT_SERVER_PORT}"
-        )
         return (
             ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -157,7 +156,7 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
-                default_value=default_base_url,
+                default_value=CONF_VALUE_AUTO,
                 requires_reload=False,
             ),
             ConfigEntry(
@@ -296,12 +295,18 @@ class WebserverController(CoreController):
             ingress_tcp_site_params = (ingress_host, INGRESS_SERVER_PORT)
         else:
             ingress_tcp_site_params = None
-        base_url = str(config.get_value(CONF_BASE_URL))
         port_value = config.get_value(CONF_BIND_PORT)
         assert isinstance(port_value, int)
         self.publish_port = port_value
         self.publish_ip = default_publish_ip
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
+        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
+        # resolve the URL that the "auto" base_url default (or an unset value) translates to
+        protocol = "https" if ssl_enabled else "http"
+        self._auto_base_url = (
+            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{self.publish_port}"
+        )
+        base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
         if not self.auth.has_users:
@@ -334,7 +339,6 @@ class WebserverController(CoreController):
 
         # Create SSL context if SSL is enabled
         ssl_context = None
-        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
         if ssl_enabled:
             ssl_context = await create_server_ssl_context(
                 str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
