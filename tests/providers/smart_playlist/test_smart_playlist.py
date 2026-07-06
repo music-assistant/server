@@ -1167,10 +1167,10 @@ async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) 
 
 
 @pytest.mark.asyncio
-async def test_get_playlist_copies_library_artwork(
+async def test_get_playlist_loads_library_artwork(
     tmp_path: Any,
 ) -> None:
-    """get_playlist copies artwork from library item when available."""
+    """get_playlist loads artwork from the library when available."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     manifest = MagicMock()
@@ -1182,26 +1182,28 @@ async def test_get_playlist_copies_library_artwork(
 
     plugin._rules_store["abc"] = SmartPlaylistRules(limit=10, is_dynamic=False)
 
-    # Create library item with artwork
+    # Mock library item with artwork
     library_artwork = MediaItemImage(
         type=ImageType.THUMB,
         path="generated_artwork.jpg",
         provider="playlist_art",
         remotely_accessible=False,
     )
-    library_item_with_artwork = MagicMock()
-    library_item_with_artwork.metadata.images = UniqueList([library_artwork])
+    library_playlist = MagicMock()
+    library_playlist.metadata.images = UniqueList([library_artwork])
 
-    # Mock get_library_item_by_prov_id to return library item with artwork
-    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(
-        return_value=library_item_with_artwork
-    )
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=library_playlist)
 
     playlist = await plugin.get_playlist("abc")
     assert playlist.metadata.images is not None
     assert len(playlist.metadata.images) == 1
     assert playlist.metadata.images[0].path == "generated_artwork.jpg"
     assert playlist.metadata.images[0].provider == "playlist_art"
+
+    # Verify library lookup was called
+    mass.music.playlists.get_library_item_by_prov_id.assert_awaited_once_with(
+        "abc", plugin.instance_id
+    )
 
 
 @pytest.mark.asyncio
@@ -1781,6 +1783,7 @@ def _make_ai_plugin(
     mass.storage_path = str(tmp_path)
     mass.cache.clear = AsyncMock()
     mass.metadata.locale = "en_US"
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
     providers = [ai_provider] if ai_provider is not None else []
     mass.get_providers_supporting_feature = MagicMock(return_value=providers)
     manifest = MagicMock()
@@ -1928,7 +1931,7 @@ async def test_build_playlist_uses_stored_ai_description(tmp_path: Any) -> None:
     plugin._names_store["abc"] = "My List"
     plugin._descriptions_store["abc"] = "Hand-crafted AI summary."
 
-    playlist = plugin._build_playlist("abc", SmartPlaylistRules(favorites_only=True))
+    playlist = await plugin._build_playlist("abc", SmartPlaylistRules(favorites_only=True))
 
     assert playlist.metadata.description == "Hand-crafted AI summary."
 
@@ -1942,7 +1945,7 @@ async def test_build_playlist_ignores_stored_description_when_disabled(tmp_path:
     plugin._descriptions_store["abc"] = "Old AI text."
     rules = SmartPlaylistRules(favorites_only=True)
 
-    playlist = plugin._build_playlist("abc", rules)
+    playlist = await plugin._build_playlist("abc", rules)
 
     assert playlist.metadata.description == f"[Smart Playlist] {rules.human_readable()}"
 
@@ -1955,7 +1958,7 @@ async def test_build_playlist_falls_back_to_human_readable(tmp_path: Any) -> Non
     plugin._names_store["abc"] = "My List"
     rules = SmartPlaylistRules(favorites_only=True)
 
-    playlist = plugin._build_playlist("abc", rules)
+    playlist = await plugin._build_playlist("abc", rules)
 
     assert playlist.metadata.description == f"[Smart Playlist] {rules.human_readable()}"
 
