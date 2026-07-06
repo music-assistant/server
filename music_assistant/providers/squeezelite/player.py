@@ -35,7 +35,12 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import (
+    POSITION_JUMP_THRESHOLD,
+    DeviceInfo,
+    Player,
+    PlayerMedia,
+)
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -529,8 +534,13 @@ class SqueezelitePlayer(Player):
             return
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
-        # update_state re-bases the position anchor if the elapsed time diverged (e.g. buffering)
-        self.update_state()
+        # only involve the state machine when the reported position diverged (e.g. buffering/seek)
+        published_position = self.state.corrected_elapsed_time
+        if (
+            published_position is None
+            or abs(published_position - self.client.elapsed_seconds) > POSITION_JUMP_THRESHOLD
+        ):
+            self.update_state()
 
         # handle sync
         if self.synced_to:
