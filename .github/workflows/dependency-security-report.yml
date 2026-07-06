@@ -65,15 +65,43 @@ jobs:
             const { owner, repo } = context.repo;
             const pr = context.payload.pull_request;
 
+            // Gate only on actual dependency changes, mirroring the analysis
+            // workflow: added/modified lines in requirements_all.txt, or a
+            // changed `requirements` array in a provider manifest. Metadata-only
+            // manifest edits must not require review.
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner, repo, pull_number: pr.number, per_page: 100,
             });
-            const isDepFile = (f) =>
-              f === 'requirements_all.txt' ||
-              f === 'pyproject.toml' ||
-              f === 'manifest.json' ||
-              f.endsWith('/manifest.json');
-            const depsChanged = files.some(f => isDepFile(f.filename));
+
+            const getRequirements = async (path, ref) => {
+              try {
+                const res = await github.rest.repos.getContent({ owner, repo, path, ref });
+                const manifest = JSON.parse(Buffer.from(res.data.content, 'base64').toString('utf8'));
+                return JSON.stringify(manifest.requirements ?? []);
+              } catch (e) {
+                return null;
+              }
+            };
+
+            let depsChanged = false;
+            const reqFile = files.find(f => f.filename === 'requirements_all.txt');
+            if (reqFile && reqFile.additions > 0) depsChanged = true;
+
+            if (!depsChanged) {
+              const manifests = files.filter(f =>
+                f.filename === 'manifest.json' || f.filename.endsWith('/manifest.json'));
+              for (const m of manifests) {
+                const oldReqs = await getRequirements(m.previous_filename ?? m.filename, pr.base.sha) ?? '[]';
+                const newReqs = m.status === 'removed'
+                  ? '[]'
+                  : await getRequirements(m.filename, pr.head.sha);
+                // Unreadable/unparsable new manifest: treat as changed (fail closed)
+                if (newReqs === null || oldReqs !== newReqs) {
+                  depsChanged = true;
+                  break;
+                }
+              }
+            }
 
             await github.rest.repos.createCommitStatus({
               owner, repo, sha: pr.head.sha,
@@ -120,15 +148,43 @@ jobs:
               return;
             }
 
+            // Trusted deps-changed check, mirroring the analysis workflow's
+            // semantics: added/modified lines in requirements_all.txt, or a
+            // changed `requirements` array in a provider manifest. Filename-only
+            // matching would wrongly gate metadata-only manifest edits.
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner, repo, pull_number: pr.number, per_page: 100,
             });
-            const isDepFile = (f) =>
-              f === 'requirements_all.txt' ||
-              f === 'pyproject.toml' ||
-              f === 'manifest.json' ||
-              f.endsWith('/manifest.json');
-            const depsChanged = files.some(f => isDepFile(f.filename));
+
+            const getRequirements = async (path, ref) => {
+              try {
+                const res = await github.rest.repos.getContent({ owner, repo, path, ref });
+                const manifest = JSON.parse(Buffer.from(res.data.content, 'base64').toString('utf8'));
+                return JSON.stringify(manifest.requirements ?? []);
+              } catch (e) {
+                return null;
+              }
+            };
+
+            let depsChanged = false;
+            const reqFile = files.find(f => f.filename === 'requirements_all.txt');
+            if (reqFile && reqFile.additions > 0) depsChanged = true;
+
+            if (!depsChanged) {
+              const manifests = files.filter(f =>
+                f.filename === 'manifest.json' || f.filename.endsWith('/manifest.json'));
+              for (const m of manifests) {
+                const oldReqs = await getRequirements(m.previous_filename ?? m.filename, pr.base.sha) ?? '[]';
+                const newReqs = m.status === 'removed'
+                  ? '[]'
+                  : await getRequirements(m.filename, headSha);
+                // Unreadable/unparsable new manifest: treat as changed (fail closed)
+                if (newReqs === null || oldReqs !== newReqs) {
+                  depsChanged = true;
+                  break;
+                }
+              }
+            }
 
             const labels = pr.labels.map(l => l.name);
             const isAutomated =

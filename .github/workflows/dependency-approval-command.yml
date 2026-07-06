@@ -58,31 +58,26 @@ jobs:
               return;
             }
 
-            // Check if already approved
+            // Check if already approved (label add is skipped below, but the
+            // status flip still runs so the command can repair a stuck status)
             const labels = context.payload.issue.labels.map(l => l.name);
             const alreadyApproved = labels.includes('dependencies-reviewed');
 
-            if (alreadyApproved) {
-              await github.rest.issues.createComment({
+            if (!alreadyApproved) {
+              // Add the dependencies-reviewed label
+              await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: `ℹ️  Dependencies already approved - \`dependencies-reviewed\` label is present.`
+                labels: ['dependencies-reviewed']
               });
-              return;
             }
-
-            // Add the dependencies-reviewed label
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: ['dependencies-reviewed']
-            });
 
             // Flip the "Dependency Security Review" commit status. The label add
             // above uses GITHUB_TOKEN and therefore cannot re-trigger the
-            // dependency-security workflows, so the status is updated here.
+            // dependency-security workflows, so the status is updated here. This
+            // runs even when the label was already present, so the command can
+            // repair a stuck failing status (e.g. after a transient API error).
             // Only a 'failure' (awaiting review) status may be flipped; 'error'
             // (failed analysis / high risk / vulnerabilities) must be resolved
             // by a re-run or a fix and cannot be approved away.
@@ -122,11 +117,14 @@ jobs:
             }
 
             // Add a confirmation comment
+            const labelNote = alreadyApproved
+              ? 'The `dependencies-reviewed` label was already present.'
+              : 'The `dependencies-reviewed` label has been added.';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `✅ **Dependencies approved** by @${comment.user.login}\n\nThe \`dependencies-reviewed\` label has been added. ${statusNote}`
+              body: `✅ **Dependencies approved** by @${comment.user.login}\n\n${labelNote} ${statusNote}`
             });
 
             // Add a reaction to the command comment
