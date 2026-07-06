@@ -660,9 +660,9 @@ class OpenSonicProvider(MusicProvider):
             # An internet radio station is an unbounded live stream: emit a
             # direct HTTP stream to its streamUrl, no seeking, no proxying.
             # ffmpeg autodetects the container, so content type is unknown.
-            radio_id, stream_url = await self._resolve_radio_stream(item_id)
+            stream_url = await self._resolve_radio_stream(item_id)
             return StreamDetails(
-                item_id=radio_id,
+                item_id=item_id,
                 provider=self.instance_id,
                 media_type=MediaType.RADIO,
                 audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
@@ -967,20 +967,17 @@ class OpenSonicProvider(MusicProvider):
                 )
             )
 
-    async def _resolve_radio_stream(self, prov_radio_id: str) -> tuple[str, str]:
-        """Resolve a station's id and stream URL, raising MediaNotFoundError if unknown."""
-        # Prefer the URL stored in the library item's mapping details (set at sync
-        # time) over re-fetching the whole station list; fall back if not synced.
+    async def _resolve_radio_stream(self, prov_radio_id: str) -> str:
+        """Return the station's stream URL from the library, or raise MediaNotFoundError."""
         library_item = await self.mass.music.radio.get_library_item_by_prov_id(
             prov_radio_id, self.instance_id
         )
         if library_item is not None:
             for mapping in library_item.provider_mappings:
                 if mapping.provider_instance == self.instance_id and mapping.details:
-                    return prov_radio_id, mapping.details
-        # Fallback: station not in the library (e.g. streamed without a prior sync).
-        station = await self._find_radio_station(prov_radio_id)
-        return station.id, station.stream_url
+                    return mapping.details
+        msg = f"Radio station {prov_radio_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def _find_radio_station(self, prov_radio_id: str) -> SonicInternetRadioStation:
         """Return the station with the given id, or raise MediaNotFoundError."""

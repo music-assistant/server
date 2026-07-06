@@ -172,48 +172,18 @@ async def test_get_stream_details_radio_from_library(provider: OpenSonicProvider
     provider.conn.get_internet_radio_stations.assert_not_awaited()
 
 
-async def test_get_stream_details_radio_fallback(provider: OpenSonicProvider) -> None:
-    """Fallback: a station not in the library still resolves via the station list."""
-    _set_library_lookup(provider, None)  # not in library
-    provider.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
-
-    # target the SECOND station so a "return _STATIONS[0]" stub can't pass by position:
-    sd = await provider.get_stream_details("v1.chan.streamer", MediaType.RADIO)
-
-    assert isinstance(sd, StreamDetails)
-    assert sd.media_type == MediaType.RADIO
-    assert sd.stream_type == StreamType.HTTP
-    assert sd.path == "http://ts.lan:4533/rest/stream.view?id=v1.chan.streamer"
-    assert sd.item_id == "v1.chan.streamer"
-    assert sd.allow_seek is False
-    assert sd.can_seek is False
-    # the fallback fetched + filtered the list (no singular getter):
-    provider.conn.get_internet_radio_stations.assert_awaited_once()
-
-
-async def test_get_stream_details_radio_library_hit_without_details_falls_back(
+async def test_get_stream_details_radio_not_in_library_raises(
     provider: OpenSonicProvider,
 ) -> None:
-    """A synced item whose mapping has no stored URL falls through to the station list."""
-    # library item exists, but its matching mapping carries details=None (no URL
-    # stored) — the `and mapping.details` guard must skip it and use the fallback.
-    _set_library_lookup(provider, _library_radio("v1.chan.streamer", "xx-instance-id-xx", None))
-    provider.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
-
-    sd = await provider.get_stream_details("v1.chan.streamer", MediaType.RADIO)
-
-    assert sd.path == "http://ts.lan:4533/rest/stream.view?id=v1.chan.streamer"
-    # discriminating: the empty-details mapping did NOT short-circuit; the
-    # fallback list fetch ran.
-    provider.conn.get_internet_radio_stations.assert_awaited_once()
-
-
-async def test_get_stream_details_radio_not_found(provider: OpenSonicProvider) -> None:
-    """An unknown radio id (not in library, not on server) raises MediaNotFoundError."""
+    """A radio id absent from the library raises MediaNotFoundError with no server re-fetch."""
     _set_library_lookup(provider, None)  # not in library
     provider.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
+
     with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details("nope", MediaType.RADIO)
+        await provider.get_stream_details("v1.chan.streamer", MediaType.RADIO)
+
+    # load-bearing: the miss raised loudly instead of silently re-fetching the station list.
+    provider.conn.get_internet_radio_stations.assert_not_awaited()
 
 
 async def test_get_stream_details_track_unchanged(provider: OpenSonicProvider) -> None:
