@@ -123,8 +123,10 @@ jobs:
       issues: write
       statuses: write
     steps:
-      # Resolve the PR and all trusted facts from the head commit. head_sha is
+      # Resolve the PR(s) and all trusted facts from the head commit. head_sha is
       # set by GitHub from the workflow_run event and cannot be forged by the PR.
+      # Commit statuses are per-SHA, so if several open PRs share this head
+      # commit the gate must consider ALL of them (strictest result wins).
       - name: Resolve pull request (trusted)
         id: resolve
         uses: actions/github-script@v9
@@ -133,28 +135,20 @@ jobs:
             const { owner, repo } = context.repo;
             const headSha = context.payload.workflow_run.head_sha;
 
-            const prs = await github.paginate(
+            const assoc = await github.paginate(
               github.rest.repos.listPullRequestsAssociatedWithCommit,
               { owner, repo, commit_sha: headSha, per_page: 100 },
             );
-            const pr = prs.find(p =>
+            const openPrs = assoc.filter(p =>
               p.state === 'open' &&
               p.head.sha === headSha &&
               ['dev', 'stable'].includes(p.base.ref)
             );
-            if (!pr) {
+            if (openPrs.length === 0) {
               core.info(`No open PR found for head ${headSha}; nothing to report.`);
               core.setOutput('found', 'false');
               return;
             }
-
-            // Trusted deps-changed check, mirroring the analysis workflow's
-            // semantics: added/modified lines in requirements_all.txt, or a
-            // changed `requirements` array in a provider manifest. Filename-only
-            // matching would wrongly gate metadata-only manifest edits.
-            const files = await github.paginate(github.rest.pulls.listFiles, {
-              owner, repo, pull_number: pr.number, per_page: 100,
-            });
 
             const getRequirements = async (path, ref) => {
               try {
@@ -166,37 +160,53 @@ jobs:
               }
             };
 
-            let depsChanged = false;
-            const reqFile = files.find(f => f.filename === 'requirements_all.txt');
-            if (reqFile && reqFile.additions > 0) depsChanged = true;
+            // Trusted deps-changed check per PR, mirroring the analysis
+            // workflow's semantics: added/modified lines in requirements_all.txt,
+            // or a changed `requirements` array in a provider manifest.
+            // Filename-only matching would wrongly gate metadata-only edits.
+            const results = [];
+            for (const pr of openPrs) {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner, repo, pull_number: pr.number, per_page: 100,
+              });
 
-            if (!depsChanged) {
-              const manifests = files.filter(f =>
-                f.filename === 'manifest.json' || f.filename.endsWith('/manifest.json'));
-              for (const m of manifests) {
-                const oldReqs = await getRequirements(m.previous_filename ?? m.filename, pr.base.sha) ?? '[]';
-                const newReqs = m.status === 'removed'
-                  ? '[]'
-                  : await getRequirements(m.filename, headSha);
-                // Unreadable/unparsable new manifest: treat as changed (fail closed)
-                if (newReqs === null || oldReqs !== newReqs) {
-                  depsChanged = true;
-                  break;
+              let depsChanged = false;
+              const reqFile = files.find(f => f.filename === 'requirements_all.txt');
+              if (reqFile && reqFile.additions > 0) depsChanged = true;
+
+              if (!depsChanged) {
+                const manifests = files.filter(f =>
+                  f.filename === 'manifest.json' || f.filename.endsWith('/manifest.json'));
+                for (const m of manifests) {
+                  const oldReqs = await getRequirements(m.previous_filename ?? m.filename, pr.base.sha) ?? '[]';
+                  const newReqs = m.status === 'removed'
+                    ? '[]'
+                    : await getRequirements(m.filename, headSha);
+                  // Unreadable/unparsable new manifest: treat as changed (fail closed)
+                  if (newReqs === null || oldReqs !== newReqs) {
+                    depsChanged = true;
+                    break;
+                  }
                 }
               }
+
+              const labels = pr.labels.map(l => l.name);
+              results.push({
+                number: pr.number,
+                deps_changed: depsChanged,
+                has_review_label: labels.includes('dependencies-reviewed'),
+                is_automated:
+                  ['dependabot[bot]', 'renovate[bot]'].includes(pr.user.login) ||
+                  labels.includes('auto-merge'),
+              });
             }
 
-            const labels = pr.labels.map(l => l.name);
-            const isAutomated =
-              ['dependabot[bot]', 'renovate[bot]'].includes(pr.user.login) ||
-              labels.includes('auto-merge');
-
             core.setOutput('found', 'true');
-            core.setOutput('pr_number', String(pr.number));
             core.setOutput('head_sha', headSha);
-            core.setOutput('labels', JSON.stringify(labels));
-            core.setOutput('deps_changed', depsChanged ? 'true' : 'false');
-            core.setOutput('is_automated', isAutomated ? 'true' : 'false');
+            core.setOutput('prs', JSON.stringify(results));
+            // Aggregated values for the human-readable report body
+            core.setOutput('deps_changed', results.some(r => r.deps_changed) ? 'true' : 'false');
+            core.setOutput('is_automated', results.every(r => r.is_automated) ? 'true' : 'false');
 
       # Download the analysis artifact. Only meaningful when the analysis run
       # succeeded; a failed run may have partial or missing results, which the
@@ -213,14 +223,18 @@ jobs:
       # with lowercase-letter/underscore values are accepted, and results are
       # written to step outputs (data), never sourced into $GITHUB_ENV. This
       # neutralises env-injection via crafted step outputs from the analysis job.
+      # A missing status.env in a successful run is anomalous and reported as
+      # such, so the gate can fail closed instead of treating it as "no findings".
       - name: Parse analysis results
         id: results
         if: steps.resolve.outputs.found == 'true' && github.event.workflow_run.conclusion == 'success'
         run: |
           if [ ! -f status.env ]; then
-            echo "status.env not found; treating results as empty"
+            echo "status.env not found; scan results unavailable"
+            echo "present=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
           while IFS='=' read -r key val; do
             case "$key" in
               REQ_SYNC|PIP_AUDIT|DEPS_CHANGES|MANIFEST_CHANGES|SAFETY_STATUS|TRUSTED_SOURCES|TYPOSQUATTING|LICENSE) ;;
@@ -352,65 +366,65 @@ jobs:
           cat security_report.md
           cat security_report.md >> "$GITHUB_STEP_SUMMARY"
 
-      # Post the combined report as a PR comment (targeting the trusted PR number)
+      # Post the combined report as a PR comment (targeting the trusted PR numbers)
       - name: Post security report to PR
         if: steps.resolve.outputs.found == 'true' && github.event.workflow_run.conclusion == 'success'
         uses: actions/github-script@v9
         env:
-          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PRS: ${{ steps.resolve.outputs.prs }}
         with:
           script: |
             const fs = require('fs');
             const { owner, repo } = context.repo;
-            const prNumber = Number(process.env.PR_NUMBER);
+            const prs = JSON.parse(process.env.PRS);
             const report = fs.readFileSync('security_report.md', 'utf8');
             const marker = '🔒 Dependency Security Report';
 
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner, repo, issue_number: prNumber, per_page: 100,
-            });
-            const existing = comments.find(c =>
-              c.user.login === 'github-actions[bot]' && c.body.includes(marker)
-            );
+            for (const pr of prs) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: pr.number, per_page: 100,
+              });
+              const existing = comments.find(c =>
+                c.user.login === 'github-actions[bot]' && c.body.includes(marker)
+              );
 
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner, repo, comment_id: existing.id, body: report,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: prNumber, body: report,
-              });
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner, repo, comment_id: existing.id, body: report,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pr.number, body: report,
+                });
+              }
             }
 
       # Gate the merge via a commit status on the PR head, and auto-approve
       # automated PRs. All gate-relevant inputs are trusted (API-derived); the
       # scan results (high risk / vulnerabilities) are advisory and can only make
-      # the gate stricter, never bypass the review requirement. A failed analysis
-      # run is reported as an 'error' status: scan results are then unavailable,
-      # so nothing may be approved (fail closed).
+      # the gate stricter, never bypass the review requirement. Fail-closed cases
+      # reported as 'error': failed analysis run, failed artifact download, or a
+      # successful run without scan results.
+      # The commit status is per-SHA: when several open PRs share this head
+      # commit, every PR must independently pass the gate (strictest wins), so
+      # approval of one PR cannot greenlight another.
       - name: Report security status
-        if: steps.resolve.outputs.found == 'true'
+        if: always() && steps.resolve.outputs.found == 'true'
         uses: actions/github-script@v9
         env:
-          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PRS: ${{ steps.resolve.outputs.prs }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
-          LABELS: ${{ steps.resolve.outputs.labels }}
-          DEPS_CHANGED: ${{ steps.resolve.outputs.deps_changed }}
-          IS_AUTOMATED: ${{ steps.resolve.outputs.is_automated }}
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RESULTS_PRESENT: ${{ steps.results.outputs.present }}
           SAFETY_STATUS: ${{ steps.results.outputs.SAFETY_STATUS }}
           PIP_AUDIT: ${{ steps.results.outputs.PIP_AUDIT }}
         with:
           script: |
             const { owner, repo } = context.repo;
-            const prNumber = Number(process.env.PR_NUMBER);
+            const prs = JSON.parse(process.env.PRS);
             const headSha = process.env.HEAD_SHA;
-            const labels = JSON.parse(process.env.LABELS || '[]');
-            const depsChanged = process.env.DEPS_CHANGED === 'true';
-            const isAutomated = process.env.IS_AUTOMATED === 'true';
-            const hasReviewLabel = labels.includes('dependencies-reviewed');
             const analysisOk = process.env.RUN_CONCLUSION === 'success';
+            const resultsPresent = process.env.RESULTS_PRESENT === 'true';
             const isHighRisk = process.env.SAFETY_STATUS === 'high_risk';
             const hasVulns = process.env.PIP_AUDIT === 'fail';
 
@@ -420,21 +434,29 @@ jobs:
             if (!analysisOk) {
               state = 'error';
               description = 'Dependency security analysis failed - re-run the Dependency Security Check workflow';
+            } else if (!resultsPresent) {
+              state = 'error';
+              description = 'Dependency security scan results missing - re-run the Dependency Security Check workflow';
             } else if (isHighRisk) {
               state = 'error';
               description = 'High-risk packages detected - security review required';
             } else if (hasVulns) {
               state = 'error';
               description = 'Known vulnerabilities detected';
-            } else if (depsChanged) {
-              if (isAutomated || hasReviewLabel) {
+            } else {
+              // Every open PR sharing this head commit must pass the gate
+              const blocked = prs.find(p =>
+                p.deps_changed && !p.is_automated && !p.has_review_label);
+              if (blocked) {
+                state = 'failure';
+                description = prs.length > 1
+                  ? `Awaiting maintainer review on PR #${blocked.number} (add "dependencies-reviewed" label)`
+                  : 'Awaiting maintainer review (add "dependencies-reviewed" label)';
+              } else if (prs.some(p => p.deps_changed)) {
                 state = 'success';
-                description = isAutomated
+                description = prs.every(p => !p.deps_changed || p.is_automated)
                   ? 'Automated dependency update - approved'
                   : 'Dependency changes reviewed';
-              } else {
-                state = 'failure';
-                description = 'Awaiting maintainer review (add "dependencies-reviewed" label)';
               }
             }
 
@@ -443,10 +465,14 @@ jobs:
               context: 'Dependency Security Review', description,
             });
 
-            if (analysisOk && depsChanged && isAutomated && !hasReviewLabel && !isHighRisk && !hasVulns) {
-              await github.rest.issues.addLabels({
-                owner, repo, issue_number: prNumber, labels: ['dependencies-reviewed'],
-              });
+            if (analysisOk && resultsPresent && !isHighRisk && !hasVulns) {
+              for (const pr of prs) {
+                if (pr.deps_changed && pr.is_automated && !pr.has_review_label) {
+                  await github.rest.issues.addLabels({
+                    owner, repo, issue_number: pr.number, labels: ['dependencies-reviewed'],
+                  });
+                }
+              }
             }
 
             if (state !== 'success') {
