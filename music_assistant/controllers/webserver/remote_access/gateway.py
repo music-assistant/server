@@ -632,7 +632,8 @@ class WebRTCGateway:
         # Handle both ws:// and wss:// schemes.
         parsed = urlparse(self.local_ws_url)
         http_scheme = "https" if parsed.scheme == "wss" else "http"
-        local_http_url = f"{http_scheme}://{parsed.netloc}{path}"
+        # Keep `path` as a URI path so an `@`/`//` prefix can't repoint the host (SSRF).
+        local_http_url = f"{http_scheme}://{parsed.netloc}/{path.lstrip('/')}"
 
         self.logger.debug("HTTP proxy request: %s %s", method, local_http_url)
 
