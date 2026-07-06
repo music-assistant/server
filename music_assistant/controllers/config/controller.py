@@ -18,6 +18,7 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
     CONF_ENCRYPTION_KEY,
+    CONF_ENCRYPTION_KEY_MIGRATED,
     CONF_ONBOARD_DONE,
     CONF_SERVER_ID,
     ENCRYPT_SUFFIX,
@@ -215,7 +216,11 @@ class ConfigController(
         primary = self._load_or_create_primary_key()
         legacy_key = base64.urlsafe_b64encode(server_id.encode()[:32])
         self._fernet = MultiFernet([primary, Fernet(legacy_key)])
-        self._migrate_secrets(primary)
+        # a one-time pass rotates any legacy server_id-encrypted secrets onto the primary key;
+        # once done, all writes use the primary key, so there is nothing to migrate on later boots
+        if not self.get(CONF_ENCRYPTION_KEY_MIGRATED):
+            self._migrate_secrets(primary)
+            self.set(CONF_ENCRYPTION_KEY_MIGRATED, True)
 
     def _load_or_create_primary_key(self) -> Fernet:
         """
@@ -230,6 +235,8 @@ class ConfigController(
                 return Fernet(encryption_key.encode())
             except ValueError:
                 LOGGER.warning("Stored encryption key is invalid; generating a new one")
+                # the primary key changed, so legacy secrets must be re-rotated onto it
+                self.set(CONF_ENCRYPTION_KEY_MIGRATED, False)
         encryption_key = Fernet.generate_key().decode()
         self.set(CONF_ENCRYPTION_KEY, encryption_key)
         return Fernet(encryption_key.encode())

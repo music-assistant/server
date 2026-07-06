@@ -23,7 +23,12 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
 
-from music_assistant.constants import CONF_ENCRYPTION_KEY, CONF_SERVER_ID, ENCRYPT_SUFFIX
+from music_assistant.constants import (
+    CONF_ENCRYPTION_KEY,
+    CONF_ENCRYPTION_KEY_MIGRATED,
+    CONF_SERVER_ID,
+    ENCRYPT_SUFFIX,
+)
 from music_assistant.controllers.config.controller import ConfigController
 
 
@@ -120,6 +125,38 @@ def test_legacy_secret_survives_invalid_stored_key(tmp_path: Path) -> None:
     controller._init_encryption()
 
     assert controller.decrypt_string(controller.get("providers/foo/token")) == "old-secret"
+
+
+def test_secrets_migrated_only_once(tmp_path: Path) -> None:
+    """After the one-time migration, later inits must not re-scan or re-migrate stored values."""
+    controller = _make_controller(tmp_path)
+    server_id = uuid4().hex
+    controller.set(CONF_SERVER_ID, server_id)
+    controller._init_encryption()
+    assert controller.get(CONF_ENCRYPTION_KEY_MIGRATED) is True
+
+    # a legacy-encrypted value planted after migration completed is left untouched next init
+    legacy_value = ENCRYPT_SUFFIX + _legacy_fernet(server_id).encrypt(b"late").decode()
+    controller.set("providers/foo/token", legacy_value)
+    controller._init_encryption()
+    assert controller.get("providers/foo/token") == legacy_value
+
+
+def test_invalid_key_regen_remigrates_legacy_secrets(tmp_path: Path) -> None:
+    """Regenerating an invalid key must re-run migration so legacy secrets move onto the new key."""
+    controller = _make_controller(tmp_path)
+    server_id = uuid4().hex
+    controller.set(CONF_SERVER_ID, server_id)
+    controller.set(CONF_ENCRYPTION_KEY, "not-a-valid-fernet-key")
+    controller.set(CONF_ENCRYPTION_KEY_MIGRATED, True)
+    legacy_value = ENCRYPT_SUFFIX + _legacy_fernet(server_id).encrypt(b"old-secret").decode()
+    controller.set("providers/foo/token", legacy_value)
+
+    controller._init_encryption()
+
+    migrated = controller.get("providers/foo/token")
+    assert migrated != legacy_value
+    assert controller.decrypt_string(migrated) == "old-secret"
 
 
 def test_new_encryption_not_readable_with_legacy_key(tmp_path: Path) -> None:
