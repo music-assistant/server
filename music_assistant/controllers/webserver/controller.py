@@ -59,6 +59,7 @@ from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
     resolve_command_impersonation,
+    set_current_token,
     set_current_user,
     set_impersonated_user,
 )
@@ -598,8 +599,11 @@ class WebserverController(CoreController):
                 headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
             )
 
-        # Set user in context and check the required scope
+        # Set user and token in context and check the required scope
         set_current_user(user)
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            set_current_token(auth_header[7:])
         if handler.required_scope and not has_scope(user, handler.required_scope):
             return web.Response(
                 status=403,

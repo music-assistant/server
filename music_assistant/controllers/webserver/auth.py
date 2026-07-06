@@ -1141,7 +1141,10 @@ class AuthenticationManager:
     @api_command("auth/scopes")
     async def get_role_scopes(self) -> dict[str, list[str]]:
         """Get the scopes granted to each of the builtin user roles."""
-        return {role: sorted(scopes) for role, scopes in ROLE_SCOPES.items()}
+        return {
+            str(role): sorted(str(scope) for scope in scopes)
+            for role, scopes in ROLE_SCOPES.items()
+        }
 
     async def update_user_filters(
         self,

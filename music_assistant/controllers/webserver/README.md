@@ -437,8 +437,8 @@ async def admin_command():
     pass
 ```
 
-Scopes are granted to users through their role, see `ROLE_SCOPES` in the
-`music_assistant_models.auth` module for the builtin role definitions.
+Scopes are granted to users through their role, see `ROLE_SCOPES` in
+[helpers/auth_middleware.py](helpers/auth_middleware.py) for the builtin role definitions.
 
 ### Database Migrations
 

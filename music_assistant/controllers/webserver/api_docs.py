@@ -1183,7 +1183,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                 "parameters": parameters,
                 "return_type": return_type_str,
                 "authenticated": handler.authenticated,
-                "required_scope": handler.required_scope,
+                "required_scope": str(handler.required_scope) if handler.required_scope else None,
             }
         )
 
