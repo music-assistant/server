@@ -37,8 +37,7 @@ if TYPE_CHECKING:
     from libopensonic.media import PodcastEpisode as SonicEpisode
     from libopensonic.media import StructuredLyrics
 
-    # InternetRadioStation is not re-exported from libopensonic.media top-level
-    # in py-opensonic 10.0.0 (unlike its siblings) - import from the submodule.
+    # InternetRadioStation is not re-exported from libopensonic.media; import from the submodule.
     from libopensonic.media.media_types import (
         InternetRadioStation as SonicInternetRadioStation,
     )
@@ -317,8 +316,7 @@ def parse_radio(instance_id: str, sonic_radio: SonicInternetRadioStation) -> Rad
                 provider_domain=SUBSONIC_DOMAIN,
                 provider_instance=instance_id,
                 audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
-                # stream URL lives in details; get_stream_details reads it back
-                # (tunein convention)
+                # stream URL is stored in details at sync time; get_stream_details reads it back
                 details=sonic_radio.stream_url,
             )
         },

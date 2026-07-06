@@ -2267,7 +2267,7 @@
     ]),
     'favorite': False,
     'is_playable': True,
-    'item_id': 'v1.chan.somestreamer',
+    'item_id': 'station-2',
     'media_type': 'radio',
     'metadata': dict({
       'chapters': None,
@@ -2280,7 +2280,7 @@
       'grouping': None,
       'images': list([
         dict({
-          'path': 'cover:chan:somestreamer',
+          'path': 'cover-station-2',
           'provider': 'xx-instance-id-xx',
           'proxy_id': None,
           'remotely_accessible': False,
@@ -2301,7 +2301,7 @@
       'review': None,
       'style': None,
     }),
-    'name': 'somestreamer (Twitch)',
+    'name': 'Some Station',
     'position': None,
     'provider': 'opensubsonic',
     'provider_mappings': list([
@@ -2316,19 +2316,19 @@
           'sample_rate': 44100,
         }),
         'available': True,
-        'details': 'http://twitch-sonic.lan:4533/rest/stream.view?id=v1.chan.somestreamer',
+        'details': 'http://radio.example.com/rest/stream.view?id=station-2',
         'in_library': None,
         'is_unique': None,
-        'item_id': 'v1.chan.somestreamer',
+        'item_id': 'station-2',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
         'url': None,
       }),
     ]),
-    'sort_name': 'somestreamer (twitch)',
+    'sort_name': 'some station',
     'translation_key': None,
     'translation_params': None,
-    'uri': 'opensubsonic://radio/v1.chan.somestreamer',
+    'uri': 'opensubsonic://radio/station-2',
     'version': '',
   })
 # ---

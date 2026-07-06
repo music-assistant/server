@@ -1,7 +1,7 @@
 {
-  "id": "v1.chan.somestreamer",
-  "name": "somestreamer (Twitch)",
-  "streamUrl": "http://twitch-sonic.lan:4533/rest/stream.view?id=v1.chan.somestreamer",
-  "homePageUrl": "https://twitch.tv/somestreamer",
-  "coverArt": "cover:chan:somestreamer"
+  "id": "station-2",
+  "name": "Some Station",
+  "streamUrl": "http://radio.example.com/rest/stream.view?id=station-2",
+  "homePageUrl": "https://radio.example.com/some-station",
+  "coverArt": "cover-station-2"
 }

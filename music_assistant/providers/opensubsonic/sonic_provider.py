@@ -76,8 +76,7 @@ if TYPE_CHECKING:
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
-    # InternetRadioStation is not re-exported from libopensonic.media top-level
-    # in py-opensonic 10.0.0 (unlike its siblings) - import from the submodule.
+    # InternetRadioStation is not re-exported from libopensonic.media; import from the submodule.
     from libopensonic.media.media_types import (
         InternetRadioStation as SonicInternetRadioStation,
     )
@@ -657,9 +656,7 @@ class OpenSonicProvider(MusicProvider):
                 item.content_type,
             )
         elif media_type == MediaType.RADIO:
-            # An internet radio station is an unbounded live stream: emit a
-            # direct HTTP stream to its streamUrl, no seeking, no proxying.
-            # ffmpeg autodetects the container, so content type is unknown.
+            # Unbounded live stream with an unknown container, so content type is unknown.
             stream_url = await self._resolve_radio_stream(item_id)
             return StreamDetails(
                 item_id=item_id,

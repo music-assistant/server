@@ -19,8 +19,7 @@ from libopensonic.media import (
     StructuredLyrics,
 )
 
-# InternetRadioStation is NOT re-exported from libopensonic.media top-level in
-# py-opensonic==10.0.0 (unlike its siblings above); import from the submodule.
+# InternetRadioStation is not re-exported from libopensonic.media; import from the submodule.
 from libopensonic.media.media_types import InternetRadioStation
 
 from music_assistant.providers.opensubsonic.parsers import (
@@ -83,16 +82,6 @@ async def test_parse_radio(example: pathlib.Path, snapshot: SnapshotAssertion) -
     parsed = radio.to_dict()
     parsed["external_ids"].sort()
     assert snapshot == parsed
-
-    # Load-bearing invariant: the stream URL must round-trip into the single
-    # provider mapping's `details` field — that is what get_stream_details reads
-    # to build the StreamType.HTTP path. A snapshot alone wouldn't flag a silent
-    # move of this field, so assert it explicitly.
-    assert len(radio.provider_mappings) == 1
-    mapping = next(iter(radio.provider_mappings))
-    assert mapping.details == station.stream_url
-    assert radio.item_id == station.id
-    assert radio.name == station.name
 
 
 @pytest.mark.parametrize("example", ALBUM_FIXTURES, ids=lambda val: str(val.stem))

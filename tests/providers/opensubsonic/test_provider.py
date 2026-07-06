@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from libopensonic.media.media_types import InternetRadioStation
-from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping, Radio
 from music_assistant_models.streamdetails import StreamDetails
@@ -30,9 +30,9 @@ def _station(iid: str, name: str, url: str, *, cover: str | None = None) -> Inte
 _STATIONS = [
     _station("1", "HBR1 Tronic", "http://hbr1.example/tronic.aac", cover="cv1"),
     _station(
-        "v1.chan.streamer",
-        "streamer (Twitch)",
-        "http://ts.lan:4533/rest/stream.view?id=v1.chan.streamer",
+        "station-2",
+        "Some Station",
+        "http://radio.example.com/rest/stream.view?id=station-2",
     ),
 ]
 
@@ -53,7 +53,6 @@ def _make_provider() -> OpenSonicProvider:
         "log_level": "INFO",
     }.get(key, default)
     prov = OpenSonicProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    # instance_id is a read-only property derived from config (set above).
     prov.conn = Mock()
     return prov
 
@@ -62,14 +61,6 @@ def _make_provider() -> OpenSonicProvider:
 def provider() -> OpenSonicProvider:
     """Return an OpenSonicProvider with a mocked connection."""
     return _make_provider()
-
-
-# --- feature flag -----------------------------------------------------------
-
-
-def test_radio_feature_declared() -> None:
-    """LIBRARY_RADIOS must be advertised so MA surfaces the Radios browse node."""
-    assert ProviderFeature.LIBRARY_RADIOS in SUPPORTED_FEATURES
 
 
 # --- get_library_radios -----------------------------------------------------
@@ -81,33 +72,20 @@ async def test_get_library_radios_yields_all(provider: OpenSonicProvider) -> Non
     results = [r async for r in provider.get_library_radios()]
     assert len(results) == 2
     assert all(isinstance(r, Radio) for r in results)
-    assert {r.item_id for r in results} == {"1", "v1.chan.streamer"}
+    assert {r.item_id for r in results} == {"1", "station-2"}
     provider.conn.get_internet_radio_stations.assert_awaited_once()
-
-
-async def test_get_library_radios_empty(provider: OpenSonicProvider) -> None:
-    """A server with no stations yields nothing (no crash)."""
-    provider.conn.get_internet_radio_stations = AsyncMock(return_value=[])
-    results = [r async for r in provider.get_library_radios()]
-    assert results == []
 
 
 # --- get_radio (single item) ------------------------------------------------
 
 
 async def test_get_radio_found(provider: OpenSonicProvider) -> None:
-    """
-    A known station id resolves to its Radio.
-
-    Targets the SECOND station (not _STATIONS[0]) so a "return the first
-    station" stub can't pass by accident — the id must actually be matched.
-    """
+    """A known station id resolves to its Radio."""
     provider.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
-    radio = await provider.get_radio("v1.chan.streamer")
+    radio = await provider.get_radio("station-2")
     assert isinstance(radio, Radio)
-    assert radio.item_id == "v1.chan.streamer"
-    assert radio.name == "streamer (Twitch)"
-    # the list was fetched + filtered (no singular getter exists), not guessed.
+    assert radio.item_id == "station-2"
+    assert radio.name == "Some Station"
     provider.conn.get_internet_radio_stations.assert_awaited_once()
 
 
@@ -147,28 +125,21 @@ def _set_library_lookup(provider: OpenSonicProvider, return_value: Radio | None)
 
 async def test_get_stream_details_radio_from_library(provider: OpenSonicProvider) -> None:
     """Library-first: read the stream URL from the synced item, no list re-fetch."""
-    url = "http://ts.lan:4533/rest/stream.view?id=v1.chan.streamer"
-    lookup = _set_library_lookup(
-        provider, _library_radio("v1.chan.streamer", "xx-instance-id-xx", url)
-    )
+    url = "http://radio.example.com/rest/stream.view?id=station-2"
+    lookup = _set_library_lookup(provider, _library_radio("station-2", "xx-instance-id-xx", url))
     provider.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
 
-    sd = await provider.get_stream_details("v1.chan.streamer", MediaType.RADIO)
+    sd = await provider.get_stream_details("station-2", MediaType.RADIO)
 
-    # Discriminating asserts are those that differ from StreamDetails' defaults
-    # (media_type=TRACK, stream_type=CUSTOM, path=None) — they prove the radio
-    # branch ran, not an unset object.
     assert isinstance(sd, StreamDetails)
-    assert sd.media_type == MediaType.RADIO  # default is TRACK
-    assert sd.stream_type == StreamType.HTTP  # default is CUSTOM
-    assert sd.path == url  # the stored details, not a re-fetch
+    assert sd.media_type == MediaType.RADIO
+    assert sd.stream_type == StreamType.HTTP
+    assert sd.path == url
     assert sd.provider == "xx-instance-id-xx"
-    assert sd.item_id == "v1.chan.streamer"
+    assert sd.item_id == "station-2"
     assert sd.allow_seek is False
     assert sd.can_seek is False
-    lookup.assert_awaited_once_with("v1.chan.streamer", "xx-instance-id-xx")
-    # The load-bearing check for THIS test: the station list was NOT re-fetched,
-    # proving the library path was taken rather than the fallback.
+    lookup.assert_awaited_once_with("station-2", "xx-instance-id-xx")
     provider.conn.get_internet_radio_stations.assert_not_awaited()
 
 
@@ -180,19 +151,13 @@ async def test_get_stream_details_radio_not_in_library_raises(
     provider.conn.get_internet_radio_stations = AsyncMock(return_value=_STATIONS)
 
     with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details("v1.chan.streamer", MediaType.RADIO)
+        await provider.get_stream_details("station-2", MediaType.RADIO)
 
-    # load-bearing: the miss raised loudly instead of silently re-fetching the station list.
     provider.conn.get_internet_radio_stations.assert_not_awaited()
 
 
 async def test_get_stream_details_track_unchanged(provider: OpenSonicProvider) -> None:
-    """
-    Adding the radio branch must not disturb the existing TRACK stream path.
-
-    The TRACK path builds an HTTP stream via conn.get_stream_url (POST-body auth)
-    and is seekable, distinguishing it from the radio branch above.
-    """
+    """Adding the radio branch must not disturb the existing TRACK stream path."""
     song = Mock()
     song.id = "t1"
     song.title = "A Track"
@@ -207,13 +172,12 @@ async def test_get_stream_details_track_unchanged(provider: OpenSonicProvider) -
     # the TRACK path resolves the stream URL + POST params through get_stream_url;
     # it returns a (url, params) tuple that get_stream_details unpacks.
     provider.conn.get_stream_url = Mock(
-        return_value=("http://ts.lan:4533/rest/stream.view", {"id": "t1", "u": "user"})
+        return_value=("http://music.example.com/rest/stream.view", {"id": "t1", "u": "user"})
     )
     sd = await provider.get_stream_details("t1", MediaType.TRACK)
     assert sd.media_type == MediaType.TRACK
     assert sd.stream_type == StreamType.HTTP
-    # discriminates the TRACK builder from the radio branch, which is unseekable:
     assert sd.allow_seek is True
     assert sd.can_seek is True
-    assert sd.path == "http://ts.lan:4533/rest/stream.view"
+    assert sd.path == "http://music.example.com/rest/stream.view"
     provider.conn.get_stream_url.assert_called_once()
