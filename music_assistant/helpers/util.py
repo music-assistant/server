@@ -1128,7 +1128,7 @@ async def select_free_port(range_start: int, range_end: int, host: str | None = 
             if not await is_port_in_use(port, host=host):
                 _reserved_ports[port] = now + _PORT_RESERVATION_TTL
                 return port
-    msg = f"No free port available in range {range_start}-{range_end}"
+    msg = f"No free port available in range {range_start}-{range_end - 1}"
     raise OSError(msg)
 
 
