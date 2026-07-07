@@ -1076,6 +1076,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self._play_announcement(player, announcement, volume_level)
         finally:
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+            # release the announcement data registered by get_announcement_url
+            self.mass.streams.announcements.pop(player_id, None)
 
     @handle_player_command
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
