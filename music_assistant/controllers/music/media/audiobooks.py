@@ -112,7 +112,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             FROM audiobooks
             LEFT JOIN playlog ON playlog.id = (
                 SELECT p2.id FROM playlog p2
-                WHERE p2.item_id = audiobooks.item_id AND p2.media_type = 'audiobook'
+                WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT)
+                AND p2.media_type = 'audiobook'
                 {playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)
             """
         return query, params
@@ -596,7 +597,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         extra_joins = (
             f"LEFT JOIN {DB_TABLE_PLAYLOG} ON playlog.id = ("
             f"SELECT p2.id FROM {DB_TABLE_PLAYLOG} p2 "
-            "WHERE p2.item_id = audiobooks.item_id AND p2.media_type = 'audiobook' "
+            "WHERE p2.item_id = CAST(audiobooks.item_id AS TEXT) "
+            "AND p2.media_type = 'audiobook' "
             f"{playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)"
         )
         return extra_columns, extra_joins, params
