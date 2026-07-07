@@ -7,10 +7,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import OutputProtocol
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 
 
@@ -830,6 +830,40 @@ class TestPresetMembersInDynamicGroup:
         assert sgp._is_member_allowed("other") is True
         # an unrelated player is rejected
         assert sgp._is_member_allowed("outsider") is False
+
+
+class TestGetConfigEntriesMemberPicker:
+    """Test the member options offered in the group settings dropdown."""
+
+    @pytest.mark.asyncio
+    async def test_slaved_follower_is_still_offered(self) -> None:
+        """
+        A synced follower must stay selectable in the member dropdown.
+
+        Regression: a member removed from the config during active playback
+        remains slaved at the protocol level. Its can_group_with is then empty,
+        and since it is no longer in the saved ids it vanished from the
+        dropdown, making it impossible to re-add without stopping playback.
+        """
+        mass = _make_mock_mass()
+        leader = _make_mock_player("leader")
+        leader.type = PlayerType.PLAYER
+        leader.state.can_group_with = {"follower"}
+        # slaved follower: empty can_group_with while synced_to is set
+        follower = _make_mock_player("follower")
+        follower.type = PlayerType.PLAYER
+        follower.state.synced_to = "leader"
+        # idle player that cannot group with anything must NOT be offered
+        solo = _make_mock_player("solo")
+        solo.type = PlayerType.PLAYER
+        mass.players.all_players = MagicMock(return_value=[leader, follower, solo])
+        sgp = _make_sync_group(mass)
+
+        entries = await sgp.get_config_entries()
+        members_entry = next(x for x in entries if x.key == CONF_GROUP_MEMBERS)
+        option_ids = {option.value for option in members_entry.options}
+
+        assert option_ids == {"leader", "follower"}
 
 
 class TestMembersFilterMigration:

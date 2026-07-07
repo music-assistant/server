@@ -280,7 +280,9 @@ class SyncGroupPlayer(Player):
                     x.player_id in saved_ids
                     or (
                         PlayerFeature.SET_MEMBERS in x.state.supported_features
-                        and x.state.can_group_with
+                        # also include synced followers: can_group_with returns empty
+                        # while slaved, but the player is still group-capable
+                        and (x.state.can_group_with or x.state.synced_to)
                     )
                 )
             ],
