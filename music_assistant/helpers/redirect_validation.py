@@ -124,15 +124,21 @@ def build_code_redirect_url(
     params = f"code={quote(token, safe='')}"
     if extra_params:
         for key, value in extra_params.items():
-            params += f"&{key}={quote(value, safe='')}"
+            params += f"&{quote(key, safe='')}={quote(value, safe='')}"
 
     if "#" in return_url:
         base_part, hash_part = return_url.split("#", 1)
-        separator = "&" if "?" in base_part else "?"
-        return f"{base_part}{separator}{params}#{hash_part}"
+        return f"{_append_query_params(base_part, params)}#{hash_part}"
 
-    separator = "&" if "?" in return_url else "?"
-    return f"{return_url}{separator}{params}"
+    return _append_query_params(return_url, params)
+
+
+def _append_query_params(base: str, params: str) -> str:
+    """Append query params to a URL part, reusing a trailing ? or & separator if present."""
+    if base.endswith(("?", "&")):
+        return f"{base}{params}"
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}{params}"
 
 
 def _is_private_ip(hostname: str) -> bool:

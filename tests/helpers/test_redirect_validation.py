@@ -38,10 +38,26 @@ def test_build_code_redirect_url_fragment_with_existing_query() -> None:
 
 
 def test_build_code_redirect_url_extra_params() -> None:
-    """Extra params are appended after the code param."""
+    """Extra params are appended after the code param, with keys and values URL-encoded."""
     assert (
         build_code_redirect_url("https://example.com/cb", "tok", {"onboard": "true"})
         == "https://example.com/cb?code=tok&onboard=true"
+    )
+    assert (
+        build_code_redirect_url("https://example.com/cb", "tok", {"a key": "a value"})
+        == "https://example.com/cb?code=tok&a%20key=a%20value"
+    )
+
+
+def test_build_code_redirect_url_trailing_separator() -> None:
+    """A trailing ? or & in the URL is reused instead of adding another separator."""
+    assert (
+        build_code_redirect_url("https://example.com/cb?", "tok")
+        == "https://example.com/cb?code=tok"
+    )
+    assert (
+        build_code_redirect_url("https://example.com/cb?foo=bar&", "tok")
+        == "https://example.com/cb?foo=bar&code=tok"
     )
 
 
