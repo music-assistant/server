@@ -547,6 +547,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         query = f"{self.db_table}.item_id IN ({subquery})"
         for item in await self.get_library_items_by_query(
+            limit=1,
             extra_query_parts=[query],
             extra_query_params=query_params,
         ):
