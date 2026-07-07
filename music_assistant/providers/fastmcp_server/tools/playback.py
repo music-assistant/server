@@ -11,7 +11,8 @@ from mcp.types import ToolAnnotations
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import BrowseFolder
 
-from ...radio_playlist import radio_playlist_uri
+from music_assistant.providers.radio_playlist import radio_playlist_uri
+
 from ..tags import Tag
 from ._common import TIMEOUT_MUTATION, TIMEOUT_QUERY
 
