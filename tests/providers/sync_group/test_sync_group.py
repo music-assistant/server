@@ -1166,24 +1166,30 @@ class TestWaitMemberUnsynced:
 
     @pytest.mark.asyncio
     async def test_attempts_recovery_when_stuck(self) -> None:
-        """If the first wait doesn't clear it, issue a recovery ungroup and wait again."""
+        """If the first wait doesn't clear it, kick the member from its stale parent directly."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
         member.synced_to = "old_leader"  # still stale after first wait
-        mass.players.get_player = _player_lookup({"m1": member})
+        old_leader = _make_mock_player("old_leader")
+        mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
 
-        # cmd_ungroup is what should be called as the recovery action.
+        # _handle_set_members on the stale parent is the expected recovery action.
         # We make it succeed by side-effect-clearing synced_to.
-        async def _ungroup(_player_id: str) -> None:
+        async def _kick(_parent: Any, player_ids_to_remove: list[str]) -> None:
+            assert player_ids_to_remove == ["m1"]
             member.synced_to = None
 
-        mass.players.cmd_ungroup = AsyncMock(side_effect=_ungroup)
+        mass.players._handle_set_members = AsyncMock(side_effect=_kick)
+        mass.players.cmd_ungroup = AsyncMock()
 
         ok = await sgp._wait_member_unsynced("m1")
 
         assert ok is True
-        mass.players.cmd_ungroup.assert_awaited_once_with("m1")
+        mass.players._handle_set_members.assert_awaited_once_with(
+            old_leader, player_ids_to_remove=["m1"]
+        )
+        mass.players.cmd_ungroup.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_false_when_genuinely_stuck(self) -> None:
@@ -1192,13 +1198,16 @@ class TestWaitMemberUnsynced:
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
         member.synced_to = "old_leader"  # stays stuck even after recovery
-        mass.players.get_player = _player_lookup({"m1": member})
-        mass.players.cmd_ungroup = AsyncMock()  # no-op: state stays stale
+        old_leader = _make_mock_player("old_leader")
+        mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
+        mass.players._handle_set_members = AsyncMock()  # no-op: state stays stale
 
         ok = await sgp._wait_member_unsynced("m1")
 
         assert ok is False
-        mass.players.cmd_ungroup.assert_awaited_once_with("m1")
+        mass.players._handle_set_members.assert_awaited_once_with(
+            old_leader, player_ids_to_remove=["m1"]
+        )
 
 
 class TestSupportedFeaturesPower:
