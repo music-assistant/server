@@ -91,6 +91,12 @@ class UniversalPlayerProvider(PlayerProvider):
                 valid_protocol_ids.append(protocol_id)
                 continue
             protocol_player_type = protocol_config.get("player_type")
+            protocol_values = protocol_config.get("values") or {}
+            if protocol_values.get(CONF_PROTOCOL_PARENT_ID) == player_id:
+                # the persisted parent link proves this child still belongs to us,
+                # even if its player_type was left stale by an aborted registration
+                valid_protocol_ids.append(protocol_id)
+                continue
             if protocol_player_type != "protocol":
                 self.logger.info(
                     "Removing %s from universal player %s - player type changed to %s",
@@ -99,8 +105,7 @@ class UniversalPlayerProvider(PlayerProvider):
                     protocol_player_type,
                 )
                 continue
-            protocol_values = protocol_config.get("values") or {}
-            if not protocol_values.get("protocol_parent_id"):
+            if not protocol_values.get(CONF_PROTOCOL_PARENT_ID):
                 self.logger.info(
                     "Deleting orphaned protocol player config %s (was linked to %s)",
                     protocol_id,
