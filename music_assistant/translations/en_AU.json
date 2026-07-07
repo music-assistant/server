@@ -64,5 +64,9 @@
   "provider.yandex_music.media.folder.my_favorites.name": "My Favourites",
   "provider.yandex_music.media.folder.wave_mode_favorite.name": "Favourites",
   "provider.yandex_music.media.playlist.liked_tracks.name": "My Favourites",
-  "provider.lastfm_scrobble.config_entries.authorize.label": "Authorise with {0}"
+  "provider.lastfm_scrobble.config_entries.authorize.label": "Authorise with {0}",
+  "provider.builtin.media.playlist.all_favorite_tracks.name": "All favourited tracks",
+  "provider.builtin.media.playlist.infinite_mix_favorites.description": "Like Infinite Mix, but limited to your favourited tracks. 25 fresh random favourites are added whenever the queue is nearly empty.",
+  "provider.builtin.media.playlist.infinite_mix_favorites.name": "Infinite Mix (favourites)",
+  "provider.deezer.media.folder.mixes.name": "Personalised Playlists"
 }
