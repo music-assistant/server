@@ -6806,6 +6806,70 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         assert protocol_id in registered._protocol_player_ids
 
     @pytest.mark.asyncio
+    async def test_restore_keeps_linked_protocol_after_startup_type_rewrite(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A linked protocol whose type was rewritten must not delete its universal config."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "upe45f0170ef67"
+        protocol_id = "e4:5f:01:70:ef:67"
+        universal_config: dict[str, Any] = {
+            "player_id": universal_id,
+            "provider": "universal_player",
+            "player_type": "player",
+            "enabled": True,
+            "name": "WC-Player",
+            "default_name": "solarium-bath-sl",
+            "values": {
+                "hide_in_ui": True,
+                "announce_volume_min": 55,
+                "announce_volume_max": 98,
+                "play_media_overrides_group": False,
+                "linked_protocol_ids": [protocol_id],
+                "device_identifiers": {},
+                "device_info": {},
+            },
+        }
+        configs: dict[str, dict[str, Any]] = {
+            universal_id: universal_config,
+            protocol_id: {
+                "player_id": protocol_id,
+                "provider": "squeezelite",
+                "player_type": "player",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.remove_player_config = AsyncMock()
+        mock_mass.config.get_base_player_config.return_value = create_mock_config("WC-Player")
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.delete_player_config = MagicMock()
+        mock_mass.players.unregister = AsyncMock()
+        mock_mass.players.register_or_update = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.config.remove_player_config.assert_not_called()
+        mock_mass.players.delete_player_config.assert_not_called()
+        mock_mass.players.unregister.assert_not_called()
+        mock_mass.players.register_or_update.assert_awaited_once()
+        registered = mock_mass.players.register_or_update.call_args.args[0]
+        assert protocol_id in registered._protocol_player_ids
+        assert configs[universal_id]["values"]["hide_in_ui"] is True
+        assert configs[universal_id]["values"]["announce_volume_min"] == 55
+
+    @pytest.mark.asyncio
     async def test_disabled_parent_reparents_and_disables_orphaned_protocols(
         self, mock_mass: MagicMock
     ) -> None:

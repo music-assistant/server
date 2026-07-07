@@ -585,11 +585,12 @@ class ConfigController:
             if include_values:
                 result.append(await self.get_player_config(raw_conf["player_id"]))
             else:
-                raw_conf["default_name"] = (
-                    player.state.name if player else raw_conf.get("default_name")
+                summary_conf = deepcopy(raw_conf)
+                summary_conf["default_name"] = (
+                    player.state.name if player else summary_conf.get("default_name")
                 )
-                raw_conf["available"] = player.state.available if player else False
-                result.append(cast("PlayerConfig", PlayerConfig.parse([], raw_conf)))
+                summary_conf["available"] = player.state.available if player else False
+                result.append(cast("PlayerConfig", PlayerConfig.parse([], summary_conf)))
         return result
 
     @api_command("config/players/get")
@@ -929,9 +930,9 @@ class ConfigController:
             # update default name if needed
             if name and name != existing_conf.get("default_name"):
                 self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
-            # update player_type if needed
-            if existing_conf.get("player_type") != player_type:
-                self.set(f"{CONF_PLAYERS}/{player_id}/player_type", player_type.value)
+            # deliberately do NOT update player_type here: this is called from
+            # Player.__init__ where the type can still be a transient class default.
+            # Genuine type changes are persisted by update_state after registration.
             return
         # config does not yet exist, create a default one
         conf_key = f"{CONF_PLAYERS}/{player_id}"

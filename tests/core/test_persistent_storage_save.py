@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from music_assistant_models.enums import PlayerType
 
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.controllers.config import ConfigController
 
 
@@ -113,3 +116,45 @@ async def test_save_succeeds_when_directory_fsync_unsupported(tmp_path: Path) ->
         await controller._async_save()
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+
+
+async def test_player_config_summary_read_does_not_rewrite_settings(
+    tmp_path: Path,
+) -> None:
+    """A config/players read must not dirty raw player config that is later saved."""
+    mass = SimpleNamespace(storage_path=str(tmp_path), players=MagicMock())
+    controller = ConfigController(mass)  # type: ignore[arg-type]
+    controller.initialized = True
+    player_id = "upe45f0170ef67"
+    raw_config = {
+        "player_id": player_id,
+        "provider": "universal_player",
+        "player_type": "player",
+        "enabled": True,
+        "name": "WC-Player",
+        "default_name": "solarium-bath-sl",
+        "values": {
+            "hide_in_ui": True,
+            "announce_volume_min": 55,
+            "announce_volume_max": 98,
+            "play_media_overrides_group": False,
+            "linked_protocol_ids": ["e4:5f:01:70:ef:67"],
+        },
+    }
+    controller._data = {CONF_PLAYERS: {player_id: deepcopy(raw_config)}}
+    live_player = SimpleNamespace(
+        state=SimpleNamespace(
+            name="solarium-bath-sl",
+            available=False,
+            type=PlayerType.PLAYER,
+        )
+    )
+    mass.players.get_player.return_value = live_player
+
+    configs = await controller.get_player_configs(include_values=False)
+    await controller._async_save()
+
+    assert configs[0].default_name == "solarium-bath-sl"
+    assert controller._data[CONF_PLAYERS][player_id] == raw_config
+    saved = json.loads(Path(controller.filename).read_text())
+    assert saved[CONF_PLAYERS][player_id] == raw_config
