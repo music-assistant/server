@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, TypeVar, overload
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from music_assistant_models.config_entries import ConfigValueType
 from music_assistant_models.enums import ProviderStage, ProviderType
@@ -97,6 +97,15 @@ class CoreController:
             specified type matches the actual config value type.
         """
         return self.config.get_value(key, default)
+
+    async def get_diagnostics(self) -> dict[str, Any] | None:
+        """
+        Return optional diagnostics info for this controller to include in diagnostics reports.
+
+        Return None (the default) when this controller has nothing to contribute.
+        Keep the returned data small, JSON serializable and free of sensitive values.
+        """
+        return None
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""

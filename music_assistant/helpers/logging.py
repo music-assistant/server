@@ -18,6 +18,8 @@ from collections.abc import Callable, Coroutine
 from functools import partial, wraps
 from typing import Any, cast, overload
 
+from music_assistant.helpers.diagnostics import DiagnosticsLogHandler
+
 
 class LoggingQueueHandler(logging.handlers.QueueHandler):
     """Process the log in another thread."""
@@ -79,6 +81,11 @@ def activate_log_queue_handler() -> None:
     migrated_handlers: list[logging.Handler] = []
     for handler in logging.root.handlers[:]:
         if handler is queue_handler:
+            continue
+        # the diagnostics capture handler stays attached directly to the root logger:
+        # the queue handler copies records and strips exc_info, which would break
+        # its exception aggregation (and it never blocks anyway)
+        if isinstance(handler, DiagnosticsLogHandler):
             continue
         logging.root.removeHandler(handler)
         migrated_handlers.append(handler)

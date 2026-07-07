@@ -40,6 +40,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
@@ -55,6 +56,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
+from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import get_icon_string
 from music_assistant.helpers.util import (
     TaskManager,
@@ -143,6 +145,7 @@ class MusicAssistant:
     discovery: DiscoveryController
     streams: StreamsController
     translations: TranslationController
+    diagnostics: DiagnosticsController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
@@ -176,6 +179,10 @@ class MusicAssistant:
         self.loop = asyncio.get_running_loop()
         # start() runs on the event loop thread, so this is the loop's thread id.
         self.loop_thread_id = threading.get_ident()
+        # ensure the always-on diagnostics capture handler is installed as early as
+        # possible so boot-time errors are captured (idempotent, also installed by
+        # __main__ but embedded usage boots the server directly)
+        install_diagnostics_log_handler()
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
         # setup config controller first and fetch important config values
@@ -204,6 +211,7 @@ class MusicAssistant:
         self.player_queues = PlayerQueuesController(self)
         self.streams = StreamsController(self)
         self.translations = TranslationController(self)
+        self.diagnostics = DiagnosticsController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
@@ -229,6 +237,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.metadata))
             tg.create_task(setup_controller(self.players))
             tg.create_task(setup_controller(self.player_queues))
+            tg.create_task(setup_controller(self.diagnostics))
 
         for controller_name in (
             "cache",
@@ -281,6 +290,7 @@ class MusicAssistant:
         await self.player_queues.close()
         await self.players.close()
         await self.translations.close()
+        await self.diagnostics.close()
         # cleanup cache and config
         await self.config.close()
         await self.cache.close()
@@ -921,6 +931,7 @@ class MusicAssistant:
             self.webserver,
             self.webserver.auth,
             self.streams.audio_analysis,
+            self.diagnostics,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):

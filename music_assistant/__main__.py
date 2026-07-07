@@ -20,6 +20,7 @@ from typing import Any, Final
 from colorlog import ColoredFormatter
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.logging import activate_log_queue_handler
 from music_assistant.mass import MusicAssistant
@@ -107,6 +108,10 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     # The standard destination for them is stderr, which may end up unnoticed.
     # This way they're where other messages are, and can be filtered as usual.
     logging.captureWarnings(True)
+
+    # install the always-on diagnostics capture handler as early as possible
+    # so boot-time warnings/errors end up in the diagnostics report
+    install_diagnostics_log_handler()
 
     # setup file handler
     log_filename = os.path.join(data_path, "musicassistant.log")
