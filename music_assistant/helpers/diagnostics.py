@@ -25,6 +25,7 @@ LOG_RING_MAXLEN = 300
 MAX_EXCEPTION_FINGERPRINTS = 100
 MAX_TRACEBACK_CHARS = 6000
 MAX_MESSAGE_CHARS = 500
+TRACEBACK_FRAME_LIMIT = 50
 
 REDACTION_NOTICE = (
     "This report is automatically redacted: home directories, media file paths/names, "
@@ -147,10 +148,17 @@ class CapturedException:
     logger_name: str
     level: str
     message: str
-    traceback: str
+    traceback_exc: traceback.TracebackException
     first_seen: float
     last_seen: float
     count: int = 1
+
+    def render_traceback(self) -> str:
+        """Render the representative traceback as text (may read source files)."""
+        try:
+            return "".join(self.traceback_exc.format())[-MAX_TRACEBACK_CHARS:]
+        except Exception as err:
+            return f"<traceback rendering failed: {err!r}>"
 
 
 class DiagnosticsLogHandler(logging.Handler):
@@ -202,6 +210,8 @@ class DiagnosticsLogHandler(logging.Handler):
         """Aggregate an exception attached to a log record by fingerprint."""
         assert record.exc_info is not None  # guarded by caller
         exc_type, exc_value, exc_tb = record.exc_info
+        if exc_type is None or exc_value is None:
+            return
         # walk the raw traceback frames without touching linecache/source files,
         # keeping this always-on path cheap
         raise_site = ""
@@ -226,8 +236,16 @@ class DiagnosticsLogHandler(logging.Handler):
             entry.last_seen = record.created
             self.exceptions.move_to_end(fingerprint)
             return
-        # formatting the representative traceback happens once per unique fingerprint only
-        tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        # capture structured traceback metadata once per unique fingerprint;
+        # lookup_lines=False defers all source file (linecache) reads to report time
+        traceback_exc = traceback.TracebackException(
+            exc_type,
+            exc_value,
+            exc_tb,
+            limit=TRACEBACK_FRAME_LIMIT,
+            lookup_lines=False,
+            compact=True,
+        )
         self.exceptions[fingerprint] = CapturedException(
             fingerprint=fingerprint,
             exc_type=exc_type_name,
@@ -235,7 +253,7 @@ class DiagnosticsLogHandler(logging.Handler):
             logger_name=record.name,
             level=record.levelname,
             message=message,
-            traceback=tb_text[-MAX_TRACEBACK_CHARS:],
+            traceback_exc=traceback_exc,
             first_seen=record.created,
             last_seen=record.created,
         )

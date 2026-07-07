@@ -66,7 +66,9 @@ CORE_CONTROLLER_ATTRS = (
     "webserver",
 )
 
-type DiagnosticsSectionCallback = Callable[[], dict[str, Any] | Awaitable[dict[str, Any] | None]]
+type DiagnosticsSectionCallback = Callable[
+    [], dict[str, Any] | None | Awaitable[dict[str, Any] | None]
+]
 
 
 class DiagnosticsController(CoreController):
@@ -287,6 +289,10 @@ class DiagnosticsController(CoreController):
         """Return the aggregated (sanitized) exceptions, most recent first."""
         _, exceptions = self._log_handler.snapshot()
         exceptions.sort(key=lambda entry: entry.last_seen, reverse=True)
+        # rendering traceback text may read source files (linecache), so run off-loop
+        rendered = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: [entry.render_traceback() for entry in exceptions]
+        )
         return [
             {
                 "type": entry.exc_type,
@@ -298,9 +304,9 @@ class DiagnosticsController(CoreController):
                 "level": entry.level,
                 "origin": sanitize_text(entry.origin),
                 "message": sanitize_text(entry.message),
-                "traceback": sanitize_text(entry.traceback),
+                "traceback": sanitize_text(traceback_text),
             }
-            for entry in exceptions
+            for entry, traceback_text in zip(exceptions, rendered, strict=True)
         ]
 
     async def _collect_sections(self) -> dict[str, Any]:

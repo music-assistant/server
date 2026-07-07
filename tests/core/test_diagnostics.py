@@ -140,7 +140,7 @@ def test_exception_aggregation() -> None:
     assert entry.count == 2
     assert entry.exc_type == "ValueError"
     assert entry.logger_name == "test.diagnostics"
-    assert "ValueError: boom" in entry.traceback
+    assert "ValueError: boom" in entry.render_traceback()
     assert entry.last_seen >= entry.first_seen
 
 
@@ -196,6 +196,18 @@ def test_emit_does_no_sanitization_work() -> None:
         mock_sanitize.assert_not_called()
 
 
+def test_emit_does_no_disk_io() -> None:
+    """Test that capturing an exception never reads source files (linecache)."""
+    handler = DiagnosticsLogHandler()
+    with (
+        patch("linecache.getline", side_effect=AssertionError("linecache hit on emit")),
+        patch("linecache.updatecache", side_effect=AssertionError("linecache hit on emit")),
+    ):
+        _emit_exception(handler)
+    _, exceptions = handler.snapshot()
+    assert len(exceptions) == 1
+
+
 def test_install_diagnostics_log_handler_idempotent() -> None:
     """Test that installing the capture handler twice returns the same instance."""
     handler = install_diagnostics_log_handler()
@@ -215,6 +227,10 @@ async def test_get_report(mass: MusicAssistant) -> None:
     logging.getLogger("music_assistant.test").warning("test warning for the ring")
     # device identifiers embedded in logger names must be redacted too
     logging.getLogger("aiosendspin.server.connection.20:F8:3B:09:03:E2").warning("closed")
+    try:
+        raise RuntimeError("report traceback probe")
+    except RuntimeError:
+        logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
     assert report["schema_version"] == 1
     assert "redaction_notice" in report
@@ -223,6 +239,10 @@ async def test_get_report(mass: MusicAssistant) -> None:
     assert isinstance(report["install"]["providers"], list)
     assert isinstance(report["install"]["library"]["tracks"], int)
     assert isinstance(report["exceptions"], list)
+    assert any(
+        entry["type"] == "RuntimeError" and "report traceback probe" in entry["traceback"]
+        for entry in report["exceptions"]
+    )
     # streams controller contributes its section through the get_diagnostics hook
     assert "active_output_streams" in report["sections"]["core.streams"]
     # log tail is opt-in
