@@ -21,6 +21,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -781,6 +782,34 @@ async def migrate_database(  # noqa: PLR0915
                 f"playback_speed FROM {DB_TABLE_PLAYLOG}_old WHERE userid IS NOT NULL"
             )
             await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}_old")
+
+    if prev_version <= 49:
+        # external id matching moved from a (unindexable) LIKE scan on the external_ids
+        # JSON column to the new external_id_lookup table: backfill the lookup rows from
+        # the existing external_ids JSON of all media item tables and drop the old
+        # external_ids indexes, which could never be used by the LIKE scan anyway.
+        for media_type, table in (
+            (MediaType.ARTIST, DB_TABLE_ARTISTS),
+            (MediaType.ALBUM, DB_TABLE_ALBUMS),
+            (MediaType.TRACK, DB_TABLE_TRACKS),
+            (MediaType.PLAYLIST, DB_TABLE_PLAYLISTS),
+            (MediaType.RADIO, DB_TABLE_RADIOS),
+            (MediaType.AUDIOBOOK, DB_TABLE_AUDIOBOOKS),
+            (MediaType.PODCAST, DB_TABLE_PODCASTS),
+            (MediaType.GENRE, DB_TABLE_GENRES),
+        ):
+            await database.execute(f"DROP INDEX IF EXISTS {table}_external_ids_idx")
+            # external_ids is a JSON array of [type, value] pairs; the NOCASE unique
+            # index may collapse case-variants of the same id, hence OR IGNORE
+            await database.execute(
+                f"INSERT OR IGNORE INTO {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+                "(media_type, external_id_type, external_id, item_id) "
+                f"SELECT '{media_type.value}', json_extract(ext.value, '$[0]'), "
+                f"json_extract(ext.value, '$[1]'), {table}.item_id "
+                f"FROM {table}, json_each({table}.external_ids) AS ext "
+                "WHERE json_extract(ext.value, '$[0]') IS NOT NULL "
+                "AND json_extract(ext.value, '$[1]') IS NOT NULL"
+            )
 
     # save changes
     await database.commit()
