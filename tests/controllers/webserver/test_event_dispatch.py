@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 async def drain_event_callbacks() -> None:
-    """Yield to the event loop so event subscriber callbacks (call_soon) run."""
+    """Yield to the event loop so pending event subscriber callbacks run."""
     await asyncio.sleep(0)
 
 
@@ -73,7 +73,7 @@ async def test_event_delivered_to_all_clients(
     assert "player1" in msg1
 
 
-async def test_tasks_updated_rendered_per_user(
+async def test_tasks_updated_payload_per_user(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
 ) -> None:
