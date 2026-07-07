@@ -7101,6 +7101,28 @@ class TestStaleConfigMigration:
             "squeezelite_child", PlayerType.PROTOCOL
         )
 
+    def test_native_registration_clears_stale_parent_link(self, mock_mass: MagicMock) -> None:
+        """A player registering with a non-protocol type drops its leftover parent link."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("sendspin", mass=mock_mass)
+        player = MockPlayer(provider, "web_player", "Web Player", player_type=PlayerType.PLAYER)
+
+        config_values = {
+            f"{CONF_PLAYERS}/web_player": {"player_type": "player"},
+            f"{CONF_PLAYERS}/web_player/values/protocol_parent_id": "up_old_parent",
+        }
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: config_values.get(key, default)
+        )
+
+        with patch.object(controller, "_try_link_protocols_to_native"):
+            controller._evaluate_protocol_links(player)
+
+        mock_mass.config.set.assert_any_call(
+            f"{CONF_PLAYERS}/web_player/values/protocol_parent_id",
+            None,
+        )
+
 
 class TestUniversalPlayerRestoreOrphanCleanup:
     """Tests for UniversalPlayerProvider._restore_player membership repair behavior."""

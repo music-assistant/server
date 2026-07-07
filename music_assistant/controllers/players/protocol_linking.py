@@ -114,6 +114,12 @@ class ProtocolLinkingMixin:
         elif player.state.type == PlayerType.GROUP:
             return
         else:
+            # A player that registers with a non-protocol type can no longer be a
+            # protocol child: drop a leftover persisted parent link (e.g. from a
+            # bridge client that turned web player) so the startup repair pass
+            # doesn't heal its player type back to protocol.
+            if self._get_cached_protocol_parent_id(player.player_id):
+                self._clear_protocol_parent_id(player.player_id)
             # Native player (including STEREO_PAIR): try to find protocol players to link
             self._try_link_protocols_to_native(player)
 
