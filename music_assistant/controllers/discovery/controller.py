@@ -47,8 +47,7 @@ UPNP_DISCOVERY_BROADCAST_TARGET = (str(IPv4Address("255.255.255.255")), 1900)
 UPNP_DISCOVERY_TASK_ID = "discovery_upnp_cycle"
 UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
 
-# Re-announce daily so the HA integration token is rotated (and pushed to HA via
-# Supervisor discovery) before it expires, also on long uptimes without restarts.
+# Re-announce daily so the HA integration token rotates before expiry, also on long uptimes
 HA_ANNOUNCE_INTERVAL = 86400
 HA_ANNOUNCE_TIMER_ID = "discovery_ha_announce_timer"
 
@@ -448,13 +447,8 @@ class DiscoveryController(CoreController):
                 )
 
     async def _announce_to_homeassistant(self) -> None:
-        """
-        Announce Music Assistant Ingress server to Home Assistant via Supervisor API.
-
-        Safe to repeat: the announced token only changes when it is due for rotation,
-        the Supervisor dedupes identical payloads and the HA integration only reloads
-        when the payload actually changed.
-        """
+        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
+        # Safe to repeat: Supervisor dedupes identical payloads and HA only reloads on change
         supervisor_token = os.environ["SUPERVISOR_TOKEN"]
         addon_hostname = os.environ["HOSTNAME"]
         ha_integration_token = await self.mass.webserver.auth.get_homeassistant_system_user_token()

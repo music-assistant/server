@@ -63,8 +63,7 @@ TOKEN_LONG_LIVED_EXPIRATION = 365  # Long-lived tokens (1 year, no auto-renewal)
 # Max days a sliding short-lived session may live from creation before re-auth.
 TOKEN_ABSOLUTE_MAX_EXPIRATION = 90
 TOKEN_GUEST_EXPIRATION = 1  # Guest sessions: short fixed lifetime, no renewal
-# Days before the absolute cap at which the HA integration token is rotated, so the
-# replacement is announced (and picked up by HA) before the current one stops working.
+# Days before the absolute cap at which the HA integration token is rotated
 HA_TOKEN_ROTATION_MARGIN = 7
 
 HA_TOKEN_SETTING_KEY = "ha_integration_token"
@@ -436,15 +435,13 @@ class AuthenticationManager:
         """
         system_user = await self.get_homeassistant_system_user()
 
-        # The plain token is kept in the settings table so it can be re-announced as-is.
-        # This adds no attack surface: the jwt_secret in the same table can mint any token.
+        # Keep the plain token in settings for re-announcing; the jwt_secret next to it can mint any token anyway
         if token_row := await self.database.get_row("settings", {"key": HA_TOKEN_SETTING_KEY}):
             token = str(token_row["value"])
             if await self._can_reuse_ha_integration_token(token, system_user):
                 return token
 
-        # A superseded token stays valid until it expires on its own, so the integration
-        # keeps working until it has reloaded with the newly announced token.
+        # A superseded token stays valid until expiry, so HA keeps working until it reloads
         token = await self.create_token(
             user=system_user,
             name=HA_TOKEN_NAME,
@@ -1965,13 +1962,7 @@ class AuthenticationManager:
         return updates
 
     async def _can_reuse_ha_integration_token(self, token: str, system_user: User) -> bool:
-        """
-        Check whether the stored Home Assistant integration token can still be announced.
-
-        :param token: The previously announced token.
-        :param system_user: The Home Assistant system user.
-        :return: True when the token is valid and not yet due for rotation.
-        """
+        """Check whether the stored HA integration token is valid and not yet due for rotation."""
         token_id = self.jwt_helper.get_token_id(token)
         if not token_id:
             return False
