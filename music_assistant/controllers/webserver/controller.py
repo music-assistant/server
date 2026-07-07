@@ -86,6 +86,29 @@ MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
 
+def _get_publish_addresses(
+    bind_ip: str | None, publish_ip: str, all_ip_addresses: tuple[str, ...]
+) -> list[str]:
+    """
+    Return the IP addresses the webserver should publish/advertise.
+
+    :param bind_ip: The configured bind IP (None or a wildcard means all interfaces).
+    :param publish_ip: The resolved primary publish IP.
+    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    """
+    addresses = [publish_ip]
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        return addresses
+    # bound to all interfaces: also publish the primary address of the other
+    # IP family (if any) so both IPv4-only and IPv6-only clients can connect
+    publish_is_ipv6 = ":" in publish_ip
+    for ip in all_ip_addresses:
+        if (":" in ip) != publish_is_ipv6:
+            addresses.append(ip)
+            break
+    return addresses
+
+
 def _locale_from_request(request: web.Request) -> str | None:
     """
     Determine the UI locale for an HTTP request from the standard ``Accept-Language`` header.
@@ -117,6 +140,7 @@ class WebserverController(CoreController):
         # the URL that the "auto" base_url setting resolves to, detected at setup
         self._auto_base_url: str = ""
         self.bind_ip: str | None = None
+        self.publish_addresses: list[str] = []
         self.manifest.name = "Web Server (frontend and api)"
         self.manifest.description = (
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
@@ -313,6 +337,7 @@ class WebserverController(CoreController):
             self.publish_ip = bind_ip
         else:
             self.publish_ip = default_publish_ip
+        self.publish_addresses = _get_publish_addresses(bind_ip, self.publish_ip, all_ip_addresses)
         ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
         # resolve the URL that the "auto" base_url default (or an unset value) translates to
         protocol = "https" if ssl_enabled else "http"

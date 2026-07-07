@@ -63,7 +63,6 @@ from music_assistant.constants import (
     ICY_HEADERS,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
-    WILDCARD_BIND_IPS,
 )
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -345,15 +344,12 @@ class StreamsController(CoreController):
         await check_ffmpeg_version()
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT, DEFAULT_PORT)
-        self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
         publish_ip = str(config.get_value(CONF_PUBLISH_IP) or CONF_VALUE_AUTO)
         if publish_ip == CONF_VALUE_AUTO:
-            if bind_ip not in WILDCARD_BIND_IPS:
-                publish_ip = bind_ip
-            else:
-                # resolve the "auto" default (or an unset value) to this server's primary IP
-                publish_ip = (await get_ip_addresses(include_ipv6=True))[0]
+            # resolve the "auto" default (or an unset value) to this server's primary IP
+            publish_ip = (await get_ip_addresses(include_ipv6=True))[0]
         self.publish_ip = publish_ip
+        self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
