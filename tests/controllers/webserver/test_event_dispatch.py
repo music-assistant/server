@@ -87,5 +87,9 @@ async def test_tasks_updated_payload_per_user(
     mass_minimal.signal_event(EventType.TASKS_UPDATED)
     await drain_event_callbacks()
 
-    assert "task-for-user1" in get_written_message(client1)
-    assert "task-for-user2" in get_written_message(client2)
+    msg1 = get_written_message(client1)
+    msg2 = get_written_message(client2)
+    assert "task-for-user1" in msg1
+    assert "task-for-user2" not in msg1
+    assert "task-for-user2" in msg2
+    assert "task-for-user1" not in msg2
