@@ -534,9 +534,6 @@ class MusicAssistant:
             else:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], None]", cb_func)
-                # call_soon instead of call_soon_threadsafe: we already verified above that
-                # we are on the event loop thread, so the threadsafe variant would only add
-                # overhead (a heavier handle + a self-pipe wakeup syscall per subscriber).
                 self.loop.call_soon(cb_func, event_obj)
 
     def subscribe(
