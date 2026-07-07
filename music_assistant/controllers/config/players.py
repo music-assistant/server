@@ -501,9 +501,14 @@ class PlayerConfigMixin:
             # update default name if needed
             if name and name != existing_conf.get("default_name"):
                 self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
-            # update player_type if needed
-            if existing_conf.get("player_type") != player_type:
-                self.set(f"{CONF_PLAYERS}/{player_id}/player_type", player_type.value)
+            # NOTE: player_type is deliberately NOT updated here. This is called from
+            # Player.__init__ where the type can still be a transient class default
+            # (the real type is often only determined during provider setup).
+            # Overwriting the persisted type here corrupts the stored config if
+            # registration is interrupted (e.g. shutdown while clients reconnect),
+            # which in turn caused universal player configs to be deleted on the
+            # next startup. Genuine player type changes are persisted by
+            # update_state once the player is fully registered.
             return
         # config does not yet exist, create a default one
         conf_key = f"{CONF_PLAYERS}/{player_id}"
