@@ -1080,7 +1080,7 @@ class WebserverController(CoreController):
 
             # Only forward the token to a trusted destination (no consent step here).
             return_url = body.get("return_url")
-            if return_url:
+            if return_url and isinstance(return_url, str):
                 _, category = is_allowed_redirect_url(return_url, request, self.base_url)
                 if category == "trusted":
                     response_data["redirect_to"] = build_code_redirect_url(
