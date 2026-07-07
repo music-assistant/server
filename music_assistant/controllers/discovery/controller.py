@@ -27,8 +27,9 @@ from music_assistant.constants import (
     CONF_ZEROCONF_INTERFACES,
     INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
-from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
+from music_assistant.helpers.util import get_ip_addresses, get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -261,7 +262,9 @@ class DiscoveryController(CoreController):
         info = AsyncServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
+            addresses=[
+                await get_ip_pton(address) for address in await self._get_publish_addresses()
+            ],
             port=self.mass.webserver.publish_port,
             properties=self.mass.get_server_info().to_dict(),
             server="mass.local.",
@@ -276,6 +279,21 @@ class DiscoveryController(CoreController):
             self.logger.error(
                 "Music Assistant instance with identical name present in the local network!"
             )
+
+    async def _get_publish_addresses(self) -> list[str]:
+        """Return the IP addresses to include in the Music Assistant mDNS advertisement."""
+        webserver = self.mass.webserver
+        addresses = [webserver.publish_ip]
+        if webserver.bind_ip and webserver.bind_ip not in WILDCARD_BIND_IPS:
+            return addresses
+        # bound to all interfaces: also advertise the primary address of the other
+        # IP family (if any) so both IPv4-only and IPv6-only clients can connect
+        publish_is_ipv6 = ":" in webserver.publish_ip
+        for ip in await get_ip_addresses(include_ipv6=True):
+            if (":" in ip) != publish_is_ipv6:
+                addresses.append(ip)
+                break
+        return addresses
 
     def _on_mdns_service_state_change(
         self,

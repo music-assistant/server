@@ -40,6 +40,7 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
 from music_assistant.controllers.webserver.helpers.ssl import (
     create_server_ssl_context,
@@ -115,6 +116,7 @@ class WebserverController(CoreController):
         self.clients: set[WebsocketClientHandler] = set()
         # the URL that the "auto" base_url setting resolves to, detected at setup
         self._auto_base_url: str = ""
+        self.bind_ip: str | None = None
         self.manifest.name = "Web Server (frontend and api)"
         self.manifest.description = (
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
@@ -305,13 +307,17 @@ class WebserverController(CoreController):
         port_value = config.get_value(CONF_BIND_PORT)
         assert isinstance(port_value, int)
         self.publish_port = port_value
-        self.publish_ip = default_publish_ip
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
+        self.bind_ip = bind_ip
+        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+            self.publish_ip = bind_ip
+        else:
+            self.publish_ip = default_publish_ip
         ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
         # resolve the URL that the "auto" base_url default (or an unset value) translates to
         protocol = "https" if ssl_enabled else "http"
         self._auto_base_url = (
-            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{self.publish_port}"
+            f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
         )
         base_url = self.base_url
         # print a big fat message in the log where the webserver is running
