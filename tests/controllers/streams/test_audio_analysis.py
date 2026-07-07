@@ -1350,20 +1350,3 @@ async def test_get_wave_form_none_without_rms() -> None:
     """wave_form returns None when no AA provider stored RMS energy."""
     c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=120.0)])
     assert await c.get_wave_form("track-1", "test-provider") is None
-
-
-def test_aa_domains_preferring_orders_preferred_first() -> None:
-    """The preferred AA domain is listed first, remaining domains follow sorted."""
-    c, _ = _stub_controller()
-    c.mass.get_providers = MagicMock(  # type: ignore[method-assign]
-        return_value=[
-            _aa_provider_stub(SONIC_ANALYSIS_DOMAIN),
-            _aa_provider_stub(SMART_FADES_ANALYSIS_DOMAIN),
-            _aa_provider_stub(LOUDNESS_ANALYSIS_DOMAIN),
-        ]
-    )
-    assert c._aa_domains_preferring(SMART_FADES_ANALYSIS_DOMAIN) == (
-        SMART_FADES_ANALYSIS_DOMAIN,
-        LOUDNESS_ANALYSIS_DOMAIN,
-        SONIC_ANALYSIS_DOMAIN,
-    )

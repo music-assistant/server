@@ -45,6 +45,9 @@ from music_assistant.models.music_provider import MusicProvider
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
 SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
+# AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.
+# Extend deliberately when a new AA provider should feed the frontend.
+TRACK_EXPORT_AA_PRIORITY = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN)
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
@@ -527,7 +530,7 @@ class AudioAnalysisController:
 
         :param track: The track to look up stored analysis data for.
         """
-        priority = self._aa_domains_preferring(SMART_FADES_ANALYSIS_DOMAIN)
+        priority = TRACK_EXPORT_AA_PRIORITY
         for mapping in sorted(track.provider_mappings, key=lambda m: m.quality, reverse=True):
             analysis = await self.get_audio_analysis(
                 mapping.item_id, mapping.provider_instance, priority=priority
@@ -559,7 +562,7 @@ class AudioAnalysisController:
         analysis = await self.get_audio_analysis(
             item_id,
             provider_instance_id_or_domain,
-            priority=self._aa_domains_preferring(SMART_FADES_ANALYSIS_DOMAIN),
+            priority=TRACK_EXPORT_AA_PRIORITY,
         )
         if analysis is None or analysis.rms_energy is None:
             return None
@@ -1421,15 +1424,6 @@ class AudioAnalysisController:
                 self._finalize_providers(session_key)
             else:
                 self._cancel_providers(session_key)
-
-    def _aa_domains_preferring(self, preferred: str) -> tuple[str, ...]:
-        """Return all AA provider domains ordered with the preferred domain first."""
-        others = sorted(
-            p.domain
-            for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
-            if p.domain != preferred
-        )
-        return (preferred, *others)
 
     def _cpu_count(self) -> int:
         """Return the CPU core count available to this process (fallback 4 when unknown)."""
