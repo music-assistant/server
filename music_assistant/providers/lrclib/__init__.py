@@ -6,10 +6,13 @@ Used for retrieval of synchronized lyrics.
 
 from __future__ import annotations
 
+from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any, cast
 
+from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.controllers.cache import use_cache
@@ -155,12 +158,16 @@ class LrclibProvider(MetadataProvider):
     async def _get_data(self, **params: Any) -> dict[str, Any] | None:
         """Get data from LRCLib API with throttling and retries."""
         headers = {"User-Agent": USER_AGENT}
-        async with self.mass.http_session.get(
-            f"{self.api_url}/get", params=params, headers=headers
-        ) as response:
-            # 204/404 mean there are genuinely no lyrics for this track; any other failure
-            # (5xx, network, malformed json) propagates so it is not cached as "no lyrics"
-            if response.status in (204, 404):
-                return None
-            response.raise_for_status()
-            return cast("dict[str, Any]", await response.json())
+        try:
+            async with self.mass.http_session.get(
+                f"{self.api_url}/get", params=params, headers=headers
+            ) as response:
+                # 204/404 mean there are genuinely no lyrics for this track
+                if response.status in (204, 404):
+                    return None
+                response.raise_for_status()
+                return cast("dict[str, Any]", await response.json())
+        except (ClientError, TimeoutError, JSONDecodeError) as err:
+            # any other failure (5xx, network, malformed json) is transient — surface it as
+            # ResourceTemporarilyUnavailable so callers degrade instead of caching "no lyrics"
+            raise ResourceTemporarilyUnavailable("LRCLIB request failed") from err

@@ -8,11 +8,13 @@ Wikidata sitelinks.
 
 from __future__ import annotations
 
+from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import unquote, urlparse
 
+import aiohttp
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata
 
 from music_assistant.controllers.cache import use_cache
@@ -178,8 +180,9 @@ class WikipediaMetadataProvider(MetadataProvider):
         """
         Return the parsed JSON from a GET request, or None when the resource is absent.
 
-        Only a 404 yields None; transient failures (network, other HTTP errors or an
-        unparsable response) propagate so callers do not cache them as a negative result.
+        Only a 404 yields None; a transient failure (network, another HTTP error or an
+        unparsable response) raises ResourceTemporarilyUnavailable so callers do not cache
+        it as a negative result.
 
         :param url: Request URL.
         :param params: Optional query parameters.
@@ -187,14 +190,17 @@ class WikipediaMetadataProvider(MetadataProvider):
         headers = {
             "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"
         }
-        async with (
-            self.throttler,
-            self.mass.http_session.get(url, params=params, headers=headers) as response,
-        ):
-            if response.status == 404:
-                return None
-            response.raise_for_status()
-            return cast("dict[str, Any]", await response.json())
+        try:
+            async with (
+                self.throttler,
+                self.mass.http_session.get(url, params=params, headers=headers) as response,
+            ):
+                if response.status == 404:
+                    return None
+                response.raise_for_status()
+                return cast("dict[str, Any]", await response.json())
+        except (aiohttp.ClientError, TimeoutError, JSONDecodeError) as err:
+            raise ResourceTemporarilyUnavailable("Wikipedia request failed") from err
 
 
 def _wiki_titles_by_lang(relations: list[MusicBrainzRelation]) -> dict[str, str]:

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ClientError
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 
 from music_assistant.providers.coverartarchive import (
     SUPPORTED_FEATURES,
@@ -65,7 +66,7 @@ async def test_get_cover_art_url_returns_none_when_missing(
 async def test_get_cover_art_url_propagates_transient_error(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
-    """A 5xx status propagates instead of being cached as 'no cover art'."""
+    """A 5xx failure surfaces as ResourceTemporarilyUnavailable, not cached as 'no cover art'."""
     response = MagicMock()
     response.status = 503
     response.raise_for_status = MagicMock(side_effect=ClientError("service unavailable"))
@@ -73,5 +74,5 @@ async def test_get_cover_art_url_propagates_transient_error(
         return_value=_response_cm(response)
     )
 
-    with pytest.raises(ClientError):
+    with pytest.raises(ResourceTemporarilyUnavailable):
         await provider._get_cover_art_url("mbid")

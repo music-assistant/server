@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import aiohttp
 from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import Album, MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
@@ -95,14 +97,17 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         :param release_group_id: MusicBrainz release group ID.
         """
         # Try 1200px first, fall back to 500px
-        for size in ("front-1200", "front-500"):
-            url = f"{CAA_BASE_URL}/release-group/{release_group_id}/{size}"
-            async with self.mass.http_session.head(url, allow_redirects=True) as response:
-                if response.status == 200:
-                    return str(response.url)
-                if response.status != 404:
-                    # a non-404 status (5xx, 429, ...) is a transient error — propagate it
-                    # instead of caching it as "no cover art"
-                    response.raise_for_status()
+        try:
+            for size in ("front-1200", "front-500"):
+                url = f"{CAA_BASE_URL}/release-group/{release_group_id}/{size}"
+                async with self.mass.http_session.head(url, allow_redirects=True) as response:
+                    if response.status == 200:
+                        return str(response.url)
+                    if response.status != 404:
+                        response.raise_for_status()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            # a non-404 status (5xx, 429, ...) or network failure is transient — surface it as
+            # ResourceTemporarilyUnavailable so callers degrade instead of caching "no cover art"
+            raise ResourceTemporarilyUnavailable("Cover Art Archive request failed") from err
         # a 404 for both sizes means this release group genuinely has no cover art
         return None

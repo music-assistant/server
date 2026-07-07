@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from json import JSONDecodeError
 from typing import TYPE_CHECKING
 
+import aiohttp
 from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
@@ -100,11 +103,16 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
         """
         # iTunes expects a UPC (12 digits), strip leading zero from EAN-13 if present
         upc = barcode.lstrip("0").zfill(12) if len(barcode) == 13 else barcode
-        async with self.mass.http_session.get(ITUNES_LOOKUP_URL, params={"upc": upc}) as response:
-            # let non-2xx / network / parse failures propagate so they are not cached;
-            # an empty result set below is the genuine "no artwork for this barcode"
-            response.raise_for_status()
-            data = await response.json(content_type=None)
+        try:
+            async with self.mass.http_session.get(
+                ITUNES_LOOKUP_URL, params={"upc": upc}
+            ) as response:
+                response.raise_for_status()
+                data = await response.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError, JSONDecodeError) as err:
+            # non-2xx / network / parse failure is transient — surface it as
+            # ResourceTemporarilyUnavailable so callers degrade instead of caching "no artwork"
+            raise ResourceTemporarilyUnavailable("iTunes request failed") from err
 
         if not data.get("resultCount"):
             self.logger.debug("No results from iTunes for barcode %s", barcode)

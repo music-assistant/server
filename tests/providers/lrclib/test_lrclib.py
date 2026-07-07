@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ClientError
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.lrclib import SUPPORTED_FEATURES, LrclibProvider
@@ -23,7 +24,8 @@ def provider() -> LrclibProvider:
     config.get_value.return_value = "GLOBAL"
     prov = LrclibProvider(mass, manifest, config, SUPPORTED_FEATURES)
     prov.api_url = "https://lrclib.net/api"
-    prov.throttler = ThrottlerManager(rate_limit=1, period=1)
+    # retry_attempts=1 keeps the transient-error test fast (no backoff sleeps)
+    prov.throttler = ThrottlerManager(rate_limit=1, period=1, retry_attempts=1)
     return prov
 
 
@@ -48,10 +50,10 @@ async def test_get_data_returns_none_when_not_found(provider: LrclibProvider) ->
 
 
 async def test_get_data_propagates_transient_error(provider: LrclibProvider) -> None:
-    """A network failure propagates instead of being cached as 'no lyrics'."""
+    """A network failure surfaces as a MusicAssistantError instead of being cached as 'no lyrics'."""
     provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
         return_value=_response_cm(exc=ClientError("network down"))
     )
 
-    with pytest.raises(ClientError):
+    with pytest.raises(MusicAssistantError):
         await provider._get_data(track_name="Song", artist_name="Artist")
