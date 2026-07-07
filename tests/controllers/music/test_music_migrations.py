@@ -25,6 +25,17 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
     from pathlib import Path
 
+MEDIA_TABLES = (
+    "artists",
+    "albums",
+    "tracks",
+    "playlists",
+    "radios",
+    "audiobooks",
+    "podcasts",
+    "genres",
+)
+
 
 @pytest.fixture
 async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
@@ -33,16 +44,7 @@ async def database(tmp_path: Path) -> AsyncGenerator[DatabaseConnection]:
     await db.setup()
     # minimal stand-ins for the tables that create_tables() would provide, so
     # migration steps other than the one under test can run against this bare db
-    for table in (
-        "artists",
-        "albums",
-        "tracks",
-        "playlists",
-        "radios",
-        "audiobooks",
-        "podcasts",
-        "genres",
-    ):
+    for table in MEDIA_TABLES:
         await db.execute(
             f"CREATE TABLE {table}([item_id] INTEGER PRIMARY KEY, "
             "[external_ids] json NOT NULL DEFAULT '[]')"
@@ -218,19 +220,28 @@ async def test_migrate_database_rejects_too_old_schema() -> None:
 async def test_migrate_database_backfills_external_id_lookup(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """A v49 database with populated external_ids upgrades cleanly and lookups resolve."""
+    """A pre-lookup-table database with populated external_ids columns upgrades cleanly."""
     # populate a fresh library database with a track carrying external ids
     music = MusicController(mass_minimal)
     mass_minimal.music = music
     await music._setup_database()
     library_track = await music.tracks.add_item_to_library(create_track("spotify_1", "track_abc"))
     db_id = int(library_track.item_id)
-    # revert the database to its (pre lookup table) v49 state
+    # revert the database to its v49 state: no lookup table, external ids stored
+    # in an (indexed) external_ids JSON column on every media item table
     await music.database.execute(f"DROP TABLE {DB_TABLE_EXTERNAL_ID_LOOKUP}")
+    for table in MEDIA_TABLES:
+        await music.database.execute(
+            f"ALTER TABLE {table} ADD COLUMN external_ids json NOT NULL DEFAULT '[]'"
+        )
     for table in ("tracks", "artists"):
         await music.database.execute(
             f"CREATE INDEX IF NOT EXISTS {table}_external_ids_idx on {table}(external_ids)"
         )
+    await music.database.execute(
+        "UPDATE tracks SET external_ids = :external_ids WHERE item_id = :item_id",
+        {"external_ids": f'[["isrc","{ISRC}"]]', "item_id": db_id},
+    )
     await music.database.insert_or_replace(
         DB_TABLE_SETTINGS, {"key": "version", "value": "49", "type": "str"}
     )
@@ -250,7 +261,16 @@ async def test_migrate_database_backfills_external_id_lookup(
     match = await music.tracks.get_library_item_by_external_id(ISRC, ExternalID.ISRC)
     assert match is not None
     assert int(match.item_id) == db_id
-    # the old (unusable) external_ids indexes are dropped
+    # the external_ids columns (and their unusable indexes) are dropped;
+    # the lookup table is now the single source of truth
+    for table in MEDIA_TABLES:
+        columns = {
+            column["name"]
+            for column in await music.database.get_rows_from_query(
+                f"PRAGMA table_info({table})", limit=0
+            )
+        }
+        assert "external_ids" not in columns
     old_indexes = await music.database.get_rows_from_query(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%_external_ids_idx'"
     )

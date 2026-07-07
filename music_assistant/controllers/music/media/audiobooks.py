@@ -81,6 +81,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         query = f"""
         SELECT
             audiobooks.*,
+            {self._external_ids_query()} AS external_ids,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
                 'item_id', audiobook_pm.provider_item_id,
@@ -337,7 +338,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "version": item.version,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
                 "publisher": item.publisher,
                 "authors": serialize_to_json(_authors),
                 "narrators": serialize_to_json(_narrators),
@@ -347,6 +347,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         # update/set provider_mappings table
         await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -450,9 +452,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "sort_name": sort_name,
                 "version": update.version if overwrite else cur_item.version or update.version,
                 "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "publisher": cur_item.publisher or update.publisher,
                 "authors": serialize_to_json(
                     _update_authors if overwrite else cur_item.authors or _update_authors
@@ -467,6 +466,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 if update.date_added
                 else UNSET,
             },
+        )
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
         provider_mappings = (

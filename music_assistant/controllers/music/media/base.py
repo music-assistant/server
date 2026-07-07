@@ -169,6 +169,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query = f"""
         SELECT
             {self.db_table}.*,
+            {self._external_ids_query()} AS external_ids,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
                 'item_id', provider_mappings.provider_item_id,
@@ -205,7 +206,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 async with self._db_add_lock:
                     library_id = await self._add_library_item(item)
                     new_item = True
-            await self._sync_external_id_lookup(library_id)
         # return final library_item
         library_item = await self.get_library_item(library_id)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -225,7 +225,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # batch the many writes of an item update into a single commit
         async with self.mass.music.database.deferred_commit():
             await self._update_library_item(item_id, update, overwrite=overwrite)
-            await self._sync_external_id_lookup(int(item_id))
         # return the updated object
         library_item = await self.get_library_item(item_id)
         if SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -968,6 +967,29 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             prov_map_objs,
         )
 
+    @final
+    async def set_external_ids(
+        self,
+        item_id: str | int,
+        external_ids: Iterable[tuple[ExternalID, str]],
+    ) -> None:
+        """Update the external_id_lookup table rows for the media item."""
+        db_id = int(item_id)  # ensure integer
+        await self.mass.music.database.delete(
+            DB_TABLE_EXTERNAL_ID_LOOKUP,
+            {"media_type": self.media_type.value, "item_id": db_id},
+        )
+        if lookup_rows := [
+            {
+                "media_type": self.media_type.value,
+                "external_id_type": external_id_type,
+                "external_id": external_id,
+                "item_id": db_id,
+            }
+            for external_id_type, external_id in external_ids
+        ]:
+            await self.mass.music.database.upsert_many(DB_TABLE_EXTERNAL_ID_LOOKUP, lookup_rows)
+
     @abstractmethod
     async def match_providers(self, db_item: ItemCls) -> None:
         """
@@ -1066,26 +1088,27 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return int(db_item.item_id)
         return None
 
-    @final
-    async def _sync_external_id_lookup(self, db_id: int) -> None:
-        """Sync the external_id_lookup table rows with the item's stored external_ids."""
-        query = f"SELECT external_ids FROM {self.db_table} WHERE item_id = :item_id"
-        db_rows = await self.mass.music.database.get_rows_from_query(query, {"item_id": db_id})
-        external_ids = json_loads(db_rows[0]["external_ids"]) if db_rows else []
-        await self.mass.music.database.delete(
-            DB_TABLE_EXTERNAL_ID_LOOKUP,
-            {"media_type": self.media_type.value, "item_id": db_id},
+    def _external_ids_query(
+        self, media_type: MediaType | None = None, table_alias: str | None = None
+    ) -> str:
+        """
+        Return a subquery that selects the external ids of a media item as a JSON array.
+
+        :param media_type: Media type to select the external ids for, defaults to
+            this controller's media type.
+        :param table_alias: (Aliased) table name the subquery correlates against,
+            defaults to this controller's table.
+        """
+        media_type = media_type or self.media_type
+        table_alias = table_alias or self.db_table
+        return (
+            f"(SELECT JSON_GROUP_ARRAY(json_array("
+            f"{DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id_type, "
+            f"{DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id)) "
+            f"FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+            f"WHERE {DB_TABLE_EXTERNAL_ID_LOOKUP}.media_type = '{media_type.value}' "
+            f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.item_id = {table_alias}.item_id)"
         )
-        if lookup_rows := [
-            {
-                "media_type": self.media_type.value,
-                "external_id_type": external_id_type,
-                "external_id": external_id,
-                "item_id": db_id,
-            }
-            for external_id_type, external_id in external_ids
-        ]:
-            await self.mass.music.database.upsert_many(DB_TABLE_EXTERNAL_ID_LOOKUP, lookup_rows)
 
     async def _localized_search_fallback(
         self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any

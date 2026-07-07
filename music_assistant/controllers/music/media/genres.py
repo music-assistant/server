@@ -227,6 +227,7 @@ class GenreController(MediaControllerBase[Genre]):
         query = f"""
         SELECT
             {DB_TABLE_GENRES}.*,
+            {self._external_ids_query()} AS external_ids,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
                     'item_id', provider_mappings.provider_item_id,
@@ -1244,7 +1245,6 @@ class GenreController(MediaControllerBase[Genre]):
                 "description": item.metadata.description if item.metadata else None,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
                 "genre_aliases": serialize_to_json(aliases),
                 "play_count": 0,
                 "last_played": 0,
@@ -1255,6 +1255,8 @@ class GenreController(MediaControllerBase[Genre]):
                 "content_type": content_type_value,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         return db_id
 
@@ -1300,15 +1302,16 @@ class GenreController(MediaControllerBase[Genre]):
                 "description": description,
                 "favorite": update.favorite,
                 "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "genre_aliases": serialize_to_json(merged_aliases),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
                 "timestamp_added": UNSET,
                 "content_type": content_type.value if content_type else None,
             },
+        )
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
@@ -1785,10 +1788,10 @@ class GenreController(MediaControllerBase[Genre]):
             cursor = await self.mass.music.database.execute(
                 f"INSERT INTO {DB_TABLE_GENRES}"
                 "(name, sort_name, translation_key, description, favorite, metadata, "
-                "external_ids, genre_aliases, play_count, last_played, "
+                "genre_aliases, play_count, last_played, "
                 "search_name, search_sort_name, is_default, content_type) "
                 "VALUES (:name, :sort_name, :translation_key, :description, :favorite, "
-                ":metadata, :external_ids, :genre_aliases, :play_count, :last_played, "
+                ":metadata, :genre_aliases, :play_count, :last_played, "
                 ":search_name, :search_sort_name, :is_default, :content_type)",
                 {
                     "name": name_value,
@@ -1797,7 +1800,6 @@ class GenreController(MediaControllerBase[Genre]):
                     "description": None,
                     "favorite": 0,
                     "metadata": serialize_to_json(icon_metadata.to_dict() if icon_metadata else {}),
-                    "external_ids": serialize_to_json(set()),
                     "genre_aliases": serialize_to_json(all_aliases),
                     "play_count": 0,
                     "last_played": 0,
@@ -1951,7 +1953,6 @@ class GenreController(MediaControllerBase[Genre]):
                     "description": None,
                     "favorite": 0,
                     "metadata": serialize_to_json({}),
-                    "external_ids": serialize_to_json(set()),
                     "genre_aliases": serialize_to_json([name_value]),
                     "play_count": 0,
                     "last_played": 0,

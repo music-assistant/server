@@ -82,7 +82,9 @@ async def test_external_id_lookup_rows_follow_item_updates(music: MusicControlle
     # an update merges in newly discovered external ids
     update = create_track("spotify_1", "track_abc")
     update.external_ids.add((ExternalID.MB_RECORDING, MBID))
-    await music.tracks.update_item_in_library(library_track.item_id, update)
+    updated = await music.tracks.update_item_in_library(library_track.item_id, update)
+    # the item's external_ids attribute is reconstructed from the lookup table on read
+    assert updated.external_ids == {(ExternalID.ISRC, ISRC), (ExternalID.MB_RECORDING, MBID)}
     assert await _get_lookup_rows(music, library_track.item_id) == {
         (str(ExternalID.ISRC), ISRC),
         (str(ExternalID.MB_RECORDING), MBID),

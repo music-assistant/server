@@ -255,7 +255,6 @@ async def migrate_database(  # noqa: PLR0915
         db = database._db
 
         empty_metadata = serialize_to_json({})
-        empty_external_ids = serialize_to_json(set())
 
         def _normalize_name(raw_name: str) -> tuple[str, str, str, str]:
             name = raw_name.strip()
@@ -269,9 +268,9 @@ async def migrate_database(  # noqa: PLR0915
         genre_insert_sql = (
             f"INSERT OR IGNORE INTO {DB_TABLE_GENRES}"
             "(name, sort_name, translation_key, description, favorite, "
-            "metadata, external_ids, genre_aliases, play_count, last_played, "
+            "metadata, genre_aliases, play_count, last_played, "
             "search_name, search_sort_name) "
-            "VALUES (?, ?, ?, NULL, 0, ?, ?, ?, 0, 0, ?, ?)"
+            "VALUES (?, ?, ?, NULL, 0, ?, ?, 0, 0, ?, ?)"
         )
         genre_select_sql = f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = ?"
 
@@ -297,7 +296,6 @@ async def migrate_database(  # noqa: PLR0915
                     sort_name,
                     translation_key,
                     metadata_json,
-                    empty_external_ids,
                     aliases_json,
                     search_name,
                     search_sort_name,
@@ -695,17 +693,6 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
-    if prev_version <= 45:
-        # seed the curated podcast & audiobook default genres into their namespaces so existing
-        # installs get them on upgrade (music defaults already exist and are skipped). A partial
-        # restore is idempotent; failures here are non-fatal — defaults can be restored later via
-        # the admin API rather than discarding the whole library.
-        await database.commit()
-        try:
-            await mass.music.genres.restore_default_genres(full_restore=False)
-        except Exception as err:
-            logger.warning("Could not seed default podcast/audiobook genres: %s", err)
-
     if prev_version <= 46:
         # add artists column to playlog (lightweight artist mappings for track rows) so
         # recency matching can recognize the same song across different releases/providers
@@ -714,17 +701,6 @@ async def migrate_database(  # noqa: PLR0915
         except Exception as err:
             if "duplicate column" not in str(err):
                 raise
-
-    # Only 46/47 DBs seeded their genres before icons existed; a ≤45 upgrade seeds
-    # them (with icons) in the earlier step, so it doesn't need this refresh.
-    if 46 <= prev_version <= 47:
-        # podcast/audiobook genre icons were added this release; re-run the partial restore so
-        # already-seeded default genres pick up their (now-present) icon metadata. Non-fatal.
-        await database.commit()
-        try:
-            await mass.music.genres.restore_default_genres(full_restore=False)
-        except Exception as err:
-            logger.warning("Could not refresh default genre icons: %s", err)
 
     if prev_version <= 48:
         # databases from before the userid column still carry the original inline
@@ -783,11 +759,13 @@ async def migrate_database(  # noqa: PLR0915
             )
             await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}_old")
 
-    if prev_version <= 49:
+    if prev_version <= 50:
         # external id matching moved from a (unindexable) LIKE scan on the external_ids
-        # JSON column to the new external_id_lookup table: backfill the lookup rows from
-        # the existing external_ids JSON of all media item tables and drop the old
-        # external_ids indexes, which could never be used by the LIKE scan anyway.
+        # JSON column to the new external_id_lookup table, which is now the single source
+        # of truth: backfill the lookup rows from the external_ids JSON of all media item
+        # tables, then drop that column and its old index (which could never be used by
+        # the LIKE scan anyway). The backfill is idempotent, so v50 databases (which
+        # already have a populated lookup table) simply get the column drop.
         for media_type, table in (
             (MediaType.ARTIST, DB_TABLE_ARTISTS),
             (MediaType.ALBUM, DB_TABLE_ALBUMS),
@@ -798,6 +776,17 @@ async def migrate_database(  # noqa: PLR0915
             (MediaType.PODCAST, DB_TABLE_PODCASTS),
             (MediaType.GENRE, DB_TABLE_GENRES),
         ):
+            # tables (re)created by an earlier migration step already use the current
+            # schema (no external_ids column) and have nothing to backfill
+            table_columns = {
+                column["name"]
+                for column in await database.get_rows_from_query(
+                    f"PRAGMA table_info({table})", limit=0
+                )
+            }
+            if "external_ids" not in table_columns:
+                continue
+            # the column must not be indexed for DROP COLUMN to succeed
             await database.execute(f"DROP INDEX IF EXISTS {table}_external_ids_idx")
             # external_ids is a JSON array of [type, value] pairs; the NOCASE unique
             # index may collapse case-variants of the same id, hence OR IGNORE
@@ -810,6 +799,21 @@ async def migrate_database(  # noqa: PLR0915
                 "WHERE json_extract(ext.value, '$[0]') IS NOT NULL "
                 "AND json_extract(ext.value, '$[1]') IS NOT NULL"
             )
+            await database.execute(f"ALTER TABLE {table} DROP COLUMN external_ids")
+
+    # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
+    # with the current code/schema, so the external_ids column must be gone first.
+    if prev_version <= 47:
+        # seed the curated podcast & audiobook default genres into their namespaces so existing
+        # installs get them on upgrade (music defaults already exist and are skipped), and
+        # refresh 46/47-seeded genres so they pick up their (later added) icon metadata.
+        # A partial restore is idempotent; failures here are non-fatal — defaults can be
+        # restored later via the admin API rather than discarding the whole library.
+        await database.commit()
+        try:
+            await mass.music.genres.restore_default_genres(full_restore=False)
+        except Exception as err:
+            logger.warning("Could not seed default podcast/audiobook genres: %s", err)
 
     # save changes
     await database.commit()

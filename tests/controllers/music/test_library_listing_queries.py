@@ -208,7 +208,10 @@ def _legacy_tracks_base_query() -> str:
                     'name', artists.name,
                     'sort_name', artists.sort_name,
                     'media_type', 'artist',
-                    'external_ids', json(artists.external_ids)
+                    'external_ids', json((SELECT json_group_array(json_array(
+                        external_id_lookup.external_id_type, external_id_lookup.external_id))
+                        FROM external_id_lookup WHERE external_id_lookup.media_type = 'artist'
+                        AND external_id_lookup.item_id = artists.item_id))
                 )) FROM artists JOIN track_artists on track_artists.track_id = tracks.item_id  WHERE artists.item_id = track_artists.artist_id) AS artists,
             (SELECT
                 json_object(
