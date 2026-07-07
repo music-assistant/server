@@ -19,7 +19,7 @@ from music_assistant.controllers.music.migrations import migrate_database
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
 
-from .test_external_id_lookup import ISRC, _create_track
+from .helpers import ISRC, create_track
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -223,7 +223,7 @@ async def test_migrate_database_backfills_external_id_lookup(
     music = MusicController(mass_minimal)
     mass_minimal.music = music
     await music._setup_database()
-    library_track = await music.tracks.add_item_to_library(_create_track("spotify_1", "track_abc"))
+    library_track = await music.tracks.add_item_to_library(create_track("spotify_1", "track_abc"))
     db_id = int(library_track.item_id)
     # revert the database to its (pre lookup table) v49 state
     await music.database.execute(f"DROP TABLE {DB_TABLE_EXTERNAL_ID_LOOKUP}")
