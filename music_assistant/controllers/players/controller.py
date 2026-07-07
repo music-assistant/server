@@ -251,7 +251,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
-        self._cleanup_stale_protocol_parent_ids()
+        self._repair_protocol_parent_links()
         self._poll_task = self.mass.create_task(self._poll_players())
         self.mass.tasks.register_scheduled_task(
             task_id="fix_group_member_configs",
@@ -2909,18 +2909,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # player was playing something before the announcement - try to resume that here
             await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
 
-    def _cleanup_stale_protocol_parent_ids(self) -> None:
+    def _repair_protocol_parent_links(self) -> None:
         """
-        Clean up stale protocol_parent_id values in config on startup.
+        Repair protocol parent links in player configs on startup.
 
-        Scans protocol player configs and clears parent_ids that point to
-        player configs that no longer exist (e.g., deleted universal players).
+        Scans player configs with a protocol_parent_id set and clears parent_ids
+        that point to player configs that no longer exist (e.g., deleted universal
+        players). A valid parent link also proves the player is a protocol child,
+        so a stale player_type (left behind by an aborted registration) is healed.
         """
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         for player_id, player_config in all_player_configs.items():
-            if player_config.get("player_type") != "protocol":
-                continue
-            values = player_config.get("values", {})
+            values = player_config.get("values") or {}
             parent_id = values.get(CONF_PROTOCOL_PARENT_ID)
             if not parent_id:
                 continue
@@ -2934,6 +2934,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 )
                 conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
                 self.mass.config.set(conf_key, None)
+                continue
+            if player_config.get("player_type") != PlayerType.PROTOCOL.value:
+                self.logger.info(
+                    "Repairing player type of %s - linked as protocol child of %s",
+                    player_id,
+                    parent_id,
+                )
+                self.mass.config.set_player_type(player_id, PlayerType.PROTOCOL)
 
     async def _fix_group_member_configs(self) -> None:
         """

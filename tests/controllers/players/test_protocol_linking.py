@@ -7017,7 +7017,7 @@ class TestCleanupProtocolLinks:
 
 
 class TestStaleConfigMigration:
-    """Tests for stale protocol_parent_id cleanup on startup."""
+    """Tests for protocol parent link repair on startup."""
 
     def test_clears_stale_parent_ids(self, mock_mass: MagicMock) -> None:
         """Stale parent_ids pointing to deleted players are cleared on startup."""
@@ -7039,13 +7039,14 @@ class TestStaleConfigMigration:
             }
         )
 
-        controller._cleanup_stale_protocol_parent_ids()
+        controller._repair_protocol_parent_links()
 
         # Verify the stale parent_id was cleared
         mock_mass.config.set.assert_any_call(
             "players/airplay_test/values/protocol_parent_id",
             None,
         )
+        mock_mass.config.set_player_type.assert_not_called()
 
     def test_keeps_valid_parent_ids(self, mock_mass: MagicMock) -> None:
         """Valid parent_ids pointing to existing players are preserved."""
@@ -7067,15 +7068,64 @@ class TestStaleConfigMigration:
             }
         )
 
-        controller._cleanup_stale_protocol_parent_ids()
+        controller._repair_protocol_parent_links()
 
         # Verify no set calls were made to clear the parent_id
         for call in mock_mass.config.set.call_args_list:
             assert "protocol_parent_id" not in str(call), "Valid parent_id should not be cleared"
+        mock_mass.config.set_player_type.assert_not_called()
+
+    def test_heals_stale_player_type_of_linked_child(self, mock_mass: MagicMock) -> None:
+        """A parented child whose player_type was corrupted is healed back to protocol."""
+        controller = PlayerController(mock_mass)
+
+        mock_mass.config.get = MagicMock(
+            return_value={
+                "squeezelite_child": {
+                    "player_type": "player",
+                    "values": {
+                        "protocol_parent_id": "up_valid_player",
+                    },
+                },
+                "up_valid_player": {
+                    "player_type": "group",
+                    "provider": "universal_player",
+                    "values": {},
+                },
+            }
+        )
+
+        controller._repair_protocol_parent_links()
+
+        mock_mass.config.set_player_type.assert_called_once_with(
+            "squeezelite_child", PlayerType.PROTOCOL
+        )
+
+    def test_native_registration_clears_stale_parent_link(self, mock_mass: MagicMock) -> None:
+        """A player registering with a non-protocol type drops its leftover parent link."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("sendspin", mass=mock_mass)
+        player = MockPlayer(provider, "web_player", "Web Player", player_type=PlayerType.PLAYER)
+
+        config_values = {
+            f"{CONF_PLAYERS}/web_player": {"player_type": "player"},
+            f"{CONF_PLAYERS}/web_player/values/protocol_parent_id": "up_old_parent",
+        }
+        mock_mass.config.get = MagicMock(
+            side_effect=lambda key, default=None: config_values.get(key, default)
+        )
+
+        with patch.object(controller, "_try_link_protocols_to_native"):
+            controller._evaluate_protocol_links(player)
+
+        mock_mass.config.set.assert_any_call(
+            f"{CONF_PLAYERS}/web_player/values/protocol_parent_id",
+            None,
+        )
 
 
 class TestUniversalPlayerRestoreOrphanCleanup:
-    """Tests for UniversalPlayerProvider._restore_player orphan cleanup behavior."""
+    """Tests for UniversalPlayerProvider._restore_player membership repair behavior."""
 
     @staticmethod
     def _setup_config_get(
@@ -7093,20 +7143,21 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             },
             "name": "Test Universal",
         }
+        all_configs: dict[str, object] = {universal_id: universal_conf, **protocol_configs}
 
         def _get(key: str, default: object = None) -> object:
-            if key == f"players/{universal_id}":
-                return universal_conf
-            for pid, conf in protocol_configs.items():
-                if key == f"players/{pid}":
-                    return conf
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
             return default
 
         mock_mass.config.get.side_effect = _get
 
     @pytest.mark.asyncio
-    async def test_orphan_protocol_deleted_when_not_registered(self, mock_mass: MagicMock) -> None:
-        """Orphan protocol with no live registration → delete_player_config path."""
+    async def test_orphan_protocol_dropped_but_configs_kept(self, mock_mass: MagicMock) -> None:
+        """Orphan protocol is dropped from membership without deleting any config."""
         provider = create_mock_universal_provider(mock_mass)
         universal_id = "up_test"
         orphan_id = "spb_orphan"
@@ -7126,44 +7177,17 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         mock_mass.players.get_player = MagicMock(return_value=None)
         mock_mass.players.delete_player_config = MagicMock()
         mock_mass.players.unregister = AsyncMock()
+        mock_mass.players.register_or_update = AsyncMock()
         mock_mass.config.remove_player_config = AsyncMock()
 
         await provider._restore_player(universal_id)
 
-        mock_mass.players.delete_player_config.assert_called_once_with(orphan_id)
-        mock_mass.players.unregister.assert_not_called()
-        # With no valid protocols left, the universal is also removed
-        mock_mass.config.remove_player_config.assert_called_once_with(universal_id)
-
-    @pytest.mark.asyncio
-    async def test_orphan_protocol_unregistered_when_active(self, mock_mass: MagicMock) -> None:
-        """Orphan protocol that is currently registered → unregister(permanent=True) path."""
-        provider = create_mock_universal_provider(mock_mass)
-        universal_id = "up_test"
-        orphan_id = "spb_orphan"
-
-        self._setup_config_get(
-            mock_mass,
-            universal_id,
-            [orphan_id],
-            {
-                orphan_id: {
-                    "player_type": "protocol",
-                    "values": {"protocol_parent_id": None},
-                },
-            },
-        )
-        mock_mass.players = MagicMock()
-        mock_mass.players.get_player = MagicMock(return_value=MagicMock())
-        mock_mass.players.delete_player_config = MagicMock()
-        mock_mass.players.unregister = AsyncMock()
-        mock_mass.config.remove_player_config = AsyncMock()
-
-        await provider._restore_player(universal_id)
-
-        mock_mass.players.unregister.assert_awaited_once_with(orphan_id, permanent=True)
+        # Neither the orphan's config nor the universal's config is deleted
         mock_mass.players.delete_player_config.assert_not_called()
-        mock_mass.config.remove_player_config.assert_called_once_with(universal_id)
+        mock_mass.players.unregister.assert_not_called()
+        mock_mass.config.remove_player_config.assert_not_called()
+        # With no valid protocols left, the universal is simply not restored
+        mock_mass.players.register_or_update.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_valid_protocol_kept_and_no_cleanup(self, mock_mass: MagicMock) -> None:
@@ -7266,15 +7290,85 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         assert configs[universal_id]["values"]["announce_volume_min"] == 55
 
     @pytest.mark.asyncio
+    async def test_membership_augmented_from_child_parent_link(self, mock_mass: MagicMock) -> None:
+        """A child whose parent link points at the universal is re-added to membership."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        stored_id = "spb_stored"
+        missing_id = "spb_missing"
+
+        self._setup_config_get(
+            mock_mass,
+            universal_id,
+            [stored_id],
+            {
+                stored_id: {
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": universal_id},
+                },
+                missing_id: {
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": universal_id},
+                },
+            },
+        )
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.register_or_update = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+        mock_mass.config.get_base_player_config.return_value = create_mock_config("Test Universal")
+
+        await provider._restore_player(universal_id)
+
+        # The missing child is restored to membership and persisted
+        mock_mass.config.set.assert_any_call(
+            f"{CONF_PLAYERS}/{universal_id}/values/linked_protocol_ids",
+            [stored_id, missing_id],
+        )
+        registered = mock_mass.players.register_or_update.call_args.args[0]
+        assert registered._protocol_player_ids == [stored_id, missing_id]
+
+    @pytest.mark.asyncio
+    async def test_universal_config_kept_when_protocol_moved_to_other_parent(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol that moved to another parent is dropped, universal config is kept."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        protocol_id = "spb_moved"
+
+        self._setup_config_get(
+            mock_mass,
+            universal_id,
+            [protocol_id],
+            {
+                protocol_id: {
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": "up_other"},
+                },
+            },
+        )
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.register_or_update = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.config.remove_player_config.assert_not_called()
+        mock_mass.players.register_or_update.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_disabled_parent_reparents_and_disables_orphaned_protocols(
         self, mock_mass: MagicMock
     ) -> None:
         """
         Self-heal: stale UP whose protocols belong to a disabled native parent.
 
-        Restoring such a UP should delete the wrapper, restore each protocol's
-        parent_id back to the rightful (disabled) native parent, and cascade-disable
-        each protocol so the next registration cycle doesn't rebuild the wrapper.
+        Restoring such a UP should skip the wrapper (keeping its config), restore
+        each protocol's parent_id back to the rightful (disabled) native parent, and
+        cascade-disable each protocol so the next registration cycle doesn't rebuild
+        the wrapper.
         """
         provider = create_mock_universal_provider(mock_mass)
         universal_id = "up_test"
@@ -7325,8 +7419,8 @@ class TestUniversalPlayerRestoreOrphanCleanup:
 
         await provider._restore_player(universal_id)
 
-        # Stale UP is removed
-        mock_mass.config.remove_player_config.assert_awaited_once_with(universal_id)
+        # The wrapper is skipped but its config is kept
+        mock_mass.config.remove_player_config.assert_not_awaited()
 
         # Each protocol's parent_id is restored to the disabled native parent
         parent_restorations = {
@@ -7344,6 +7438,72 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             call.args[0] for call in mock_mass.config.save_player_config.await_args_list
         }
         assert disabled_ids == {ap_id, dlna_id}
+
+    @pytest.mark.asyncio
+    async def test_protocols_reparented_to_their_own_native_claimer(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Each protocol is reparented to the native player that claims it, not the first found."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        ap_id = "airplay_1"
+        slimproto_id = "slimproto_1"
+
+        all_configs = {
+            universal_id: {
+                "values": {
+                    "linked_protocol_ids": [ap_id, slimproto_id],
+                    "device_identifiers": {},
+                    "device_info": {},
+                },
+                "name": "Test UP",
+            },
+            "native_a": {
+                "provider": "dlna",
+                "values": {"linked_protocol_ids": [ap_id]},
+            },
+            "native_b": {
+                "provider": "squeezelite",
+                "values": {"linked_protocol_ids": [slimproto_id]},
+            },
+            ap_id: {
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": universal_id},
+            },
+            slimproto_id: {
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": universal_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.save_player_config = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.register_or_update = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.players.register_or_update.assert_not_called()
+        parent_restorations = {
+            call.args[0]: call.args[1]
+            for call in mock_mass.config.set.call_args_list
+            if "protocol_parent_id" in call.args[0]
+        }
+        assert parent_restorations == {
+            f"{CONF_PLAYERS}/{ap_id}/values/protocol_parent_id": "native_a",
+            f"{CONF_PLAYERS}/{slimproto_id}/values/protocol_parent_id": "native_b",
+        }
         for call in mock_mass.config.save_player_config.await_args_list:
             assert call.args[1] == {ATTR_ENABLED: False}
 
