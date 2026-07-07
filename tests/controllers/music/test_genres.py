@@ -891,6 +891,27 @@ class TestSyncMediaItemGenres:
         assert int(genre_a.item_id) in mapped_genre_ids
         assert int(genre_b.item_id) in mapped_genre_ids
 
+    async def test_sync_picks_up_genre_created_between_syncs(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A genre created between syncs re-routes an already-stored alias mapping."""
+        electro = await genre_ctrl.add_item_to_library(_make_genre("SyncElectro"))
+        await genre_ctrl.add_alias(electro.item_id, "SyncWaveAlias")
+        track = await _add_test_track(mass, "Sync Track NewGenre")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncWaveAlias"})
+        # user now creates a genre whose primary name matches the stored alias;
+        # primary-name resolution takes priority, so a re-sync must remap the item
+        new_genre = await genre_ctrl.add_item_to_library(_make_genre("SyncWaveAlias"))
+        genre_ctrl._sync_lookup_cache.clear()  # simulate the cached lookup expiring
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncWaveAlias"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert {int(r["genre_id"]) for r in rows} == {int(new_genre.item_id)}
+
 
 # ===================================================================
 # Group F: promote_alias_to_genre (4 tests)

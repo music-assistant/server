@@ -568,6 +568,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """Return extra (columns, joins, params) for the audiobooks sync-details query."""
         # the sync loop needs the (str vs Artist) type of the stored authors/narrators
         # plus the user-scoped resume state to detect changes on the provider side
+        params: dict[str, Any] = {}
+        # mirror base_query: scope the playlog lookup to the session user (if any) and
+        # pick at most one row (the most recent) so the join can never fan out
+        playlog_user_clause = ""
+        if session_user := get_current_user():
+            playlog_user_clause = "AND p2.userid = :playlog_userid "
+            params["playlog_userid"] = session_user.user_id
         extra_columns = f"""
             , EXISTS (
                 SELECT 1 FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
@@ -587,13 +594,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             , playlog.seconds_played * 1000 AS resume_position_ms
         """
         extra_joins = (
-            f"LEFT JOIN {DB_TABLE_PLAYLOG} ON playlog.item_id = audiobooks.item_id "
-            "AND playlog.media_type = 'audiobook'"
+            f"LEFT JOIN {DB_TABLE_PLAYLOG} ON playlog.id = ("
+            f"SELECT p2.id FROM {DB_TABLE_PLAYLOG} p2 "
+            "WHERE p2.item_id = audiobooks.item_id AND p2.media_type = 'audiobook' "
+            f"{playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)"
         )
-        params: dict[str, Any] = {}
-        if session_user := get_current_user():
-            extra_joins += " AND playlog.userid = :playlog_userid"
-            params["playlog_userid"] = session_user.user_id
         return extra_columns, extra_joins, params
 
     def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> AudiobookSyncDetails:

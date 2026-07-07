@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
@@ -87,6 +88,21 @@ GENRE_BUCKETS: tuple[tuple[MediaType | None, tuple[tuple[str, MediaType], ...]],
 )
 GENRE_SCAN_TASK_ID = "genre_mapping_scan"
 
+# lifetime of the cached per-taxonomy genre lookup used by sync_media_item_genres;
+# kept short so user edits to genres/aliases are picked up quickly by a running sync
+SYNC_GENRE_LOOKUP_TTL = 5.0
+
+
+@dataclass(slots=True)
+class _SyncGenreLookup:
+    """In-memory snapshot of a genre taxonomy for fast name -> genre_ids resolution."""
+
+    built_at: float
+    primary_name_to_genre: dict[str, int]
+    alias_to_genre: dict[str, list[int]]
+    excluded_names: set[str]
+
+
 # Curated default genres per taxonomy: (content_type, mapping). Music keeps content_type None;
 # podcast/audiobook seed their own namespaced default genres (iTunes / Audible-style lists).
 DEFAULT_GENRE_TAXONOMIES: tuple[tuple[MediaType | None, list[dict[str, Any]]], ...] = (
@@ -117,6 +133,7 @@ class GenreController(MediaControllerBase[Genre]):
         super().__init__(mass)
         self._last_scan_time: float = 0
         self._last_scan_mapped: int = 0
+        self._sync_lookup_cache: dict[str | None, _SyncGenreLookup] = {}
 
         # register extra api handlers
         self.mass.register_api_command(
@@ -1047,32 +1064,29 @@ class GenreController(MediaControllerBase[Genre]):
         """
         media_id_int = int(media_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+        content_type = genre_content_type_for(media_type)
 
-        # cheap short-circuit for the (very common) unchanged case:
-        # stored alias values are the normalized incoming names from a previous run,
-        # so if those match exactly there is nothing to resolve or write.
-        # rows with a NULL alias (derived mappings) always take the full path.
-        incoming_aliases = {
-            normalized[0]
-            for name in genre_names
-            if (normalized := self._normalize_genre_name(name))
-        }
-        stored_rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT DISTINCT alias FROM {gm} "
-            "WHERE media_type = :media_type AND media_id = :media_id",
-            {"media_type": media_type.value, "media_id": media_id_int},
-            limit=0,
-        )
-        stored_aliases = {row["alias"] for row in stored_rows}
-        if None not in stored_aliases and stored_aliases == incoming_aliases:
-            return
+        # fast path for the (very common) unchanged case: resolve the incoming names
+        # against a short-lived cached snapshot of this taxonomy — the same resolution
+        # the full path performs — and skip all writes when the resolved genre ids
+        # match the stored mappings exactly. Unknown names require genre creation, so
+        # they (and any mismatch) fall through to the full path below.
+        target_ids = await self._resolve_genre_names_cached(genre_names, content_type)
+        if target_ids is not None:
+            stored_rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT DISTINCT genre_id FROM {gm} "
+                "WHERE media_type = :media_type AND media_id = :media_id",
+                {"media_type": media_type.value, "media_id": media_id_int},
+                limit=0,
+            )
+            if {int(row["genre_id"]) for row in stored_rows} == target_ids:
+                return
 
         # batch the (possible) genre creations and mapping changes into a single commit
         async with self.mass.music.database.deferred_commit():
             # Build target set: (genre_id, alias_name) from incoming names.
             # One alias can map to multiple genres (n:n). Genres resolve within the taxonomy
             # the item belongs to, so a podcast tag never lands on a music genre.
-            content_type = genre_content_type_for(media_type)
             target_mappings: dict[int, str] = {}
             for name in genre_names:
                 normalized = self._normalize_genre_name(name)
@@ -1861,6 +1875,54 @@ class GenreController(MediaControllerBase[Genre]):
                     if genre_id not in alias_to_genre[norm]:
                         alias_to_genre[norm].append(genre_id)
         return alias_to_genre, primary_name_to_genre
+
+    async def _resolve_genre_names_cached(
+        self, genre_names: set[str], content_type: MediaType | None
+    ) -> set[int] | None:
+        """
+        Resolve genre names to genre ids using a short-lived cached taxonomy snapshot.
+
+        :param genre_names: Raw genre names from the provider.
+        :param content_type: Genre taxonomy to resolve within (None = music/general).
+        :return: The resolved genre ids, or None when any name is unknown to the
+            taxonomy and a full resolution (with genre creation) is required.
+        """
+        cache_key = content_type.value if content_type else None
+        lookup = self._sync_lookup_cache.get(cache_key)
+        if lookup is None or (time.monotonic() - lookup.built_at) > SYNC_GENRE_LOOKUP_TTL:
+            lookup = await self._build_sync_genre_lookup(content_type)
+            self._sync_lookup_cache[cache_key] = lookup
+        target_ids: set[int] = set()
+        for name in genre_names:
+            if not (normalized := self._normalize_genre_name(name)):
+                continue
+            search_name = normalized[2]
+            # primary-name match takes priority over alias match, and names matching
+            # an excluded genre deliberately resolve to nothing (mirrors
+            # _find_genres_for_alias, which the full path uses)
+            if (genre_id := lookup.primary_name_to_genre.get(search_name)) is not None:
+                target_ids.add(genre_id)
+            elif genre_ids := lookup.alias_to_genre.get(search_name):
+                target_ids.update(genre_ids)
+            elif search_name not in lookup.excluded_names:
+                return None
+        return target_ids
+
+    async def _build_sync_genre_lookup(self, content_type: MediaType | None) -> _SyncGenreLookup:
+        """Build a fresh in-memory genre lookup snapshot for a single taxonomy."""
+        alias_to_genre, primary_name_to_genre = await self._build_genre_lookup(content_type)
+        excluded_rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT search_name FROM {DB_TABLE_GENRES} "
+            "WHERE is_excluded = 1 AND content_type IS :content_type",
+            {"content_type": content_type.value if content_type else None},
+            limit=0,
+        )
+        return _SyncGenreLookup(
+            built_at=time.monotonic(),
+            primary_name_to_genre=primary_name_to_genre,
+            alias_to_genre=alias_to_genre,
+            excluded_names={row["search_name"] for row in excluded_rows},
+        )
 
     async def _ensure_aliases(self, genre_id: int, aliases: list[str]) -> None:
         """
