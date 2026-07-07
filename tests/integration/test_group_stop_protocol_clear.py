@@ -19,7 +19,7 @@ import asyncio
 import json
 import logging
 import socket
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, NonCallableMagicMock, patch
 
@@ -38,7 +38,8 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 from tests.common import suppress_auto_loaded_providers
-from tests.conftest import _create_mock_zeroconf
+
+from .conftest import _create_mock_zeroconf, play_test_track, wait_for
 
 if TYPE_CHECKING:
     import pathlib
@@ -210,17 +211,6 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-async def _wait_for(predicate: Callable[[], object], timeout: float = 10.0) -> bool:
-    """Poll predicate until truthy or timeout."""
-    elapsed = 0.0
-    while elapsed < timeout:
-        if predicate():
-            return True
-        await asyncio.sleep(0.1)
-        elapsed += 0.1
-    return bool(predicate())
-
-
 @pytest.fixture
 async def repro_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """Boot a hermetic MusicAssistant for the repro."""
@@ -274,8 +264,8 @@ async def test_group_stop_clears_leader_protocol(repro_mass: MusicAssistant) -> 
     mass = repro_mass
     # sync_group is builtin/auto-loaded; the test music provider must be configured
     await mass.config.save_provider_config("test", {})
-    assert await _wait_for(lambda: mass.get_provider("sync_group") is not None)
-    assert await _wait_for(lambda: mass.get_provider("test") is not None)
+    assert await wait_for(lambda: mass.get_provider("sync_group") is not None)
+    assert await wait_for(lambda: mass.get_provider("test") is not None)
 
     # set up fake providers + players
     wiim_prov = _make_provider(mass, "fakewiim")
@@ -290,10 +280,10 @@ async def test_group_stop_clears_leader_protocol(repro_mass: MusicAssistant) -> 
         await mass.players.register(player)
 
     # protocol players must be linked to their native parents (matched via MAC)
-    assert await _wait_for(lambda: wiim_ap.protocol_parent_id == wiim.player_id), (
+    assert await wait_for(lambda: wiim_ap.protocol_parent_id == wiim.player_id), (
         "wiim airplay protocol player not linked"
     )
-    assert await _wait_for(lambda: sonos_ap.protocol_parent_id == sonos.player_id), (
+    assert await wait_for(lambda: sonos_ap.protocol_parent_id == sonos.player_id), (
         "sonos airplay protocol player not linked"
     )
 
@@ -302,24 +292,19 @@ async def test_group_stop_clears_leader_protocol(repro_mass: MusicAssistant) -> 
         "sync_group", "Whole Home", [wiim.player_id, sonos.player_id]
     )
 
-    async def play_test_track(queue_id: str) -> None:
-        test_prov = mass.get_provider("test")
-        track = await test_prov.get_track("0_0_0")  # type: ignore[union-attr]
-        await mass.player_queues.play_media(queue_id, track)
-
     # 1. play on wiim solo -> native protocol
-    await play_test_track(wiim.player_id)
-    assert await _wait_for(lambda: wiim.active_output_protocol == "native"), (
+    await play_test_track(mass, wiim.player_id)
+    assert await wait_for(lambda: wiim.active_output_protocol == "native"), (
         f"expected native protocol, got {wiim.active_output_protocol}"
     )
     await mass.players.cmd_stop(wiim.player_id)
-    assert await _wait_for(lambda: wiim.state.playback_state == PlaybackState.IDLE)
+    assert await wait_for(lambda: wiim.state.playback_state == PlaybackState.IDLE)
     # allow the delayed protocol clear (5s) to pass
     await asyncio.sleep(6)
 
     # 2. play on the group -> airplay protocol on the leader
-    await play_test_track(group.player_id)
-    assert await _wait_for(
+    await play_test_track(mass, group.player_id)
+    assert await wait_for(
         lambda: (
             wiim.active_output_protocol == wiim_ap.player_id
             or sonos.active_output_protocol == sonos_ap.player_id
@@ -331,7 +316,7 @@ async def test_group_stop_clears_leader_protocol(repro_mass: MusicAssistant) -> 
     )
     leader = wiim if wiim.active_output_protocol == wiim_ap.player_id else sonos
     # the group itself must reflect the leader's playing state
-    assert await _wait_for(lambda: group.state.playback_state == PlaybackState.PLAYING), (
+    assert await wait_for(lambda: group.state.playback_state == PlaybackState.PLAYING), (
         f"group did not report playing: {group.state.playback_state}"
     )
 
@@ -346,7 +331,7 @@ async def test_group_stop_clears_leader_protocol(repro_mass: MusicAssistant) -> 
     )
 
     # 5. playing solo on the leader again must use the native protocol
-    await play_test_track(leader.player_id)
-    assert await _wait_for(lambda: leader.active_output_protocol == "native"), (
+    await play_test_track(mass, leader.player_id)
+    assert await wait_for(lambda: leader.active_output_protocol == "native"), (
         f"solo playback did not use native protocol: {leader.active_output_protocol}"
     )
