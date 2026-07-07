@@ -182,7 +182,11 @@ class SnapcastMAStream:
             if self._streamer_task and not self._streamer_task.done():
                 if not allow_restart:
                     raise RuntimeError("streamer already running")
-                self._restart_if_running()
+                if self._stop_requested or self._stop_streamer_evt.is_set():
+                    # stop in flight; _on_streamer_done will start the fresh run
+                    self._restart_requested = True
+                else:
+                    self._restart_if_running()
                 return
 
             self._stop_requested = False
