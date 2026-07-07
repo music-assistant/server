@@ -334,9 +334,19 @@ class MetaDataController(
         for provider in self.providers:
             if ProviderFeature.LYRICS not in provider.supported_features:
                 continue
-            if (metadata := await provider.get_track_metadata(track)) and (
-                metadata.lyrics or metadata.lrc_lyrics
-            ):
+            try:
+                metadata = await provider.get_track_metadata(track)
+            except Exception as err:
+                # a provider failure must not abort the lookup — skip to the next provider
+                self.logger.warning(
+                    "Error fetching lyrics for %s from provider %s: %s",
+                    track.name,
+                    provider.name,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+                continue
+            if metadata and (metadata.lyrics or metadata.lrc_lyrics):
                 return metadata.lyrics, metadata.lrc_lyrics
         return None, None
 

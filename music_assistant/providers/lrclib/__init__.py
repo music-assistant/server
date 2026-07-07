@@ -6,12 +6,13 @@ Used for retrieval of synchronized lyrics.
 
 from __future__ import annotations
 
-import json
+from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.controllers.cache import use_cache
@@ -152,24 +153,21 @@ class LrclibProvider(MetadataProvider):
             )
         return None
 
-    # None can signal a fetch/parse failure as well as "no lyrics", so don't cache it
-    @use_cache(3600 * 24 * 14, cache_none=False)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     @throttle_with_retries
     async def _get_data(self, **params: Any) -> dict[str, Any] | None:
         """Get data from LRCLib API with throttling and retries."""
         headers = {"User-Agent": USER_AGENT}
-
         try:
             async with self.mass.http_session.get(
                 f"{self.api_url}/get", params=params, headers=headers
             ) as response:
-                response.raise_for_status()
-                if response.status == 204:  # No content
+                # 204/404 mean there are genuinely no lyrics for this track
+                if response.status in (204, 404):
                     return None
+                response.raise_for_status()
                 return cast("dict[str, Any]", await response.json())
-        except ClientResponseError as err:
-            self.logger.debug("Error fetching data from LRCLib API (%s): %s", self.api_url, err)
-            return None
-        except json.JSONDecodeError as err:
-            self.logger.debug("Error parsing response from LRCLib API: %s", err)
-            return None
+        except (ClientError, TimeoutError, JSONDecodeError) as err:
+            # any other failure (5xx, network, malformed json) is transient — surface it as
+            # ResourceTemporarilyUnavailable so callers degrade instead of caching "no lyrics"
+            raise ResourceTemporarilyUnavailable("LRCLIB request failed") from err
