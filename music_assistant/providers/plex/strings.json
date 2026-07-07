@@ -54,6 +54,10 @@
       "label": "Items per hub",
       "description": "Maximum number of items to load from each hub (default: 10)"
     },
+    "extended_recommendations": {
+      "label": "Extended recommendations",
+      "description": "Show additional recommendation hubs in the dashboard, including 'Mixes For You', recent library playlists, and 'On This Day' releases. Matches the hub set Plex's own clients surface. Changes take effect on the next recommendations refresh."
+    },
     "gdm": {
       "label": "Use Plex GDM to discover local servers",
       "description": "Enable \"GDM\" to discover local Plex servers automatically.",
