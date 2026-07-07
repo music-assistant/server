@@ -9,11 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.media_items import AudioFormat, ProviderMapping, Track
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
@@ -1259,3 +1260,93 @@ def test_controller_has_no_provider_specific_extra_data_keys() -> None:
     # do not weaken this to an import/attribute check.
     assert "_EXPORT_STRIP_EXTRA_DATA_KEYS" not in source
     assert "clap_embedding" not in source
+
+
+# --- track audio metadata & waveform export ---
+
+
+def _track_with_mapping(item_id: str = "track-1", provider: str = "test-provider") -> Track:
+    """Build a Track with a single provider mapping."""
+    return Track(
+        item_id=item_id,
+        provider="library",
+        name="Test Track",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
+            )
+        },
+    )
+
+
+def _analysis_controller_with_rows(rows: list[dict[str, Any]]) -> AudioAnalysisController:
+    """Build a stub controller whose DB returns the given analysis rows for any track."""
+    c, db = _stub_controller()
+    db.get_rows = AsyncMock(return_value=rows)
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = True
+    music_prov.domain = "test-provider"
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    c.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            _aa_provider_stub(SMART_FADES_ANALYSIS_DOMAIN),
+            _aa_provider_stub(SONIC_ANALYSIS_DOMAIN),
+        ]
+    )
+    return c
+
+
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_prefers_smart_fades() -> None:
+    """bpm/key come from smart_fades even when another AA provider wrote them later."""
+    c = _analysis_controller_with_rows(
+        [
+            _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=128.0, key="F#", mode="minor"),
+            _aa_row(SONIC_ANALYSIS_DOMAIN, 2, bpm=100.0),
+        ]
+    )
+    result = await c.get_track_audio_metadata(_track_with_mapping())
+    assert result is not None
+    assert result.bpm == 128.0
+    assert result.musical_key == "F# minor"
+
+
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_key_without_mode() -> None:
+    """musical_key falls back to the bare pitch class when no mode was detected."""
+    c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, key="C")])
+    result = await c.get_track_audio_metadata(_track_with_mapping())
+    assert result is not None
+    assert result.bpm is None
+    assert result.musical_key == "C"
+
+
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_none_without_relevant_analysis() -> None:
+    """No AudioMetadata when stored analysis has neither bpm nor key."""
+    c = _analysis_controller_with_rows(
+        [_aa_row(SONIC_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5)]
+    )
+    assert await c.get_track_audio_metadata(_track_with_mapping()) is None
+
+
+@pytest.mark.asyncio
+async def test_get_wave_form_returns_rms_bins() -> None:
+    """wave_form returns the stored RMS energy bins as a plain list of floats."""
+    rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32)
+    c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, rms_energy=rms)])
+    result = await c.get_wave_form("track-1", "test-provider")
+    assert result is not None
+    assert len(result) == 1800
+    assert result[0] == pytest.approx(0.0)
+    assert result[-1] == pytest.approx(1.0)
+    assert all(isinstance(v, float) for v in result)
+
+
+@pytest.mark.asyncio
+async def test_get_wave_form_none_without_rms() -> None:
+    """wave_form returns None when no AA provider stored RMS energy."""
+    c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=120.0)])
+    assert await c.get_wave_form("track-1", "test-provider") is None
