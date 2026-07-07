@@ -489,27 +489,111 @@ async def test_homeassistant_system_user(auth_manager: AuthenticationManager) ->
     assert system_user2.user_id == system_user.user_id
 
 
-async def test_homeassistant_system_user_token(auth_manager: AuthenticationManager) -> None:
-    """Test Home Assistant system user token creation.
+async def test_homeassistant_system_user_token_stable_across_restarts(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a valid Home Assistant integration token is reused on repeated announces.
+
+    The addon announces on every startup; re-minting each time would invalidate the
+    token the HA integration still holds (issue #158174). Repeated calls must return
+    the exact same token so the re-announce is idempotent.
 
     :param auth_manager: AuthenticationManager instance.
     """
-    # Get or create token
     token1 = await auth_manager.get_homeassistant_system_user_token()
     assert token1 is not None
 
-    # Getting it again should create a new token (old one is replaced)
+    # A later startup (restart) returns the same token unchanged.
     token2 = await auth_manager.get_homeassistant_system_user_token()
-    assert token2 is not None
+    assert token2 == token1
+
+    user = await auth_manager.authenticate_with_token(token1)
+    assert user is not None
+    assert user.username == HOMEASSISTANT_SYSTEM_USER
+
+
+async def test_homeassistant_system_user_token_reissued_when_invalid(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a fresh token is minted once the existing one is revoked or gone.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    token1 = await auth_manager.get_homeassistant_system_user_token()
+
+    # Drop the token row, as would happen if it expired or was revoked.
+    token_id = auth_manager.jwt_helper.get_token_id(token1)
+    await auth_manager.database.delete("auth_tokens", {"token_id": token_id})
+
+    token2 = await auth_manager.get_homeassistant_system_user_token()
+    assert token2 != token1
+    assert await auth_manager.authenticate_with_token(token2) is not None
+    assert await auth_manager.authenticate_with_token(token1) is None
+
+
+async def test_homeassistant_system_user_token_rotated_before_absolute_max(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the Home Assistant integration token is rotated before its absolute cap.
+
+    The integration cannot reauth while running as an addon, so the token must be
+    replaced (and re-announced) before the absolute lifetime cap silently strands
+    the integration (issue #171938). The superseded token must remain valid so the
+    integration keeps working until it reloads with the new one.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    token1 = await auth_manager.get_homeassistant_system_user_token()
+    token_id = auth_manager.jwt_helper.get_token_id(token1)
+
+    # Age the token into the rotation window (close to the absolute cap, still valid).
+    now = utc()
+    created_at = now - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION - 1)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_id},
+        {
+            "created_at": created_at.isoformat(),
+            "expires_at": (now + timedelta(days=1)).isoformat(),
+        },
+    )
+
+    # The next (periodic) announce must mint a replacement.
+    token2 = await auth_manager.get_homeassistant_system_user_token()
     assert token2 != token1
 
-    # Old token should not work
-    user1 = await auth_manager.authenticate_with_token(token1)
-    assert user1 is None
+    # Both tokens work: the old one until it expires, the new one going forward.
+    assert await auth_manager.authenticate_with_token(token1) is not None
+    assert await auth_manager.authenticate_with_token(token2) is not None
 
-    # New token should work
-    user2 = await auth_manager.authenticate_with_token(token2)
-    assert user2 is not None
+    # The new token is stable again on subsequent announces.
+    assert await auth_manager.get_homeassistant_system_user_token() == token2
+
+
+async def test_homeassistant_system_user_token_cleans_up_expired_rows(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that expired Home Assistant integration token rows are removed on rotation.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    token1 = await auth_manager.get_homeassistant_system_user_token()
+    token_id = auth_manager.jwt_helper.get_token_id(token1)
+
+    # Expire the token entirely so the next announce mints a replacement.
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_id},
+        {"expires_at": (utc() - timedelta(days=1)).isoformat()},
+    )
+
+    token2 = await auth_manager.get_homeassistant_system_user_token()
+    assert token2 != token1
+    assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
 
 
 async def test_update_user_role(auth_manager: AuthenticationManager) -> None:
