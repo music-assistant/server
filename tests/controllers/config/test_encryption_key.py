@@ -1,17 +1,4 @@
-"""
-Regression tests for the SECURE_STRING encryption key (findings 7.3.1 / 7.3.2).
-
-The Fernet key used by ``encrypt_string``/``decrypt_string`` used to be derived
-from ``server_id`` (``base64.urlsafe_b64encode(server_id.encode()[:32])``).
-That ``server_id`` is broadcast on the LAN via Zeroconf and is a low-entropy
-UUIDv4 hex string, so any device on the network could decrypt the secrets.
-
-These tests pin down the fixed behavior:
-- the active encryption key is NOT derived from ``server_id``
-- encrypt -> decrypt round-trips
-- secrets encrypted with the legacy ``server_id``-derived key still decrypt
-  (transparent migration via ``MultiFernet``)
-"""
+"""Tests for the dedicated SECURE_STRING encryption key and legacy secret migration."""
 
 from __future__ import annotations
 
@@ -68,15 +55,15 @@ def test_encrypt_decrypt_round_trip(tmp_path: Path) -> None:
 
 
 def test_legacy_encrypted_value_still_decrypts(tmp_path: Path) -> None:
-    """Secrets encrypted with the old server_id-derived key must still decrypt."""
+    """Secrets encrypted with the old server_id-derived key must still decrypt after setup."""
     controller = _make_controller(tmp_path)
     server_id = uuid4().hex
     controller.set(CONF_SERVER_ID, server_id)
-
     legacy_value = ENCRYPT_SUFFIX + _legacy_fernet(server_id).encrypt(b"old-secret").decode()
+    controller.set("providers/foo/token", legacy_value)
 
     controller._init_encryption()
-    assert controller.decrypt_string(legacy_value) == "old-secret"
+    assert controller.decrypt_string(controller.get("providers/foo/token")) == "old-secret"
 
 
 def test_existing_secrets_migrated_off_legacy_key(tmp_path: Path) -> None:

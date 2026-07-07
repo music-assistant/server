@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiofiles
-from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+from cryptography.fernet import Fernet, InvalidToken
 from music_assistant_models import config_entries
 from music_assistant_models.errors import InvalidDataError
 
@@ -52,7 +52,7 @@ class ConfigController(
 ):
     """Controller that handles storage of persistent configuration settings."""
 
-    _fernet: MultiFernet | None = None
+    _fernet: Fernet | None = None
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize storage controller."""
@@ -205,75 +205,51 @@ class ConfigController(
             raise InvalidDataError(msg) from err
 
     def _init_encryption(self) -> None:
-        """
-        Set up encryption for SECURE_STRING values with a dedicated key, not server_id.
-
-        server_id is public (broadcast via Zeroconf), so it must not be the key; MultiFernet
-        keeps it as a decrypt-only fallback and _migrate_secrets re-encrypts onto the new key.
-        """
-        server_id: str = self.get(CONF_SERVER_ID)
-        assert server_id
-        primary = self._load_or_create_primary_key()
-        legacy_key = base64.urlsafe_b64encode(server_id.encode()[:32])
-        self._fernet = MultiFernet([primary, Fernet(legacy_key)])
-        # a one-time pass rotates any legacy server_id-encrypted secrets onto the primary key;
-        # once done, all writes use the primary key, so there is nothing to migrate on later boots
+        """Set up encryption for SECURE_STRING config values."""
+        self._fernet = self._load_or_create_encryption_key()
         if not self.get(CONF_ENCRYPTION_KEY_MIGRATED):
-            self._migrate_secrets(primary)
+            self._migrate_legacy_secrets()
             self.set(CONF_ENCRYPTION_KEY_MIGRATED, True)
 
-    def _load_or_create_primary_key(self) -> Fernet:
-        """
-        Return the dedicated Fernet key, generating a new one if it is absent or invalid.
-
-        A missing or corrupted key must never crash startup or block legacy decryption, so we
-        fall back to a fresh key while the legacy server_id key stays available for decrypt.
-        """
+    def _load_or_create_encryption_key(self) -> Fernet:
+        """Return the stored encryption key, generating a new one if it is absent or invalid."""
         encryption_key: Any = self.get(CONF_ENCRYPTION_KEY, "")
         if isinstance(encryption_key, str) and encryption_key:
             try:
                 return Fernet(encryption_key.encode())
             except ValueError:
                 LOGGER.warning("Stored encryption key is invalid; generating a new one")
-                # the primary key changed, so legacy secrets must be re-rotated onto it
                 self.set(CONF_ENCRYPTION_KEY_MIGRATED, False)
         encryption_key = Fernet.generate_key().decode()
         self.set(CONF_ENCRYPTION_KEY, encryption_key)
         return Fernet(encryption_key.encode())
 
-    def _migrate_secrets(self, primary: Fernet) -> None:
-        """
-        Proactively re-encrypt legacy server_id-encrypted secrets onto the new key.
-
-        Otherwise they stay recoverable with the public server_id until next rewritten.
-        """
-        assert self._fernet is not None
-        migrated = self._rotate_encrypted_values(self._data, primary)
+    def _migrate_legacy_secrets(self) -> None:
+        """One-time re-encryption of secrets that were encrypted with the server_id-derived key."""
+        server_id: str = self.get(CONF_SERVER_ID)
+        assert server_id
+        legacy_fernet = Fernet(base64.urlsafe_b64encode(server_id.encode()[:32]))
+        migrated = self._rotate_encrypted_values(self._data, legacy_fernet)
         if migrated:
-            LOGGER.info("Re-encrypted %s secret(s) onto the dedicated encryption key", migrated)
+            LOGGER.info("Re-encrypted %s secret(s) with the dedicated encryption key", migrated)
             self.save(immediate=True)
 
-    def _rotate_encrypted_values(self, node: Any, primary: Fernet) -> int:
-        """Recursively rotate legacy-encrypted values onto the primary key, returning the count."""
+    def _rotate_encrypted_values(self, node: Any, legacy_fernet: Fernet) -> int:
+        """Recursively re-encrypt legacy-encrypted values, returning the count."""
         assert self._fernet is not None
         count = 0
         values = node.items() if isinstance(node, dict) else enumerate(node)
         for key, value in values:
             if isinstance(value, (dict, list)):
-                count += self._rotate_encrypted_values(value, primary)
+                count += self._rotate_encrypted_values(value, legacy_fernet)
             elif isinstance(value, str) and value.startswith(ENCRYPT_SUFFIX):
                 token = value[len(ENCRYPT_SUFFIX) :].encode()
                 try:
-                    # already on the primary key, nothing to migrate
-                    primary.decrypt(token)
+                    decrypted = legacy_fernet.decrypt(token)
+                except InvalidToken:
                     continue
-                except InvalidToken:
-                    pass
-                try:
-                    node[key] = ENCRYPT_SUFFIX + self._fernet.rotate(token).decode()
-                    count += 1
-                except InvalidToken:
-                    LOGGER.warning("Failed to migrate an encrypted config value")
+                node[key] = ENCRYPT_SUFFIX + self._fernet.encrypt(decrypted).decode()
+                count += 1
         return count
 
     async def _load(self) -> None:
