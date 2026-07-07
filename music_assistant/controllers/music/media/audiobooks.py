@@ -71,7 +71,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         resume_position_ms). When a session user is present the join is scoped to that
         user, so multi-user installs don't surface each other's resume state.
         """
-        query = """
+        params: dict[str, Any] = {}
+        # scope the playlog lookup to the session user (if any) and pick at most one
+        # row (the most recent) so the join can never fan out the result set
+        playlog_user_clause = ""
+        if session_user := get_current_user():
+            playlog_user_clause = "AND p2.userid = :playlog_userid "
+            params["playlog_userid"] = session_user.user_id
+        query = f"""
         SELECT
             audiobooks.*,
             (SELECT JSON_GROUP_ARRAY(
@@ -100,12 +107,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog.seconds_played AS seconds_played,
             playlog.seconds_played * 1000 as resume_position_ms
             FROM audiobooks
-            LEFT JOIN playlog ON playlog.item_id = audiobooks.item_id AND playlog.media_type = 'audiobook'
+            LEFT JOIN playlog ON playlog.id = (
+                SELECT p2.id FROM playlog p2
+                WHERE p2.item_id = audiobooks.item_id AND p2.media_type = 'audiobook'
+                {playlog_user_clause}ORDER BY p2.timestamp DESC LIMIT 1)
             """
-        params: dict[str, Any] = {}
-        if session_user := get_current_user():
-            query += " AND playlog.userid = :playlog_userid"
-            params["playlog_userid"] = session_user.user_id
         return query, params
 
     async def library_items(
