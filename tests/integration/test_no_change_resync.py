@@ -81,11 +81,8 @@ async def test_no_change_resync_is_hydration_free(e2e_mass: MusicAssistant) -> N
 
         async with wait_for_sync_completion(mass):
             await mass.music.start_sync()
-        # sync tasks are done; drain until fully idle while spies are still active
-        elapsed = 0.0
-        while mass.music.active_sync_tasks and elapsed < 60.0:
-            await asyncio.sleep(0.25)
-            elapsed += 0.25
+        # keep the spies active until the follow-up genre scan has fully completed
+        await _wait_until_sync_idle(mass)
 
     for name, spy in write_spies.items():
         assert not spy.called, f"unexpected library write during no-change re-sync: {name}"
