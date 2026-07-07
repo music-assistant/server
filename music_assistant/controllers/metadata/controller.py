@@ -91,12 +91,21 @@ class MetaDataController(
         )
         self.manifest.icon = "book-information-variant"
         self._throttler = Throttler(1, 30)
-        # image-id LRU: image_id -> (provider, path). Acts as a write-through
-        # hot cache in front of the cache controller so that resolving an image
-        # by id never blocks on sqlite if the URL was generated recently.
+        # image-id bookkeeping, all bounded by _IMAGE_ID_LRU_MAX and sharing the
+        # same key/id string objects so the combined footprint stays small:
+        # - _image_id_forward: (provider, path) -> image_id memo so serializing a
+        #   known image skips the sha256 and the lock entirely. Read lock-free
+        #   (single dict lookup is atomic), mutated only while holding the lock.
+        # - _image_id_lru: image_id -> (provider, path). Write-through hot cache
+        #   in front of the cache controller so that resolving an image by id
+        #   never blocks on sqlite if the URL was generated recently.
+        # - _image_id_persisted: image_id -> epoch of the last persist to the
+        #   cache db, so repeat encounters skip the sqlite write.
         # The lock is needed because compute_image_id() runs from the executor
         # thread during outbound websocket serialization.
+        self._image_id_forward: dict[tuple[str, str], str] = {}
         self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._image_id_persisted: dict[str, float] = {}
         self._image_id_lock = threading.Lock()
 
     async def get_config_entries(

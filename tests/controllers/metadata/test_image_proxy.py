@@ -2,13 +2,25 @@
 
 import asyncio
 import hashlib
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from aiohttp import web
+from music_assistant_models.enums import ImageType
+from music_assistant_models.media_items import (
+    MediaItemImage,
+    MediaItemMetadata,
+    ProviderMapping,
+    Track,
+)
+from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
+from music_assistant_models.unique_list import UniqueList
 from PIL import Image
 
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
+    _IMAGE_ID_CACHE_TTL,
     _IMAGEPROXY_CONTENT_TYPES,
     CACHE_CATEGORY_IMAGE_IDS,
 )
@@ -135,6 +147,233 @@ async def test_image_id_persists_with_persistent_flag(
     metadata_controller._image_id_lru.clear()
     resolved = await metadata_controller.resolve_image_id(image_id)
     assert resolved == ("filesystem", "/persistent.jpg")
+
+
+def _track_with_image(item_id: str, image: MediaItemImage) -> Track:
+    """Build a minimal serializable Track carrying the given image."""
+    return Track(
+        item_id=item_id,
+        provider="library",
+        name=f"Track {item_id}",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="filesystem",
+                provider_instance="filesystem--test",
+            )
+        },
+        metadata=MediaItemMetadata(images=UniqueList([image])),
+    )
+
+
+async def _wait_for_expiration_refresh(
+    controller: MetaDataController, image_id: str, old_expires: int, timeout: float = 2.0
+) -> int:
+    """Wait until the stored row's expiration moved past `old_expires`, or fail."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        expires = await controller.cache.get_expiration(
+            key=image_id,
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=controller.domain,
+        )
+        if expires is not None and expires > old_expires:
+            return expires
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"expiration for {image_id!r} not refreshed within {timeout}s")
+
+
+async def test_serialize_twice_hashes_once_and_persists_once(
+    metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Serializing the same item list twice hashes and persists each unique image only once.
+
+    The proxy_id injection runs per image occurrence per outbound message, so
+    repeat serializations must be served from the forward memo: no hashing at
+    all on the second pass and exactly one cache write per unique image.
+    """
+    hash_calls: list[tuple[str, str]] = []
+
+    def counting_thumb_hash(provider: str, path: str) -> str:
+        hash_calls.append((provider, path))
+        return create_thumb_hash(provider, path)
+
+    monkeypatch.setattr(
+        "music_assistant.controllers.metadata.images.create_thumb_hash", counting_thumb_hash
+    )
+    persist_calls: list[str] = []
+    real_cache_set = metadata_controller.cache.set
+
+    async def counting_cache_set(*args: Any, **kwargs: Any) -> None:
+        if kwargs.get("category") == CACHE_CATEGORY_IMAGE_IDS:
+            persist_calls.append(kwargs["key"])
+        await real_cache_set(*args, **kwargs)
+
+    monkeypatch.setattr(metadata_controller.cache, "set", counting_cache_set)
+
+    # three image occurrences per pass, but only two unique images
+    image_a = MediaItemImage(type=ImageType.THUMB, path="/album_a.jpg", provider="filesystem")
+    image_b = MediaItemImage(type=ImageType.THUMB, path="/album_b.jpg", provider="filesystem")
+    tracks = [
+        _track_with_image("1", image_a),
+        _track_with_image("2", image_a),
+        _track_with_image("3", image_b),
+    ]
+    token = IMAGE_PROXY_ID_RESOLVER.set(metadata_controller.compute_image_id)
+    try:
+        first_pass = [track.to_dict() for track in tracks]
+        assert len(hash_calls) == 2
+        second_pass = [track.to_dict() for track in tracks]
+    finally:
+        IMAGE_PROXY_ID_RESOLVER.reset(token)
+    # zero hashing on the second pass: everything came from the forward memo
+    assert len(hash_calls) == 2
+    assert first_pass == second_pass
+    expected_ids = sorted(
+        create_thumb_hash("filesystem", path) for path in ("/album_a.jpg", "/album_b.jpg")
+    )
+    for track_dict in first_pass:
+        assert track_dict["metadata"]["images"][0]["proxy_id"] in expected_ids
+    # exactly one persist per unique image across both passes
+    for image_id in expected_ids:
+        await _wait_for_persisted_image_id(metadata_controller, image_id)
+    assert sorted(persist_calls) == expected_ids
+
+
+async def test_persist_skipped_when_row_already_fresh(
+    metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mapping already stored with plenty of TTL left must not be rewritten."""
+    provider, path = "filesystem", "/prestored.jpg"
+    image_id = create_thumb_hash(provider, path)
+    # simulate a previous process run that already stored the mapping
+    await metadata_controller.cache.set(
+        key=image_id,
+        data={"provider": provider, "path": path},
+        category=CACHE_CATEGORY_IMAGE_IDS,
+        provider=metadata_controller.domain,
+        expiration=_IMAGE_ID_CACHE_TTL,
+        persistent=True,
+    )
+    probes: list[str] = []
+    real_get_expiration = metadata_controller.cache.get_expiration
+
+    async def recording_get_expiration(*args: Any, **kwargs: Any) -> int | None:
+        result = await real_get_expiration(*args, **kwargs)
+        probes.append(kwargs.get("key") or args[0])
+        return result
+
+    writes: list[str] = []
+    real_cache_set = metadata_controller.cache.set
+
+    async def recording_cache_set(*args: Any, **kwargs: Any) -> None:
+        writes.append(kwargs.get("key") or args[0])
+        await real_cache_set(*args, **kwargs)
+
+    monkeypatch.setattr(metadata_controller.cache, "get_expiration", recording_get_expiration)
+    monkeypatch.setattr(metadata_controller.cache, "set", recording_cache_set)
+
+    assert metadata_controller.compute_image_id(provider, path) == image_id
+    # wait for the freshness probe, then give the persist task time to (not) write
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 2.0
+    while not probes and loop.time() < deadline:
+        await asyncio.sleep(0.01)
+    assert probes == [image_id]
+    await asyncio.sleep(0.05)
+    assert writes == []
+    # the pre-stored row keeps the id resolvable, also without the in-memory layer
+    metadata_controller._image_id_lru.clear()
+    assert await metadata_controller.resolve_image_id(image_id) == (provider, path)
+
+
+async def test_persist_refreshes_stale_row(metadata_controller: MetaDataController) -> None:
+    """A stored row past half its TTL is rewritten so the id stays resolvable."""
+    provider, path = "filesystem", "/stale.jpg"
+    image_id = create_thumb_hash(provider, path)
+    # a row whose remaining TTL is way below half of _IMAGE_ID_CACHE_TTL
+    await metadata_controller.cache.set(
+        key=image_id,
+        data={"provider": provider, "path": path},
+        category=CACHE_CATEGORY_IMAGE_IDS,
+        provider=metadata_controller.domain,
+        expiration=1000,
+        persistent=True,
+    )
+    old_expires = await metadata_controller.cache.get_expiration(
+        key=image_id,
+        category=CACHE_CATEGORY_IMAGE_IDS,
+        provider=metadata_controller.domain,
+    )
+    assert old_expires is not None
+    assert metadata_controller.compute_image_id(provider, path) == image_id
+    await _wait_for_expiration_refresh(metadata_controller, image_id, old_expires)
+
+
+async def test_imageproxy_resolves_after_restart(
+    metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    An id persisted by one process run must resolve on the imageproxy of the next.
+
+    Simulates a restart with a second controller instance on the same cache
+    database: cold in-memory maps, so resolution can only come from the
+    persisted row.
+    """
+    provider, path = "filesystem", "/restart/cover.jpg"
+    image_id = metadata_controller.compute_image_id(provider, path)
+    await _wait_for_persisted_image_id(metadata_controller, image_id)
+
+    restarted = MetaDataController(metadata_controller.mass)
+    assert not restarted._image_id_forward
+    assert not restarted._image_id_lru
+    served: list[tuple[str, str]] = []
+
+    async def fake_serve_thumbnail(
+        path_arg: str, provider_arg: str, _size: int, _image_format: str
+    ) -> web.Response:
+        served.append((provider_arg, path_arg))
+        return web.Response(status=200)
+
+    monkeypatch.setattr(restarted, "_serve_thumbnail", fake_serve_thumbnail)
+    request = MagicMock()
+    request.path = f"/imageproxy/{image_id}"
+    request.query = {}
+    response = await restarted.handle_imageproxy(request)
+    assert response.status == 200
+    assert served == [(provider, path)]
+
+
+async def test_no_repersist_after_in_memory_eviction(
+    metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-encountering an image after memo/LRU eviction must not hit the cache db again."""
+    provider, path = "filesystem", "/evicted.jpg"
+    image_id = metadata_controller.compute_image_id(provider, path)
+    await _wait_for_persisted_image_id(metadata_controller, image_id)
+    # simulate LRU pressure evicting the in-memory maps (markers survive)
+    metadata_controller._image_id_forward.clear()
+    metadata_controller._image_id_lru.clear()
+
+    calls: list[str] = []
+
+    async def recording_get_expiration(*_args: object, **_kwargs: object) -> int | None:
+        calls.append("probe")
+        return None
+
+    async def recording_cache_set(*_args: object, **_kwargs: object) -> None:
+        calls.append("write")
+
+    monkeypatch.setattr(metadata_controller.cache, "get_expiration", recording_get_expiration)
+    monkeypatch.setattr(metadata_controller.cache, "set", recording_cache_set)
+
+    # re-encounter re-hashes (memo was evicted) but the persist marker is fresh,
+    # so no persist work is scheduled at all
+    assert metadata_controller.compute_image_id(provider, path) == image_id
+    await asyncio.sleep(0.05)
+    assert calls == []
 
 
 def test_normalize_imageproxy_format() -> None:
