@@ -191,13 +191,20 @@ jobs:
               }
 
               const labels = pr.labels.map(l => l.name);
+              // Same-repo check is required: fork branch names are
+              // attacker-controlled, same-repo branches need write access.
+              const isSameRepoBumpBranch =
+                pr.head.repo &&
+                pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+                /^auto-update-(frontend|models)-/.test(pr.head.ref);
               results.push({
                 number: pr.number,
                 deps_changed: depsChanged,
                 has_review_label: labels.includes('dependencies-reviewed'),
                 is_automated:
                   ['dependabot[bot]', 'renovate[bot]'].includes(pr.user.login) ||
-                  labels.includes('auto-merge'),
+                  labels.includes('auto-merge') ||
+                  isSameRepoBumpBranch,
               });
             }
 

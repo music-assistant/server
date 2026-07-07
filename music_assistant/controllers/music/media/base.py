@@ -36,6 +36,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PLAYLOG,
@@ -237,6 +238,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 async with self._db_add_lock:
                     library_id = await self._add_library_item(item)
                     new_item = True
+            await self._sync_external_id_lookup(library_id)
         # return final library_item
         library_item = await self.get_library_item(library_id)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -256,6 +258,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # batch the many writes of an item update into a single commit
         async with self.mass.music.database.deferred_commit():
             await self._update_library_item(item_id, update, overwrite=overwrite)
+            await self._sync_external_id_lookup(int(item_id))
         # return the updated object
         library_item = await self.get_library_item(item_id)
         if SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -289,6 +292,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
+            {"media_type": self.media_type.value, "item_id": db_id},
+        )
+        # cleanup external_id_lookup table
+        await self.mass.music.database.delete(
+            DB_TABLE_EXTERNAL_ID_LOOKUP,
             {"media_type": self.media_type.value, "item_id": db_id},
         )
         # cleanup playlog table
@@ -610,14 +618,26 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self, external_id: str, external_id_type: ExternalID | None = None
     ) -> ItemCls | None:
         """Get the library item for the given external id."""
-        query = f"{self.db_table}.external_ids LIKE :external_id_str"
+        subquery_parts = [
+            "media_type = :ext_id_media_type",
+            "external_id = :external_id",
+        ]
+        query_params: dict[str, Any] = {
+            "ext_id_media_type": self.media_type.value,
+            "external_id": external_id,
+        }
         if external_id_type:
-            external_id_str = f'%"{external_id_type}","{external_id}"%'
-        else:
-            external_id_str = f'%"{external_id}"%'
+            subquery_parts.append("external_id_type = :external_id_type")
+            query_params["external_id_type"] = str(external_id_type)
+        subquery = (
+            f"SELECT item_id FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+            f"WHERE {' AND '.join(subquery_parts)}"
+        )
+        query = f"{self.db_table}.item_id IN ({subquery})"
         for item in await self.get_library_items_by_query(
+            limit=1,
             extra_query_parts=[query],
-            extra_query_params={"external_id_str": external_id_str},
+            extra_query_params=query_params,
         ):
             return item
         return None
@@ -1085,7 +1105,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self._apply_filters(
                 query_parts=query_parts,
                 query_params=query_params,
-                join_parts=join_parts,
                 favorite=favorite,
                 search=search,
                 genre_ids=genre_ids,
@@ -1095,7 +1114,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         # build and execute final query
         sql_query, base_query_params = self._build_final_query(query_parts, join_parts, order_by)
-        query_params.update(base_query_params)
+        # base query params act as defaults: callers may override them via extra_query_params
+        for key, value in base_query_params.items():
+            query_params.setdefault(key, value)
 
         return [
             cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
@@ -1132,6 +1153,27 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if compare_media_item(db_item, item, True):
                 return int(db_item.item_id)
         return None
+
+    @final
+    async def _sync_external_id_lookup(self, db_id: int) -> None:
+        """Sync the external_id_lookup table rows with the item's stored external_ids."""
+        query = f"SELECT external_ids FROM {self.db_table} WHERE item_id = :item_id"
+        db_rows = await self.mass.music.database.get_rows_from_query(query, {"item_id": db_id})
+        external_ids = json_loads(db_rows[0]["external_ids"]) if db_rows else []
+        await self.mass.music.database.delete(
+            DB_TABLE_EXTERNAL_ID_LOOKUP,
+            {"media_type": self.media_type.value, "item_id": db_id},
+        )
+        if lookup_rows := [
+            {
+                "media_type": self.media_type.value,
+                "external_id_type": external_id_type,
+                "external_id": external_id,
+                "item_id": db_id,
+            }
+            for external_id_type, external_id in external_ids
+        ]:
+            await self.mass.music.database.upsert_many(DB_TABLE_EXTERNAL_ID_LOOKUP, lookup_rows)
 
     async def _localized_search_fallback(
         self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
@@ -1229,7 +1271,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self._apply_filters(
             query_parts=sub_query_parts,
             query_params=query_params,
-            join_parts=sub_join_parts,
             favorite=favorite,
             search=search,
             genre_ids=genre_ids,
@@ -1260,7 +1301,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         query_parts: list[str],
         query_params: dict[str, Any],
-        join_parts: list[str],
         favorite: bool | None,
         search: str | None,
         genre_ids: list[int] | None,
@@ -1291,6 +1331,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "AND gm.genre_id IN :genre_ids)"
             )
         # Apply the provider filter
+        # NOTE: provider mapping filters are applied as a correlated EXISTS subquery
+        # instead of a JOIN + GROUP BY, so SQLite can stream results straight from the
+        # sort index instead of materializing/sorting the whole (deduped) result set.
         if provider_filter:
             provider_conditions = []
             for idx, prov in enumerate(provider_filter):
@@ -1299,18 +1342,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 query_params[param_name] = prov
             query_params["provider_media_type"] = self.media_type.value
             in_library_clause = "AND provider_mappings.in_library = 1 " if in_library_only else ""
-            join_parts.append(
-                f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
+            query_parts.append(
+                "EXISTS(SELECT 1 FROM provider_mappings "
+                f"WHERE provider_mappings.item_id = {self.db_table}.item_id "
                 "AND provider_mappings.media_type = :provider_media_type "
                 f"{in_library_clause}"
-                f"AND ({' OR '.join(provider_conditions)})"
+                f"AND ({' OR '.join(provider_conditions)}))"
             )
         elif in_library_only:
             query_params["provider_media_type"] = self.media_type.value
-            join_parts.append(
-                f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
+            query_parts.append(
+                "EXISTS(SELECT 1 FROM provider_mappings "
+                f"WHERE provider_mappings.item_id = {self.db_table}.item_id "
                 "AND provider_mappings.media_type = :provider_media_type "
-                "AND provider_mappings.in_library = 1"
+                "AND provider_mappings.in_library = 1)"
             )
 
     @final
@@ -1332,8 +1377,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # prevent duplicate where statement
             sql_query += " WHERE " + " AND ".join(self._clean_query_parts(query_parts))
 
-        # Add grouping and ordering
-        sql_query += f" GROUP BY {self.db_table}.item_id"
+        # Add grouping (only needed when caller-provided joins can fan out rows)
+        # and ordering. Without a GROUP BY, SQLite can stream results directly
+        # from the sort index instead of sorting the whole result set.
+        if join_parts:
+            sql_query += f" GROUP BY {self.db_table}.item_id"
 
         if order_by:
             if sort_key := SORT_KEYS.get(order_by):

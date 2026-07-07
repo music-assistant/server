@@ -1,6 +1,7 @@
 """Tests for cache controller."""
 
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -58,6 +59,22 @@ async def test_set_and_get_string(cache: CacheController) -> None:
     await cache.set("test_key", "hello", provider="test")
     result = await cache.get("test_key", provider="test")
     assert result == "hello"
+
+
+async def test_get_expiration(cache: CacheController) -> None:
+    """get_expiration returns the stored expiry epoch, also for expired rows."""
+    before = int(time.time())
+    await cache.set("exp_key", {"a": 1}, provider="test", expiration=500)
+    expires = await cache.get_expiration("exp_key", provider="test")
+    assert expires is not None
+    assert abs(expires - (before + 500)) <= 5
+    # a missing key yields None
+    assert await cache.get_expiration("missing_key", provider="test") is None
+    # an expired-but-present row still reports its (past) expiration
+    await cache.set("expired_key", "x", provider="test", expiration=-100)
+    expired = await cache.get_expiration("expired_key", provider="test")
+    assert expired is not None
+    assert expired < int(time.time())
 
 
 async def test_set_and_get_int(cache: CacheController) -> None:

@@ -15,6 +15,7 @@ import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
 from concurrent import futures
+from contextlib import aclosing
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import quote
@@ -462,10 +463,15 @@ class WebserverController(CoreController):
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
-        async for chunk in self.mass.streams.get_preview_stream(
+        preview_stream = self.mass.streams.get_preview_stream(
             provider_instance_id_or_domain, item_id
-        ):
-            await resp.write(chunk)
+        )
+        # aclosing guarantees the preview stream (and the ffmpeg process behind it)
+        # is torn down immediately when the client disconnects, instead of lingering
+        # until garbage collection finalizes the abandoned generator.
+        async with aclosing(preview_stream):
+            async for chunk in preview_stream:
+                await resp.write(chunk)
         return resp
 
     async def _handle_cors_preflight(self, request: web.Request) -> web.Response:

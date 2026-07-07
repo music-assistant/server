@@ -188,7 +188,7 @@ class ProviderInspect:
 
 @dataclass(frozen=True, kw_only=True)
 class LogLine:
-    """One parsed line from musicassistant.log."""
+    """One parsed record from musicassistant.log (continuation lines joined into message)."""
 
     timestamp: str | None
     level: str | None
@@ -202,6 +202,32 @@ class LogTailResult:
 
     log_path: str
     lines: list[LogLine]
+    bytes_scanned: int
+    truncated: bool
+    has_more: bool = False
+    response_truncated: bool = False
+    next_call_hint: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ComponentCount:
+    """Record count for one log component."""
+
+    component: str
+    count: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class LogStatsResult:
+    """Result of debug_log_stats."""
+
+    log_path: str
+    window_seconds: int | None
+    total_records: int
+    level_counts: dict[str, int]
+    top_components: list[ComponentCount]
+    first_timestamp: str | None
+    last_timestamp: str | None
     bytes_scanned: int
     truncated: bool
 

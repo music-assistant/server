@@ -20,7 +20,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import EventType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    InvalidDataError,
+    PlayerCommandFailed,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players import PlayerController
@@ -1167,6 +1171,59 @@ class TestCurrentMediaTimeUpdates:
         # (current_media already holds the fresh position in the same pass)
         mock_mass.player_queues.on_player_elapsed_time_corrected.assert_called_once_with(player)
         assert self._player_updated_signalled(mock_mass)
+
+
+class TestPlayAnnouncementCleanup:
+    """Test announcement data cleanup after play_announcement."""
+
+    def _make_player(
+        self, mock_mass: MagicMock, announcements: dict[str, object]
+    ) -> tuple[PlayerController, MockPlayer]:
+        """Create a controller and a player with native announcement support."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        player._cache.clear()
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+
+        # mimic the real streams controller: register announce data on url request
+        def _get_announcement_url(player_id: str, announce_data: object, **_kwargs: object) -> str:
+            announcements[player_id] = announce_data
+            return f"http://ma/announcement/{player_id}.mp3"
+
+        mock_mass.streams.announcements = announcements
+        mock_mass.streams.get_announcement_url = MagicMock(side_effect=_get_announcement_url)
+        player.update_state(signal_event=False)
+        return controller, player
+
+    async def test_announcement_data_removed_after_playback(self, mock_mass: MagicMock) -> None:
+        """The registered announcement data is released once playback finished."""
+        announcements: dict[str, object] = {}
+        controller, player = self._make_player(mock_mass, announcements)
+
+        async def _play_announcement(*_args: object, **_kwargs: object) -> None:
+            # entry must exist while the announcement is being played/served
+            assert "player_1" in announcements
+
+        player.play_announcement = AsyncMock(side_effect=_play_announcement)  # type: ignore[method-assign]
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        player.play_announcement.assert_awaited_once()
+        assert announcements == {}
+
+    async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
+        """The registered announcement data is released even when playback fails."""
+        announcements: dict[str, object] = {}
+        controller, player = self._make_player(mock_mass, announcements)
+        player.play_announcement = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerCommandFailed):
+            await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        assert announcements == {}
 
 
 if __name__ == "__main__":

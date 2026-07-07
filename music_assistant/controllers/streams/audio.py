@@ -837,6 +837,9 @@ class StreamsAudio:
                 async for chunk in self.get_icy_radio_stream(current_url, streamdetails):
                     delivered_audio = True
                     failed_rotations = 0
+                    # release the previous failure while healthy: it pins the full
+                    # exception traceback (with frames) for the lifetime of the stream
+                    last_err = None
                     yield chunk
                 return
             except RADIO_MIRROR_FAILOVER_ERRORS as err:

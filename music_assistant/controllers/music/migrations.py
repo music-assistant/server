@@ -21,6 +21,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -724,6 +725,91 @@ async def migrate_database(  # noqa: PLR0915
             await mass.music.genres.restore_default_genres(full_restore=False)
         except Exception as err:
             logger.warning("Could not refresh default genre icons: %s", err)
+
+    if prev_version <= 48:
+        # databases from before the userid column still carry the original inline
+        # UNIQUE(item_id, provider, media_type) constraint, which ALTER TABLE could not
+        # remove. It collides with the per-user upsert (ON CONFLICT on 4 columns) and
+        # raises IntegrityError on every replay of an item. SQLite can only drop an
+        # inline constraint by rebuilding the table.
+        stale_unique = False
+        for index in await database.get_rows_from_query(
+            f"PRAGMA index_list({DB_TABLE_PLAYLOG})", limit=0
+        ):
+            if not index["unique"]:
+                continue
+            index_columns = {
+                column["name"]
+                for column in await database.get_rows_from_query(
+                    f"PRAGMA index_info({index['name']})", limit=0
+                )
+            }
+            if "userid" not in index_columns:
+                stale_unique = True
+                break
+        if stale_unique:
+            logger.info("Rebuilding playlog table to update its unique constraint")
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLOG} RENAME TO {DB_TABLE_PLAYLOG}_old"
+            )
+            await database.execute(
+                f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [media_type] TEXT NOT NULL,
+                    [name] TEXT NOT NULL,
+                    [image] json,
+                    [artists] json,
+                    [timestamp] INTEGER DEFAULT 0,
+                    [fully_played] BOOLEAN,
+                    [seconds_played] INTEGER,
+                    [userid] TEXT NOT NULL,
+                    [queue_id] TEXT,
+                    [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                    [playback_speed] REAL NOT NULL DEFAULT 1.0,
+                    UNIQUE(item_id, provider, media_type, userid));"""
+            )
+            # rows from before the userid column existed have no owner and cannot be
+            # kept under the NOT NULL schema
+            await database.execute(
+                f"INSERT INTO {DB_TABLE_PLAYLOG} "
+                "(id, item_id, provider, media_type, name, image, artists, timestamp, "
+                "fully_played, seconds_played, userid, queue_id, user_initiated, "
+                "playback_speed) "
+                "SELECT id, item_id, provider, media_type, name, image, artists, timestamp, "
+                "fully_played, seconds_played, userid, queue_id, user_initiated, "
+                f"playback_speed FROM {DB_TABLE_PLAYLOG}_old WHERE userid IS NOT NULL"
+            )
+            await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}_old")
+
+    if prev_version <= 49:
+        # external id matching moved from a (unindexable) LIKE scan on the external_ids
+        # JSON column to the new external_id_lookup table: backfill the lookup rows from
+        # the existing external_ids JSON of all media item tables and drop the old
+        # external_ids indexes, which could never be used by the LIKE scan anyway.
+        for media_type, table in (
+            (MediaType.ARTIST, DB_TABLE_ARTISTS),
+            (MediaType.ALBUM, DB_TABLE_ALBUMS),
+            (MediaType.TRACK, DB_TABLE_TRACKS),
+            (MediaType.PLAYLIST, DB_TABLE_PLAYLISTS),
+            (MediaType.RADIO, DB_TABLE_RADIOS),
+            (MediaType.AUDIOBOOK, DB_TABLE_AUDIOBOOKS),
+            (MediaType.PODCAST, DB_TABLE_PODCASTS),
+            (MediaType.GENRE, DB_TABLE_GENRES),
+        ):
+            await database.execute(f"DROP INDEX IF EXISTS {table}_external_ids_idx")
+            # external_ids is a JSON array of [type, value] pairs; the NOCASE unique
+            # index may collapse case-variants of the same id, hence OR IGNORE
+            await database.execute(
+                f"INSERT OR IGNORE INTO {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+                "(media_type, external_id_type, external_id, item_id) "
+                f"SELECT '{media_type.value}', json_extract(ext.value, '$[0]'), "
+                f"json_extract(ext.value, '$[1]'), {table}.item_id "
+                f"FROM {table}, json_each({table}.external_ids) AS ext "
+                "WHERE json_extract(ext.value, '$[0]') IS NOT NULL "
+                "AND json_extract(ext.value, '$[1]') IS NOT NULL"
+            )
 
     # save changes
     await database.commit()

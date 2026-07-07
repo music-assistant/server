@@ -80,6 +80,11 @@ class TracksController(MediaControllerBase[Track]):
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:
         """Return the base SELECT query for tracks and its bound query params."""
+        # NOTE: the track_album subquery is fully self-contained (correlated) so the
+        # outer query needs no join with album_tracks (which would fan out rows for
+        # tracks that appear on multiple albums and force a GROUP BY). For tracks on
+        # multiple albums it prefers :preferred_album_id (used for album track
+        # listings) and otherwise deterministically picks the lowest album id.
         query = """
         SELECT
             tracks.*,
@@ -116,11 +121,14 @@ class TracksController(MediaControllerBase[Track]):
                     'disc_number', album_tracks.disc_number,
                     'track_number', album_tracks.track_number,
                     'images', json_extract(albums.metadata, '$.images')
-                ) FROM albums WHERE albums.item_id = album_tracks.album_id) AS track_album
+                ) FROM album_tracks
+                JOIN albums ON albums.item_id = album_tracks.album_id
+                WHERE album_tracks.track_id = tracks.item_id
+                ORDER BY (album_tracks.album_id IS :preferred_album_id) DESC, album_tracks.album_id
+                LIMIT 1) AS track_album
             FROM tracks
-            LEFT JOIN album_tracks on album_tracks.track_id = tracks.item_id
             """
-        return query, {}
+        return query, {"preferred_album_id": None}
 
     async def get(
         self,
@@ -135,6 +143,9 @@ class TracksController(MediaControllerBase[Track]):
             item_id,
             provider_instance_id_or_domain,
             allow_update_metadata=allow_update_metadata,
+        )
+        track.audio_metadata = await self.mass.streams.audio_analysis.get_track_audio_metadata(
+            track
         )
         if not recursive and album_uri is None:
             # return early if we do not want recursive full details and no album uri is provided
