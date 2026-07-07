@@ -174,7 +174,7 @@ def test_log_error_counter() -> None:
     counter.emit(record)
     # logger names are truncated so device identifiers in deep segments never leak
     record_with_id = logger.makeRecord(
-        "aiofoo.server.connection.AA:BB:CC:DD", logging.WARNING, "file.py", 1, "msg", None, None
+        "aiofoo.server.connection.AA:BB:CC:DD", logging.WARNING, "file.py", 1, "msg", (), None
     )
     counter.emit(record_with_id)
     summary = counter.summarize()
