@@ -8,6 +8,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
@@ -107,6 +108,38 @@ SORT_KEYS = {
     "random": "RANDOM()",
     "random_play_count": "RANDOM(), play_count ASC",
 }
+
+
+@dataclass(slots=True)
+class LibraryItemSyncDetails:
+    """
+    Lightweight snapshot of a library item with just the fields the library sync needs.
+
+    Used by the provider sync loops to detect (un)changed items without hydrating
+    full MediaItem objects from the database.
+    """
+
+    item_id: int
+    favorite: bool
+    date_added: datetime
+    provider_mappings: set[ProviderMapping]
+
+
+@dataclass(slots=True)
+class TrackSyncDetails(LibraryItemSyncDetails):
+    """Lightweight sync snapshot of a library track."""
+
+    has_album: bool
+
+
+@dataclass(slots=True)
+class AudiobookSyncDetails(LibraryItemSyncDetails):
+    """Lightweight sync snapshot of a library audiobook."""
+
+    author_is_str: bool
+    narrator_is_str: bool
+    fully_played: bool | None
+    resume_position_ms: int | None
 
 
 class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
@@ -522,6 +555,61 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_item_id=mapping.item_id,
             ):
                 return item
+        return None
+
+    @final
+    async def get_library_item_sync_details(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+    ) -> LibraryItemSyncDetails | None:
+        """
+        Get a lightweight sync snapshot of the library item for the given provider mappings.
+
+        Returns only the scalar columns and raw provider mapping rows the library sync
+        needs for its change detection, without hydrating a full MediaItem object.
+        Resolution order matches get_library_item_by_prov_mappings (instance first,
+        then domain).
+        """
+        extra_columns, extra_joins, extra_params = self._sync_details_query_parts()
+        base_sql = f"""
+            SELECT
+                {self.db_table}.item_id,
+                {self.db_table}.favorite,
+                {self.db_table}.timestamp_added,
+                (SELECT JSON_GROUP_ARRAY(
+                    json_object(
+                        'item_id', pm.provider_item_id,
+                        'provider_domain', pm.provider_domain,
+                        'provider_instance', pm.provider_instance,
+                        'available', pm.available,
+                        'in_library', pm.in_library,
+                        'is_unique', pm.is_unique
+                    )) FROM provider_mappings pm WHERE pm.item_id = {self.db_table}.item_id
+                        AND pm.media_type = '{self.media_type.value}') AS provider_mappings
+                {extra_columns}
+            FROM {self.db_table}
+            {extra_joins}
+            WHERE {self.db_table}.item_id IN (
+                SELECT item_id FROM provider_mappings
+                WHERE provider_mappings.media_type = '{self.media_type.value}'
+                AND provider_mappings.{{prov_column}} = :prov_id
+                AND provider_mappings.provider_item_id = :prov_item_id
+            )
+        """
+        # always prefer provider instance first, then domain
+        # (same resolution order as get_library_item_by_prov_mappings)
+        for prov_column in ("provider_instance", "provider_domain"):
+            for mapping in provider_mappings:
+                for db_row in await self.mass.music.database.get_rows_from_query(
+                    base_sql.format(prov_column=prov_column),
+                    {
+                        **extra_params,
+                        "prov_id": getattr(mapping, prov_column),
+                        "prov_item_id": mapping.item_id,
+                    },
+                    limit=1,
+                ):
+                    return self._parse_sync_details_row(db_row)
         return None
 
     @final
@@ -1488,3 +1576,36 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             {"metadata": serialize_to_json(metadata)},
         )
         return True
+
+    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+        """
+        Return extra (columns, joins, params) for this media type's sync-details query.
+
+        Override in a subclass to select additional lightweight columns needed by the
+        library sync change detection for this media type.
+        """
+        return "", "", {}
+
+    def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> LibraryItemSyncDetails:
+        """Parse a raw sync-details db row into a LibraryItemSyncDetails object."""
+        return LibraryItemSyncDetails(
+            item_id=db_row["item_id"],
+            favorite=bool(db_row["favorite"]),
+            date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
+            provider_mappings=self._parse_sync_details_mappings(db_row),
+        )
+
+    @final
+    def _parse_sync_details_mappings(self, db_row: Mapping[str, Any]) -> set[ProviderMapping]:
+        """Parse the aggregated raw provider mapping rows of a sync-details db row."""
+        return {
+            ProviderMapping(
+                item_id=raw_mapping["item_id"],
+                provider_domain=raw_mapping["provider_domain"],
+                provider_instance=raw_mapping["provider_instance"],
+                available=bool(raw_mapping["available"]),
+                in_library=parse_optional_bool(raw_mapping["in_library"]),
+                is_unique=parse_optional_bool(raw_mapping["is_unique"]),
+            )
+            for raw_mapping in json_loads(db_row["provider_mappings"])
+        }
