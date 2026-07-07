@@ -182,10 +182,15 @@ class PlexConnectProvider(PluginProvider):
         :return: The port to bind this instance's remote control server to.
         """
         configured_port = self.config.get_value(CONF_PORT)
-        if isinstance(configured_port, int) and not await is_port_in_use(configured_port):
+        # Probe on IPv4 all-interfaces, matching how the remote control server binds
+        if isinstance(configured_port, int) and not await is_port_in_use(
+            configured_port, host="0.0.0.0"
+        ):
             return configured_port
 
-        port = await select_free_port(PORT_RANGE_START, PORT_RANGE_START + PORT_RANGE_ATTEMPTS)
+        port = await select_free_port(
+            PORT_RANGE_START, PORT_RANGE_START + PORT_RANGE_ATTEMPTS, host="0.0.0.0"
+        )
         if port != configured_port:
             try:
                 self.mass.config.set_raw_provider_config_value(self.instance_id, CONF_PORT, port)
