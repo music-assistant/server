@@ -82,9 +82,10 @@ class TracksController(MediaControllerBase[Track]):
         # tracks that appear on multiple albums and force a GROUP BY). For tracks on
         # multiple albums it prefers :preferred_album_id (used for album track
         # listings) and otherwise deterministically picks the lowest album id.
-        query = """
+        query = f"""
         SELECT
             tracks.*,
+            {self._external_ids_query()} AS external_ids,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
                 'item_id', track_pm.provider_item_id,
@@ -105,7 +106,7 @@ class TracksController(MediaControllerBase[Track]):
                     'name', artists.name,
                     'sort_name', artists.sort_name,
                     'media_type', 'artist',
-                    'external_ids', json(artists.external_ids)
+                    'external_ids', json({self._external_ids_query(MediaType.ARTIST, "artists")})
                 )) FROM artists JOIN track_artists on track_artists.track_id = tracks.item_id  WHERE artists.item_id = track_artists.artist_id) AS artists,
             (SELECT
                 json_object(
@@ -636,13 +637,14 @@ class TracksController(MediaControllerBase[Track]):
                 "version": item.version,
                 "duration": item.duration,
                 "favorite": item.favorite,
-                "external_ids": serialize_to_json(item.external_ids),
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         # update/set provider_mappings table
         await self.set_provider_mappings(db_id, item.provider_mappings)
         # set track artist(s)
@@ -677,15 +679,16 @@ class TracksController(MediaControllerBase[Track]):
                 "version": update.version if overwrite else cur_item.version or update.version,
                 "duration": update.duration if overwrite else cur_item.duration or update.duration,
                 "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,
             },
+        )
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
         provider_mappings = (
