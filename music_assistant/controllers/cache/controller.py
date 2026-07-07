@@ -214,18 +214,22 @@ class CacheController(CoreController):
         """
         Return the expiration timestamp (epoch seconds) of a cache entry, if any.
 
-        Cheap existence/freshness probe: the stored data is not deserialized.
-        Returns None when no entry exists for the given key.
+        Cheap existence/freshness probe: only the expiration column is read, the
+        stored data is not. Returns None when no entry exists for the given key.
 
         :param key: The (unique) lookup key of the cache object.
         :param provider: Provider id to group cache objects.
         :param category: Category to group cache objects.
         """
         assert self.database is not None
-        db_row = await self.database.get_row(
-            DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
+        assert key, "No key provided"
+        rows = await self.database.get_rows_from_query(
+            f"SELECT expires FROM {DB_TABLE_CACHE} "
+            "WHERE category = :category AND provider = :provider AND key = :key",
+            {"category": category, "provider": provider, "key": key},
+            limit=1,
         )
-        return int(db_row["expires"]) if db_row else None
+        return int(rows[0]["expires"]) if rows else None
 
     async def set(
         self,
