@@ -334,15 +334,18 @@ class WebsocketClientHandler:
             IMAGE_PROXY_ID_RESOLVER.reset(token)
             TRANSLATION_RESOLVER.reset(token_loc)
 
-        self._enqueue_message(_message)
+        try:
+            self._to_write.put_nowait(_message)
+        except asyncio.QueueFull:
+            self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
+
+            self._cancel()
 
     def _send_message_sync(self, message: MessageType) -> None:
         """
         Send a message from a sync context (for small messages like events).
 
-        Serializes inline (per client, uncached) without executor overhead.
-        Only used for messages with a client-specific payload; regular events are
-        rendered once via WebserverController.render_event_message and shared.
+        Serializes inline without executor overhead since events are typically small.
         """
         token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
         token_loc = TRANSLATION_RESOLVER.set(
@@ -354,12 +357,8 @@ class WebsocketClientHandler:
             IMAGE_PROXY_ID_RESOLVER.reset(token)
             TRANSLATION_RESOLVER.reset(token_loc)
 
-        self._enqueue_message(_message)
-
-    def _enqueue_message(self, message: str) -> None:
-        """Queue a rendered message for the writer, disconnecting a client that can't keep up."""
         try:
-            self._to_write.put_nowait(message)
+            self._to_write.put_nowait(_message)
         except asyncio.QueueFull:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
@@ -542,7 +541,6 @@ class WebsocketClientHandler:
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:
                     return
-                # per-user payload: render per client, bypassing the shared event cache
                 task_data = self.mass.tasks.list_tasks_for_user(self._authenticated_user)
                 self._send_message_sync(
                     MassEvent(
@@ -553,9 +551,7 @@ class WebsocketClientHandler:
                 )
                 return
 
-            # all clients receive the exact same event object, so render the JSON once
-            # per locale (shared via the webserver) instead of once per client
-            self._enqueue_message(self.webserver.render_event_message(event, self._locale))
+            self._send_message_sync(event)
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
