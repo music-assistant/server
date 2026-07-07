@@ -301,9 +301,8 @@ class UniversalPlayerProvider(PlayerProvider):
             protocol_player_type = protocol_config.get("player_type")
             protocol_values = protocol_config.get("values") or {}
             if protocol_values.get(CONF_PROTOCOL_PARENT_ID) == player_id:
-                # During startup, the underlying provider can briefly rewrite
-                # this row's type before its protocol attributes are refreshed.
-                # The persisted parent link still proves it belongs to this UP.
+                # the persisted parent link proves this child still belongs to us,
+                # even if its player_type was left stale by an aborted registration
                 valid_protocol_ids.append(protocol_id)
                 continue
             if protocol_player_type != "protocol":
