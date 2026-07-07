@@ -285,7 +285,7 @@ class UniversalPlayerProvider(PlayerProvider):
             return
 
         # Get stored values
-        values = config.get("values", {})
+        values = config.get("values") or {}
         stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS, {})
         stored_device_info = values.get(CONF_DEVICE_INFO, {})
 
