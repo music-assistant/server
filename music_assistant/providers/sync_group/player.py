@@ -729,12 +729,15 @@ class SyncGroupPlayer(Player):
                     await self.mass.players._handle_set_members(
                         sync_leader, player_ids_to_remove=sync_children
                     )
-        # Clear the leader's active protocol so it doesn't persist
-        # after the sync group is dissolved. The controller's normal
-        # clearing (in _handle_cmd_stop) is skipped when the protocol
-        # player had multiple group members at stop time.
-        if sync_leader and sync_leader.state.playback_state != PlaybackState.PLAYING:
-            sync_leader.set_active_output_protocol(None)
+        # Delayed-clear the leader's active protocol: the leader may still report
+        # PLAYING briefly after stop; a new session cancels the timer.
+        if sync_leader:
+            self.mass.call_later(
+                5,
+                sync_leader.set_active_output_protocol,
+                None,
+                task_id=f"clear_active_protocol_{sync_leader.player_id}",
+            )
         self.sync_leader = None
         self._update_attributes()
         self.update_state()
