@@ -1106,6 +1106,8 @@ class SyncGroupPlayer(Player):
                     await self.mass.players._handle_set_members(
                         stale_parent, player_ids_to_remove=[member_id]
                     )
+            except asyncio.CancelledError:
+                raise
             except Exception as err:
                 self.logger.debug(
                     "stale-parent removal recovery for %s raised: %s", member.display_name, err
