@@ -448,7 +448,6 @@ class DiscoveryController(CoreController):
 
     async def _announce_to_homeassistant(self) -> None:
         """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        # Safe to repeat: Supervisor dedupes identical payloads and HA only reloads on change
         supervisor_token = os.environ["SUPERVISOR_TOKEN"]
         addon_hostname = os.environ["HOSTNAME"]
         ha_integration_token = await self.mass.webserver.auth.get_homeassistant_system_user_token()
