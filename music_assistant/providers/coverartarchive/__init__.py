@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import aiohttp.client_exceptions
 from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
 from music_assistant_models.media_items import Album, MediaItemImage, MediaItemMetadata, UniqueList
 
@@ -88,8 +87,7 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
             )
         )
 
-    # None can signal a network failure as well as "no cover art", so don't cache it
-    @use_cache(86400 * 30, cache_none=False)
+    @use_cache(86400 * 30)
     async def _get_cover_art_url(self, release_group_id: str) -> str | None:
         """
         Retrieve cover art URL for a release group.
@@ -99,14 +97,12 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         # Try 1200px first, fall back to 500px
         for size in ("front-1200", "front-500"):
             url = f"{CAA_BASE_URL}/release-group/{release_group_id}/{size}"
-            try:
-                async with self.mass.http_session.head(url, allow_redirects=True) as response:
-                    if response.status == 200:
-                        return str(response.url)
-            except (
-                aiohttp.client_exceptions.ClientConnectorError,
-                aiohttp.client_exceptions.ServerDisconnectedError,
-                TimeoutError,
-            ):
-                self.logger.debug("Failed to retrieve cover art from %s", url)
+            async with self.mass.http_session.head(url, allow_redirects=True) as response:
+                if response.status == 200:
+                    return str(response.url)
+                if response.status != 404:
+                    # a non-404 status (5xx, 429, ...) is a transient error — propagate it
+                    # instead of caching it as "no cover art"
+                    response.raise_for_status()
+        # a 404 for both sizes means this release group genuinely has no cover art
         return None

@@ -6,10 +6,8 @@ Used for retrieval of synchronized lyrics.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp import ClientResponseError
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.media_items import MediaItemMetadata, Track
@@ -152,24 +150,17 @@ class LrclibProvider(MetadataProvider):
             )
         return None
 
-    # None can signal a fetch/parse failure as well as "no lyrics", so don't cache it
-    @use_cache(3600 * 24 * 14, cache_none=False)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     @throttle_with_retries
     async def _get_data(self, **params: Any) -> dict[str, Any] | None:
         """Get data from LRCLib API with throttling and retries."""
         headers = {"User-Agent": USER_AGENT}
-
-        try:
-            async with self.mass.http_session.get(
-                f"{self.api_url}/get", params=params, headers=headers
-            ) as response:
-                response.raise_for_status()
-                if response.status == 204:  # No content
-                    return None
-                return cast("dict[str, Any]", await response.json())
-        except ClientResponseError as err:
-            self.logger.debug("Error fetching data from LRCLib API (%s): %s", self.api_url, err)
-            return None
-        except json.JSONDecodeError as err:
-            self.logger.debug("Error parsing response from LRCLib API: %s", err)
-            return None
+        async with self.mass.http_session.get(
+            f"{self.api_url}/get", params=params, headers=headers
+        ) as response:
+            # 204/404 mean there are genuinely no lyrics for this track; any other failure
+            # (5xx, network, malformed json) propagates so it is not cached as "no lyrics"
+            if response.status in (204, 404):
+                return None
+            response.raise_for_status()
+            return cast("dict[str, Any]", await response.json())

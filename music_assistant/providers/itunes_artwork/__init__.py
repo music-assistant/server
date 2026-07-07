@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import aiohttp.client_exceptions
 from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
@@ -92,8 +91,7 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
             )
         )
 
-    # None can signal a network failure as well as "no artwork", so don't cache it
-    @use_cache(86400 * 30, cache_none=False)
+    @use_cache(86400 * 30)
     async def _get_artwork_url(self, barcode: str) -> str | None:
         """
         Look up album artwork URL from iTunes by UPC barcode.
@@ -102,23 +100,11 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
         """
         # iTunes expects a UPC (12 digits), strip leading zero from EAN-13 if present
         upc = barcode.lstrip("0").zfill(12) if len(barcode) == 13 else barcode
-        try:
-            async with self.mass.http_session.get(
-                ITUNES_LOOKUP_URL, params={"upc": upc}
-            ) as response:
-                if response.status != 200:
-                    self.logger.debug(
-                        "iTunes lookup failed for barcode %s (status %d)", barcode, response.status
-                    )
-                    return None
-                data = await response.json(content_type=None)
-        except (
-            aiohttp.client_exceptions.ClientConnectorError,
-            aiohttp.client_exceptions.ServerDisconnectedError,
-            TimeoutError,
-        ):
-            self.logger.debug("Failed to connect to iTunes API for barcode %s", barcode)
-            return None
+        async with self.mass.http_session.get(ITUNES_LOOKUP_URL, params={"upc": upc}) as response:
+            # let non-2xx / network / parse failures propagate so they are not cached;
+            # an empty result set below is the genuine "no artwork for this barcode"
+            response.raise_for_status()
+            data = await response.json(content_type=None)
 
         if not data.get("resultCount"):
             self.logger.debug("No results from iTunes for barcode %s", barcode)
