@@ -144,7 +144,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         extra_query_parts: list[str] = []
         if artist_type:
             extra_query_parts = [f"artist_type = '{artist_type}'"]
-        if album_artists_only and artist_type == ArtistType.SINGER:
+        if album_artists_only and artist_type in (None, ArtistType.SINGER):
             extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"from {DB_TABLE_ALBUM_ARTISTS})"
