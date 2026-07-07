@@ -534,7 +534,7 @@ class MusicAssistant:
             else:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], None]", cb_func)
-                self.loop.call_soon_threadsafe(cb_func, event_obj)
+                self.loop.call_soon(cb_func, event_obj)
 
     def subscribe(
         self,
