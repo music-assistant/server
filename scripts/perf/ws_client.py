@@ -125,43 +125,57 @@ class PerfWsClient:
     async def _reader(self) -> None:
         """Route incoming messages to pending commands and event waiters."""
         assert self._ws is not None
-        async for msg in self._ws:
-            if msg.type != aiohttp.WSMsgType.TEXT:
-                break
-            data = json.loads(msg.data)
-            if event := data.get("event"):
-                for waiter_event, future in list(self._event_waiters):
-                    if waiter_event == event and not future.done():
-                        future.set_result(data)
-                continue
-            message_id = data.get("message_id")
-            if not message_id or not (pending := self._pending.get(message_id)):
-                continue
-            pending.payload_bytes += len(msg.data)
-            if "error_code" in data:
+        try:
+            async for msg in self._ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    break
+                self._handle_message(json.loads(msg.data), len(msg.data))
+        finally:
+            # fail fast on a closed/errored connection instead of letting callers
+            # wait out their full command timeouts
+            error = ConnectionError("websocket connection closed")
+            for pending in self._pending.values():
                 if not pending.future.done():
-                    pending.future.set_exception(
-                        RuntimeError(f"command failed: {data.get('details') or data['error_code']}")
-                    )
-                continue
-            result = data.get("result")
-            if isinstance(result, list):
-                pending.items += len(result)
-                pending.partial_results.extend(result)
-            if data.get("partial"):
-                continue
+                    pending.future.set_exception(error)
+            for _, future in self._event_waiters:
+                if not future.done():
+                    future.set_exception(error)
+
+    def _handle_message(self, data: dict[str, Any], size_bytes: int) -> None:
+        """Dispatch a single incoming message to its pending command or event waiters."""
+        if event := data.get("event"):
+            for waiter_event, future in list(self._event_waiters):
+                if waiter_event == event and not future.done():
+                    future.set_result(data)
+            return
+        message_id = data.get("message_id")
+        if not message_id or not (pending := self._pending.get(message_id)):
+            return
+        pending.payload_bytes += size_bytes
+        if "error_code" in data:
             if not pending.future.done():
-                final_result = result
-                if pending.partial_results and isinstance(result, list):
-                    final_result = pending.partial_results
-                pending.future.set_result(
-                    CommandResult(
-                        result=final_result,
-                        duration_seconds=time.perf_counter() - pending.sent_at,
-                        payload_bytes=pending.payload_bytes,
-                        items=pending.items,
-                    )
+                pending.future.set_exception(
+                    RuntimeError(f"command failed: {data.get('details') or data['error_code']}")
                 )
+            return
+        result = data.get("result")
+        if isinstance(result, list):
+            pending.items += len(result)
+            pending.partial_results.extend(result)
+        if data.get("partial"):
+            return
+        if not pending.future.done():
+            final_result = result
+            if pending.partial_results and isinstance(result, list):
+                final_result = pending.partial_results
+            pending.future.set_result(
+                CommandResult(
+                    result=final_result,
+                    duration_seconds=time.perf_counter() - pending.sent_at,
+                    payload_bytes=pending.payload_bytes,
+                    items=pending.items,
+                )
+            )
 
 
 def summarize_latencies(durations_ms: list[float]) -> tuple[float, float]:

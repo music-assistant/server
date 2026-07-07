@@ -867,7 +867,13 @@ def collect_env() -> dict[str, Any]:
 
 
 def _free_ports() -> tuple[int, int, int]:
-    """Reserve three distinct free TCP ports on the loopback interface."""
+    """
+    Pick three distinct currently-free loopback TCP ports.
+
+    The ports are not reserved after this returns; the tiny window until the server
+    binds them is an accepted race — a collision makes the server exit and the boot
+    fail loudly.
+    """
     with socket.socket() as sock1, socket.socket() as sock2, socket.socket() as sock3:
         sock1.bind(("127.0.0.1", 0))
         sock2.bind(("127.0.0.1", 0))
