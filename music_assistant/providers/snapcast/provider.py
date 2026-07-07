@@ -171,7 +171,8 @@ class SnapCastProvider(PlayerProvider):
         self._stop_called = True
 
         for snap_client in self._snapserver.clients:
-            player_id = self._get_ma_id(snap_client.identifier)
+            if not (player_id := self._get_ma_id(snap_client.identifier)):
+                continue
             if not (player := self.mass.players.get_player(player_id, raise_unavailable=False)):
                 continue
             if player.playback_state != PlaybackState.PLAYING:
@@ -360,11 +361,9 @@ class SnapCastProvider(PlayerProvider):
                     self._snapserver_started.clear()
                 self._controlscript_available = False
 
-    def _get_ma_id(self, snap_client_id: str) -> str:
-        search_dict = self._ids_map.inverse
-        ma_id = search_dict.get(snap_client_id)
-        assert ma_id is not None  # for type checking
-        return ma_id
+    def _get_ma_id(self, snap_client_id: str) -> str | None:
+        """Return the MA player id for the given snapclient id, or None if not registered."""
+        return self._ids_map.inverse.get(snap_client_id)
 
     def _get_snapclient_id(self, player_id: str) -> str:
         search_dict = self._ids_map
@@ -378,7 +377,7 @@ class SnapCastProvider(PlayerProvider):
             new_id = "ma_" + str(re.sub(r"\W+", "", snap_client_id))
             self._ids_map[new_id] = snap_client_id
             return new_id
-        return self._get_ma_id(snap_client_id)
+        return search_dict[snap_client_id]
 
     def _handle_player_init(self, snap_client: SnapclientProto) -> SnapCastPlayer | None:
         """Process Snapcast add to Player controller."""
@@ -556,7 +555,8 @@ class SnapCastProvider(PlayerProvider):
                 raise RuntimeError("Couldn't remove client from group")
             self._snapserver.synchronize(res)
             for client_id in group_members:
-                ma_player_id = self._get_ma_id(client_id)
+                if (ma_player_id := self._get_ma_id(client_id)) is None:
+                    continue
                 if ma_player := cast("SnapCastPlayer", self.mass.players.get_player(ma_player_id)):
                     client = self._snapserver.client(client_id)
                     if client is not None:
@@ -729,9 +729,11 @@ class SnapCastProvider(PlayerProvider):
     ) -> SnapCastPlayer | None:
         """Return the MA SnapCastPlayer for either given client_id or player_id."""
         if client_id is not None:
-            if player_id is not None and player_id != self._get_ma_id(client_id):
+            if (mapped_id := self._get_ma_id(client_id)) is None:
+                return None
+            if player_id is not None and player_id != mapped_id:
                 raise ValueError("provided client_id and player_id do not match")
-            player_id = self._get_ma_id(client_id)
+            player_id = mapped_id
 
         if player_id is None:
             return None

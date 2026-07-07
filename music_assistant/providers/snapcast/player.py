@@ -398,10 +398,17 @@ class SnapCastPlayer(Player):
             self._poke_evt.clear()
             while True:
                 call_update: bool = False
-                async with self._state_update_lock:
-                    call_update = await self._process_snapcast_client_state()
-                if call_update:
-                    self.update_state()
+                try:
+                    async with self._state_update_lock:
+                        call_update = await self._process_snapcast_client_state()
+                    if call_update:
+                        self.update_state()
+                except KeyError, AttributeError, TypeError, ValueError:
+                    # a failed update must not kill this worker (state would freeze)
+                    self.logger.exception(
+                        "Error while processing state update for player %s", self.player_id
+                    )
+                    break
                 if self._poke_evt.is_set():
                     self._poke_evt.clear()
                     continue
