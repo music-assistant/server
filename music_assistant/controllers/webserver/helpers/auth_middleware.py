@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
 from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
@@ -21,11 +22,67 @@ if TYPE_CHECKING:
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
 
+# TEMPORARY workaround for the 2.9 stable branch until the scope based authorization
+# from 2.10 lands: admin-only commands the Home Assistant system user may execute,
+# so add-on users are not blocked by the insufficient rights error.
+SYSTEM_USER_ALLOWED_ADMIN_COMMANDS = ("players/remove", "config/players/remove")
+
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
 current_token: ContextVar[str | None] = ContextVar("current_token", default=None)
 # ContextVar for tracking the sendspin player associated with the current connection
 sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", default=None)
+
+
+def is_system_user_allowed_admin_command(user: User, command: str) -> bool:
+    """
+    Check if the user may execute the given admin-only command despite not being admin.
+
+    TEMPORARY workaround for the 2.9 stable branch until the scope based
+    authorization from 2.10 lands.
+
+    :param user: The authenticated user.
+    :param command: The API command being executed.
+    """
+    return (
+        user.username == HOMEASSISTANT_SYSTEM_USER and command in SYSTEM_USER_ALLOWED_ADMIN_COMMANDS
+    )
+
+
+async def resolve_username_workaround(
+    mass: MusicAssistant, command: str, args: dict[str, Any] | None
+) -> None:
+    """
+    Handle the optional username argument on library listing and search commands.
+
+    TEMPORARY workaround for the 2.9 stable branch until the centralized
+    impersonation from 2.10 lands: the given user's library filters are applied
+    by executing the (read-only) command as that user. Only allowed for admin
+    users and the Home Assistant system user.
+
+    :param mass: The MusicAssistant instance.
+    :param command: The API command being executed.
+    :param args: The (mutable) arguments dict of the incoming command.
+    """
+    if not args:
+        return
+    if command != "music/search" and not (
+        command.startswith("music/") and command.endswith("/library_items")
+    ):
+        return
+    # deliberately treat None and empty string as "no user context requested"
+    if not (username := args.pop("username", None)):
+        return
+    caller = current_user.get()
+    if caller is None:
+        raise InsufficientPermissions("Authentication is necessary to impersonate another user.")
+    if caller.username == username:
+        return
+    if caller.role != UserRole.ADMIN and caller.username != HOMEASSISTANT_SYSTEM_USER:
+        raise InsufficientPermissions("Insufficient permissions to impersonate another user.")
+    if not (target_user := await mass.webserver.auth.get_user_by_username(str(username))):
+        raise InvalidDataError(f"A user with username {username} is not available.")
+    set_current_user(target_user)
 
 
 async def get_authenticated_user(request: web.Request) -> User | None:

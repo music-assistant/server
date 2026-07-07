@@ -10,13 +10,16 @@ from sqlite3 import IntegrityError
 
 import pytest
 from music_assistant_models.auth import AuthProviderType, UserRole
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    is_system_user_allowed_admin_command,
+    resolve_username_workaround,
     set_current_token,
     set_current_user,
 )
@@ -1207,3 +1210,69 @@ async def test_revoke_join_code_api_not_found(auth_manager: AuthenticationManage
 
     with pytest.raises(InvalidDataError, match="Join code not found"):
         await auth_manager.revoke_join_code("nonexistent-code-id")
+
+
+async def test_system_user_allowed_admin_commands(auth_manager: AuthenticationManager) -> None:
+    """
+    Test the temporary stable-branch exemption for the Home Assistant system user.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    system_user = await auth_manager.get_homeassistant_system_user()
+    standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
+
+    assert is_system_user_allowed_admin_command(system_user, "players/remove")
+    assert is_system_user_allowed_admin_command(system_user, "config/players/remove")
+    # other admin commands remain off limits for the system user
+    assert not is_system_user_allowed_admin_command(system_user, "config/core/save")
+    # regular users are not exempt
+    assert not is_system_user_allowed_admin_command(standard_user, "players/remove")
+
+
+async def test_username_workaround(auth_manager: AuthenticationManager) -> None:
+    """
+    Test the temporary stable-branch username argument on listing commands.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    mass = auth_manager.mass
+    system_user = await auth_manager.get_homeassistant_system_user()
+    admin_user = await auth_manager.create_user(username="admin", role=UserRole.ADMIN)
+    standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
+
+    # no username argument present is a no-op and leaves other args untouched
+    set_current_user(system_user)
+    args: dict[str, str | int] = {"limit": 10}
+    await resolve_username_workaround(mass, "music/tracks/library_items", args)
+    assert args == {"limit": 10}
+    assert get_current_user() == system_user
+
+    # the system user may execute listing commands as another user
+    args = {"limit": 10, "username": "user_a"}
+    await resolve_username_workaround(mass, "music/tracks/library_items", args)
+    assert args == {"limit": 10}
+    assert get_current_user() == standard_user
+
+    # admin users may do the same (also on music/search)
+    set_current_user(admin_user)
+    await resolve_username_workaround(mass, "music/search", {"username": "user_a"})
+    assert get_current_user() == standard_user
+
+    # the username argument is ignored on other commands
+    set_current_user(system_user)
+    args = {"username": "user_a"}
+    await resolve_username_workaround(mass, "player_queues/items", args)
+    assert args == {"username": "user_a"}
+    assert get_current_user() == system_user
+
+    # an unknown username must raise
+    with pytest.raises(InvalidDataError):
+        await resolve_username_workaround(mass, "music/search", {"username": "nobody"})
+
+    # a regular user may not execute listing commands as another user
+    set_current_user(standard_user)
+    with pytest.raises(InsufficientPermissions):
+        await resolve_username_workaround(mass, "music/search", {"username": "admin"})
+    # but passing their own username is a no-op
+    await resolve_username_workaround(mass, "music/search", {"username": "user_a"})
+    assert get_current_user() == standard_user
