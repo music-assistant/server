@@ -54,6 +54,8 @@ from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
     is_request_from_ingress,
+    is_system_user_allowed_admin_command,
+    resolve_username_workaround,
     set_current_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
@@ -571,13 +573,20 @@ class WebserverController(CoreController):
 
             # Set user in context and check role
             set_current_user(user)
-            if handler.required_role == "admin" and user.role != UserRole.ADMIN:
+            if (
+                handler.required_role == "admin"
+                and user.role != UserRole.ADMIN
+                and not is_system_user_allowed_admin_command(user, handler.command)
+            ):
                 return web.Response(
                     status=403,
                     text="Admin access required",
                 )
 
         try:
+            # TEMPORARY workaround for the 2.9 stable branch: handle the optional
+            # username argument on library listing and search commands
+            await resolve_username_workaround(self.mass, handler.command, command_msg.args)
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):

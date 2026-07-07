@@ -34,6 +34,8 @@ from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import (
     is_request_from_ingress,
+    is_system_user_allowed_admin_command,
+    resolve_username_workaround,
     set_current_token,
     set_current_user,
     set_sendspin_player_id,
@@ -212,7 +214,11 @@ class WebsocketClientHandler:
 
             # Check role if required
             if handler.required_role == "admin":
-                if self._authenticated_user.role != UserRole.ADMIN:
+                if self._authenticated_user.role != UserRole.ADMIN and (
+                    not is_system_user_allowed_admin_command(
+                        self._authenticated_user, handler.command
+                    )
+                ):
                     await self._send_message(
                         ErrorResultMessage(
                             msg.message_id,
@@ -228,6 +234,9 @@ class WebsocketClientHandler:
     async def _run_handler(self, handler: APICommandHandler, msg: CommandMessage) -> None:
         """Run command handler and send response."""
         try:
+            # TEMPORARY workaround for the 2.9 stable branch: handle the optional
+            # username argument on library listing and search commands
+            await resolve_username_workaround(self.mass, handler.command, msg.args)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
