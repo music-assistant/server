@@ -1,12 +1,12 @@
 {
   "type": "plugin",
-  "stage": "experimental",
+  "stage": "beta",
   "domain": "smart_playlist",
   "name": "Smart Playlists",
-  "description": "Create dynamic or fixed playlists based on rules like genres, artists, albums, favorites and similar tracks.",
+  "description": "Create dynamic or fixed playlists based on rules: genres, artists, albums, favorites, similar tracks, release year, album type, explicit content, track duration, and rediscover forgotten tracks by filtering out recently played music.",
   "codeowners": ["@dmoo500"],
   "requirements": [],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/features/smart-playlists/",
   "multi_instance": false,
   "builtin": false,
   "icon": "playlist-star"

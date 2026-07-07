@@ -1,6 +1,8 @@
 """Tests for remote access feature."""
 
+import base64
 from unittest.mock import AsyncMock, Mock, patch
+from urllib.parse import urlparse
 
 import pytest
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection
@@ -13,8 +15,8 @@ from music_assistant.controllers.webserver.remote_access.gateway import (
 )
 from music_assistant.helpers.webrtc_certificate import (
     _generate_certificate,
+    _remote_id_from_certificate,
     create_peer_connection_with_certificate,
-    get_remote_id_from_certificate,
 )
 
 
@@ -32,15 +34,32 @@ def mock_certificate() -> Mock:
     return cert
 
 
-async def test_get_remote_id_from_certificate(mock_certificate: Mock) -> None:
-    """Test remote ID generation from certificate fingerprint."""
-    remote_id = get_remote_id_from_certificate(mock_certificate)
+async def test_remote_id_from_certificate() -> None:
+    """Test deterministic remote ID generation from a certificate."""
+    _, cert = _generate_certificate()
+    remote_id = _remote_id_from_certificate(cert)
 
     # Should be base32 encoded, uppercase, no padding
     assert remote_id.isalnum()
     assert remote_id == remote_id.upper()
     # 128 bits = 16 bytes -> 26 base32 chars (without padding)
     assert len(remote_id) == 26
+    # deterministic: the same certificate always yields the same id
+    assert _remote_id_from_certificate(cert) == remote_id
+
+
+async def test_remote_id_matches_aiortc_fingerprint() -> None:
+    """The aiortc-free remote ID must match aiortc's own certificate fingerprint derivation."""
+    private_key, cert = _generate_certificate()
+    rtc_cert = RTCCertificate(key=private_key, cert=cert)
+    fingerprint = next(fp.value for fp in rtc_cert.getFingerprints() if fp.algorithm == "sha-256")
+    expected = (
+        base64.b32encode(bytes.fromhex(fingerprint.replace(":", ""))[:16])
+        .decode("ascii")
+        .rstrip("=")
+        .replace("2", "9")
+    )
+    assert _remote_id_from_certificate(cert) == expected
 
 
 async def test_remote_access_info_dataclass() -> None:
@@ -340,7 +359,8 @@ async def test_webrtc_gateway_handle_ice_candidate_without_session(mock_certific
 
 
 async def test_create_peer_connection_with_certificate() -> None:
-    """Test that create_peer_connection_with_certificate correctly sets the custom certificate.
+    """
+    Test that create_peer_connection_with_certificate correctly sets the custom certificate.
 
     This verifies the fragile name-mangled private attribute access works correctly
     and that our custom certificate fully replaces the auto-generated one, which is
@@ -367,3 +387,51 @@ async def test_create_peer_connection_with_certificate() -> None:
         assert certificates[0] is certificate
     finally:
         await pc.close()
+
+
+@pytest.mark.parametrize(
+    "malicious_path",
+    [
+        "@evil.com",  # netloc becomes basic-auth creds, evil.com becomes the host
+        "//evil.com",  # protocol-relative URL pointing at another host
+        "@evil.com/foo",
+        "//evil.com/foo",
+    ],
+)
+async def test_http_proxy_request_cannot_change_host(
+    mock_certificate: Mock, malicious_path: str
+) -> None:
+    """An attacker-controlled proxy path must never change the target host (SSRF guard)."""
+    mock_session = Mock()
+    captured_url: dict[str, str] = {}
+
+    def fake_request(_method: str, url: str, **_kwargs: object) -> AsyncMock:
+        captured_url["url"] = url
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(return_value=b"")
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        local_ws_url="ws://localhost:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", peer_connection=Mock())
+
+    await gateway._handle_http_proxy_request(
+        session, {"id": "1", "method": "GET", "path": malicious_path}
+    )
+
+    parsed = urlparse(captured_url["url"])
+    assert parsed.hostname == "localhost"
+    assert parsed.port == 8095
+    assert parsed.username is None
+    assert "evil.com" not in (parsed.netloc or "")

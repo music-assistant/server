@@ -31,13 +31,16 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
-    CONF_SMART_FADES_MODE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.models.smart_fades import SmartFadesMode
+from music_assistant.models.player import (
+    POSITION_JUMP_THRESHOLD,
+    DeviceInfo,
+    Player,
+    PlayerMedia,
+)
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -153,18 +156,17 @@ class SqueezelitePlayer(Player):
         # create preset entries (for players that support it)
         presets = []
         async for playlist in self.mass.music.playlists.iter_library_items(True):
-            presets.append(ConfigValueOption(playlist.name, playlist.uri))
+            presets.append(ConfigValueOption(playlist.uri, title=playlist.name))
         async for radio in self.mass.music.radio.iter_library_items(True):
-            presets.append(ConfigValueOption(radio.name, radio.uri))
+            presets.append(ConfigValueOption(radio.uri, title=radio.name))
         preset_count = 10
         preset_entries = [
             ConfigEntry(
                 key=f"preset_{index}",
                 type=ConfigEntryType.STRING,
                 options=presets,
-                label=f"Preset {index}",
-                description="Assign a playable item to the player's preset. "
-                "Only supported on real squeezebox hardware or jive(lite) based emulators.",
+                translation_key="preset",
+                translation_params=[str(index)],
                 category="presets",
                 required=False,
             )
@@ -271,20 +273,16 @@ class SqueezelitePlayer(Player):
             if media.source_id and media.queue_item_id
             else None
         )
-        smart_fades_mode = (
-            await self.mass.config.get_player_config_value(
-                self.player_id,
-                CONF_SMART_FADES_MODE,
-                default=SmartFadesMode.DISABLED,
-                return_type=SmartFadesMode,
-            )
-            if media.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+        # crossfade is a queue-scoped setting; read it from the queue being played (source_id),
+        # which can differ from this player when playing on behalf of a group/linked queue
+        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
+        crossfade_enabled = bool(
+            queue and queue.crossfade_enabled and media.media_type == MediaType.TRACK
         )
         master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(
             self,
             start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
-            smartfades_enabled=smart_fades_mode != SmartFadesMode.DISABLED,
+            crossfade_enabled=crossfade_enabled,
         )
 
         # select audio source, we force flow mode
@@ -534,10 +532,15 @@ class SqueezelitePlayer(Player):
             # Some players keep sending heartbeat with increasing elapsed time
             # even when paused (e.g. WiiM)
             return
-        # elapsed time change on the player will be auto picked up
-        # by the player manager.
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
+        # only involve the state machine when the reported position diverged (e.g. buffering/seek)
+        published_position = self.state.corrected_elapsed_time
+        if (
+            published_position is None
+            or abs(published_position - self.client.elapsed_seconds) > POSITION_JUMP_THRESHOLD
+        ):
+            self.update_state()
 
         # handle sync
         if self.synced_to:
@@ -756,7 +759,8 @@ class SqueezelitePlayer(Player):
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
-    """Pause player and schedule unpause after specified duration.
+    """
+    Pause player and schedule unpause after specified duration.
 
     This is used instead of pause_for because WiiM devices
     don't properly auto-unpause after pause_for interval.

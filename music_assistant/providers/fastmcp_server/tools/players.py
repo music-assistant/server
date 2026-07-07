@@ -10,7 +10,7 @@ from mcp.types import ToolAnnotations
 
 from ..models import PlayerBrief
 from ..tags import Tag
-from ._common import TIMEOUT_FAST, TIMEOUT_MUTATION, to_brief_player
+from ._common import TIMEOUT_FAST, TIMEOUT_MUTATION, safe_active_queue, to_brief_player
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -40,12 +40,18 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
 
         Returns ``PlayerBrief`` items with ``player_id``, ``name``, ``state``,
         ``powered``, ``volume_level``, ``available``, ``enabled``,
-        ``needs_setup``, ``active_group``, ``synced_to`` and the currently
-        playing item (if any). ``state`` summarises usability — values are
-        ``unavailable`` (offline), ``disabled`` (admin-disabled),
-        ``needs_setup`` (first-run config pending), ``synced`` (member of an
-        active sync group; its queue belongs to the group leader), or the
-        normal playback states (``idle`` / ``playing`` / ``paused`` / ...).
+        ``needs_setup``, ``active_group``, ``synced_to``, ``external_source``
+        and the currently playing item (if any). ``state`` summarises
+        usability — values are ``unavailable`` (offline), ``disabled``
+        (admin-disabled), ``needs_setup`` (first-run config pending),
+        ``synced`` (member of an active sync group; its queue belongs to the
+        group leader), or the normal playback states
+        (``idle`` / ``playing`` / ``paused`` / ...). When a player is being
+        driven by an external "Connect"-style source (e.g. Spotify Connect,
+        AirPlay, Yandex Ynison), ``state`` reflects the active queue
+        (``playing`` / ``paused``) rather than ``idle``, ``external_source``
+        holds the controlling provider instance id, and ``current_item``
+        shows the real track title rather than the source wrapper name.
         Offline and admin-disabled players are hidden by default — flip the
         corresponding ``include_*`` flag to get them back. Does not include
         queue contents — use the ``queue`` tools for that.
@@ -66,7 +72,7 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
             return_unavailable=include_unavailable,
             return_disabled=include_disabled,
         )
-        return [to_brief_player(p) for p in players]
+        return [to_brief_player(p, safe_active_queue(mass, p.player_id)) for p in players]
 
     @sub.tool(
         tags={Tag.QUERY_PLAYERS},
@@ -89,7 +95,9 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
         :param player_id: Player identifier (from ``PlayerBrief.player_id``).
         """
         player = mass.players.get_player(player_id)
-        return to_brief_player(player) if player is not None else None
+        if player is None:
+            return None
+        return to_brief_player(player, safe_active_queue(mass, player_id))
 
     @sub.tool(
         tags={Tag.CONTROL_PLAYERS},
@@ -106,9 +114,9 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
         """
         Power a player on or off.
 
-        Does not affect sync-group membership — use ``group_player`` to
-        change that. Setting the current power state again is a no-op.
-        Returns nothing.
+        Does not affect sync-group membership — use ``group_player`` to add a
+        player to a sync group, or ``ungroup_player`` to remove one. Setting
+        the current power state again is a no-op. Returns nothing.
 
         :param player_id: Player identifier from ``PlayerBrief.player_id``.
         :param powered: ``True`` to power on, ``False`` to power off.
@@ -131,12 +139,36 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
         Add a player to another player's sync group so both play in lockstep.
 
         Does not change volume — use ``set_group_volume`` on the volume
-        sub-server for that. Returns nothing.
+        sub-server for that. Use ``ungroup_player`` to remove a player from
+        a sync group. Returns nothing.
 
         :param player_id: Player to add to the group.
         :param target_player_id: Player whose sync group ``player_id`` joins
             (typically the group leader).
         """
         await mass.players.cmd_group(player_id, target_player_id)
+
+    @sub.tool(
+        tags={Tag.CONTROL_PLAYERS},
+        annotations=ToolAnnotations(
+            title="Ungroup player from sync group",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        timeout=TIMEOUT_MUTATION,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def ungroup_player(player_id: str) -> None:
+        """
+        Remove a player from its sync group so it plays independently again.
+
+        If the player is not currently grouped, this is a no-op. Use
+        ``group_player`` to add a player to another player's sync group.
+        Returns nothing.
+
+        :param player_id: Player to remove from any active sync group.
+        """
+        await mass.players.cmd_ungroup(player_id)
 
     return sub

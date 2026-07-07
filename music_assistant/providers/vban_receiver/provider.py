@@ -171,7 +171,8 @@ class VBANReceiverProvider(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the VBAN PCM audio to a queue.
+        """
+        Return StreamDetails for streaming the VBAN PCM audio to a queue.
 
         Side-effect-free: ownership is claimed in on_source_selected (which the
         streams controller fires before this method on the actual stream
@@ -195,7 +196,7 @@ class VBANReceiverProvider(PluginProvider):
 
     async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
         assert self._vban_stream  # for type checking
         assert self._udp_socket_fut  # for type checking
@@ -277,7 +278,10 @@ class VBANReceiverProvider(PluginProvider):
                     if not _stream_acquired:
                         raise AudioError(
                             f"VBAN sender {self._sender_host!r} did not send any packets "
-                            f"on stream {self._vban_stream_name!r}"
+                            f"on stream {self._vban_stream_name!r}",
+                            translation_key="no_packets",
+                            translation_owner=self.translation_owner,
+                            translation_args=[self._sender_host, self._vban_stream_name],
                         ) from None
                     continue
                 except asyncio.QueueShutDown:

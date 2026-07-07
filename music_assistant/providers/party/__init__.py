@@ -1,4 +1,5 @@
-"""Party Plugin Provider for Music Assistant.
+"""
+Party Plugin Provider for Music Assistant.
 
 Provides guest access with a shareable URL, allowing guests
 to add songs to the queue with configurable rate limiting.
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -23,7 +24,6 @@ from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackSta
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import DEFAULT_PORT
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 
@@ -145,7 +145,8 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
+    """
+    Return Config entries to setup this provider.
 
     :param mass: MusicAssistant instance.
     :param instance_id: ID of an existing provider instance (None if new instance setup).
@@ -169,13 +170,10 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             required=False,
             default_value=CONF_PARTY_PLAYER_AUTO,
-            label="Party Player",
-            description="Select which player/queue is attached to the party dashboard. "
-            "When set to auto, the first active player will be used.",
             options=[
-                ConfigValueOption("Auto (last active player)", CONF_PARTY_PLAYER_AUTO),
+                ConfigValueOption(CONF_PARTY_PLAYER_AUTO),
                 *[
-                    ConfigValueOption(player.display_name, player.player_id)
+                    ConfigValueOption(player.player_id, title=player.display_name)
                     for player in sorted(
                         mass.players.all_players(False, False),
                         key=lambda p: p.display_name.lower(),
@@ -188,17 +186,11 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value="",
             required=False,
-            label="Party Name",
-            description=(
-                "Custom name/title for the party, displayed in the party dashboard. "
-                "Leave blank to not show a text at all."
-            ),
         ),
         ConfigEntry(
             key=CONF_ENABLE_GUEST_ACCESS,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Enable Guest Access via QR Code",
             hidden=True,
             value=guest_access_enabled,
             immediate_apply=True,
@@ -207,17 +199,13 @@ async def get_config_entries(
         ConfigEntry(
             key="guest_disabled_note",
             type=ConfigEntryType.LABEL,
-            label="Ready to get the party started? Enable guest access and let "
-            "your friends add songs by scanning a QR code!",
             required=False,
             hidden=guest_access_enabled,
         ),
         ConfigEntry(
             key=CONF_ACTION_ENABLE_GUEST_ACCESS,
             type=ConfigEntryType.ACTION,
-            label="Enable Guest Access",
             action=CONF_ACTION_ENABLE_GUEST_ACCESS,
-            action_label="Enable Guest Access",
             hidden=guest_access_enabled,
             immediate_apply=True,
         ),
@@ -225,18 +213,13 @@ async def get_config_entries(
         ConfigEntry(
             key="guest_enabled_note",
             type=ConfigEntryType.ALERT,
-            label="Guest mode is enabled. Guests will be able to join your party "
-            "by scanning the QR code (which automatically expires after 8 hours). "
-            "Click the button below to end the party and withdraw guest access.",
             required=False,
             hidden=not guest_access_enabled,
         ),
         ConfigEntry(
             key=CONF_ACTION_DISABLE_GUEST_ACCESS,
             type=ConfigEntryType.ACTION,
-            label="Disable Guest Access",
             action=CONF_ACTION_DISABLE_GUEST_ACCESS,
-            action_label="Disable Guest Access",
             hidden=not guest_access_enabled,
             immediate_apply=True,
         ),
@@ -245,71 +228,38 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value="",
             required=False,
-            label="QR Code Text",
-            description=(
-                "Custom text to display alongside the QR code. "
-                "Leave blank to not show a text at all."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
         ),
         ConfigEntry(
             key=CONF_HIDE_BACK_BUTTON,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Hide Back Button in Fullscreen Mode",
-            description=(
-                "WARNING: Enabling this option will hide all regular navigation "
-                "elements in fullscreen mode. You will need to use browser controls "
-                "(e.g. Alt+Left or the browser back button) to navigate back to "
-                "Music Assistant."
-            ),
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_SHOW_PROGRESS_BAR,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Show Progress Bar for the current playing song",
-            description=(
-                "When enabled, a progress bar will be displayed on the current playing song "
-                "in the track list, visually indicating the progress of the currently playing song. "
-            ),
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_PARTY_KARAOKE_MODE,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Karaoke Mode",
-            description=(
-                "When enabled, lyrics are displayed prominently in the center of the screen "
-                "with the track list minimized to current and next song at the bottom."
-            ),
-            category="Karaoke",
+            category="karaoke",
         ),
         ConfigEntry(
             key=CONF_PARTY_HIGHLIGHT_AHEAD,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Highlight Lyrics Ahead of Time",
-            description=(
-                "When enabled, the lyric line highlight transition finishes exactly "
-                "when the line's timestamp arrives, giving a smooth anticipation effect. "
-                "When disabled, the transition starts at the timestamp instead."
-            ),
             depends_on=CONF_PARTY_KARAOKE_MODE,
-            category="Karaoke",
+            category="karaoke",
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_ANTI_BURN_IN,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Enable Anti Burn-in",
-            description=(
-                "Periodically swap the QR code and track list sides to prevent "
-                "burn-in on OLED or plasma displays. Sides swap every 10 minutes."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
         ),
@@ -317,173 +267,114 @@ async def get_config_entries(
             key=CONF_ENABLE_RATE_LIMITING,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Enable Rate Limiting",
-            description=(
-                "Enable token-based rate limiting to prevent guests from overusing features. "
-                "When disabled, guests have unlimited uses (subject to feature toggles below)."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Add to Queue feature
         ConfigEntry(
             key=CONF_ENABLE_ADD_QUEUE,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Allow Add to Queue",
-            description=(
-                "Allow guests to add songs to the end of the queue. "
-                "When disabled, guests cannot add songs to the queue at all."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PREVENT_DUPLICATE_TRACKS,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Prevent Duplicate Tracks",
-            description=(
-                "Prevent guests from adding a track that is already in the queue. "
-                "When enabled, duplicate track requests will be rejected."
-            ),
             depends_on=CONF_ENABLE_ADD_QUEUE,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_ADD_QUEUE_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=10,
-            label="Add to Queue Token Limit",
-            description=(
-                "Maximum number of 'Add to Queue' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(5, 50),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=2,
-            label="Add to Queue Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Add to Queue' token to refill. "
-                "This controls how often guests can add songs."
-            ),
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(1, 30),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Boost feature (priority queue jumping)
         ConfigEntry(
             key=CONF_ENABLE_BOOST,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Allow Boost",
-            description=(
-                "Allow guests to boost songs to play next (jump the queue). "
-                "When disabled, guests can only add songs to the end of the queue."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_BOOST_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=1,
-            label="Boost Token Limit",
-            description=(
-                "Maximum number of 'Boost' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
             depends_on=CONF_ENABLE_BOOST,
             range=(1, 10),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_BOOST_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=20,
-            label="Boost Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Boost' token to refill. "
-                "This controls how often guests can skip the queue."
-            ),
             depends_on=CONF_ENABLE_BOOST,
             range=(5, 120),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Skip Song feature
         ConfigEntry(
             key=CONF_ENABLE_SKIP_SONG,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Allow Skip Song",
-            description=(
-                "Allow guests to skip the currently playing song. "
-                "When disabled, guests cannot skip songs at all."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_SKIP_SONG_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=1,
-            label="Skip Song Token Limit",
-            description=(
-                "Maximum number of 'Skip Song' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(1, 5),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=60,
-            label="Skip Song Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Skip Song' token to refill. "
-                "This controls how often guests can skip the currently playing song."
-            ),
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(15, 180),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Badge color configuration
         ConfigEntry(
             key=CONF_REQUEST_BADGE_COLOR,
             type=ConfigEntryType.STRING,
             default_value="#2D6A4F",  # Green
-            label="Request Badge Color",
-            description="Color for the 'Request' badge shown on guest-added queue items.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
-            options=[ConfigValueOption(name, value) for name, value in BADGE_COLOR_OPTIONS],
+            options=[ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS],
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_BOOST_BADGE_COLOR,
             type=ConfigEntryType.STRING,
             default_value="#B55522",  # Orange
-            label="Boost Badge Color",
-            description="Color for the 'Boost' badge shown on priority guest requests.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
-            options=[ConfigValueOption(name, value) for name, value in BADGE_COLOR_OPTIONS],
+            options=[ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS],
             advanced=True,
         ),
     )
@@ -508,27 +399,38 @@ class PartyPlugin(PluginProvider):
         """Call after the provider has been loaded."""
         # Register API commands and store unregister handles
         self._unregister_handles.append(
-            self.mass.register_api_command("party/url", self.get_party_url, required_role="user")
+            self.mass.register_api_command(
+                "party/url", self.get_party_url, required_scope=Scope.USERS_INVITE
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/player", self.get_party_player)
+            self.mass.register_api_command(
+                "party/player", self.get_party_player, required_scope=Scope.PLAYERS_READ
+            )
         )
         self._unregister_handles.append(
             self.mass.register_api_command("party/config", self.get_party_config)
         )
         # Guest action commands - these are called by the guest frontend
         self._unregister_handles.append(
-            self.mass.register_api_command("party/add_to_queue", self.add_to_queue)
+            self.mass.register_api_command(
+                "party/add_to_queue", self.add_to_queue, required_scope=Scope.QUEUES_CONTROL
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/boost_queue_item", self.boost_queue_item)
+            self.mass.register_api_command(
+                "party/boost_queue_item", self.boost_queue_item, required_scope=Scope.QUEUES_CONTROL
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/skip", self.skip_current)
+            self.mass.register_api_command(
+                "party/skip", self.skip_current, required_scope=Scope.QUEUES_CONTROL
+            )
         )
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Call when the provider is being unloaded.
+        """
+        Call when the provider is being unloaded.
 
         :param is_removed: Whether the provider is being removed (vs just reloaded).
         """
@@ -556,7 +458,8 @@ class PartyPlugin(PluginProvider):
     # ==================== Configuration API Commands ====================
 
     async def _get_or_create_party_guest_user(self) -> User:
-        """Get or create the party guest user.
+        """
+        Get or create the party guest user.
 
         :returns: The party guest User.
         """
@@ -575,7 +478,8 @@ class PartyPlugin(PluginProvider):
         return user
 
     async def _get_join_code(self) -> str:
-        """Get an active join code for party, creating one if needed.
+        """
+        Get an active join code for party, creating one if needed.
 
         Looks up an existing non-expired join code via the auth controller.
         If none exists, generates a new one.
@@ -600,7 +504,8 @@ class PartyPlugin(PluginProvider):
         return code
 
     async def get_party_url(self) -> str | None:
-        """Get the guest access URL for party.
+        """
+        Get the guest access URL for party.
 
         When remote access is enabled, returns a URL that works from anywhere via WebRTC.
         Otherwise, returns a local URL that only works on the same network.
@@ -618,12 +523,13 @@ class PartyPlugin(PluginProvider):
                 f"https://app.music-assistant.io/?remote_id={remote_access.remote_id}&join={code}"
             )
 
-        base_url_value = self.mass.webserver.config.get_value("base_url")
-        base_url = str(base_url_value) if base_url_value else f"http://localhost:{DEFAULT_PORT}"
+        base_url = self.mass.webserver.base_url
+        assert base_url  # for type-checker only
         return f"{base_url}/?join={code}"
 
     async def get_party_player(self) -> str | None:
-        """Get the configured party player/queue ID.
+        """
+        Get the configured party player/queue ID.
 
         When configured to auto, returns the first active playing queue,
         falling back to any paused queue, then any available queue.
@@ -654,7 +560,8 @@ class PartyPlugin(PluginProvider):
         return best_queue
 
     async def get_party_config(self) -> PartyConfig:
-        """Get the party configuration for guest rate limiting.
+        """
+        Get the party configuration for guest rate limiting.
 
         :returns: PartyConfig with feature toggles, token limits, refill rates, and colors.
         """
@@ -696,7 +603,8 @@ class PartyPlugin(PluginProvider):
         uri: str,
         boost: bool = False,
     ) -> dict[str, Any]:
-        """Add a media item to the party queue.
+        """
+        Add a media item to the party queue.
 
         This is the primary API for guests to add songs. The provider handles all
         queue logic including priority positioning for guest items.
@@ -781,7 +689,8 @@ class PartyPlugin(PluginProvider):
         }
 
     async def boost_queue_item(self, queue_item_id: str) -> dict[str, Any]:
-        """Boost an existing queue item by moving it to the boosted section.
+        """
+        Boost an existing queue item by moving it to the boosted section.
 
         Finds the item in the queue, marks it as boosted, and moves it to the
         end of the boosted priority section (right after the currently playing track).
@@ -884,7 +793,8 @@ class PartyPlugin(PluginProvider):
     async def _add_to_priority_section(
         self, queue_id: str, uri: str, extra_attributes: dict[str, Any]
     ) -> None:
-        """Add a media item to the end of a priority section in the queue.
+        """
+        Add a media item to the end of a priority section in the queue.
 
         Resolves the media item, creates a QueueItem with the given extra attributes,
         finds the correct insert position, and loads it into the queue.
@@ -948,7 +858,8 @@ class PartyPlugin(PluginProvider):
 
     @staticmethod
     def _validate_guest_access() -> None:
-        """Validate the current user is an authenticated party guest.
+        """
+        Validate the current user is an authenticated party guest.
 
         :raises InvalidDataError: If the user is not a party guest.
         """
@@ -963,7 +874,8 @@ class PartyPlugin(PluginProvider):
 
     @staticmethod
     def _find_section_end(queue_items: list[QueueItem], current_index: int, attribute: str) -> int:
-        """Find the index where a priority section ends.
+        """
+        Find the index where a priority section ends.
 
         Scans from current_index + 1 forward to find where consecutive items
         with the given attribute end. Returns the position where a new item
@@ -989,7 +901,8 @@ class PartyPlugin(PluginProvider):
         return section_end
 
     async def skip_current(self) -> dict[str, Any]:
-        """Skip the currently playing track.
+        """
+        Skip the currently playing track.
 
         :returns: Result dict with success status.
         """
@@ -1026,7 +939,8 @@ class PartyPlugin(PluginProvider):
     # ==================== Helper Methods ====================
 
     async def _revoke_guest_tokens(self) -> None:
-        """Revoke all guest access tokens and codes for party.
+        """
+        Revoke all guest access tokens and codes for party.
 
         This is called when guest access is disabled or the plugin is removed.
         We disconnect WebSocket connections to force the frontend to redirect to login,

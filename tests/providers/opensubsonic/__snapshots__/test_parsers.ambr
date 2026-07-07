@@ -67,6 +67,7 @@
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 1,
     'duration': 178,
@@ -83,6 +84,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -156,7 +158,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -176,6 +177,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -222,7 +224,6 @@
           }),
         ]),
         'sort_name': 'unknown]',
-        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/fake_artist_unknown',
         'version': '',
       }),
@@ -240,6 +241,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -297,7 +299,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -318,6 +319,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -364,7 +366,6 @@
           }),
         ]),
         'sort_name': 'unknown]',
-        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/fake_artist_unknown',
         'version': '',
       }),
@@ -382,6 +383,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
       'description_language': None,
@@ -446,7 +448,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -518,6 +519,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -575,7 +577,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -647,6 +648,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
       'description_language': None,
@@ -711,7 +713,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -783,6 +784,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -840,7 +842,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': 'Deluxe Edition',
     'year': 2007,
@@ -912,6 +913,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
       'description_language': None,
@@ -976,7 +978,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': 'Deluxe Edition',
     'year': 2007,
@@ -998,6 +999,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -1059,7 +1061,6 @@
       }),
     ]),
     'sort_name': '2 mello',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
@@ -1080,6 +1081,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
       'description_language': None,
@@ -1148,7 +1150,6 @@
       }),
     ]),
     'sort_name': '2 mello',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
@@ -1169,6 +1170,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -1230,7 +1232,6 @@
       }),
     ]),
     'sort_name': 'Mello (2)',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
@@ -1251,6 +1252,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
       'description_language': None,
@@ -1319,7 +1321,6 @@
       }),
     ]),
     'sort_name': 'Mello (2)',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
@@ -1336,6 +1337,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -1390,7 +1392,6 @@
       }),
     ]),
     'sort_name': 'synthetic',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/100000002',
     'version': '',
   })
@@ -1407,6 +1408,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
       'description_language': None,
@@ -1468,7 +1470,6 @@
       }),
     ]),
     'sort_name': 'synthetic',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/100000002',
     'version': '',
   })
@@ -1486,6 +1487,7 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'description_language': None,
@@ -1526,6 +1528,7 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
@@ -1611,7 +1614,6 @@
     ]),
     'resume_position_ms': None,
     'sort_name': '179- the end',
-    'translation_key': None,
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
   })
@@ -1629,6 +1631,7 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'description_language': None,
@@ -1669,6 +1672,7 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
@@ -1754,7 +1758,6 @@
     ]),
     'resume_position_ms': None,
     'sort_name': '179- the end',
-    'translation_key': None,
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
   })
@@ -1772,6 +1775,7 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'description_language': None,
@@ -1812,6 +1816,7 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
@@ -1897,7 +1902,6 @@
     ]),
     'resume_position_ms': None,
     'sort_name': '179- the end',
-    'translation_key': None,
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
   })
@@ -1915,6 +1919,7 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -1974,6 +1979,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'opensubsonic://playlist/Mi8xNzQzNzg5NTk5MzM1LTE3NDM3ODk1OTkzMzUubTN1',
     'version': '',
   })
@@ -1989,6 +1995,7 @@
     'media_type': 'podcast',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'description_language': None,
@@ -2061,6 +2068,7 @@
     'media_type': 'podcast',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'description_language': None,
@@ -2152,6 +2160,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -2198,11 +2207,11 @@
           }),
         ]),
         'sort_name': 'unknown]',
-        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/fake_artist_unknown',
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 0,
@@ -2219,6 +2228,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -2273,7 +2283,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 0,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -2345,6 +2354,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -2402,7 +2412,6 @@
         }),
       ]),
       'sort_name': 'lagerfeuer (8-bit)',
-      'translation_key': None,
       'uri': 'opensubsonic://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': 'Deluxe Edition',
       'year': 2007,
@@ -2419,6 +2428,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -2465,11 +2475,11 @@
           }),
         ]),
         'sort_name': 'unknown]',
-        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/fake_artist_unknown',
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 0,
@@ -2486,6 +2496,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -2540,7 +2551,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 0,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': 'Deluxe Edition',
   })
@@ -2575,6 +2585,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -2621,11 +2632,11 @@
           }),
         ]),
         'sort_name': 'new deal, the',
-        'translation_key': None,
         'uri': 'opensubsonic://artist/MA-NAVIDROME-The New Deal',
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 0,
@@ -2642,6 +2653,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -2696,7 +2708,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 0,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -2768,6 +2779,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -2825,7 +2837,6 @@
         }),
       ]),
       'sort_name': 'lagerfeuer (8-bit)',
-      'translation_key': None,
       'uri': 'opensubsonic://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': 'Deluxe Edition',
       'year': 2007,
@@ -2842,6 +2853,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -2888,11 +2900,11 @@
           }),
         ]),
         'sort_name': 'new deal, the',
-        'translation_key': None,
         'uri': 'opensubsonic://artist/MA-NAVIDROME-The New Deal',
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 0,
@@ -2909,6 +2921,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -2963,7 +2976,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 0,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': 'Deluxe Edition',
   })
@@ -3036,6 +3048,7 @@
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 1,
     'duration': 178,
@@ -3052,6 +3065,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -3106,7 +3120,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -3178,6 +3191,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -3235,7 +3249,6 @@
         }),
       ]),
       'sort_name': 'lagerfeuer (8-bit)',
-      'translation_key': None,
       'uri': 'opensubsonic://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': '',
       'year': 2007,
@@ -3290,6 +3303,7 @@
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 1,
     'duration': 178,
@@ -3306,6 +3320,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -3360,7 +3375,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -3433,6 +3447,7 @@
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 1,
     'duration': 178,
@@ -3449,6 +3464,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -3503,7 +3519,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -3575,6 +3590,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -3632,7 +3648,6 @@
         }),
       ]),
       'sort_name': 'lagerfeuer (8-bit)',
-      'translation_key': None,
       'uri': 'opensubsonic://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': 'Deluxe Edition',
       'year': 2007,
@@ -3687,6 +3702,7 @@
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 1,
     'duration': 178,
@@ -3703,6 +3719,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -3757,7 +3774,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': 'Deluxe Edition',
   })

@@ -11,7 +11,7 @@ import pytest
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.providers.sonic_analysis import SonicAnalysisProvider, SonicSessionData
 
 # ---------------------------------------------------------------------------
@@ -20,7 +20,8 @@ from music_assistant.providers.sonic_analysis import SonicAnalysisProvider, Soni
 
 
 def _make_provider() -> tuple[SonicAnalysisProvider, AsyncMock, AsyncMock]:
-    """Construct a SonicAnalysisProvider with mocked MA infrastructure.
+    """
+    Construct a SonicAnalysisProvider with mocked MA infrastructure.
 
     Uses ``__new__`` to bypass ``__init__`` (no model downloads) and manually
     sets the attributes the finalize path touches.
@@ -33,6 +34,7 @@ def _make_provider() -> tuple[SonicAnalysisProvider, AsyncMock, AsyncMock]:
     mass = MagicMock()
     mass.streams.audio_analysis.set_audio_analysis = set_aa_mock
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.record_analysis_failure = AsyncMock()
     mass.create_task = MagicMock(side_effect=lambda coro: coro.close() or MagicMock())
 
     manifest = MagicMock()
@@ -95,7 +97,8 @@ def _make_session(
     bit_depth: int = 16,
     channels: int = 1,
 ) -> SonicSessionData:
-    """Register a fresh SonicSessionData for session_id in the provider.
+    """
+    Register a fresh SonicSessionData for session_id in the provider.
 
     :param provider: The provider instance to register the session on.
     :param session_id: The session ID to register.
@@ -127,7 +130,8 @@ def _make_session(
 
 @pytest.mark.asyncio
 async def test_finalize_calls_set_audio_analysis_and_post_analysis() -> None:
-    """finalize() must call set_audio_analysis and post_analysis exactly once each.
+    """
+    finalize() must call set_audio_analysis and post_analysis exactly once each.
 
     Before the fix, _finalize returns None so the base class skips both.
     After the fix, _finalize returns AudioAnalysisData and the base class
@@ -172,7 +176,8 @@ async def test_finalize_calls_set_audio_analysis_and_post_analysis() -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_skips_persist_when_no_feature_blocks() -> None:
-    """finalize() must not persist or fire post_analysis when no feature blocks exist.
+    """
+    finalize() must not persist or fire post_analysis when no feature blocks exist.
 
     This covers the early-return path when accumulated.rms_frames is empty
     (e.g. audio too short to produce a single 10-second block).
@@ -198,7 +203,8 @@ async def test_finalize_skips_persist_when_no_feature_blocks() -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_unknown_session_is_silent() -> None:
-    """finalize() on an unknown session_id must not raise and must log at debug level.
+    """
+    finalize() on an unknown session_id must not raise and must log at debug level.
 
     This verifies the guard at the top of _finalize for sessions that were
     already cancelled or never started.
@@ -213,3 +219,19 @@ async def test_finalize_unknown_session_is_silent() -> None:
     provider.logger.debug.assert_called()  # type: ignore[attr-defined]
     debug_calls = [str(c) for c in provider.logger.debug.call_args_list]  # type: ignore[attr-defined]
     assert any("nonexistent-session-id" in c for c in debug_calls)
+
+
+# ---------------------------------------------------------------------------
+# Test 4: empty accumulated — _finalize raises AudioAnalysisError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_raises_when_no_feature_blocks() -> None:
+    """_finalize must raise AudioAnalysisError when no feature blocks were accumulated."""
+    provider, _set_aa, _post_analysis = _make_provider()
+    session_id = "test-session-empty-raise"
+    _make_session(provider, session_id)
+
+    with pytest.raises(AudioAnalysisError, match="no usable audio"):
+        await provider._finalize(session_id)

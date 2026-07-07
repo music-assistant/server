@@ -49,6 +49,7 @@ def use_cache(
     allow_bypass: bool | None = None,
     base_class: Any = None,
     allow_expired_cache: bool = False,
+    cache_none: bool = True,
 ) -> Callable[
     [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
     Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
@@ -68,6 +69,10 @@ def use_cache(
         entry has expired, return it immediately and trigger a background refresh that
         re-runs the wrapped function and updates the cache. Expired entries also
         survive the cache auto-cleanup task so they remain available as fallback data.
+    :param cache_none: Whether a None result is cached and served like any other value
+        (a negative hit, e.g. "no lyrics exist for this track"). Set to False for
+        methods where None signals a (transient) failure, so the call is retried on
+        the next invocation instead of serving a cached None.
     """
     if allow_bypass is None:
         allow_bypass = not persistent
@@ -78,9 +83,8 @@ def use_cache(
         def _reconstruct(cachedata: Any) -> R:
             if base_class is not None:
                 return cast("R", cachedata)
-            # fallback: reconstruct using type annotations
-            type_hints = get_type_hints(func)
-            return cast("R", parse_value(func.__name__, cachedata, type_hints["return"]))
+            # fallback: reconstruct using the (memoized) return-type annotation
+            return cast("R", parse_value(func.__name__, cachedata, _resolve_return_hint(func)))
 
         @functools.wraps(func)
         async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
@@ -105,54 +109,68 @@ def use_cache(
                     allow_expired_cache=allow_expired_cache,
                 )
 
-            # try the fresh-only lookup first
-            cachedata = await cache.get(
+            # single lookup that returns the entry, its freshness and whether it was found;
+            # found distinguishes a stored None (a negative hit) from a cache miss. expired
+            # entries are only read (and deserialized) when this call serves stale data
+            cachedata, is_fresh, found = await cache.get_with_freshness(
                 cache_key,
                 provider=provider_id,
                 checksum=cache_checksum,
                 category=category,
                 allow_bypass=allow_bypass,
                 base_class=base_class,
+                include_expired=allow_expired_cache,
             )
-            if cachedata is not None:
+            # a found value counts as a hit, except a None that this call opted out of
+            # caching (cache_none=False) which is treated as a miss and re-fetched
+            cache_hit = found and (cache_none or cachedata is not None)
+
+            if cache_hit and is_fresh:
                 return _reconstruct(cachedata)
 
-            if allow_expired_cache:
-                # nothing fresh; try again accepting expired entries
-                cachedata = await cache.get(
-                    cache_key,
-                    provider=provider_id,
-                    checksum=cache_checksum,
-                    category=category,
-                    allow_bypass=allow_bypass,
-                    base_class=base_class,
-                    allow_expired_cache=True,
-                )
-                if cachedata is not None:
-                    # serve stale data and refresh in the background;
-                    # task_id deduplicates concurrent refreshes for the same entry
-                    async def _background_refresh() -> None:
-                        try:
-                            result = await func(self, *args, **kwargs)
+            if cache_hit and allow_expired_cache:
+                # serve stale data and refresh in the background;
+                # task_id deduplicates concurrent refreshes for the same entry
+                async def _background_refresh() -> None:
+                    try:
+                        result = await func(self, *args, **kwargs)
+                        if cache_none or result is not None:
                             await _store_task(result)
-                        except Exception:
-                            LOGGER.exception(
-                                "Background cache refresh failed for %s/%s",
-                                provider_id,
-                                cache_key,
-                            )
+                    except Exception:
+                        LOGGER.exception(
+                            "Background cache refresh failed for %s/%s",
+                            provider_id,
+                            cache_key,
+                        )
 
-                    self.mass.create_task(
-                        _background_refresh(),
-                        task_id=f"cache_refresh.{provider_id}.{cache_key}",
-                    )
-                    return _reconstruct(cachedata)
+                self.mass.create_task(
+                    _background_refresh(),
+                    task_id=f"cache_refresh.{provider_id}.{cache_key}",
+                )
+                return _reconstruct(cachedata)
 
-            # cache miss: fetch synchronously, store in background
+            # cache miss (or expired entry without stale-while-revalidate):
+            # fetch synchronously, store in background
             result = await func(self, *args, **kwargs)
-            self.mass.create_task(_store_task(result))
+            if cache_none or result is not None:
+                self.mass.create_task(_store_task(result))
             return result
 
         return wrapper
 
     return _decorator
+
+
+@functools.cache
+def _resolve_return_hint(func: Callable[..., Any]) -> Any:
+    """
+    Return the resolved return-type annotation of func, memoized per function.
+
+    A function's return annotation is invariant for the process lifetime, so it is resolved
+    once and cached instead of re-running get_type_hints() — which re-evaluates the PEP-563
+    string annotations — on every cache hit. Resolution stays lazy (it happens on the first
+    hit, not at decoration time), so forward-reference handling is unchanged.
+
+    :param func: The decorated function whose return-type annotation to resolve.
+    """
+    return get_type_hints(func)["return"]

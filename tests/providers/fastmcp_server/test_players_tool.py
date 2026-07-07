@@ -1,4 +1,5 @@
-"""Tests for the ``players`` sub-server tools.
+"""
+Tests for the ``players`` sub-server tools.
 
 End-to-end through a FastMCP ``Client`` so the parameter signature and
 filtering behaviour exposed to MCP clients are pinned, not just the
@@ -8,14 +9,16 @@ in-process helpers.
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
 
-from music_assistant.providers.fastmcp_server.tools import build_players_server
+from music_assistant.providers.fastmcp_server.tools import build_players_server, build_queue_server
 
 
 def _player(
@@ -46,7 +49,8 @@ def _player(
 
 
 def _make_all_players_mock(roster: list[SimpleNamespace]) -> Any:
-    """Side effect mirroring MA's ``all_players(return_unavailable, return_disabled)`` filter.
+    """
+    Side effect mirroring MA's ``all_players(return_unavailable, return_disabled)`` filter.
 
     Lets the tests pin the contract — "we forward the flag to MA" — without
     coupling to a re-implementation in Python.
@@ -70,7 +74,8 @@ def _make_all_players_mock(roster: list[SimpleNamespace]) -> Any:
 
 @pytest.fixture
 def mounted_players(mock_mass: Any) -> Iterator[FastMCP]:
-    """Build a root FastMCP with only the players sub-server mounted.
+    """
+    Build a root FastMCP with only the players sub-server mounted.
 
     Yields rather than returns so future FastMCP lifecycle methods (e.g.
     a ``close()`` / ``shutdown()`` once upstream adds one) can be wired
@@ -92,7 +97,8 @@ def mounted_players(mock_mass: Any) -> Iterator[FastMCP]:
 async def test_list_players_hides_unavailable_by_default(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """Default ``list_players`` call asks MA to omit unavailable and disabled players.
+    """
+    Default ``list_players`` call asks MA to omit unavailable and disabled players.
 
     Matches the spec: a model asked to pick a speaker should not see
     devices MA can no longer reach or that the admin has disabled.
@@ -116,7 +122,8 @@ async def test_list_players_hides_unavailable_by_default(
 async def test_list_players_include_unavailable_returns_all(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """With ``include_unavailable=True`` every player comes through.
+    """
+    With ``include_unavailable=True`` every player comes through.
 
     The unavailable one is still tagged ``state="unavailable"`` so the
     caller can act on it.
@@ -138,7 +145,8 @@ async def test_list_players_include_unavailable_returns_all(
 async def test_list_players_include_disabled_returns_disabled(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """With ``include_disabled=True`` admin-disabled players surface as ``state="disabled"``.
+    """
+    With ``include_disabled=True`` admin-disabled players surface as ``state="disabled"``.
 
     Without the flag MA filters them out before they reach the brief,
     so the ``enabled`` field on the response is always ``True``.
@@ -160,7 +168,8 @@ async def test_list_players_include_disabled_returns_disabled(
 async def test_list_players_synced_player_reports_synced_state(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """A player belonging to an active sync group reports ``state="synced"``.
+    """
+    A player belonging to an active sync group reports ``state="synced"``.
 
     The cached ``playback_state`` on a sync follower stays ``idle``
     because the device doesn't have its own queue — the group plays
@@ -186,7 +195,8 @@ async def test_list_players_synced_player_reports_synced_state(
 async def test_list_players_synced_reads_from_state_object(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """``state.active_group`` (canonical) wins over the raw dataclass attr.
+    """
+    ``state.active_group`` (canonical) wins over the raw dataclass attr.
 
     Mirrors the live MA shape — ``Player.state.active_group`` is set
     by ``__final_active_group`` while the raw ``Player.active_group``
@@ -225,7 +235,8 @@ async def test_list_players_synced_reads_from_state_object(
 async def test_list_players_syncgroup_reports_group_volume(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """A SyncGroupPlayer surfaces its ``group_volume`` round-tripped through MCP.
+    """
+    A SyncGroupPlayer surfaces its ``group_volume`` round-tripped through MCP.
 
     Per-player ``volume_level`` is ``None`` on a sync group; the
     canonical volume signal lives on ``state.group_volume``. The brief
@@ -296,3 +307,69 @@ async def test_get_player_returns_unavailable_player(
     assert result.data.player_id == "gone"
     assert result.data.available is False
     assert result.data.state == "unavailable"
+
+
+async def test_group_player_calls_cmd_group(mock_mass: Any, mounted_players: FastMCP) -> None:
+    """``players_group_player`` forwards to ``mass.players.cmd_group``."""
+    async with Client(mounted_players) as client:
+        await client.call_tool(
+            "players_group_player",
+            {"player_id": "follower", "target_player_id": "leader"},
+        )
+    mock_mass.players.cmd_group.assert_awaited_once_with("follower", "leader")
+
+
+async def test_ungroup_player_calls_cmd_ungroup(mock_mass: Any, mounted_players: FastMCP) -> None:
+    """``players_ungroup_player`` forwards to ``mass.players.cmd_ungroup``."""
+    async with Client(mounted_players) as client:
+        await client.call_tool("players_ungroup_player", {"player_id": "follower"})
+    mock_mass.players.cmd_ungroup.assert_awaited_once_with("follower")
+
+
+async def test_get_player_reports_external_source(mock_mass: Any, mounted_players: FastMCP) -> None:
+    """An idle player driven by a Connect source reports playing + provider."""
+    player = _player(player_id="lenco", name="Lenco LS-500", state="idle")
+    mock_mass.players.get_player.return_value = player
+    queue = SimpleNamespace(
+        state=SimpleNamespace(value="playing"),
+        current_item=SimpleNamespace(
+            name="Yandex Music Connect (Ynison)",
+            streamdetails=SimpleNamespace(
+                media_type=SimpleNamespace(value="audio_source"),
+                provider="yandex_ynison--PL8BnL7a",
+                stream_metadata=SimpleNamespace(title="Behind Your Walls"),
+            ),
+        ),
+    )
+    mock_mass.player_queues.get_active_queue.return_value = queue
+    async with Client(mounted_players) as client:
+        result = await client.call_tool("players_get_player", {"player_id": "lenco"})
+    assert result.data.state == "playing"
+    assert result.data.external_source == "yandex_ynison--PL8BnL7a"
+    assert result.data.current_item == "Behind Your Walls"
+
+
+def _ns(obj: Any) -> Any:
+    """Recursively turn dicts/lists into attribute-accessible namespaces."""
+    if isinstance(obj, dict):
+        return SimpleNamespace(**{k: _ns(v) for k, v in obj.items()})
+    if isinstance(obj, list):
+        return [_ns(v) for v in obj]
+    return obj
+
+
+async def test_queue_get_active_queue_external_item_title(mock_mass: Any) -> None:
+    """queue_get_active_queue surfaces the real title for an AUDIO_SOURCE item."""
+    raw = json.loads(
+        Path(__file__).parent.joinpath("fixtures/queue_external_audio_source.json").read_text()
+    )
+    queue = _ns(raw)
+    mock_mass.player_queues.get_active_queue.return_value = queue
+    mock_mass.player_queues.items.return_value = [queue.current_item]
+
+    mcp = FastMCP(name="test")
+    mcp.mount(build_queue_server(mock_mass), namespace="queue")
+    async with Client(mcp) as client:
+        result = await client.call_tool("queue_get_active_queue", {"player_id": "lenco"})
+    assert result.data.items[0].name == "Behind Your Walls"
+    mock_mass.player_queues.items.assert_called_with("lenco", limit=25, offset=0)

@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -90,16 +91,15 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label="Client ID",
             required=True,
         ),
         ConfigEntry(
             key=CONF_AUTHORIZATION,
             type=ConfigEntryType.SECURE_STRING,
-            label="Authorization",
             required=True,
         ),
     )
@@ -110,7 +110,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
-    _me: dict[str, Any] = {}
+    _me: dict[str, Any]
 
     async def handle_async_init(self) -> None:
         """Set up the Soundcloud provider."""
@@ -125,7 +125,8 @@ class SoundcloudMusicProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -157,7 +158,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return result
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Soundcloud."""
         time_start = time.time()
 
@@ -173,7 +174,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
                 continue
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Soundcloud."""
         time_start = time.time()
         async for item in self._soundcloud.get_account_playlists():
@@ -205,7 +206,7 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Soundcloud."""
         time_start = time.time()
         async for track in self._soundcloud.get_track_details_liked(self._user_id):
@@ -254,6 +255,7 @@ class SoundcloudMusicProvider(MusicProvider):
         if feed and "collection" in feed:
             folder = RecommendationFolder(
                 name="SoundCloud Feed",
+                translation_key="soundcloud_feed",
                 item_id=f"{self.instance_id}_sc_subscribed_feed",
                 provider=self.instance_id,
                 icon="mdi-rss",
@@ -410,7 +412,8 @@ class SoundcloudMusicProvider(MusicProvider):
         return tracks
 
     async def _get_stream_url(self, item_id: str) -> str | None:
-        """Get stream URL, preferring progressive (HTTP) over HLS.
+        """
+        Get stream URL, preferring progressive (HTTP) over HLS.
 
         SoundCloud HLS playlists can have limited content windows (~10 min) which
         cause seeking failures mid-track. Progressive HTTP URLs support full
@@ -499,8 +502,9 @@ class SoundcloudMusicProvider(MusicProvider):
         )
         if artist_obj.get("description"):
             artist.metadata.description = artist_obj["description"]
-        if artist_obj.get("avatar_url"):
-            img_url = self._transform_artwork_url(artist_obj["avatar_url"])
+        # skip default_avatar placeholder; it has no high-res variant and 404s after transform
+        if (avatar_url := artist_obj.get("avatar_url")) and "default_avatar" not in avatar_url:
+            img_url = self._transform_artwork_url(avatar_url)
             artist.metadata.images = UniqueList(
                 [
                     MediaItemImage(
@@ -560,7 +564,7 @@ class SoundcloudMusicProvider(MusicProvider):
             provider=self.domain,
             name=name,
             version=version,
-            duration=track_obj["duration"] / 1000,
+            duration=int(track_obj["duration"] / 1000),
             provider_mappings={
                 ProviderMapping(
                     item_id=track_id,

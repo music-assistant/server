@@ -1,4 +1,5 @@
-"""Optional 1024-dim CLAP audio-embedding ANN index for sonic_similarity.
+"""
+Optional 1024-dim CLAP audio-embedding ANN index for sonic_similarity.
 
 A usearch-backed on-disk index mapping a deterministic u64 label
 (derived from provider+item_id) to a 1024-dim CLAP audio embedding.
@@ -46,7 +47,8 @@ SAVE_MIN_INTERVAL_SECONDS: float = 60.0
 
 
 def derive_label(provider: str, item_id: str) -> int:
-    """Deterministic 64-bit label for a (provider, item_id) pair.
+    """
+    Deterministic 64-bit label for a (provider, item_id) pair.
 
     :param provider: Music provider domain (e.g. 'spotify').
     :param item_id: Provider-specific track identifier.
@@ -79,6 +81,120 @@ class ClapIndex:
         self._last_save: float = time.monotonic()
         self._save_lock = asyncio.Lock()
 
+    async def load(self) -> None:
+        """Create a fresh index or restore from disk."""
+        await asyncio.to_thread(self._load_sync)
+
+    async def close(self) -> None:
+        """Flush to disk and release the index."""
+        await self.save()
+        self._index = None
+        self._reverse.clear()
+
+    def contains(self, provider: str, item_id: str) -> bool:
+        """Check if a track is present in the index (cheap, in-memory)."""
+        return derive_label(provider, item_id) in self._reverse
+
+    async def add(self, provider: str, item_id: str, embedding: np.ndarray) -> None:
+        """
+        Insert or replace a track's CLAP embedding.
+
+        :param provider: Music provider domain.
+        :param item_id: Provider-specific track identifier.
+        :param embedding: 1024-dim CLAP audio embedding.
+        """
+        if self._index is None:
+            return
+        if embedding.shape != (CLAP_EMBEDDING_DIM,):
+            self._logger.warning("Ignoring embedding with unexpected shape %s", embedding.shape)
+            return
+
+        label = derive_label(provider, item_id)
+
+        existing = self._reverse.get(label)
+        if existing is not None and existing != (provider, item_id):
+            self._logger.warning(
+                "CLAP index hash collision for %s (conflicts with %s); skipping",
+                (provider, item_id),
+                existing,
+            )
+            return
+
+        vec = np.asarray(embedding, dtype=np.float32)
+        await asyncio.to_thread(self._add_sync, label, vec)
+        self._reverse[label] = (provider, item_id)
+        self._dirty_adds += 1
+        await self._maybe_flush()
+
+    def get_embedding(self, provider: str, item_id: str) -> np.ndarray | None:
+        """
+        Return the stored embedding for a (provider, item_id), or None if absent.
+
+        O(1) via the derived label; prefer this on hot paths where the provider
+        is known. Use get_embedding_by_item_id only when it isn't.
+
+        :param provider: Music provider domain.
+        :param item_id: Provider-specific track identifier.
+        """
+        if self._index is None:
+            return None
+        label = derive_label(provider, item_id)
+        if label not in self._reverse:
+            return None
+        return self._embedding_for_label(label)
+
+    def get_embedding_by_item_id(self, item_id: str) -> tuple[str, np.ndarray] | None:
+        """
+        Return (provider, embedding) for a stored track, or None if absent.
+
+        O(n) scan over the reverse map; used when only the item_id is known.
+
+        :param item_id: Provider-specific track identifier to look up. The
+            first label whose reverse-map entry matches is returned (an
+            item_id is expected to be unique across providers in practice).
+        """
+        if self._index is None:
+            return None
+        for label, (prov, iid) in self._reverse.items():
+            if iid != item_id:
+                continue
+            arr = self._embedding_for_label(label)
+            return (prov, arr) if arr is not None else None
+        return None
+
+    async def search(self, embedding: np.ndarray, k: int) -> list[ScoredCandidate]:
+        """
+        Return the top-k nearest ScoredCandidate results.
+
+        :param embedding: 1024-dim query embedding (from CLAP text encoder).
+        :param k: Max number of neighbors to return.
+        """
+        if self._index is None or len(self._index) == 0:
+            return []
+        vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        matches = await asyncio.to_thread(self._search_sync, vec, k)
+        results: list[ScoredCandidate] = []
+        for label, distance in matches:
+            entry = self._reverse.get(int(label))
+            if entry is None:
+                continue
+            provider, item_id = entry
+            results.append(
+                ScoredCandidate(item_id=item_id, provider=provider, distance=float(distance))
+            )
+        return results
+
+    async def save(self) -> None:
+        """Force an unconditional flush."""
+        async with self._save_lock:
+            await asyncio.to_thread(self._save_sync)
+            self._dirty_adds = 0
+            self._last_save = time.monotonic()
+
+    def __len__(self) -> int:
+        """Return the number of tracks currently in the index."""
+        return len(self._reverse)
+
     @property
     def _index_path(self) -> Path:
         return Path(self._mass.storage_path) / f"{self._filename_stem}.usearch"
@@ -86,10 +202,6 @@ class ClapIndex:
     @property
     def _keys_path(self) -> Path:
         return Path(self._mass.storage_path) / f"{self._filename_stem}_keys.json"
-
-    async def load(self) -> None:
-        """Create a fresh index or restore from disk."""
-        await asyncio.to_thread(self._load_sync)
 
     def _load_sync(self) -> None:
         from usearch.index import (  # type: ignore[attr-defined]  # noqa: PLC0415
@@ -141,106 +253,27 @@ class ClapIndex:
                 self._reverse = {}
                 self._keys_path.unlink(missing_ok=True)
 
-    async def close(self) -> None:
-        """Flush to disk and release the index."""
-        await self.save()
-        self._index = None
-        self._reverse.clear()
-
-    def contains(self, provider: str, item_id: str) -> bool:
-        """Check if a track is present in the index (cheap, in-memory)."""
-        return derive_label(provider, item_id) in self._reverse
-
-    async def add(self, provider: str, item_id: str, embedding: np.ndarray) -> None:
-        """Insert or replace a track's CLAP embedding.
-
-        :param provider: Music provider domain.
-        :param item_id: Provider-specific track identifier.
-        :param embedding: 1024-dim CLAP audio embedding.
-        """
-        if self._index is None:
-            return
-        if embedding.shape != (CLAP_EMBEDDING_DIM,):
-            self._logger.warning("Ignoring embedding with unexpected shape %s", embedding.shape)
-            return
-
-        label = derive_label(provider, item_id)
-
-        existing = self._reverse.get(label)
-        if existing is not None and existing != (provider, item_id):
-            self._logger.warning(
-                "CLAP index hash collision for %s (conflicts with %s); skipping",
-                (provider, item_id),
-                existing,
-            )
-            return
-
-        vec = np.asarray(embedding, dtype=np.float32)
-        await asyncio.to_thread(self._add_sync, label, vec)
-        self._reverse[label] = (provider, item_id)
-        self._dirty_adds += 1
-        await self._maybe_flush()
-
     def _add_sync(self, label: int, vec: np.ndarray) -> None:
         if label in self._index:
             self._index.remove(label)
         self._index.add(label, vec)
 
-    def get_embedding_by_item_id(self, item_id: str) -> tuple[str, np.ndarray] | None:
-        """Return (provider, embedding) for a stored track, or None if absent.
-
-        :param item_id: Provider-specific track identifier to look up. The
-            first label whose reverse-map entry matches is returned (an
-            item_id is expected to be unique across providers in practice).
-        """
-        if self._index is None:
+    def _embedding_for_label(self, label: int) -> np.ndarray | None:
+        """Fetch and validate the stored 1024-dim vector for a label, or None."""
+        try:
+            vec = self._index.get(label)
+        except Exception:
             return None
-        for label, (prov, iid) in self._reverse.items():
-            if iid != item_id:
-                continue
-            try:
-                vec = self._index.get(label)
-            except Exception:
-                return None
-            if vec is None:
-                return None
-            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
-            if arr.shape != (CLAP_EMBEDDING_DIM,):
-                return None
-            return prov, arr
-        return None
-
-    async def search(self, embedding: np.ndarray, k: int) -> list[ScoredCandidate]:
-        """Return the top-k nearest ScoredCandidate results.
-
-        :param embedding: 1024-dim query embedding (from CLAP text encoder).
-        :param k: Max number of neighbors to return.
-        """
-        if self._index is None or len(self._index) == 0:
-            return []
-        vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
-        matches = await asyncio.to_thread(self._search_sync, vec, k)
-        results: list[ScoredCandidate] = []
-        for label, distance in matches:
-            entry = self._reverse.get(int(label))
-            if entry is None:
-                continue
-            provider, item_id = entry
-            results.append(
-                ScoredCandidate(item_id=item_id, provider=provider, distance=float(distance))
-            )
-        return results
+        if vec is None:
+            return None
+        arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+        if arr.shape != (CLAP_EMBEDDING_DIM,):
+            return None
+        return arr
 
     def _search_sync(self, vec: np.ndarray, k: int) -> list[tuple[int, float]]:
         res = self._index.search(vec, k)
         return list(zip(res.keys, res.distances, strict=False))
-
-    async def save(self) -> None:
-        """Force an unconditional flush."""
-        async with self._save_lock:
-            await asyncio.to_thread(self._save_sync)
-            self._dirty_adds = 0
-            self._last_save = time.monotonic()
 
     def _save_sync(self) -> None:
         if self._index is None:
@@ -267,7 +300,3 @@ class ClapIndex:
         if time.monotonic() - self._last_save < SAVE_MIN_INTERVAL_SECONDS:
             return
         await self.save()
-
-    def __len__(self) -> int:
-        """Return the number of tracks currently in the index."""
-        return len(self._reverse)

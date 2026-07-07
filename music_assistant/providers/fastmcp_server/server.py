@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
 from .constants import (
+    CONF_DEBUG_EVENT_BUFFER_CAPACITY,
+    CONF_DEBUG_EVENTS,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
+    CONF_LEAN_ADMIN_SCHEMA,
     CONF_MOUNT_PATH,
     CONF_REQUIRE_AUTH,
     CONF_REQUIRE_CONFIRMATION,
+    CONF_TRUST_FORWARDED_PROTO,
     DEFAULT_MOUNT_PATH,
 )
 from .tags import enabled_tags
@@ -27,7 +32,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 class MCPServerRuntime:
-    """Build and manage a FastMCP server mounted into MA's webserver.
+    """
+    Build and manage a FastMCP server mounted into MA's webserver.
 
     The lifecycle is intentionally simple:
 
@@ -47,7 +53,8 @@ class MCPServerRuntime:
         config: ProviderConfig,
         logger: logging.Logger,
     ) -> None:
-        """Hold the shared dependencies; nothing is started here.
+        """
+        Hold the shared dependencies; nothing is started here.
 
         :param mass: MusicAssistant instance.
         :param config: Provider config.
@@ -65,6 +72,8 @@ class MCPServerRuntime:
         # Mutable so apply_permission_change can hot-swap the allowed-tag set
         # without re-instantiating the TagFilterMiddleware closure.
         self._allowed_tags: set[str] = set()
+        self._event_buffer: Any = None  # provider.debug.event_buffer.EventBuffer | None
+        self._reload_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def public_url(self) -> str:
@@ -73,7 +82,8 @@ class MCPServerRuntime:
         return f"{base}{self._mount_path}"
 
     async def start(self) -> None:
-        """Build the FastMCP server and mount it into the MA webserver.
+        """
+        Build the FastMCP server and mount it into the MA webserver.
 
         On any partial-mount failure, the in-progress state is rolled back
         via :meth:`stop` before the exception propagates — so a retry (or a
@@ -86,6 +96,70 @@ class MCPServerRuntime:
             with contextlib.suppress(Exception):
                 await self.stop()
             raise
+
+    async def stop(self) -> None:
+        """Unregister the HTTP route and drop references."""
+        if self._event_buffer is not None:
+            try:
+                self._event_buffer.stop()
+            finally:
+                self._event_buffer = None
+        if self._unmount is not None:
+            try:
+                await self._unmount()
+            except Exception:
+                self._logger.exception("Failed to unregister MCP route")
+            self._unmount = None
+        if getattr(self, "_unmount_well_known", None) is not None:
+            try:
+                self._unmount_well_known()  # type: ignore[misc, unused-ignore]
+            except Exception:
+                self._logger.exception("Failed to unregister well-known route")
+            self._unmount_well_known = None
+        if getattr(self, "_unmount_connect", None) is not None:
+            try:
+                self._unmount_connect()  # type: ignore[misc, unused-ignore]
+            except Exception:
+                self._logger.exception("Failed to unregister Connect Wizard route")
+            self._unmount_connect = None
+        self._mcp = None
+
+    async def apply_permission_change(
+        self, new_config: ProviderConfig, changed_keys: set[str]
+    ) -> None:
+        """
+        Hot-swap the allowed-tag set, or restart when resources are involved.
+
+        Resource toggles (``CONF_RES_*``) require a rebuild because resource
+        registration is decided at :meth:`start` time; permission flags flip the
+        tag set in the closure read by :class:`TagFilterMiddleware` and take
+        effect on the next request without a restart.
+
+        :param new_config: the new provider config; assigned to ``self._config``
+            before any restart so ``start`` reads the updated values.
+        :param changed_keys: keys that changed (already stripped of any
+            ``values/`` prefix by the caller). MA mutates ``ProviderConfig``
+            in place during ``config.update(values)``, so re-diffing ``old`` vs
+            ``new`` here would always be empty — the caller's set is the only
+            reliable signal.
+        """
+        from .constants import PERMISSION_KEYS  # noqa: PLC0415
+
+        # ``set().issubset(...)`` is True, so an empty ``changed_keys`` (no-op
+        # call) classifies as permission-only and skips a pointless restart.
+        permission_only = changed_keys.issubset(PERMISSION_KEYS)
+
+        self._config = new_config
+        if permission_only and hasattr(self, "_allowed_tags"):
+            self._allowed_tags = {str(t) for t in enabled_tags(new_config)}
+            self._logger.debug(
+                "MCP runtime: hot-swapped tag filter to %d tags",
+                len(self._allowed_tags),
+            )
+            return
+
+        await self.stop()
+        await self.start()
 
     async def _start_impl(self) -> None:
         """Mount the runtime; see :meth:`start` for the public-facing wrapper."""
@@ -135,9 +209,16 @@ class MCPServerRuntime:
         )
 
         require_confirmation = bool(self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False)
+        lean_admin_schema = bool(self._config.get_value(CONF_LEAN_ADMIN_SCHEMA) or False)
+        from .tags import Tag  # noqa: PLC0415
+
         mcp.mount(build_library_server(self._mass), namespace="library")
         mcp.mount(
-            build_queue_server(self._mass, require_confirmation=require_confirmation),
+            build_queue_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                delete_queue_enabled=Tag.DELETE_QUEUE in enabled_tags(self._config),
+            ),
             namespace="queue",
         )
         mcp.mount(build_playback_server(self._mass), namespace="playback")
@@ -152,6 +233,42 @@ class MCPServerRuntime:
             namespace="media",
         )
         mcp.mount(build_metadata_server(self._mass), namespace="metadata")
+
+        from .debug.event_buffer import EventBuffer  # noqa: PLC0415
+        from .tools import build_debug_server  # noqa: PLC0415
+
+        if bool(self._config.get_value(CONF_DEBUG_EVENTS)):
+            cap_value = self._config.get_value(CONF_DEBUG_EVENT_BUFFER_CAPACITY)
+            capacity = int(cap_value) if isinstance(cap_value, int | float | str) else 500
+            self._event_buffer = EventBuffer(self._mass, capacity=capacity)
+            self._event_buffer.start()
+
+        mcp.mount(
+            build_debug_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                event_buffer=self._event_buffer,
+                logs_enabled=Tag.DEBUG_LOGS in enabled_tags(self._config),
+                reload_lock=self._reload_lock,
+                lean_schema=lean_admin_schema,
+            ),
+            namespace="debug",
+        )
+
+        from .constants import CONF_CONFIG_WRITE_SECRET  # noqa: PLC0415
+        from .tools import build_config_server  # noqa: PLC0415
+
+        mcp.mount(
+            build_config_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                secret_writes_enabled=lambda: bool(
+                    self._config.get_value(CONF_CONFIG_WRITE_SECRET)
+                ),
+                lean_schema=lean_admin_schema,
+            ),
+            namespace="config",
+        )
 
         register_resources(mcp, self._mass, self._config)
         register_prompts(mcp, self._config)
@@ -192,6 +309,7 @@ class MCPServerRuntime:
                 self._mount_path,
                 enabled_tags_provider=lambda: [str(t) for t in enabled_tags(self._config)],
                 extra_origins_csv=extra_origins,
+                trust_forwarded_proto=bool(self._config.get_value(CONF_TRUST_FORWARDED_PROTO)),
             )
         except Exception:
             self._logger.warning("Connect Wizard: mount failed", exc_info=True)
@@ -202,64 +320,6 @@ class MCPServerRuntime:
             bool(verifier),
             len(enabled_tags(self._config)),
         )
-
-    async def stop(self) -> None:
-        """Unregister the HTTP route and drop references."""
-        if self._unmount is not None:
-            try:
-                await self._unmount()
-            except Exception:
-                self._logger.exception("Failed to unregister MCP route")
-            self._unmount = None
-        if getattr(self, "_unmount_well_known", None) is not None:
-            try:
-                self._unmount_well_known()  # type: ignore[misc, unused-ignore]
-            except Exception:
-                self._logger.exception("Failed to unregister well-known route")
-            self._unmount_well_known = None
-        if getattr(self, "_unmount_connect", None) is not None:
-            try:
-                self._unmount_connect()  # type: ignore[misc, unused-ignore]
-            except Exception:
-                self._logger.exception("Failed to unregister Connect Wizard route")
-            self._unmount_connect = None
-        self._mcp = None
-
-    async def apply_permission_change(
-        self, new_config: ProviderConfig, changed_keys: set[str]
-    ) -> None:
-        """Hot-swap the allowed-tag set, or restart when resources are involved.
-
-        Resource toggles (``CONF_RES_*``) require a rebuild because resource
-        registration is decided at :meth:`start` time; permission flags flip the
-        tag set in the closure read by :class:`TagFilterMiddleware` and take
-        effect on the next request without a restart.
-
-        :param new_config: the new provider config; assigned to ``self._config``
-            before any restart so ``start`` reads the updated values.
-        :param changed_keys: keys that changed (already stripped of any
-            ``values/`` prefix by the caller). MA mutates ``ProviderConfig``
-            in place during ``config.update(values)``, so re-diffing ``old`` vs
-            ``new`` here would always be empty — the caller's set is the only
-            reliable signal.
-        """
-        from .constants import PERMISSION_KEYS  # noqa: PLC0415
-
-        # ``set().issubset(...)`` is True, so an empty ``changed_keys`` (no-op
-        # call) classifies as permission-only and skips a pointless restart.
-        permission_only = changed_keys.issubset(PERMISSION_KEYS)
-
-        self._config = new_config
-        if permission_only and hasattr(self, "_allowed_tags"):
-            self._allowed_tags = {str(t) for t in enabled_tags(new_config)}
-            self._logger.debug(
-                "MCP runtime: hot-swapped tag filter to %d tags",
-                len(self._allowed_tags),
-            )
-            return
-
-        await self.stop()
-        await self.start()
 
     def _apply_tag_filter(self, mcp: Any, allowed: set[Any]) -> None:
         """Install the tag-filter middleware on the given FastMCP server."""
@@ -273,7 +333,8 @@ class MCPServerRuntime:
 
 
 async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:
-    """Resolve component name/URI back to its tag set via FastMCP public API.
+    """
+    Resolve component name/URI back to its tag set via FastMCP public API.
 
     Returns ``None`` if the component is unknown — middleware then blocks
     the call with NotFoundError, preventing a client that cached a name

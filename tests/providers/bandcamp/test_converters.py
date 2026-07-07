@@ -3,7 +3,7 @@
 from unittest.mock import Mock
 
 import pytest
-from bandcamp_async_api.models import BCAlbum, BCArtist, BCTrack
+from bandcamp_async_api.models import BCAlbum, BCArtist, BCTrack, FeedTrack
 from music_assistant_models.enums import ContentType
 
 from music_assistant.providers.bandcamp.converters import BandcampConverters, DiscographyItem
@@ -250,6 +250,43 @@ def test_track_from_api_audio_format_none_streaming_url(converters: BandcampConv
     mapping = next(iter(result.provider_mappings))
     assert mapping.audio_format.content_type == ContentType.MP3
     assert mapping.audio_format.bit_rate is None
+
+
+def test_track_from_feed(converters: BandcampConverters) -> None:
+    """Test converting a FeedTrack to MA Track."""
+    track = FeedTrack(
+        track_id=789,
+        title="Feed Track",
+        band_id=123,
+        band_name="Test Artist",
+        album_id=456,
+        album_title="Test Album",
+        track_num=3,
+        duration=212.5,
+        streaming_url={"mp3-128": "https://example.com/feed.mp3"},
+        art_id=987,
+        track_url="https://test.bandcamp.com/track/feed-track",
+    )
+
+    result = converters.track_from_feed(track)
+
+    assert result.item_id == "123-456-789"
+    assert result.name == "Feed Track"
+    assert result.duration == 212
+    assert result.track_number == 3
+    assert result.album is not None
+    assert result.album.item_id == "123-456"
+    assert result.provider == "bandcamp_test"
+
+
+def test_track_from_feed_standalone(converters: BandcampConverters) -> None:
+    """Test a feed track without an album maps to album_id 0 and omits the album."""
+    track = FeedTrack(track_id=789, title="Single", band_id=123, band_name="Test Artist")
+
+    result = converters.track_from_feed(track)
+
+    assert result.item_id == "123-0-789"
+    assert result.album is None
 
 
 def test_streaming_url_priority_v0_over_320(converters: BandcampConverters) -> None:

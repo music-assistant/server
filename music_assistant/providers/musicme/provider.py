@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     SetupFailedError,
 )
@@ -93,7 +94,8 @@ class MusicMeProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
-        """Perform search on MusicMe.
+        """
+        Perform search on MusicMe.
 
         Uses a two-pass strategy: the dataservice API first (fast, popular matches),
         then a web search fallback for niche queries.
@@ -141,7 +143,8 @@ class MusicMeProvider(MusicProvider):
     # ---- browse ----
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse MusicMe content.
+        """
+        Browse MusicMe content.
 
         :param path: The path to browse.
         """
@@ -154,25 +157,29 @@ class MusicMeProvider(MusicProvider):
                     item_id="home",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://home",
-                    name="A l'affiche",
+                    name="Featured",
+                    translation_key="featured",
                 ),
                 BrowseFolder(
                     item_id="news",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://news",
-                    name="Nouveautés",
+                    name="New releases",
+                    translation_key="new_releases",
                 ),
                 BrowseFolder(
                     item_id="tops",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://tops",
-                    name="Top artistes",
+                    name="Top artists",
+                    translation_key="top_artists",
                 ),
                 BrowseFolder(
                     item_id="radios",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://radios",
-                    name="Radios par thème",
+                    name="Themed radios",
+                    translation_key="themed_radios",
                 ),
             ]
 
@@ -304,7 +311,8 @@ class MusicMeProvider(MusicProvider):
 
         if home_data:
             folder = RecommendationFolder(
-                name="A l'affiche",
+                name="Featured",
+                translation_key="featured",
                 item_id=f"{self.instance_id}_home",
                 provider=self.instance_id,
                 icon="mdi-star",
@@ -317,7 +325,8 @@ class MusicMeProvider(MusicProvider):
 
         if news_data:
             folder = RecommendationFolder(
-                name="Nouveautés",
+                name="New releases",
+                translation_key="new_releases",
                 item_id=f"{self.instance_id}_news",
                 provider=self.instance_id,
                 icon="mdi-new-box",
@@ -330,7 +339,8 @@ class MusicMeProvider(MusicProvider):
 
         if tops_data:
             folder = RecommendationFolder(
-                name="Top artistes",
+                name="Top artists",
+                translation_key="top_artists",
                 item_id=f"{self.instance_id}_tops",
                 provider=self.instance_id,
                 icon="mdi-trending-up",
@@ -344,6 +354,7 @@ class MusicMeProvider(MusicProvider):
         if radio_data:
             folder = RecommendationFolder(
                 name="Radios",
+                translation_key="radios",
                 item_id=f"{self.instance_id}_radios",
                 provider=self.instance_id,
                 icon="mdi-radio",
@@ -358,7 +369,7 @@ class MusicMeProvider(MusicProvider):
 
     # ---- library ----
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from MusicMe."""
         data = await self._api_get('/playlists?resources=home{details:"list"}')
         if not data:
@@ -398,7 +409,8 @@ class MusicMeProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30)
     async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id.
+        """
+        Get full track details by id.
 
         MusicMe doesn't have a single-track endpoint, so we fetch the parent album.
         """
@@ -434,7 +446,8 @@ class MusicMeProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of top/popular tracks for the given artist.
+        """
+        Get a list of top/popular tracks for the given artist.
 
         MusicMe has no dedicated top-tracks endpoint, so we collect the first
         tracks from the artist's most recent albums (sorted by date desc).
@@ -485,7 +498,8 @@ class MusicMeProvider(MusicProvider):
     # ---- streaming ----
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the content details for the given track when it will be streamed.
+        """
+        Return the content details for the given track when it will be streamed.
 
         :param item_id: The MusicMe track barcode, or radio airplay ID.
         :param media_type: The media type (TRACK or RADIO).
@@ -625,7 +639,7 @@ class MusicMeProvider(MusicProvider):
                 disc_track_parts = disc_track.split("_")
                 track.disc_number = int(disc_track_parts[0])
                 track.track_number = int(disc_track_parts[1])
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 pass
         for art_obj in track_obj.get("artists", []):
             if art_obj.get("id"):
@@ -715,7 +729,8 @@ class MusicMeProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 10,
     ) -> SearchResults | None:
-        """Fall back to MusicMe's PHP web search when the dataservice API returns nothing.
+        """
+        Fall back to MusicMe's PHP web search when the dataservice API returns nothing.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -828,7 +843,8 @@ class MusicMeProvider(MusicProvider):
 
     @throttle_with_retries
     async def _api_get(self, endpoint: str) -> dict[str, Any] | None:
-        """Make a GET request to MusicMe dataservice and decrypt the response.
+        """
+        Make a GET request to MusicMe dataservice and decrypt the response.
 
         :param endpoint: API endpoint path (e.g. '/search?query=...')
         """
@@ -842,9 +858,9 @@ class MusicMeProvider(MusicProvider):
                 if response.status == 429:
                     try:
                         backoff = min(int(response.headers.get("Retry-After", 10)), 300)
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         backoff = 10
-                    raise ResourceTemporarilyUnavailable("Rate limited", backoff_time=backoff)
+                    raise RateLimited("Rate limited", backoff_time=backoff)
                 if response.status in (502, 503):
                     raise ResourceTemporarilyUnavailable(
                         "Server temporarily unavailable", backoff_time=30
@@ -867,7 +883,8 @@ class MusicMeProvider(MusicProvider):
             return None
 
     async def _get_stream_url(self, track_barcode: str) -> str:
-        """Get a fresh streaming URL for a track.
+        """
+        Get a fresh streaming URL for a track.
 
         Tickets are single-use and ephemeral — must be generated right before playback.
         """

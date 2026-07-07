@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientResponseError
 from music_assistant_models.enums import MediaType
@@ -103,7 +103,7 @@ class AppleMusicRecommendationManager:
             station_obj = station_response["data"][0]
             station_obj["id"] = station_id
             return parse_station_as_playlist(self.provider, station_obj)
-        except (MediaNotFoundError, KeyError, IndexError):
+        except MediaNotFoundError, KeyError, IndexError:
             return parse_station_as_playlist(self.provider, {"id": station_id})
 
     @use_cache(3600)
@@ -173,6 +173,7 @@ class AppleMusicRecommendationManager:
 
     async def browse_stations(self) -> list[ItemMapping | Playlist]:
         """Return recommended radio stations from personal recommendations."""
-        return [
-            item for folder in await self.get_personal_recommendations() for item in folder.items
-        ]
+        return cast(
+            "list[ItemMapping | Playlist]",
+            [item for folder in await self.get_personal_recommendations() for item in folder.items],
+        )

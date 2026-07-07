@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import Any, cast
 
@@ -21,6 +21,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
@@ -29,6 +30,8 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     Playlist,
@@ -44,7 +47,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from orjson import JSONDecodeError
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
@@ -161,7 +164,7 @@ class SpotifyProvider(MusicProvider):
         return None
 
     ## Library retrieval methods (generators)
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from spotify."""
         endpoint = "me/following"
         while True:
@@ -179,19 +182,19 @@ class SpotifyProvider(MusicProvider):
             else:
                 break
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         async for item in self._get_all_items("me/albums"):
             if item["album"] and item["album"]["id"]:
                 yield parse_album(item["album"], self)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         async for item in self._get_all_items("me/tracks"):
             if item and item["track"]["id"]:
                 yield parse_track(item["track"], self)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library podcasts from spotify."""
         async for item in self._get_all_items("me/shows"):
             if item["show"] and item["show"]["id"]:
@@ -202,7 +205,7 @@ class SpotifyProvider(MusicProvider):
                     continue
                 yield parse_podcast(show_obj, self)
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library audiobooks from spotify."""
         if not self.audiobooks_supported:
             return
@@ -214,8 +217,9 @@ class SpotifyProvider(MusicProvider):
                 await self._add_audiobook_chapters(audiobook)
                 yield audiobook
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Retrieve playlists from the provider.
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
+        """
+        Retrieve playlists from the provider.
 
         Note: We use the global session here because playlists like "Daily Mix"
         are only returned when using the non-dev (global) token.
@@ -224,6 +228,52 @@ class SpotifyProvider(MusicProvider):
         async for item in self._get_all_items("me/playlists", use_global_session=True):
             if item and item["id"]:
                 yield parse_playlist(item, self)
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse Spotify items, including curated sections (new releases, genres & moods).
+
+        :param path: The path to browse (e.g. provider_id:// or provider_id://new-releases).
+        """
+        path_parts = path.split("://")[1].split("/") if "://" in path else []
+        subpath = path_parts[0] if path_parts else None
+        sub_subpath = path_parts[1] if len(path_parts) > 1 else None
+        locale = self.mass.metadata.locale
+
+        if subpath == "new-releases":
+            return await self._get_new_releases()
+
+        if subpath == "categories" and sub_subpath:
+            return await self._get_category_playlists(sub_subpath, locale)
+
+        if subpath == "categories":
+            return await self._get_categories(locale)
+
+        # For root path, add curated folders on top of standard library folders.
+        # At the root the path always ends in "://", so curated paths can be appended directly.
+        if not subpath:
+            curated: list[BrowseFolder] = [
+                BrowseFolder(
+                    item_id="new-releases",
+                    provider=self.instance_id,
+                    path=f"{path}new-releases",
+                    name="New Releases",
+                    translation_key="new_releases",
+                    is_playable=True,
+                ),
+                BrowseFolder(
+                    item_id="categories",
+                    provider=self.instance_id,
+                    path=f"{path}categories",
+                    name="Genres & Moods",
+                    translation_key="genres_and_moods",
+                    is_playable=False,
+                ),
+            ]
+            standard = await super().browse(path)
+            return [*curated, *standard]
+
+        return await super().browse(path)
 
     @use_cache()
     async def search(
@@ -259,93 +309,6 @@ class SpotifyProvider(MusicProvider):
                 break
 
         return searchresult
-
-    def _build_search_types(self, media_types: list[MediaType]) -> str:
-        """Build comma-separated search types string from media types."""
-        searchtypes = []
-        if MediaType.ARTIST in media_types:
-            searchtypes.append("artist")
-        if MediaType.ALBUM in media_types:
-            searchtypes.append("album")
-        if MediaType.TRACK in media_types:
-            searchtypes.append("track")
-        if MediaType.PLAYLIST in media_types:
-            searchtypes.append("playlist")
-        if MediaType.PODCAST in media_types:
-            searchtypes.append("show")
-        if MediaType.AUDIOBOOK in media_types and self.audiobooks_supported:
-            searchtypes.append("audiobook")
-        return ",".join(searchtypes)
-
-    def _process_search_results(
-        self, api_result: dict[str, Any], searchresult: SearchResults
-    ) -> int:
-        """
-        Process API search results and update searchresult object.
-
-        Returns the total number of items received.
-        """
-        items_received = 0
-
-        if "artists" in api_result:
-            artists = [
-                parse_artist(item, self)
-                for item in api_result["artists"]["items"]
-                if (item and item["id"] and item["name"])
-            ]
-            searchresult.artists = [*searchresult.artists, *artists]
-            items_received += len(api_result["artists"]["items"])
-
-        if "albums" in api_result:
-            albums = [
-                parse_album(item, self)
-                for item in api_result["albums"]["items"]
-                if (item and item["id"])
-            ]
-            searchresult.albums = [*searchresult.albums, *albums]
-            items_received += len(api_result["albums"]["items"])
-
-        if "tracks" in api_result:
-            tracks = [
-                parse_track(item, self)
-                for item in api_result["tracks"]["items"]
-                if (item and item["id"])
-            ]
-            searchresult.tracks = [*searchresult.tracks, *tracks]
-            items_received += len(api_result["tracks"]["items"])
-
-        if "playlists" in api_result:
-            playlists = [
-                parse_playlist(item, self)
-                for item in api_result["playlists"]["items"]
-                if (item and item["id"])
-            ]
-            searchresult.playlists = [*searchresult.playlists, *playlists]
-            items_received += len(api_result["playlists"]["items"])
-
-        if "shows" in api_result:
-            podcasts = []
-            for item in api_result["shows"]["items"]:
-                if not (item and item["id"]):
-                    continue
-                # Filter out audiobooks - they have a distinctive description format
-                description = item.get("description", "")
-                if description.startswith("Author(s):") and "Narrator(s):" in description:
-                    continue
-                podcasts.append(parse_podcast(item, self))
-            searchresult.podcasts = [*searchresult.podcasts, *podcasts]
-            items_received += len(api_result["shows"]["items"])
-
-        if "audiobooks" in api_result and self.audiobooks_supported:
-            audiobooks = [
-                parse_audiobook(item, self)
-                for item in api_result["audiobooks"]["items"]
-                if (item and item["id"])
-            ]
-            searchresult.audiobooks = [*searchresult.audiobooks, *audiobooks]
-            items_received += len(api_result["audiobooks"]["items"])
-
-        return items_received
 
     @use_cache()
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -423,9 +386,7 @@ class SpotifyProvider(MusicProvider):
 
         return audiobook
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all podcast episodes."""
         podcast = await self.get_podcast(prov_podcast_id)
 
@@ -793,7 +754,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get audio stream from Spotify via librespot."""
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
             chapter_uris = streamdetails.data.get("chapters", [])
@@ -867,14 +828,14 @@ class SpotifyProvider(MusicProvider):
         try:
             auth_info = await get_spotify_token(
                 self.mass.http_session,
-                app_var(2),  # Always use MA's global client ID
+                app_var("spotify_client_id"),  # Always use MA's global client ID
                 cast("str", refresh_token),
                 "global",
             )
             self.logger.debug("Successfully refreshed global access token")
         except LoginFailed as err:
-            if "revoked" in str(err):
-                # clear refresh token if it's invalid
+            if "revoked" in str(err) or "invalid_grant" in str(err):
+                # clear refresh token if it's revoked or expired
                 self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
                 if self.available:
                     self.unload_with_error(str(err))
@@ -934,8 +895,8 @@ class SpotifyProvider(MusicProvider):
             )
             self.logger.debug("Successfully refreshed developer access token")
         except LoginFailed as err:
-            if "revoked" in str(err):
-                # clear refresh token if it's invalid
+            if "revoked" in str(err) or "invalid_grant" in str(err):
+                # clear refresh token if it's revoked or expired
                 self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
                 self._update_config_value(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
@@ -954,6 +915,93 @@ class SpotifyProvider(MusicProvider):
 
         self.logger.info("Successfully logged in to Spotify developer session")
         return auth_info
+
+    def _build_search_types(self, media_types: list[MediaType]) -> str:
+        """Build comma-separated search types string from media types."""
+        searchtypes = []
+        if MediaType.ARTIST in media_types:
+            searchtypes.append("artist")
+        if MediaType.ALBUM in media_types:
+            searchtypes.append("album")
+        if MediaType.TRACK in media_types:
+            searchtypes.append("track")
+        if MediaType.PLAYLIST in media_types:
+            searchtypes.append("playlist")
+        if MediaType.PODCAST in media_types:
+            searchtypes.append("show")
+        if MediaType.AUDIOBOOK in media_types and self.audiobooks_supported:
+            searchtypes.append("audiobook")
+        return ",".join(searchtypes)
+
+    def _process_search_results(
+        self, api_result: dict[str, Any], searchresult: SearchResults
+    ) -> int:
+        """
+        Process API search results and update searchresult object.
+
+        Returns the total number of items received.
+        """
+        items_received = 0
+
+        if "artists" in api_result:
+            artists = [
+                parse_artist(item, self)
+                for item in api_result["artists"]["items"]
+                if (item and item["id"] and item["name"])
+            ]
+            searchresult.artists = [*searchresult.artists, *artists]
+            items_received += len(api_result["artists"]["items"])
+
+        if "albums" in api_result:
+            albums = [
+                parse_album(item, self)
+                for item in api_result["albums"]["items"]
+                if (item and item["id"])
+            ]
+            searchresult.albums = [*searchresult.albums, *albums]
+            items_received += len(api_result["albums"]["items"])
+
+        if "tracks" in api_result:
+            tracks = [
+                parse_track(item, self)
+                for item in api_result["tracks"]["items"]
+                if (item and item["id"])
+            ]
+            searchresult.tracks = [*searchresult.tracks, *tracks]
+            items_received += len(api_result["tracks"]["items"])
+
+        if "playlists" in api_result:
+            playlists = [
+                parse_playlist(item, self)
+                for item in api_result["playlists"]["items"]
+                if (item and item["id"])
+            ]
+            searchresult.playlists = [*searchresult.playlists, *playlists]
+            items_received += len(api_result["playlists"]["items"])
+
+        if "shows" in api_result:
+            podcasts = []
+            for item in api_result["shows"]["items"]:
+                if not (item and item["id"]):
+                    continue
+                # Filter out audiobooks - they have a distinctive description format
+                description = item.get("description", "")
+                if description.startswith("Author(s):") and "Narrator(s):" in description:
+                    continue
+                podcasts.append(parse_podcast(item, self))
+            searchresult.podcasts = [*searchresult.podcasts, *podcasts]
+            items_received += len(api_result["shows"]["items"])
+
+        if "audiobooks" in api_result and self.audiobooks_supported:
+            audiobooks = [
+                parse_audiobook(item, self)
+                for item in api_result["audiobooks"]["items"]
+                if (item and item["id"])
+            ]
+            searchresult.audiobooks = [*searchresult.audiobooks, *audiobooks]
+            items_received += len(api_result["audiobooks"]["items"])
+
+        return items_received
 
     async def _setup_librespot_auth(self, access_token: str) -> None:
         """
@@ -1005,6 +1053,56 @@ class SpotifyProvider(MusicProvider):
     def _get_liked_songs_playlist_id(self) -> str:
         return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
 
+    @use_cache(86400, allow_expired_cache=True)  # 24h; serve stale + refresh in background
+    async def _get_new_releases(self) -> list[Album]:
+        """Get Spotify's curated 'new releases' albums."""
+        try:
+            result = await self._get_data("browse/new-releases", limit=50)
+        except MediaNotFoundError:
+            return []
+        return [
+            parse_album(item, self)
+            for item in result.get("albums", {}).get("items", [])
+            if item and item.get("id")
+        ]
+
+    @use_cache(86400 * 7, allow_expired_cache=True)  # 7d; serve stale + refresh in background
+    async def _get_categories(self, locale: str) -> list[BrowseFolder]:
+        """Get Spotify's curated browse categories (genres & moods) as browse folders."""
+        try:
+            result = await self._get_data("browse/categories", locale=locale, limit=50)
+        except MediaNotFoundError:
+            return []
+        return [
+            BrowseFolder(
+                item_id=cat["id"],
+                provider=self.instance_id,
+                path=f"{self.instance_id}://categories/{cat['id']}",
+                name=cat["name"],
+                is_playable=False,
+            )
+            for cat in result.get("categories", {}).get("items", [])
+            if cat and cat.get("id") and cat.get("name")
+        ]
+
+    @use_cache(86400, allow_expired_cache=True)  # 24h; serve stale + refresh in background
+    async def _get_category_playlists(self, category_id: str, locale: str) -> list[Playlist]:
+        """Get the playlists for a single Spotify browse category."""
+        try:
+            result = await self._get_data(
+                f"browse/categories/{category_id}/playlists",
+                locale=locale,
+                limit=50,
+                use_global_session=True,
+            )
+        except MediaNotFoundError:
+            return []
+        return [
+            parse_playlist(item, self)
+            for item in result.get("playlists", {}).get("items", [])
+            if item and item.get("id") and item.get("name")
+        ]
+
     async def _get_liked_songs_playlist(self) -> Playlist:
         if self._sp_user is None:
             raise LoginFailed("User info not available - not logged in")
@@ -1012,7 +1110,9 @@ class SpotifyProvider(MusicProvider):
         liked_songs = Playlist(
             item_id=self._get_liked_songs_playlist_id(),
             provider=self.instance_id,
-            name=f"Liked Songs {self._sp_user['display_name']}",  # TODO to be translated
+            name=f"Liked Songs {self._sp_user['display_name']}",
+            translation_key="liked_songs",
+            translation_params=[self._sp_user["display_name"]],
             owner=self._sp_user["display_name"],
             provider_mappings={
                 ProviderMapping(
@@ -1142,7 +1242,7 @@ class SpotifyProvider(MusicProvider):
 
     async def _get_all_items(
         self, endpoint: str, key: str = "items", limit: int = 50, **kwargs: Any
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any]]:
         """Get all items from a paged list."""
         offset = 0
         # single request to fetch the etag (used as cache checksum) and total
@@ -1219,9 +1319,7 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                raise ResourceTemporarilyUnavailable(
-                    "Spotify Rate Limiter", backoff_time=backoff_time
-                )
+                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -1239,7 +1337,7 @@ class SpotifyProvider(MusicProvider):
                 try:
                     error = await response.json(loads=json_loads)
                     message = error.get("error", {}).get("message") or response.reason
-                except (aiohttp.ContentTypeError, JSONDecodeError):
+                except aiohttp.ContentTypeError, JSONDecodeError:
                     message = (await response.text()) or response.reason
 
                 self.logger.debug(
@@ -1272,9 +1370,7 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                raise ResourceTemporarilyUnavailable(
-                    "Spotify Rate Limiter", backoff_time=backoff_time
-                )
+                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
@@ -1302,9 +1398,7 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                raise ResourceTemporarilyUnavailable(
-                    "Spotify Rate Limiter", backoff_time=backoff_time
-                )
+                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
@@ -1335,9 +1429,7 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                raise ResourceTemporarilyUnavailable(
-                    "Spotify Rate Limiter", backoff_time=backoff_time
-                )
+                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
@@ -1377,5 +1469,5 @@ class SpotifyProvider(MusicProvider):
             if e.status == 403:
                 return False  # Not available
             raise  # Re-raise other HTTP errors
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             return False

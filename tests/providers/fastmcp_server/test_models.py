@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from music_assistant.providers.fastmcp_server import models
 from music_assistant.providers.fastmcp_server.models import (
     AlbumBrief,
     ArtistBrief,
@@ -17,6 +19,7 @@ from music_assistant.providers.fastmcp_server.models import (
     TrackBrief,
 )
 from music_assistant.providers.fastmcp_server.tools._common import (
+    _external_now_playing,
     page_args,
     to_brief_album,
     to_brief_artist,
@@ -95,7 +98,8 @@ def test_to_brief_radio() -> None:
 
 
 def test_to_brief_player_reads_playback_state() -> None:
-    """``to_brief_player`` reads the canonical ``Player.playback_state`` enum.
+    """
+    ``to_brief_player`` reads the canonical ``Player.playback_state`` enum.
 
     The expected ``PlayerBrief`` pins every defaulted field explicitly —
     leaving them implicit means the test passes only as long as the
@@ -129,7 +133,8 @@ def test_to_brief_player_reads_playback_state() -> None:
 
 
 def test_to_brief_player_falls_back_to_legacy_state_attr() -> None:
-    """When only the legacy ``state`` attr exists, ``to_brief_player`` still resolves it.
+    """
+    When only the legacy ``state`` attr exists, ``to_brief_player`` still resolves it.
 
     Kept for back-compat with older shims / hand-built test stubs.
     """
@@ -199,7 +204,8 @@ def test_to_brief_player_no_current_media() -> None:
 def test_to_brief_player_powered_prefers_state(
     player_powered: bool, state_powered: bool, expected: bool, case: str
 ) -> None:
-    """When ``Player.state.powered`` is present, it wins over raw ``Player.powered``.
+    """
+    When ``Player.state.powered`` is present, it wins over raw ``Player.powered``.
 
     MA core builds ``_state.powered`` from ``__final_power_state`` and
     serialises it in the REST API; the raw ``Player.powered`` property
@@ -221,7 +227,8 @@ def test_to_brief_player_powered_prefers_state(
 
 
 def test_to_brief_player_powered_falls_back_to_raw_when_no_state() -> None:
-    """Without a ``state`` attribute, the raw ``Player.powered`` is the only signal.
+    """
+    Without a ``state`` attribute, the raw ``Player.powered`` is the only signal.
 
     Pairs with the parametrized test above to pin both branches of the
     canonical-vs-raw selection: state present (state wins) and state absent
@@ -240,7 +247,8 @@ def test_to_brief_player_powered_falls_back_to_raw_when_no_state() -> None:
 
 
 def test_to_brief_player_current_item_uses_state_current_media() -> None:
-    """``current_item`` is cleared when ``Player.state.current_media`` is None.
+    """
+    ``current_item`` is cleared when ``Player.state.current_media`` is None.
 
     After ``stop`` MA core clears ``_state.current_media``, but the raw
     ``_attr_current_media`` may persist until the next playback. The brief
@@ -261,7 +269,8 @@ def test_to_brief_player_current_item_uses_state_current_media() -> None:
 
 
 def test_to_brief_player_exposes_available_and_enabled() -> None:
-    """``available`` / ``enabled`` flow through, and the state ladder fires.
+    """
+    ``available`` / ``enabled`` flow through, and the state ladder fires.
 
     Combined assert: a regression that breaks the state override only
     when both blocker fields are set would otherwise slip through —
@@ -287,7 +296,8 @@ def test_to_brief_player_exposes_available_and_enabled() -> None:
 
 
 def test_to_brief_player_available_enabled_default_true_when_attrs_missing() -> None:
-    """Legacy stubs without ``available`` / ``enabled`` keep working (defaults to True).
+    """
+    Legacy stubs without ``available`` / ``enabled`` keep working (defaults to True).
 
     Pins back-compat: tests built before this feature use bare
     ``SimpleNamespace`` players, and they must still produce a usable brief.
@@ -306,7 +316,8 @@ def test_to_brief_player_available_enabled_default_true_when_attrs_missing() -> 
 
 
 def test_to_brief_player_unavailable_overrides_state() -> None:
-    """``state`` becomes ``"unavailable"`` when the player is offline.
+    """
+    ``state`` becomes ``"unavailable"`` when the player is offline.
 
     Without the override the brief reports the cached ``playback_state``
     (typically ``"idle"``) and an LLM cannot distinguish a quiet speaker
@@ -325,7 +336,8 @@ def test_to_brief_player_unavailable_overrides_state() -> None:
 
 
 def _blocker_stub(**overrides: Any) -> SimpleNamespace:
-    """Build a minimal player stub for state-ladder tests.
+    """
+    Build a minimal player stub for state-ladder tests.
 
     Every blocker field defaults to its "not blocked" value; tests pass
     ``overrides`` for the axis they're exercising.
@@ -360,7 +372,8 @@ def _blocker_stub(**overrides: Any) -> SimpleNamespace:
 def test_to_brief_player_state_override_per_blocker(
     blocker: dict[str, object], expected_state: str
 ) -> None:
-    """Each blocker in isolation produces its dedicated ``state`` value.
+    """
+    Each blocker in isolation produces its dedicated ``state`` value.
 
     Pins the per-rung behaviour of the state ladder. Without these
     overrides the LLM would see ``state="playing"`` (the cached
@@ -398,7 +411,8 @@ def test_to_brief_player_state_override_per_blocker(
 def test_to_brief_player_state_priority_chain(
     blockers: dict[str, object], expected_state: str, case: str
 ) -> None:
-    """When multiple blockers are set, the most-blocking value wins.
+    """
+    When multiple blockers are set, the most-blocking value wins.
 
     The single ``state`` field has to summarise usability; an LLM that
     only reads ``state`` (skipping the explicit booleans) must make the
@@ -421,7 +435,8 @@ def test_to_brief_player_exposes_new_blocker_fields() -> None:
 
 
 def test_to_brief_player_new_fields_default_safely_when_attrs_missing() -> None:
-    """Legacy stubs without the new attributes still produce a usable brief.
+    """
+    Legacy stubs without the new attributes still produce a usable brief.
 
     Mirrors the back-compat pattern already pinned for
     ``available`` / ``enabled`` — tests built before this feature use
@@ -442,7 +457,8 @@ def test_to_brief_player_new_fields_default_safely_when_attrs_missing() -> None:
 
 
 def test_to_brief_player_prefers_state_active_group_over_raw_attr() -> None:
-    """``Player.state.active_group`` is the canonical sync-membership signal.
+    """
+    ``Player.state.active_group`` is the canonical sync-membership signal.
 
     MA's ``__final_active_group`` walks every GROUP player and resolves
     membership / protocol translation; the raw ``Player.active_group``
@@ -496,7 +512,8 @@ def test_to_brief_player_prefers_state_synced_to_over_raw_attr() -> None:
 
 
 def test_to_brief_player_falls_back_to_raw_when_state_lacks_group_fields() -> None:
-    """Back-compat: legacy stubs whose ``state`` lacks the new group fields fall through.
+    """
+    Back-compat: legacy stubs whose ``state`` lacks the new group fields fall through.
 
     The existing ``test_to_brief_player_powered_prefers_state`` already
     exercises a stub whose ``state`` has ``powered`` + ``current_media``
@@ -541,7 +558,8 @@ def test_to_brief_player_prefers_state_volume_muted_over_raw() -> None:
 
 
 def test_to_brief_player_prefers_state_group_volume_over_raw() -> None:
-    """``group_volume`` is read from state — SyncGroupPlayer holds it there.
+    """
+    ``group_volume`` is read from state — SyncGroupPlayer holds it there.
 
     The raw ``Player.group_volume`` dataclass attr can lag; the canonical
     property is exposed on ``Player.state`` (line 1497 of MA's
@@ -569,7 +587,8 @@ def test_to_brief_player_prefers_state_group_volume_over_raw() -> None:
 
 
 def test_to_brief_player_new_volume_fields_default_to_none_when_attrs_missing() -> None:
-    """Legacy stubs without volume_muted / group_volume / group_volume_muted attrs work.
+    """
+    Legacy stubs without volume_muted / group_volume / group_volume_muted attrs work.
 
     Mirrors the back-compat pattern already pinned for the
     ``active_group`` / ``synced_to`` additions.
@@ -589,7 +608,8 @@ def test_to_brief_player_new_volume_fields_default_to_none_when_attrs_missing() 
 
 
 def test_to_brief_player_volume_fields_fall_back_to_raw_when_state_lacks_them() -> None:
-    """Stubs whose ``state`` lacks the volume fields fall through to raw attrs.
+    """
+    Stubs whose ``state`` lacks the volume fields fall through to raw attrs.
 
     Back-compat with stubs that carry ``state`` for ``powered`` /
     ``current_media`` but predate the new volume fields.
@@ -636,11 +656,39 @@ def test_to_brief_queue_with_items() -> None:
     assert brief.shuffle is True
     assert brief.repeat == "off"
     assert len(brief.items) == 2
+    assert brief.items[0].index == 0
+    assert brief.items[1].index == 1
     assert brief.items[0].artists == ["A1"]
 
 
+def test_to_brief_queue_exposes_insert_index_fields() -> None:
+    """``to_brief_queue`` sets index metadata for agent insert planning."""
+    queue = SimpleNamespace(
+        queue_id="kitchen",
+        current_index=2,
+        index_in_buffer=4,
+        items=10,
+        shuffle_enabled=True,
+        repeat_mode=SimpleNamespace(value="off"),
+    )
+    items = [
+        SimpleNamespace(
+            queue_item_id="i1",
+            name="One",
+            duration=120,
+            media_item=SimpleNamespace(artists=[SimpleNamespace(name="A1")]),
+        ),
+    ]
+    brief = to_brief_queue(queue, items=items, items_offset=5)
+    assert brief.index_in_buffer == 4
+    assert brief.next_insertable_index == 5
+    assert brief.items_start_index == 5
+    assert brief.items[0].index == 5
+
+
 def test_to_brief_queue_uses_canonical_items_int_for_count() -> None:
-    """``items`` (int) on the canonical PlayerQueue is the **total** length.
+    """
+    ``items`` (int) on the canonical PlayerQueue is the **total** length.
 
     Earlier code mis-fell back to len(brief_items) (the truncated lookahead),
     under-reporting real queue depth. ``items_count`` from the truncated
@@ -671,7 +719,8 @@ def test_page_args_clamps() -> None:
 
 
 def test_to_brief_queue_returns_none_count_when_unknown() -> None:
-    """When the queue exposes no canonical count, report ``item_count=None``.
+    """
+    When the queue exposes no canonical count, report ``item_count=None``.
 
     A silent ``0`` (formerly returned via ``len(brief_items)`` when the
     truncated lookahead was empty) would tell the LLM the queue is empty
@@ -691,7 +740,8 @@ def test_to_brief_queue_returns_none_count_when_unknown() -> None:
 
 
 def test_to_brief_queue_exposes_available() -> None:
-    """``available`` flows through from ``PlayerQueue`` so callers see the offline case.
+    """
+    ``available`` flows through from ``PlayerQueue`` so callers see the offline case.
 
     Mirrors the parallel fix on the player side: a queue belonging to
     an offline player is still returned by ``get_active_queue`` but
@@ -718,3 +768,408 @@ def test_to_brief_queue_available_defaults_true_when_attr_missing() -> None:
         repeat_mode=None,
     )
     assert to_brief_queue(queue).available is True
+
+
+def test_player_brief_external_source_defaults_none() -> None:
+    """A self-driven player exposes ``external_source = None`` by default."""
+    player = SimpleNamespace(
+        player_id="p1",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+    )
+    assert to_brief_player(player).external_source is None
+
+
+def _audio_source_item(
+    *, provider: str, title: str | None, name: str = "Wrapper"
+) -> SimpleNamespace:
+    """Build a queue item stub whose stream is a plugin AUDIO_SOURCE."""
+    return SimpleNamespace(
+        name=name,
+        streamdetails=SimpleNamespace(
+            media_type=SimpleNamespace(value="audio_source"),
+            provider=provider,
+            stream_metadata=SimpleNamespace(title=title),
+        ),
+    )
+
+
+def test_external_now_playing_returns_provider_and_title() -> None:
+    """``_external_now_playing`` returns (provider, title) for an AUDIO_SOURCE item."""
+    item = _audio_source_item(provider="yandex_ynison--PL8BnL7a", title="Behind Your Walls")
+    assert _external_now_playing(item) == ("yandex_ynison--PL8BnL7a", "Behind Your Walls")
+
+
+def test_external_now_playing_none_for_normal_track() -> None:
+    """``_external_now_playing`` returns ``None`` for a normal track item."""
+    item = SimpleNamespace(
+        name="Real Track",
+        streamdetails=SimpleNamespace(
+            media_type=SimpleNamespace(value="track"),
+            provider="yandex_music--abc",
+            stream_metadata=None,
+        ),
+    )
+    assert _external_now_playing(item) is None
+
+
+def test_external_now_playing_none_when_no_streamdetails() -> None:
+    """``_external_now_playing`` returns ``None`` when there are no stream details."""
+    assert _external_now_playing(SimpleNamespace(name="x", streamdetails=None)) is None
+    assert _external_now_playing(None) is None
+
+
+def test_external_now_playing_title_may_be_none() -> None:
+    """``_external_now_playing`` returns ``(provider, None)`` when the title is absent."""
+    item = _audio_source_item(provider="airplay--1", title=None)
+    assert _external_now_playing(item) == ("airplay--1", None)
+
+
+def test_external_now_playing_accepts_legacy_plugin_source() -> None:
+    """The deprecated ``plugin_source`` media type is still treated as external."""
+    item = SimpleNamespace(
+        name="Wrapper",
+        streamdetails=SimpleNamespace(
+            media_type=SimpleNamespace(value="plugin_source"),
+            provider="spotify--1",
+            stream_metadata=SimpleNamespace(title="Some Song"),
+        ),
+    )
+    assert _external_now_playing(item) == ("spotify--1", "Some Song")
+
+
+def _queue(*, state: str, current_item: SimpleNamespace | None) -> SimpleNamespace:
+    return SimpleNamespace(state=SimpleNamespace(value=state), current_item=current_item)
+
+
+def test_to_brief_player_external_source_playing() -> None:
+    """Idle player + active queue playing an AUDIO_SOURCE reports the real state."""
+    player = SimpleNamespace(
+        player_id="lenco",
+        name="Lenco LS-500",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(
+            provider="yandex_ynison--PL8BnL7a", title="Behind Your Walls"
+        ),
+    )
+    brief = to_brief_player(player, active_queue=queue)
+    assert brief.state == "playing"
+    assert brief.external_source == "yandex_ynison--PL8BnL7a"
+    assert brief.current_item == "Behind Your Walls"
+
+
+def test_to_brief_player_normal_active_queue_unchanged() -> None:
+    """A normal track in the active queue leaves external_source None."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=None,
+        current_media=SimpleNamespace(uri="ym://track/1", title="Song"),
+    )
+    normal_item = SimpleNamespace(
+        name="Song",
+        streamdetails=SimpleNamespace(
+            media_type=SimpleNamespace(value="track"),
+            provider="yandex_music--x",
+            stream_metadata=None,
+        ),
+    )
+    brief = to_brief_player(player, active_queue=_queue(state="playing", current_item=normal_item))
+    assert brief.external_source is None
+    assert brief.state == "playing"
+    assert brief.current_item == "Song"
+
+
+def test_to_brief_player_blocking_ladder_wins_over_queue() -> None:
+    """An unavailable player keeps state=unavailable even with a playing queue."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Offline",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+        available=False,
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title="X"),
+    )
+    assert to_brief_player(player, active_queue=queue).state == "unavailable"
+
+
+def test_to_brief_player_synced_wins_over_queue() -> None:
+    """A sync follower keeps state=synced even though its leader's queue plays."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Follower",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+        synced_to="leader",
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title="X"),
+    )
+    assert to_brief_player(player, active_queue=queue).state == "synced"
+
+
+def test_to_brief_player_disabled_wins_over_queue() -> None:
+    """An admin-disabled player keeps state=disabled even with a playing queue."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Disabled",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+        enabled=False,
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title="X"),
+    )
+    assert to_brief_player(player, active_queue=queue).state == "disabled"
+
+
+def test_to_brief_player_needs_setup_wins_over_queue() -> None:
+    """A not-yet-configured player keeps state=needs_setup even with a playing queue."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Unconfigured",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+        needs_setup=True,
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title="X"),
+    )
+    assert to_brief_player(player, active_queue=queue).state == "needs_setup"
+
+
+def test_to_brief_player_external_source_without_title_keeps_current_media() -> None:
+    """A titleless external source still sets external_source but does not blank current_item."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=SimpleNamespace(uri="airplay://x", title="Fallback"),
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title=None),
+    )
+    brief = to_brief_player(player, active_queue=queue)
+    assert brief.state == "playing"
+    assert brief.external_source == "airplay--1"
+    assert brief.current_item == "Fallback"
+
+
+def test_to_brief_player_no_active_queue_legacy_behaviour() -> None:
+    """With active_queue omitted, state comes from player.playback_state."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+    )
+    brief = to_brief_player(player)
+    assert brief.state == "idle"
+    assert brief.external_source is None
+
+
+def test_to_brief_queue_relabels_external_item() -> None:
+    """An AUDIO_SOURCE item shows the real track title; normal items keep theirs."""
+    external = _audio_source_item(
+        provider="yandex_ynison--PL8BnL7a",
+        title="Behind Your Walls",
+        name="Yandex Music Connect (Ynison)",
+    )
+    external.queue_item_id = "ext"
+    external.duration = None
+    external.media_item = None
+    normal = SimpleNamespace(
+        queue_item_id="n1",
+        name="Ordinary Song",
+        duration=120,
+        media_item=SimpleNamespace(artists=[SimpleNamespace(name="A")]),
+        streamdetails=None,
+    )
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        items=2,
+        shuffle_enabled=False,
+        repeat_mode=SimpleNamespace(value="off"),
+        available=True,
+    )
+    brief = to_brief_queue(queue, items=[external, normal])
+    names = [it.name for it in brief.items]
+    assert names == ["Behind Your Walls", "Ordinary Song"]
+
+
+def test_to_brief_queue_external_item_without_title_keeps_wrapper_name() -> None:
+    """A titleless AUDIO_SOURCE item falls back to its wrapper name, not an empty string."""
+    external = _audio_source_item(
+        provider="airplay--1",
+        title=None,
+        name="AirPlay",
+    )
+    external.queue_item_id = "ext"
+    external.duration = None
+    external.media_item = None
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        items=1,
+        shuffle_enabled=False,
+        repeat_mode=SimpleNamespace(value="off"),
+        available=True,
+    )
+    brief = to_brief_queue(queue, items=[external])
+    assert brief.items[0].name == "AirPlay"
+
+
+_DEBUG_CLASSES = [
+    ("PlayerInspect", {"player_id", "raw", "state", "truncated"}),
+    ("QueueInspect", {"queue_id", "raw", "current_item", "truncated"}),
+    ("ProviderInspect", {"instance_id", "raw", "manifest", "truncated"}),
+    ("LogLine", {"timestamp", "level", "component", "message"}),
+    (
+        "LogTailResult",
+        {
+            "log_path",
+            "lines",
+            "bytes_scanned",
+            "truncated",
+            "has_more",
+            "response_truncated",
+            "next_call_hint",
+        },
+    ),
+    ("ComponentCount", {"component", "count"}),
+    (
+        "LogStatsResult",
+        {
+            "log_path",
+            "window_seconds",
+            "total_records",
+            "level_counts",
+            "top_components",
+            "first_timestamp",
+            "last_timestamp",
+            "bytes_scanned",
+            "truncated",
+        },
+    ),
+    ("EventRecord", {"timestamp", "event_type", "object_id", "data"}),
+    ("EventSnapshot", {"events", "buffer_capacity", "total_seen"}),
+    (
+        "EventBufferStats",
+        {"capacity", "current_size", "total_seen", "dropped", "subscribed_since", "by_type"},
+    ),
+    ("ProviderSummary", {"instance_id", "domain", "type", "name", "available", "last_error"}),
+    ("ProviderList", {"providers"}),
+    ("ConfigValueDump", {"key", "type", "value"}),
+    ("ProviderConfigDump", {"instance_id", "domain", "values", "truncated"}),
+    ("RouteEntry", {"method", "path", "registered_by"}),
+    ("RouteList", {"routes"}),
+    ("PackageVersions", {"packages"}),
+    ("ReloadResult", {"instance_id", "duration_ms", "new_available", "last_error"}),
+    (
+        "HealthSummary",
+        {
+            "providers_loaded",
+            "providers_disabled",
+            "providers_error",
+            "providers_error_details",
+            "queues_total",
+            "queues_with_active_playback",
+            "queues_with_errors",
+            "events_per_min_by_type",
+            "log_errors_last_5min",
+            "disabled_capabilities",
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize(("name", "fields"), _DEBUG_CLASSES)
+def test_debug_dataclass_shape(name: str, fields: set[str]) -> None:
+    """Debug dataclasses are frozen, kw_only, and have the expected fields."""
+    cls = cast("type", getattr(models, name))
+    assert dataclasses.is_dataclass(cls), f"{name} is not a dataclass"
+    assert cls.__dataclass_params__.frozen, f"{name} must be frozen"  # type: ignore[attr-defined]
+    assert cls.__dataclass_params__.kw_only, f"{name} must be kw_only"  # type: ignore[attr-defined]
+    actual = {f.name for f in dataclasses.fields(cls)}
+    assert actual == fields, f"{name} fields drift: {actual - fields=} {fields - actual=}"
+
+
+_CONFIG_CLASSES = [
+    ("ConfigTarget", {"target_type", "target_id", "domain", "name", "enabled"}),
+    ("ConfigTargetList", {"providers", "core", "players"}),
+    ("CoreConfigDump", {"domain", "values", "truncated"}),
+    ("PlayerConfigDump", {"player_id", "provider", "values", "truncated"}),
+    (
+        "ConfigEntryDump",
+        {
+            "key",
+            "type",
+            "label",
+            "default_value",
+            "required",
+            "description",
+            "options",
+            "range",
+            "advanced",
+            "hidden",
+            "requires_reload",
+            "depends_on",
+            "action",
+            "current_value",
+        },
+    ),
+    ("ConfigEntryList", {"target_type", "target_id", "entries", "truncated"}),
+    ("DSPConfigDump", {"player_id", "enabled", "input_gain", "output_gain", "filters"}),
+    ("ValueChange", {"key", "before", "after", "secret"}),
+    ("DiffResult", {"target_type", "target_id", "changes"}),
+    (
+        "SetValueResult",
+        {"target_type", "target_id", "key", "applied", "requires_reload", "audit_log_id", "diff"},
+    ),
+    (
+        "SaveResult",
+        {
+            "target_type",
+            "target_id",
+            "applied",
+            "changes",
+            "requires_reload",
+            "audit_log_id",
+            "diff",
+        },
+    ),
+    ("ActionResult", {"instance_id", "action_key", "new_entries", "extra_data", "audit_log_id"}),
+]
+
+
+@pytest.mark.parametrize(("name", "fields"), _CONFIG_CLASSES)
+def test_config_dataclass_shape(name: str, fields: set[str]) -> None:
+    """Config dataclasses are frozen, kw_only, and have the expected fields."""
+    cls = cast("type", getattr(models, name))
+    assert dataclasses.is_dataclass(cls), f"{name} is not a dataclass"
+    assert cls.__dataclass_params__.frozen, f"{name} must be frozen"  # type: ignore[attr-defined]
+    assert cls.__dataclass_params__.kw_only, f"{name} must be kw_only"  # type: ignore[attr-defined]
+    actual = {f.name for f in dataclasses.fields(cls)}
+    assert actual == fields, f"{name} fields drift: {actual - fields=} {fields - actual=}"

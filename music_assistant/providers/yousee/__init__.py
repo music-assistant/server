@@ -11,6 +11,7 @@ from music_assistant_models.enums import (
 )
 
 from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_PASSWORD,
     CONF_USERNAME,
 )
@@ -71,27 +72,24 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
         ),
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.INTEGER,
-            label="Stream Quality",
-            description="The streaming quality to use for playback",
             default_value=320,
             options=[
-                ConfigValueOption('"High" - MP4 320kbps', 320),
-                ConfigValueOption('"Normal" - MP4 192kbps', 192),
+                ConfigValueOption(320),
+                ConfigValueOption(192),
             ],
         ),
     )

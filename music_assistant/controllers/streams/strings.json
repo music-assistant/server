@@ -1,0 +1,45 @@
+{
+  "config_entries": {
+    "buffer_size": {
+      "label": "Audio buffer size",
+      "description": "Controls how much audio is buffered in memory. A larger buffer improves playback stability and seeking but uses more memory.\n\n- **Minimal**: Small buffer, recommended for memory-constrained devices.\n- **Balanced**: Moderate buffer, good balance for most systems.\n- **Maximum**: Large buffer, best performance for systems with plenty of memory.",
+      "options": {
+        "minimal": "Minimal",
+        "balanced": "Balanced",
+        "maximum": "Maximum"
+      }
+    },
+    "allow_crossfade_same_album": {
+      "label": "Allow crossfade between tracks from the same album",
+      "description": "Enabling this option allows for crossfading between tracks that are part of the same album."
+    },
+    "smart_fades_log_level": {
+      "label": "Smart Fades Log level",
+      "description": "Log level for the Smart Fades mixer and analyzer."
+    },
+    "publish_ip": {
+      "label": "Published IP address",
+      "description": "This IP address is communicated to players where to find this server.\nThe default \"auto\" automatically selects the server's primary IP address at startup.\nSet an explicit IP address if the auto-detected one cannot be reached by players on the local network (for example when running in Docker with bridged networking), otherwise audio streaming will not work."
+    },
+    "volume_normalization_radio": {
+      "label": "Volume normalization method for radio streams"
+    },
+    "volume_normalization_tracks": {
+      "label": "Volume normalization method for tracks"
+    },
+    "volume_normalization_fixed_gain_radio": {
+      "label": "Fixed/fallback gain adjustment for radio streams"
+    },
+    "volume_normalization_fixed_gain_tracks": {
+      "label": "Fixed/fallback gain adjustment for tracks"
+    },
+    "background_scan_concurrency": {
+      "label": "Background analysis concurrency",
+      "description": "Maximum number of tracks analyzed concurrently during the nightly background scan (1-16). Defaults to 1, or 2 on machines with 4 or more cores. Raise it for faster overnight scans at the cost of more CPU; analysis still never uses more than half the cores."
+    }
+  },
+  "manifest": {
+    "name": "Streams",
+    "description": "Configuration of the audio streaming and processing engine"
+  }
+}

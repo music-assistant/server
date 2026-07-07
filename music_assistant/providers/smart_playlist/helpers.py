@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 
 import aiofiles
+from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import json_dumps, json_loads
@@ -31,6 +35,17 @@ def _coerce_optional_int(value: Any, field_name: str) -> int | None:
         return int(value)
     except (TypeError, ValueError) as err:
         raise InvalidDataError(f"Invalid value for {field_name}: {value!r}") from err
+
+
+def _coerce_optional_bool(value: Any, field_name: str) -> bool | None:
+    """Coerce a value to bool | None, raising InvalidDataError on bad input."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    raise InvalidDataError(
+        f"Invalid value for {field_name}: {value!r}. Expected True, False, or None."
+    )
 
 
 def _coerce_id_list(value: Any, field_name: str) -> list[int]:
@@ -110,7 +125,13 @@ class SmartPlaylistRules:
     excluded_album_names: dict[int, str] = field(default_factory=dict)
     excluded_genre_ids: list[int] = field(default_factory=list)
     excluded_genre_names: dict[int, str] = field(default_factory=dict)
-    dedup_hours: int | None = None
+    album_types: list[str] = field(default_factory=list)
+    excluded_album_types: list[str] = field(default_factory=list)
+    explicit: bool | None = None
+    min_duration: int | None = None
+    max_duration: int | None = None
+    last_played_before_value: int | None = None
+    last_played_before_unit: str | None = None  # "hours", "days", "weeks", "months"
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -155,7 +176,13 @@ class SmartPlaylistRules:
             "excluded_album_names": {str(k): v for k, v in self.excluded_album_names.items()},
             "excluded_genre_ids": self.excluded_genre_ids,
             "excluded_genre_names": {str(k): v for k, v in self.excluded_genre_names.items()},
-            "dedup_hours": self.dedup_hours,
+            "album_types": self.album_types,
+            "excluded_album_types": self.excluded_album_types,
+            "explicit": self.explicit,
+            "min_duration": self.min_duration,
+            "max_duration": self.max_duration,
+            "last_played_before_value": self.last_played_before_value,
+            "last_played_before_unit": self.last_played_before_unit,
         }
 
     @classmethod
@@ -203,7 +230,17 @@ class SmartPlaylistRules:
             excluded_genre_names=_coerce_int_keyed_dict(
                 data.get("excluded_genre_names"), "excluded_genre_names"
             ),
-            dedup_hours=_coerce_optional_int(data.get("dedup_hours"), "dedup_hours"),
+            album_types=_coerce_str_list(data.get("album_types"), "album_types"),
+            excluded_album_types=_coerce_str_list(
+                data.get("excluded_album_types"), "excluded_album_types"
+            ),
+            explicit=_coerce_optional_bool(data.get("explicit"), "explicit"),
+            min_duration=_coerce_optional_int(data.get("min_duration"), "min_duration"),
+            max_duration=_coerce_optional_int(data.get("max_duration"), "max_duration"),
+            last_played_before_value=_coerce_optional_int(
+                data.get("last_played_before_value"), "last_played_before_value"
+            ),
+            last_played_before_unit=data.get("last_played_before_unit"),
         )
 
     def human_readable(self) -> str:
@@ -211,6 +248,10 @@ class SmartPlaylistRules:
         parts: list[str] = []
         if self.favorites_only:
             parts.append("Favorites only")
+        if self.explicit is True:
+            parts.append("Explicit only")
+        elif self.explicit is False:
+            parts.append("No explicit content")
         if self.genre_ids:
             names = [self.genre_names.get(gid, str(gid)) for gid in self.genre_ids]
             parts.append(f"Genres: {', '.join(names)}")
@@ -241,21 +282,49 @@ class SmartPlaylistRules:
             parts.append(f"Excl. genres: {', '.join(names)}")
         if self.excluded_track_uris:
             parts.append(f"Excl. {len(self.excluded_track_uris)} track(s)")
-        if self.dedup_hours is not None:
-            parts.append(f"No repeat within {self.dedup_hours}h")
+        if self.album_types:
+            parts.append(f"Album types: {', '.join(self.album_types)}")
+        if self.excluded_album_types:
+            parts.append(f"Excl. album types: {', '.join(self.excluded_album_types)}")
         if self.min_popularity is not None:
             parts.append(f"Min. popularity: {self.min_popularity}")
-        if self.year_from is not None or self.year_to is not None:
-            if self.year_from is not None and self.year_to is not None:
-                parts.append(f"Year: {self.year_from}-{self.year_to}")
-            elif self.year_from is not None:
-                parts.append(f"Year: from {self.year_from}")
-            else:
-                parts.append(f"Year: to {self.year_to}")
+        if year_range := self._format_year_range():
+            parts.append(year_range)
+        if duration_range := self._format_duration_range():
+            parts.append(duration_range)
+        if last_played_str := self._format_last_played():
+            parts.append(last_played_str)
         if not parts:
             return "No rules (all library tracks)"
         connector = f" {self.logic} "
         return connector.join(parts)
+
+    def _format_year_range(self) -> str | None:
+        """Format year filter as human-readable string."""
+        if self.year_from is not None and self.year_to is not None:
+            return f"Year: {self.year_from}-{self.year_to}"
+        if self.year_from is not None:
+            return f"Year: from {self.year_from}"
+        if self.year_to is not None:
+            return f"Year: to {self.year_to}"
+        return None
+
+    def _format_duration_range(self) -> str | None:
+        """Format duration filter as human-readable string."""
+        if self.min_duration is not None and self.max_duration is not None:
+            return f"Duration: {self.min_duration}-{self.max_duration}s"
+        if self.min_duration is not None:
+            return f"Duration: ≥{self.min_duration}s"
+        if self.max_duration is not None:
+            return f"Duration: ≤{self.max_duration}s"
+        return None
+
+    def _format_last_played(self) -> str | None:
+        """Format last played filter as human-readable string."""
+        if self.last_played_before_value is None or self.last_played_before_unit is None:
+            return None
+        unit_display = self.last_played_before_unit  # hours, days, weeks, months
+        return f"Not played in {self.last_played_before_value} {unit_display}"
 
 
 def validate_rules(rules: SmartPlaylistRules) -> None:
@@ -283,8 +352,45 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
     if total_seeds > MAX_SEEDS:
         msg = f"Too many seeds: {total_seeds} > {MAX_SEEDS}"
         raise InvalidDataError(msg)
-    if rules.dedup_hours is not None and not (1 <= rules.dedup_hours <= 8760):
-        msg = f"dedup_hours must be between 1 and 8760, got {rules.dedup_hours}"
+    valid_album_types = {t.value for t in AlbumType}
+    for at in rules.album_types:
+        if at not in valid_album_types:
+            msg = f"Invalid album_types value: {at!r}. Must be one of {sorted(valid_album_types)}"
+            raise InvalidDataError(msg)
+    for at in rules.excluded_album_types:
+        if at not in valid_album_types:
+            msg = f"Invalid excluded_album_types value: {at!r}. Must be one of {sorted(valid_album_types)}"
+            raise InvalidDataError(msg)
+    if rules.min_duration is not None and rules.min_duration < 0:
+        msg = f"min_duration must be >= 0, got {rules.min_duration}"
+        raise InvalidDataError(msg)
+    if rules.max_duration is not None and rules.max_duration < 0:
+        msg = f"max_duration must be >= 0, got {rules.max_duration}"
+        raise InvalidDataError(msg)
+    if (
+        rules.min_duration is not None
+        and rules.max_duration is not None
+        and rules.min_duration > rules.max_duration
+    ):
+        msg = f"min_duration must be <= max_duration, got {rules.min_duration}>{rules.max_duration}"
+        raise InvalidDataError(msg)
+
+    # Validate last_played fields
+    if (rules.last_played_before_value is None) != (rules.last_played_before_unit is None):
+        msg = (
+            "last_played_before_value and last_played_before_unit must both be set or both be None"
+        )
+        raise InvalidDataError(msg)
+    if rules.last_played_before_value is not None and rules.last_played_before_value < 1:
+        msg = f"last_played_before_value must be >= 1, got {rules.last_played_before_value}"
+        raise InvalidDataError(msg)
+    if rules.last_played_before_unit is not None and rules.last_played_before_unit not in (
+        "hours",
+        "days",
+        "weeks",
+        "months",
+    ):
+        msg = f"last_played_before_unit must be hours/days/weeks/months, got {rules.last_played_before_unit}"
         raise InvalidDataError(msg)
 
 
@@ -294,7 +400,25 @@ async def read_json(path: str) -> dict[str, Any]:
         return cast("dict[str, Any]", json_loads(await fh.read()))
 
 
+def _atomic_write(path: str, payload: str) -> None:
+    """Write payload to a temp file and atomically replace path, cleaning up on failure."""
+    tmp = Path(f"{path}.tmp")
+    replaced = False
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(payload)
+        tmp.replace(path)
+        replaced = True
+    finally:
+        # On any failure mid-write, don't leave a stray temp file behind to accumulate.
+        if not replaced:
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
+
+
 async def write_json(path: str, data: dict[str, Any]) -> None:
-    """Write data as JSON to a file."""
-    async with aiofiles.open(path, "w", encoding="utf-8") as fh:
-        await fh.write(json_dumps(data, indent=True))
+    """Write data as JSON to a file atomically (temp file + replace, off the event loop)."""
+    # The whole write+rename+cleanup runs in one thread so a cancelled await can't race the
+    # rename against cleanup; the rename itself is atomic, so the destination is never truncated.
+    payload = json_dumps(data, indent=True)
+    await asyncio.to_thread(_atomic_write, path, payload)

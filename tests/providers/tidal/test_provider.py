@@ -19,6 +19,7 @@ def mass_mock() -> Mock:
     mass.http_session = AsyncMock()
     mass.metadata.locale = "en_US"
     mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
     return mass
@@ -249,7 +250,7 @@ async def test_get_item_mapping(provider: TidalProvider) -> None:
 async def test_get_library_artists_delegates_to_library(provider: TidalProvider) -> None:
     """Test get_library_artists delegates to library manager."""
 
-    async def mock_generator() -> AsyncGenerator[Any, None]:
+    async def mock_generator() -> AsyncGenerator[Any]:
         yield Mock(spec=Artist)
         yield Mock(spec=Artist)
 
@@ -264,7 +265,7 @@ async def test_get_library_artists_delegates_to_library(provider: TidalProvider)
 async def test_get_library_albums_delegates_to_library(provider: TidalProvider) -> None:
     """Test get_library_albums delegates to library manager."""
 
-    async def mock_generator() -> AsyncGenerator[Any, None]:
+    async def mock_generator() -> AsyncGenerator[Any]:
         yield Mock(spec=Album)
 
     with patch.object(provider.library, "get_albums", return_value=mock_generator()):
@@ -278,7 +279,7 @@ async def test_get_library_albums_delegates_to_library(provider: TidalProvider) 
 async def test_get_library_tracks_delegates_to_library(provider: TidalProvider) -> None:
     """Test get_library_tracks delegates to library manager."""
 
-    async def mock_generator() -> AsyncGenerator[Any, None]:
+    async def mock_generator() -> AsyncGenerator[Any]:
         yield Mock(spec=Track)
         yield Mock(spec=Track)
         yield Mock(spec=Track)
@@ -294,7 +295,7 @@ async def test_get_library_tracks_delegates_to_library(provider: TidalProvider) 
 async def test_get_library_playlists_delegates_to_library(provider: TidalProvider) -> None:
     """Test get_library_playlists delegates to library manager."""
 
-    async def mock_generator() -> AsyncGenerator[Any, None]:
+    async def mock_generator() -> AsyncGenerator[Any]:
         yield Mock(spec=Playlist)
 
     with patch.object(provider.library, "get_playlists", return_value=mock_generator()):

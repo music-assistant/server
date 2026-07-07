@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-    from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzRelation
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzRelation
 
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.ARTIST_METADATA}
@@ -142,7 +143,8 @@ class WikipediaMetadataProvider(MetadataProvider):
                 result[lang] = title
         return result
 
-    @use_cache(86400 * 90, persistent=True)
+    # None can signal a fetch failure as well as a missing bio, so don't cache it
+    @use_cache(86400 * 90, persistent=True, cache_none=False)
     async def _fetch_bio(self, lang: str, title: str) -> str | None:
         """
         Return the plain-text lead section of a Wikipedia article.
@@ -189,10 +191,10 @@ class WikipediaMetadataProvider(MetadataProvider):
                         return None
                     try:
                         return cast("dict[str, Any]", await response.json())
-                    except (aiohttp.ContentTypeError, JSONDecodeError):
+                    except aiohttp.ContentTypeError, JSONDecodeError:
                         return None
             # ClientError covers every fetch failure; TimeoutError is raised separately
-            except (aiohttp.ClientError, TimeoutError):
+            except aiohttp.ClientError, TimeoutError:
                 return None
 
 

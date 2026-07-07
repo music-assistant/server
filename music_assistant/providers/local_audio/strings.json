@@ -1,0 +1,16 @@
+{
+  "config_entries": {
+    "audio_backend": {
+      "label": "Audio backend",
+      "description": "Select the audio output backend. Auto detects PulseAudio or PipeWire and falls back to ALSA. PulseAudio/PipeWire supports remap sinks and a self-managed multi-channel sink topology. ALSA provides direct hardware access for devices that PulseAudio or PipeWire cannot handle correctly.",
+      "options": {
+        "auto": "Auto (PulseAudio/PipeWire if available, else ALSA)",
+        "pulseaudio": "PulseAudio / PipeWire",
+        "alsa": "ALSA (direct)"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Play audio through locally attached soundcards (USB DACs, built-in speakers, etc.)."
+  }
+}

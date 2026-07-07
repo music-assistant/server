@@ -7,5 +7,5 @@
   "requirements": [],
   "codeowners": ["@fvonhoven"],
   "multi_instance": false,
-  "stage": "beta"
+  "stage": "stable"
 }

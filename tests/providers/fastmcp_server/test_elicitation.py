@@ -8,8 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from mcp.shared.exceptions import McpError
+from mcp.types import INTERNAL_ERROR, INVALID_REQUEST, ErrorData
 
 from music_assistant.providers.fastmcp_server.tools import build_media_server, build_queue_server
+from music_assistant.providers.fastmcp_server.tools._common import confirm_or_raise
 
 
 def _server(mass: MagicMock, *, require_confirmation: bool) -> FastMCP:
@@ -85,7 +88,8 @@ async def test_no_confirmation_when_disabled(mock_mass: MagicMock) -> None:
 
 
 async def test_get_active_queue_clamps_include_items(mock_mass: MagicMock) -> None:
-    """A client-supplied ``include_items`` is clamped to 500 to bound memory.
+    """
+    A client-supplied ``include_items`` is clamped to 500 to bound memory.
 
     Without the clamp a hostile or sloppy caller could pass ``include_items=10**6``
     and force MA to materialise the entire queue per request.
@@ -100,7 +104,7 @@ async def test_get_active_queue_clamps_include_items(mock_mass: MagicMock) -> No
             "queue_get_active_queue",
             {"player_id": "p1", "include_items": 10_000},
         )
-    mock_mass.player_queues.items.assert_called_once_with("q1", limit=500)
+    mock_mass.player_queues.items.assert_called_once_with("q1", limit=500, offset=0)
 
 
 async def test_get_active_queue_passes_small_limit_through(mock_mass: MagicMock) -> None:
@@ -115,7 +119,7 @@ async def test_get_active_queue_passes_small_limit_through(mock_mass: MagicMock)
             "queue_get_active_queue",
             {"player_id": "p1", "include_items": 10},
         )
-    mock_mass.player_queues.items.assert_called_once_with("q1", limit=10)
+    mock_mass.player_queues.items.assert_called_once_with("q1", limit=10, offset=0)
 
 
 async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:
@@ -136,7 +140,8 @@ async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:
 async def test_remove_from_favorites_resolves_provider_uri_to_library(
     mock_mass: MagicMock,
 ) -> None:
-    """A provider URI is resolved to the matching library item before removal.
+    """
+    A provider URI is resolved to the matching library item before removal.
 
     ``MusicController.remove_item_from_*`` expects a library item id; passing the
     provider's native item id silently targets the wrong item (or raises on a
@@ -165,7 +170,8 @@ async def test_remove_from_favorites_resolves_provider_uri_to_library(
 async def test_remove_from_library_raises_when_not_in_library(
     mock_mass: MagicMock,
 ) -> None:
-    """When the URI's library counterpart cannot be resolved, the tool raises.
+    """
+    When the URI's library counterpart cannot be resolved, the tool raises.
 
     Without this, the tool would silently call ``remove_item_from_library`` with
     a provider-native item id, which either fails on ``int()`` cast or targets
@@ -183,3 +189,23 @@ async def test_remove_from_library_raises_when_not_in_library(
                 "media_remove_from_library", {"uri": "yandex_music://track/prov-abc"}
             )
     mock_mass.music.remove_item_from_library.assert_not_awaited()
+
+
+async def test_confirm_passes_through_when_elicitation_unsupported() -> None:
+    """McpError(INVALID_REQUEST) = no capability → pass through (no raise)."""
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(
+        side_effect=McpError(ErrorData(code=INVALID_REQUEST, message="Elicitation not supported"))
+    )
+    # Must NOT raise — pass-through to permission flag.
+    await confirm_or_raise(ctx, "confirm?", enabled=True)
+
+
+async def test_confirm_fails_closed_on_unexpected_mcp_error() -> None:
+    """A non-capability McpError must re-raise (fail closed), not bypass confirmation."""
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(
+        side_effect=McpError(ErrorData(code=INTERNAL_ERROR, message="handler blew up"))
+    )
+    with pytest.raises(McpError):
+        await confirm_or_raise(ctx, "confirm?", enabled=True)

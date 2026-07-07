@@ -75,13 +75,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MASS_PLAYER_ID,
             type=ConfigEntryType.STRING,
-            label="Connected Music Assistant Player",
-            description="The player to use for playback.",
             default_value=PLAYER_ID_AUTO,
             options=[
-                ConfigValueOption("Auto (prefer playing player)", PLAYER_ID_AUTO),
+                ConfigValueOption(PLAYER_ID_AUTO),
                 *(
-                    ConfigValueOption(x.display_name, x.player_id)
+                    ConfigValueOption(x.player_id, title=x.display_name)
                     for x in sorted(
                         mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                     )
@@ -208,7 +206,8 @@ class AriaCastBridge(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the AriaCast audio to a queue.
+        """
+        Return StreamDetails for streaming the AriaCast audio to a queue.
 
         Side-effect-free: ownership is claimed in on_source_selected (which the
         streams controller fires before this method on the actual stream
@@ -234,7 +233,7 @@ class AriaCastBridge(PluginProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Stream PCM audio frames from the binary's stdout pump."""
         consumer_queue = self._in_use_by_queue
         # Snapshot the active session id so a same-queue reconnect (which

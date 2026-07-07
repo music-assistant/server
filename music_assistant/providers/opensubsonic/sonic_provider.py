@@ -5,6 +5,7 @@ from __future__ import annotations
 from asyncio import TaskGroup
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
+from urllib.parse import urlencode
 
 from libopensonic import AsyncConnection as SonicConnection
 from libopensonic.errors import (
@@ -77,7 +78,6 @@ if TYPE_CHECKING:
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
-CONF_OVERRIDE_OFFSET = "override_transcode_offest"
 CONF_RECO_FAVES = "recommend_favorites"
 CONF_NEW_ALBUMS = "recommend_new"
 CONF_PLAYED_ALBUMS = "recommend_played"
@@ -97,8 +97,6 @@ class OpenSonicProvider(MusicProvider):
 
     conn: SonicConnection
     _enable_podcasts: bool = True
-    _seek_support: bool = False
-    _ignore_offset: bool = False
     _show_faves: bool = True
     _show_new: bool = True
     _show_played: bool = True
@@ -131,18 +129,21 @@ class OpenSonicProvider(MusicProvider):
             msg = (
                 f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, check your settings."
             )
-            raise LoginFailed(msg) from e
+            raise LoginFailed(
+                msg,
+                translation_key="connect_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[self.config.get_value(CONF_BASE_URL)],
+            ) from e
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
-        self._ignore_offset = bool(self.config.get_value(CONF_OVERRIDE_OFFSET))
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
             for entry in extensions:
-                if entry.name == "transcodeOffset" and not self._ignore_offset:
-                    self._seek_support = True
                 if entry.name == "songLyrics":
                     self._id_lyrics = True
+                    break
         except OSError:
-            self.logger.info("Server does not support transcodeOffset, seeking in player provider")
+            self.logger.info("Failed to query server for OpenSubsonic extensions")
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
@@ -277,7 +278,7 @@ class OpenSonicProvider(MusicProvider):
         else:
             await self.conn.unstar(sids=track_ids, album_ids=album_ids, artist_ids=artist_ids)
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Provide a generator for reading all artists."""
         artists = await self.conn.get_artists()
 
@@ -291,7 +292,7 @@ class OpenSonicProvider(MusicProvider):
             for artist in index.artist:
                 yield parse_artist(self.instance_id, artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """
         Provide a generator for reading all artists.
 
@@ -315,13 +316,13 @@ class OpenSonicProvider(MusicProvider):
                 offset=offset,
             )
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Provide a generator for library playlists."""
         results = await self.conn.get_playlists()
         for entry in results:
             yield parse_playlist(self.instance_id, entry)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """
         Provide a generator for library tracks.
 
@@ -491,7 +492,7 @@ class OpenSonicProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all Episodes for given podcast id."""
         if not self._enable_podcasts:
             return
@@ -515,7 +516,7 @@ class OpenSonicProvider(MusicProvider):
 
         return parse_podcast(self.instance_id, channels[0])
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         if self._enable_podcasts:
             channels = await self.conn.get_podcasts(inc_episodes=True)
@@ -605,10 +606,16 @@ class OpenSonicProvider(MusicProvider):
         for pl in pls:
             if pl.name == name:
                 return parse_playlist(self.instance_id, pl)
-        raise MediaNotFoundError(f"Failed to create podcast with name '{name}'")
+        raise MediaNotFoundError(
+            f"Failed to create playlist with name '{name}'",
+            translation_key="create_playlist_failed",
+            translation_owner=self.translation_owner,
+            translation_args=[name],
+        )
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Append the listed tracks to the selected playlist.
+        """
+        Append the listed tracks to the selected playlist.
 
         Note that the configured user must own the playlist to edit this way.
         """
@@ -668,24 +675,22 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Unsupported media type encountered '{media_type}'"
             raise UnsupportedFeaturedException(msg)
 
-        if mime_type and mime_type.endswith("mp4"):
-            self.logger.warning(
-                "Due to the streaming method used by the subsonic API, M4A files "
-                "may fail. See provider documentation for more information."
-            )
-
-        # We believe that reporting the container type here is causing playback problems and ffmpeg
-        # should be capable of guessing the correct container type for any media supported by
-        # OpenSubsonic servers. Better to let ffmpeg figure things out than tell it something
-        # confusing. We still go through the effort of figuring out what the server thinks the
-        # container is to warn about M4A files.
-        mime_type = "?"
+        # The stream URL carries no query string; id/auth/format all travel in the POST body
+        # so they never end up in proxy logs, server logs, or a `ps aux` listing. ffmpeg is
+        # handed the URL as its input and re-sends this same body on every Range-based reconnect
+        # it issues while seeking, so seeking is handled entirely by ffmpeg's own demuxer rather
+        # than the transcodeOffset extension.
+        fmat = "raw" if self._raw_file else None
+        url, params = self.conn.get_stream_url(item.id, tformat=fmat, estimate_length=True)
+        # ffmpeg's -post_data is a binary AVOption: it must be given as a hex string of the
+        # raw bytes, a plain string value is silently rejected ("Invalid argument").
+        post_data = urlencode(params).encode().hex()
 
         return StreamDetails(
             item_id=item.id,
             provider=self.instance_id,
             allow_seek=True,
-            can_seek=self._seek_support,
+            can_seek=True,
             media_type=media_type,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(mime_type),
@@ -693,7 +698,16 @@ class OpenSonicProvider(MusicProvider):
                 bit_depth=item.bit_depth or 16,
                 channels=item.channel_count or 2,
             ),
-            stream_type=StreamType.CUSTOM,
+            stream_type=StreamType.HTTP,
+            path=url,
+            extra_input_args=[
+                "-method",
+                "POST",
+                "-content_type",
+                "application/x-www-form-urlencoded",
+                "-post_data",
+                post_data,
+            ],
             duration=item.duration or 0,
         )
 
@@ -780,32 +794,6 @@ class OpenSonicProvider(MusicProvider):
         # If we get here, there is no bookmark
         return (False, 0, None)
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Provide a generator for the stream data."""
-        # ignore seek position if the server does not support it
-        # in that case we let the core handle seeking
-        if not self._seek_support:
-            seek_position = 0
-
-        self.logger.debug("Streaming %s", streamdetails.item_id)
-        fmat = "raw" if self._raw_file else None
-
-        try:
-            resp = await self.conn.stream(
-                streamdetails.item_id, time_offset=seek_position, estimate_length=True, tformat=fmat
-            )
-        except DataNotFoundError as err:
-            msg = f"Item '{streamdetails.item_id}' not found"
-            raise MediaNotFoundError(msg) from err
-        self.logger.debug("starting stream of item '%s'", streamdetails.item_id)
-        async with resp:
-            async for chunk in resp.content.iter_chunked(40960):
-                yield bytes(chunk)
-
-        self.logger.debug("Done streaming %s", streamdetails.item_id)
-
     async def _get_podcast_channel_async(self, chan_id: str) -> PodcastChannel | None:
         if cache := await self.mass.cache.get(
             key=chan_id,
@@ -831,6 +819,7 @@ class OpenSonicProvider(MusicProvider):
             item_id="subsonic_newest_podcasts",
             provider=self.domain,
             name="Newest Podcast Episodes",
+            translation_key="episodes_recently_added",
         )
         sonic_episodes = await self.conn.get_newest_podcasts(count=self._reco_limit)
         for ep in sonic_episodes:
@@ -841,7 +830,10 @@ class OpenSonicProvider(MusicProvider):
 
     async def _favorites_recommendation(self) -> RecommendationFolder:
         faves: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_starred_albums", provider=self.domain, name="Starred Items"
+            item_id="subsonic_starred_albums",
+            provider=self.domain,
+            name="Starred Items",
+            translation_key="starred_items",
         )
         starred = await self.conn.get_starred2()
         if starred.album:
@@ -861,7 +853,10 @@ class OpenSonicProvider(MusicProvider):
 
     async def _new_recommendations(self) -> RecommendationFolder:
         new_stuff: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_new_albums", provider=self.domain, name="New Albums"
+            item_id="subsonic_new_albums",
+            provider=self.domain,
+            name="New Albums",
+            translation_key="recently_added_albums",
         )
         new_albums = await self.conn.get_album_list2(ltype="newest", size=self._reco_limit)
         for sonic_album in new_albums:
@@ -870,7 +865,10 @@ class OpenSonicProvider(MusicProvider):
 
     async def _played_recommendations(self) -> RecommendationFolder:
         recent: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_most_played", provider=self.domain, name="Most Played Albums"
+            item_id="subsonic_most_played",
+            provider=self.domain,
+            name="Most Played Albums",
+            translation_key="most_played_albums",
         )
         albums = await self.conn.get_album_list2(ltype="frequent", size=self._reco_limit)
         for sonic_album in albums:
@@ -879,7 +877,8 @@ class OpenSonicProvider(MusicProvider):
 
     @use_cache(3600 * 3, cache_checksum="v2")  # cache for 3 hours
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Provide recommendations.
+        """
+        Provide recommendations.
 
         These can provide favorited items, recently added albums, newest podcast episodes,
         and most played albums.  What is included is configured with the provider.
@@ -912,7 +911,8 @@ class OpenSonicProvider(MusicProvider):
         return recos
 
     async def get_track_lyrics(self, track: SonicItem) -> tuple[str, bool] | None:
-        """Get lyrics for a track.
+        """
+        Get lyrics for a track.
 
         Fetches lyrics from Subsonic server. Returns the lyrics text in LRC format
         if the Lyrics are synced (have time stamp info) or raw text if not

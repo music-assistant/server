@@ -1,4 +1,5 @@
-"""Smoke tests for the optional 1024-dim CLAP usearch index helper.
+"""
+Smoke tests for the optional 1024-dim CLAP usearch index helper.
 
 Round-trip coverage: deterministic labels, add/contains/get, and
 persistence to the sonic_similarity_clap.usearch filename stem under
@@ -86,6 +87,26 @@ async def test_get_embedding_by_item_id_missing_returns_none(
     idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
     await idx.load()
     assert idx.get_embedding_by_item_id("not_in_index") is None
+
+
+@pytest.mark.asyncio
+async def test_get_embedding_o1_lookup_matches_provider(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """get_embedding returns the vector for the right provider and None otherwise."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    vec = _unit_vec(7)
+    await idx.add("spotify", "track_xyz", vec)
+
+    stored = idx.get_embedding("spotify", "track_xyz")
+    assert stored is not None
+    assert stored.shape == (CLAP_EMBEDDING_DIM,)
+    np.testing.assert_allclose(stored, vec, atol=1e-3)
+
+    # Same item_id under a different provider derives a different label → miss.
+    assert idx.get_embedding("tidal", "track_xyz") is None
+    assert idx.get_embedding("spotify", "not_in_index") is None
 
 
 @pytest.mark.asyncio

@@ -218,7 +218,14 @@ class WiimPlayer(Player):
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         try:
-            await self.device.async_set_volume(volume_level)
+            # Remove and uncomment when wiim-sdk 0.1.5+ has been released
+            # await self.device.async_set_volume(volume_level)
+            # Inlined fix from https://github.com/Linkplay2020/wiim/pull/18:
+            # async_set_volume uses a UPnP action that is unreliable; the HTTP
+            # command works. Replicates the SDK method body until 0.1.5 ships.
+            volume_level = max(0, min(100, volume_level))
+            await self.device._http_command_ok("setPlayerCmd:vol:{}", str(volume_level))
+            self.device.volume = volume_level
         except (WiimDeviceException, WiimRequestException) as err:
             self._handle_command_error("volume_set", err)
             return
@@ -234,7 +241,8 @@ class WiimPlayer(Player):
         self._update_ma_state_from_sdk_cache()
 
     async def select_source(self, source: str) -> None:
-        """Handle SELECT SOURCE command on the player.
+        """
+        Handle SELECT SOURCE command on the player.
 
         :param source: The source(id) to select, as defined in the source_list.
         """
@@ -256,6 +264,7 @@ class WiimPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
         queue = self.mass.player_queues.get(self.player_id)
+        pq_data = self.mass.player_queues.queue_data_or_none(self.player_id) if queue else None
         entry_sdk_uri = self.device.current_media.uri if self.device.current_media else None
         self.logger.debug(
             "set_members entry on %s: add=%s, remove=%s | "
@@ -267,7 +276,7 @@ class WiimPlayer(Player):
             player_ids_to_remove,
             queue.current_item.queue_item_id if queue and queue.current_item else None,
             queue.next_item.queue_item_id if queue and queue.next_item else None,
-            queue.next_item_id_enqueued if queue else None,
+            pq_data.next_item_id_enqueued if pq_data else None,
             entry_sdk_uri,
             self.device.playing_status,
         )

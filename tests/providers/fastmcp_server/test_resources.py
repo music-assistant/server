@@ -1,4 +1,5 @@
-"""Tests for ``provider/resources/*`` handler return-value serialisation.
+"""
+Tests for ``provider/resources/*`` handler return-value serialisation.
 
 FastMCP's resource read API requires handlers to return ``str | bytes |
 list[ResourceContents]``; returning an MA domain object or a provider Brief
@@ -105,7 +106,8 @@ async def test_player_resource_returns_json_text_for_brief(mock_mass: MagicMock)
 
 
 async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> None:
-    """A sync follower fetched by URI carries the synthesised ``state="synced"``.
+    """
+    A sync follower fetched by URI carries the synthesised ``state="synced"``.
 
     The Connect Wizard / clients reading ``player://{id}`` should see
     the same usability signal that ``list_players`` synthesises — the
@@ -161,6 +163,55 @@ async def test_player_resource_reports_needs_setup_state(mock_mass: MagicMock) -
     parsed = json.loads(next(c.text for c in contents if hasattr(c, "text")))
     assert parsed["state"] == "needs_setup"
     assert parsed["needs_setup"] is True
+
+
+async def test_player_resource_reflects_external_source_playback(
+    mock_mass: MagicMock,
+) -> None:
+    """
+    ``player://`` resource passes the active queue so external-source state is visible.
+
+    When a player is idle at the MA layer but Yandex Ynison is streaming through
+    it (Spotify Connect / AirPlay / Ynison), ``get_active_queue`` returns a queue
+    whose ``state`` is ``"playing"`` and whose ``current_item`` is an AUDIO_SOURCE
+    item. The resource must surface ``state="playing"``, ``external_source``, and
+    ``current_item`` identically to what ``players_get_player`` returns.
+    """
+    player = SimpleNamespace(
+        player_id="ext1",
+        display_name="Ynison Player",
+        name="Ynison Player",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=80,
+        powered=True,
+        current_media=None,
+        available=True,
+        enabled=True,
+    )
+    mock_mass.players.get_player.return_value = player
+
+    active_queue = SimpleNamespace(
+        state=SimpleNamespace(value="playing"),
+        current_item=SimpleNamespace(
+            name="Yandex Music Connect (Ynison)",
+            streamdetails=SimpleNamespace(
+                media_type=SimpleNamespace(value="audio_source"),
+                provider="yandex_ynison--PL8BnL7a",
+                stream_metadata=SimpleNamespace(title="Behind Your Walls"),
+            ),
+        ),
+    )
+    mock_mass.player_queues.get_active_queue.return_value = active_queue
+
+    mcp: FastMCP = FastMCP(name="t")
+    register_player_resources(mcp, mock_mass)
+    async with Client(mcp) as client:
+        contents = await client.read_resource("player://ext1")
+
+    parsed = json.loads(next(c.text for c in contents if hasattr(c, "text")))
+    assert parsed["state"] == "playing"
+    assert parsed["external_source"] == "yandex_ynison--PL8BnL7a"
+    assert parsed["current_item"] == "Behind Your Walls"
 
 
 async def test_queue_resource_returns_json_text_for_brief(mock_mass: MagicMock) -> None:
