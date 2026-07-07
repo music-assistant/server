@@ -155,11 +155,12 @@ class PlayerConfigMixin:
             if include_values:
                 result.append(await self.get_player_config(raw_conf["player_id"]))
             else:
-                raw_conf["default_name"] = (
-                    player.state.name if player else raw_conf.get("default_name")
+                summary_conf = deepcopy(raw_conf)
+                summary_conf["default_name"] = (
+                    player.state.name if player else summary_conf.get("default_name")
                 )
-                raw_conf["available"] = player.state.available if player else False
-                result.append(cast("PlayerConfig", PlayerConfig.parse([], raw_conf)))
+                summary_conf["available"] = player.state.available if player else False
+                result.append(cast("PlayerConfig", PlayerConfig.parse([], summary_conf)))
         return result
 
     @api_command("config/players/get", required_scope=Scope.CONFIG_PLAYERS_READ)
