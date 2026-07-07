@@ -306,6 +306,7 @@ class UniversalPlayerProvider(PlayerProvider):
         # Protocols that (also) belong to a native player mean this universal
         # player is a leftover wrapper: repair the protocol links to point at
         # the rightful native parent and skip restoring the wrapper.
+        native_claims: dict[str, str] = {}
         for protocol_id in valid_protocol_ids:
             for other_player_id, other_config in all_player_configs.items():
                 if other_player_id == player_id:
@@ -313,16 +314,28 @@ class UniversalPlayerProvider(PlayerProvider):
                 if other_config.get("provider") == "universal_player":
                     continue
                 other_values = other_config.get("values") or {}
-                if protocol_id not in other_values.get(CONF_LINKED_PROTOCOL_IDS, []):
-                    continue
+                if protocol_id in (other_values.get(CONF_LINKED_PROTOCOL_IDS) or []):
+                    native_claims[protocol_id] = other_player_id
+                    break
+        if native_claims:
+            # Members are same-device by construction, so members not claimed by
+            # any native follow the first claimer (keeps the cascade-disable
+            # repair intact for protocols that appeared after the parent left).
+            default_parent = next(iter(native_claims.values()))
+            by_parent: dict[str, list[str]] = {}
+            for protocol_id in valid_protocol_ids:
+                parent_id = native_claims.get(protocol_id, default_parent)
+                by_parent.setdefault(parent_id, []).append(protocol_id)
+            for native_id, protocol_ids in by_parent.items():
                 self.logger.info(
-                    "Not restoring universal player %s - protocol %s is linked to native player %s",
+                    "Not restoring universal player %s - protocols %s are linked "
+                    "to native player %s",
                     player_id,
-                    protocol_id,
-                    other_player_id,
+                    protocol_ids,
+                    native_id,
                 )
-                await self._reparent_protocols_to_native(other_player_id, valid_protocol_ids)
-                return
+                await self._reparent_protocols_to_native(native_id, protocol_ids)
+            return
 
         stored_protocol_ids = valid_protocol_ids
 

@@ -7438,6 +7438,72 @@ class TestUniversalPlayerRestoreOrphanCleanup:
             call.args[0] for call in mock_mass.config.save_player_config.await_args_list
         }
         assert disabled_ids == {ap_id, dlna_id}
+
+    @pytest.mark.asyncio
+    async def test_protocols_reparented_to_their_own_native_claimer(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Each protocol is reparented to the native player that claims it, not the first found."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        ap_id = "airplay_1"
+        slimproto_id = "slimproto_1"
+
+        all_configs = {
+            universal_id: {
+                "values": {
+                    "linked_protocol_ids": [ap_id, slimproto_id],
+                    "device_identifiers": {},
+                    "device_info": {},
+                },
+                "name": "Test UP",
+            },
+            "native_a": {
+                "provider": "dlna",
+                "values": {"linked_protocol_ids": [ap_id]},
+            },
+            "native_b": {
+                "provider": "squeezelite",
+                "values": {"linked_protocol_ids": [slimproto_id]},
+            },
+            ap_id: {
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": universal_id},
+            },
+            slimproto_id: {
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": universal_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.save_player_config = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.register_or_update = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.players.register_or_update.assert_not_called()
+        parent_restorations = {
+            call.args[0]: call.args[1]
+            for call in mock_mass.config.set.call_args_list
+            if "protocol_parent_id" in call.args[0]
+        }
+        assert parent_restorations == {
+            f"{CONF_PLAYERS}/{ap_id}/values/protocol_parent_id": "native_a",
+            f"{CONF_PLAYERS}/{slimproto_id}/values/protocol_parent_id": "native_b",
+        }
         for call in mock_mass.config.save_player_config.await_args_list:
             assert call.args[1] == {ATTR_ENABLED: False}
 
