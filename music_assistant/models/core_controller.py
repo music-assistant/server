@@ -15,6 +15,7 @@ from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, CoreConfig
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
 # TypeVar for config value type inference
@@ -97,6 +98,15 @@ class CoreController:
             specified type matches the actual config value type.
         """
         return self.config.get_value(key, default)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
+        """
+        Return optional diagnostics info for this controller to include in diagnostics reports.
+
+        Return None (the default) when this controller has nothing to contribute.
+        Keep the returned data small, JSON serializable and free of sensitive values.
+        """
+        return None
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
