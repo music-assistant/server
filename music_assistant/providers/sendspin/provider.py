@@ -307,8 +307,10 @@ class SendspinProvider(PlayerProvider):
         :return: The player_id of the registered virtual player.
         :raises SetupFailedError: If the virtual player can not be created.
         """
-        if self.mass.get_provider(owner_instance_id) is None:
+        if (owner := self.mass.get_provider(owner_instance_id)) is None:
             raise SetupFailedError(f"Owner provider {owner_instance_id} is not loaded")
+        # normalize a provider domain to the actual instance id
+        owner_instance_id = owner.instance_id
         if player_id is None:
             player_id = uuid4().hex
         if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX):
