@@ -2,7 +2,74 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import TYPE_CHECKING
+
+from aiosendspin.models.core import PairMethodDescriptor
+from aiosendspin.models.types import PairMethod
+
 from .constants import BRIDGE_PREFIX
+
+if TYPE_CHECKING:
+    from aiosendspin.models.core import ClientHelloPayload
+    from aiosendspin.models.management import ManagementResultData
+
+
+class SecurityActionError(Exception):
+    """A pairing/management action failure carrying a strings.json alert slug for the UI."""
+
+    def __init__(self, alert_key: str, *, detail: str | None = None) -> None:
+        """Initialize with the alert slug and optional untranslated {0}-placeholder detail."""
+        super().__init__(alert_key if detail is None else f"{alert_key}: {detail}")
+        self.alert_key = alert_key
+        self.detail = detail
+
+
+def effective_pair_methods(
+    info: ClientHelloPayload | None, config: ManagementResultData | None
+) -> list[PairMethodDescriptor]:
+    """
+    Return the pairing methods the device currently offers.
+
+    A pairing config fetched over a management session on the current connection is
+    authoritative; the hello advertisement cannot reflect config changes until reconnect.
+    Methods the config enables beyond the hello get a synthesized descriptor.
+    """
+    hello_methods = list(info.supported_pair_methods or []) if info is not None else []
+    if config is None:
+        return hello_methods
+    advertised = {descriptor.method: descriptor for descriptor in hello_methods}
+    methods: list[PairMethodDescriptor] = []
+    for method, method_config in (
+        (PairMethod.PAIRING_PSK, config.pairing_psk),
+        (PairMethod.STATIC_PIN, config.static_pin),
+        (PairMethod.DYNAMIC_PIN, config.dynamic_pin),
+    ):
+        if method_config is None or not method_config.enabled:
+            continue
+        descriptor = advertised.get(method) or PairMethodDescriptor(method=method)
+        methods.append(
+            replace(
+                descriptor,
+                locked_out=method_config.locked_out,
+                min_pin_length=method_config.min_pin_length,
+            )
+        )
+    return methods
+
+
+def effective_unpaired_access(
+    info: ClientHelloPayload | None, config: ManagementResultData | None
+) -> bool:
+    """
+    Whether the device currently offers unpaired access.
+
+    A pairing config fetched over a management session on the current connection is
+    authoritative; the hello advertisement cannot reflect config changes until reconnect.
+    """
+    if config is not None and config.unpaired_access is not None:
+        return config.unpaired_access.enabled
+    return info is not None and info.unpaired_access.enabled
 
 
 def bridge_client_id_from_mac(mac: str) -> str:

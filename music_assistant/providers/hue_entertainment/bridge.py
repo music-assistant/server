@@ -1,34 +1,36 @@
 """
-Hue Entertainment bridge — connects as a Sendspin visualizer client.
+Hue Entertainment bridge — in-process Sendspin visualizer client.
 
-Instead of being a server-side role in the PushStream (which delivers
-audio 30 seconds ahead of playback), we connect as a Sendspin WebSocket
-client with the visualizer role. The server computes visualization data
-(FFT, loudness, spectrum) and delivers it at the right playback time
-through the connection layer's built-in scheduling.
+Each entertainment area registers as an external Sendspin client whose
+bridge roles run the server's visualizer feature extraction on the group's
+audio and receive color palette updates directly — no WebSocket involved.
+The analyzer queues features by playback timestamp, converts them to light
+colors at render time, and streams to the Hue bridge over DTLS.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from aiosendspin.client import SendspinClient
-from aiosendspin.models import Roles
+from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
-from aiosendspin.models.core import ServerStatePayload
 from aiosendspin.models.types import UndefinedField
 from aiosendspin.models.visualizer import (
-    BeatTiming,
     ClientHelloVisualizerSpectrum,
     ClientHelloVisualizerSupport,
-    VisualizerFrame,
 )
 from hue_entertainment import EntertainmentSession
 from music_assistant_models.enums import PlayerType
+
+from music_assistant.providers.sendspin.bridge_role import (
+    COLOR_BRIDGE_ROLE_ID,
+    VISUALIZER_BRIDGE_ROLE_ID,
+    BridgeColorRole,
+    BridgeVisualizerRole,
+)
 
 from .analyzer import HueAudioAnalyzer
 from .constants import (
@@ -45,6 +47,14 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
+    from aiosendspin.models.core import ServerStatePayload
+    from aiosendspin.models.visualizer import BeatTiming
+    from aiosendspin.server import (
+        ExternalStreamStartRequest,
+        SendspinClient,
+        SendspinServer,
+    )
+    from aiosendspin.server.roles.visualizer.features import ExtractedFrame
     from hue_entertainment import EntertainmentArea
     from hue_entertainment.api import HueEntertainmentAPI
 
@@ -54,14 +64,12 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-SENDSPIN_PORT = 8927
-
 # Hue Entertainment streams comfortably accept ~30 Hz updates over DTLS.
 _RENDER_RATE_HZ = 30
 _RENDER_PERIOD_S = 1.0 / _RENDER_RATE_HZ
-# Visualizer frame rate requested from the Sendspin server. Bridge filters
-# (channel rise/decay, bass baseline) are tuned for ~20 Hz spectrum input; the
-# DTLS render loop runs faster and interpolates.
+# Visualizer feature rate requested from the extraction pipeline. Bridge
+# filters (channel rise/decay, bass baseline) are tuned for ~20 Hz spectrum
+# input; the DTLS render loop runs faster and interpolates.
 _VISUALIZER_RATE_HZ = 20
 
 # Session start retries when the bridge is slow to complete the DTLS handshake.
@@ -74,29 +82,29 @@ class HueEntertainmentBridge:
     """
     Manages the Hue Entertainment bridge for a single entertainment area.
 
-    Connects to the local Sendspin server as a visualizer client, receives
-    pre-computed visualization data at the correct playback time, converts
-    it to light colors, and streams to the Hue bridge over DTLS.
+    Registers with the local Sendspin server as an external visualizer
+    client, receives extracted visualization features keyed to playback
+    time, converts them to light colors, and streams to the Hue bridge
+    over DTLS.
     """
 
     def __init__(
         self,
         provider: HueEntertainmentProvider,
         area: EntertainmentArea,
+        sendspin_server: SendspinServer,
     ) -> None:
         """Initialize the bridge."""
         self.provider = provider
         self.mass = provider.mass
         self.area = area
+        self.sendspin_server = sendspin_server
         self.logger = LOGGER.getChild(f"bridge.{area.name}")
 
         self._session: EntertainmentSession | None = None
         self._analyzer: HueAudioAnalyzer | None = None
         self._sendspin_client: SendspinClient | None = None
-        self._client_task: asyncio.Task[None] | None = None
         self._is_streaming = False
-        self._unsubscribe_viz: Callable[[], None] | None = None
-        self._unsubscribe_color: Callable[[], None] | None = None
         self._stop_debounce_task: asyncio.Task[None] | None = None
         self._start_task: asyncio.Task[None] | None = None
         self._render_handle: asyncio.TimerHandle | None = None
@@ -114,14 +122,13 @@ class HueEntertainmentBridge:
         )
 
     async def start(self) -> None:
-        """Start the bridge — connect as a Sendspin visualizer client."""
+        """Start the bridge — register as an in-process Sendspin visualizer client."""
         self._analyzer = HueAudioAnalyzer(
             channels=self.area.channels,
             color_mode=str(self.provider.config.get_value(CONF_COLOR_MODE) or "smooth"),
             brightness=int(float(str(self.provider.config.get_value(CONF_BRIGHTNESS) or 100))),
         )
 
-        # Create Sendspin client with visualizer role
         client_id = f"hue-{self.area.id.replace('-', '')[:16]}"
 
         # Register this client as a LIGHT player type with the Sendspin provider
@@ -130,40 +137,53 @@ class HueEntertainmentBridge:
         if sendspin_prov:
             sendspin_prov.register_bridge_player_type(client_id, PlayerType.LIGHT)
 
-        self._sendspin_client = SendspinClient(
+        support = ClientHelloVisualizerSupport(
+            # Beat + small bundle of periodic features. Each periodic frame
+            # is ~20-30 bytes; one second's worth fits comfortably under
+            # the buffer cap below.
+            buffer_capacity=2048,
+            rate_max=_VISUALIZER_RATE_HZ,
+            # Peaks requested as a fallback for when beats aren't computed yet.
+            types=["beat", "peak", "spectrum"],
+            spectrum=ClientHelloVisualizerSpectrum(
+                n_disp_bins=SPECTRUM_BINS,
+                scale=SPECTRUM_SCALE,
+                f_min=SPECTRUM_F_MIN,
+                f_max=SPECTRUM_F_MAX,
+            ),
+        )
+        hello = ClientHelloPayload(
             client_id=client_id,
-            client_name=f"Hue: {self.area.name}",
-            roles=[Roles.VISUALIZER, Roles.COLOR],
+            name=f"Hue: {self.area.name}",
+            version=1,
+            supported_roles=[VISUALIZER_BRIDGE_ROLE_ID, COLOR_BRIDGE_ROLE_ID],
             device_info=SendspinDeviceInfo(
                 manufacturer="Signify",
                 product_name="Hue Entertainment Area",
             ),
-            visualizer_support=ClientHelloVisualizerSupport(
-                # Beat + small bundle of periodic features. Each periodic frame
-                # is ~20-30 bytes; one second's worth fits comfortably under
-                # the buffer cap below.
-                buffer_capacity=2048,
-                rate_max=_VISUALIZER_RATE_HZ,
-                # Peaks requested as a fallback for when beats aren't computed yet.
-                types=["beat", "peak", "spectrum"],
-                spectrum=ClientHelloVisualizerSpectrum(
-                    n_disp_bins=SPECTRUM_BINS,
-                    scale=SPECTRUM_SCALE,
-                    f_min=SPECTRUM_F_MIN,
-                    f_max=SPECTRUM_F_MAX,
-                ),
-            ),
+            visualizer_support=support,
+        )
+        self._sendspin_client = self.sendspin_server.register_external_player(
+            hello, on_stream_start=self._on_external_stream_start
         )
 
-        self._unsubscribe_viz = self._sendspin_client.add_visualizer_listener(
-            self._on_visualizer_frames
-        )
-        self._unsubscribe_color = self._sendspin_client.add_color_listener(self._on_color)
-        self._sendspin_client.add_stream_start_listener(self._on_stream_start)
-        self._sendspin_client.add_stream_end_listener(self._on_stream_end)
-
-        # Connect to local Sendspin server
-        self._client_task = self.mass.create_task(self._run_client())
+        if viz_roles := self._sendspin_client.roles_by_family("visualizer"):
+            viz_role = cast("BridgeVisualizerRole", viz_roles[0])
+            viz_role.set_callbacks(
+                on_frame=self._on_visualizer_frame,
+                on_beats=self._on_beats,
+                on_beats_clear=self._on_beats_clear,
+                on_stream_start=self._on_stream_start,
+                on_stream_clear=self._on_stream_clear,
+                on_stream_end=self._on_stream_end,
+            )
+            viz_role.setup_visualizer(support)
+        if color_roles := self._sendspin_client.roles_by_family("color"):
+            color_role = cast("BridgeColorRole", color_roles[0])
+            color_role.set_callbacks(on_color=self._on_color)
+        # Subscribes the roles to the group's visualizer/color group roles,
+        # which beat schedules and palette updates flow through.
+        self._sendspin_client.attach_preinitialized_roles()
 
         self.logger.info(
             "Hue bridge started for area '%s' (%d channels)",
@@ -182,26 +202,15 @@ class HueEntertainmentBridge:
     async def stop(self) -> None:
         """Stop the bridge."""
         self._cancel_render_loop()
-        if self._unsubscribe_viz:
-            self._unsubscribe_viz()
-            self._unsubscribe_viz = None
-        if self._unsubscribe_color:
-            self._unsubscribe_color()
-            self._unsubscribe_color = None
-
-        if self._client_task and not self._client_task.done():
-            self._client_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._client_task
-            self._client_task = None
-
-        if self._sendspin_client and self._sendspin_client.connected:
-            await self._sendspin_client.disconnect()
-        self._sendspin_client = None
-
-        # Cancel an in-flight start so it can't adopt a session after we stop.
         if self._stop_debounce_task and not self._stop_debounce_task.done():
             self._stop_debounce_task.cancel()
+            self._stop_debounce_task = None
+
+        if self._sendspin_client:
+            await self.sendspin_server.remove_client(self._sendspin_client.client_id)
+            self._sendspin_client = None
+
+        # Cancel an in-flight start so it can't adopt a session after we stop.
         if self._start_task and not self._start_task.done():
             self._start_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -225,26 +234,6 @@ class HueEntertainmentBridge:
             )
         if hue_latency_ms is not None:
             self._hue_latency_us = hue_latency_ms * 1000
-
-    async def _run_client(self) -> None:
-        """Connect to the Sendspin server and stay connected."""
-        try:
-            assert self._sendspin_client is not None
-            bind_ip = self.mass.streams.bind_ip
-            ws_url = f"ws://{bind_ip}:{SENDSPIN_PORT}/sendspin"
-            await self._sendspin_client.connect(ws_url)
-            self.logger.info("Connected to Sendspin server as visualizer client")
-
-            # Keep alive until stopped — entertainment mode starts on first viz frame
-            while self._sendspin_client and self._sendspin_client.connected:
-                await asyncio.sleep(1.0)
-
-        except asyncio.CancelledError:
-            pass
-        except Exception as err:
-            self.logger.error("Sendspin client error: %s", err)
-        finally:
-            await self._stop_entertainment()
 
     async def _start_entertainment(self) -> None:
         """Activate entertainment mode and open the Hue stream, with retry."""
@@ -310,7 +299,15 @@ class HueEntertainmentBridge:
                 await self._session.aclose()
             self._session = None
 
-    def _on_stream_start(self, message: object) -> None:
+    def _on_external_stream_start(self, request: ExternalStreamStartRequest) -> None:
+        """Handle playback dialing this client."""
+        self.logger.debug(
+            "Sendspin stream start request for area '%s' (reason=%s)",
+            self.area.name,
+            request.connection_reason,
+        )
+
+    def _on_stream_start(self) -> None:
         """Handle stream start — start entertainment mode + DTLS proactively."""
         # Cancel any pending stop from a previous stream end (track transition)
         if self._stop_debounce_task and not self._stop_debounce_task.done():
@@ -321,10 +318,8 @@ class HueEntertainmentBridge:
             self.logger.info("Stream starting for area '%s', connecting DTLS...", self.area.name)
             self._start_task = self.mass.create_task(self._start_entertainment())
 
-    def _on_stream_end(self, roles: list[str] | None) -> None:
+    def _on_stream_end(self) -> None:
         """Handle stream end — debounce to survive track transitions."""
-        if not (roles and "visualizer" in roles):
-            return
         # Also act while a start is still in flight: the stream can end before
         # session.start() completes, and that late start would otherwise adopt a
         # session that streams forever (idle_timeout=0).
@@ -333,6 +328,11 @@ class HueEntertainmentBridge:
             if self._stop_debounce_task and not self._stop_debounce_task.done():
                 self._stop_debounce_task.cancel()
             self._stop_debounce_task = self.mass.create_task(self._debounced_stop())
+
+    def _on_stream_clear(self) -> None:
+        """Handle seek — queued analyzer state belongs to pre-seek audio, drop it."""
+        if self._analyzer is not None:
+            self._analyzer.clear_beats()
 
     async def _debounced_stop(self) -> None:
         """Wait briefly before stopping — a new stream may start (track change)."""
@@ -347,27 +347,30 @@ class HueEntertainmentBridge:
             self.logger.info("Visualizer stream ended for area '%s'", self.area.name)
             await self._stop_entertainment()
 
-    def _on_visualizer_frames(self, frames: list[VisualizerFrame]) -> None:
-        """
-        Forward periodic samples, onset peaks, and beat events to the analyzer.
-
-        Frames carrying ``is_downbeat`` are beats. The rest carry spectrum and peak data.
-        """
-        if not self._is_streaming or self._analyzer is None:
+    def _on_visualizer_frame(self, frame: ExtractedFrame) -> None:
+        """Queue spectrum and onset-peak features for the renderer."""
+        # Frames arrive ahead of the playhead (in-process delivery follows the audio push);
+        # the analyzer queues them by timestamp and drains at render time. Gated so the
+        # queues only fill while the lights are up or coming up.
+        if self._analyzer is None or not (self._is_streaming or self._entertainment_starting):
             return
-        beats: list[BeatTiming] = []
-        for frame in frames:
-            if frame.is_downbeat is not None:
-                beats.append(
-                    BeatTiming(timestamp_us=frame.timestamp_us, is_downbeat=frame.is_downbeat)
-                )
-                continue
-            if frame.spectrum is not None:
-                self._analyzer.apply_spectrum(frame.spectrum, frame.timestamp_us)
-            if frame.peak_strength is not None:
-                self._analyzer.apply_peak(frame.peak_strength, frame.timestamp_us)
-        if beats:
+        if frame.spectrum is not None:
+            self._analyzer.apply_spectrum(frame.spectrum.tolist(), frame.timestamp_us)
+        if frame.peak is not None:
+            self._analyzer.apply_peak(frame.peak, frame.timestamp_us)
+
+    def _on_beats(self, beats: list[BeatTiming]) -> None:
+        """Append a beat schedule segment."""
+        # Not gated on streaming: the schedule lands once per track and may arrive while
+        # DTLS is still connecting; the renderer prunes past beats and track changes
+        # replace the schedule.
+        if self._analyzer is not None:
             self._analyzer.push_beats(beats)
+
+    def _on_beats_clear(self) -> None:
+        """Drop the beat schedule (a track change re-pushes a fresh one)."""
+        if self._analyzer is not None:
+            self._analyzer.clear_beat_schedule()
 
     def _on_color(self, payload: ServerStatePayload) -> None:
         """Forward color palette updates from the Sendspin server to the analyzer."""
@@ -409,19 +412,15 @@ class HueEntertainmentBridge:
         if not self._is_streaming:
             return
         try:
-            # Skip this tick when not ready (client/DTLS down) but keep the loop
+            # Skip this tick when not ready (DTLS down) but keep the loop
             # alive so it recovers once the connection is back.
             if (
                 self._analyzer is not None
-                and self._sendspin_client is not None
                 and self._session is not None
                 and self._session.is_streaming
             ):
-                client_now = int(self.mass.loop.time() * 1_000_000)
                 # Render slightly ahead of the playhead to compensate for Hue+DTLS lag.
-                server_now = self._sendspin_client.compute_server_time(
-                    client_now + self._hue_latency_us
-                )
+                server_now = self.sendspin_server.clock.now_us() + self._hue_latency_us
                 commands = self._analyzer.render(server_now)
                 if commands:
                     self._session.send(commands)
@@ -462,8 +461,21 @@ class HueEntertainmentBridgeManager:
         self.logger = LOGGER.getChild("bridge_manager")
         self._bridges: dict[str, HueEntertainmentBridge] = {}
 
+    @property
+    def sendspin_server(self) -> SendspinServer | None:
+        """Get the Sendspin server if available."""
+        provider = cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
+        if provider is not None:
+            return provider.server_api
+        return None
+
     async def setup_bridges(self, areas: list[EntertainmentArea]) -> None:
         """Set up bridges for all entertainment areas."""
+        sendspin_server = self.sendspin_server
+        if sendspin_server is None:
+            self.logger.warning("Sendspin provider not available, cannot set up Hue bridges")
+            return
+
         # Remove bridges for areas that no longer exist
         current_ids = {area.id for area in areas}
         for area_id in list(self._bridges.keys()):
@@ -478,7 +490,7 @@ class HueEntertainmentBridgeManager:
             if not area.channels:
                 continue
 
-            bridge = HueEntertainmentBridge(self.provider, area)
+            bridge = HueEntertainmentBridge(self.provider, area, sendspin_server)
             try:
                 await bridge.start()
             except Exception:

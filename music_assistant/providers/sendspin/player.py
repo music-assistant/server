@@ -6,13 +6,23 @@ import asyncio
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from aiosendspin.models import AudioCodec, MediaCommand
-from aiosendspin.models.types import PlaybackStateType, PlayerCommand
+from aiosendspin.models.management import (
+    ManagementSetPairingConfigPayload,
+    SetDynamicPinConfig,
+    SetStaticPinConfig,
+    SetUnpairedAccessConfig,
+)
+from aiosendspin.models.types import PairAbortReason, PairMethod, PlaybackStateType, PlayerCommand
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.models.visualizer import BeatAvailability, BeatTiming
+from aiosendspin.noise.driver import HandshakeAbortedError
+from aiosendspin.noise.pairing import PairingAbortError, PairingError
+from aiosendspin.noise.trust_store import PskCategory
 from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.client import DisconnectBehaviour
@@ -66,11 +76,39 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
+    BRIDGE_PREFIX,
+    CONF_ACTION_ALLOW_UNPAIRED,
+    CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE,
+    CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE,
+    CONF_ACTION_MANAGEMENT_ENTER,
+    CONF_ACTION_MANAGEMENT_EXIT,
+    CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE,
+    CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE,
+    CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE,
+    CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE,
+    CONF_ACTION_PAIR_PIN_CANCEL,
+    CONF_ACTION_PAIR_PIN_RETRY,
+    CONF_ACTION_PAIR_PIN_START,
+    CONF_ACTION_PAIR_PIN_SUBMIT,
+    CONF_ACTION_PAIR_STATIC_PIN_START,
+    CONF_ACTION_PAIR_TOKEN,
+    CONF_ACTION_PAIR_TOKEN_CANCEL,
+    CONF_ACTION_PAIR_TOKEN_SUBMIT,
+    CONF_ACTION_REVOKE_UNPAIRED,
+    CONF_ACTION_UNPAIR,
+    CONF_ACTION_VERIFY_PIN_START,
     CONF_CAST_AUDIO_UNSUPPORTED,
+    CONF_PAIRING_PIN,
+    CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
     DEFAULT_SENDSPIN_STATIC_DELAY,
 )
-from .helpers import mac_from_bridge_client_id
+from .helpers import (
+    SecurityActionError,
+    effective_pair_methods,
+    effective_unpaired_access,
+    mac_from_bridge_client_id,
+)
 from .playback import SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
@@ -137,9 +175,82 @@ def format_to_display_string(fmt: SupportedAudioFormat) -> str:
     return f"{codec_name} {sample_rate_str}/{fmt.bit_depth}bit {channels_str}"
 
 
+_MANAGEMENT_ACTIONS = {
+    CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE: ManagementSetPairingConfigPayload(
+        unpaired_access=SetUnpairedAccessConfig(enabled=True)
+    ),
+    CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE: ManagementSetPairingConfigPayload(
+        unpaired_access=SetUnpairedAccessConfig(enabled=False)
+    ),
+    CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE: ManagementSetPairingConfigPayload(
+        static_pin=SetStaticPinConfig(enabled=True)
+    ),
+    CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE: ManagementSetPairingConfigPayload(
+        static_pin=SetStaticPinConfig(enabled=False)
+    ),
+    CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE: ManagementSetPairingConfigPayload(
+        dynamic_pin=SetDynamicPinConfig(enabled=True)
+    ),
+    CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE: ManagementSetPairingConfigPayload(
+        dynamic_pin=SetDynamicPinConfig(enabled=False)
+    ),
+}
+
+
+@dataclass(frozen=True)
+class _AlertText:
+    """A strings.json slug and optional {0}-placeholder params for an operator ALERT entry."""
+
+    key: str
+    params: list[str] | None = None
+
+
+_PAIR_ABORT_KEYS = {
+    PairAbortReason.ATTEMPT_TIMEOUT: "pairing_error_timeout",
+    PairAbortReason.CONCURRENT_ATTEMPT: "pairing_error_concurrent",
+    PairAbortReason.LOCKED_OUT: "pairing_error_locked_out",
+    PairAbortReason.METHOD_NOT_SUPPORTED: "pairing_error_method_unsupported",
+    PairAbortReason.PIN_LENGTH_UNACCEPTABLE: "pairing_error_pin_length",
+    PairAbortReason.PIN_MISMATCH: "pairing_error_pin_mismatch",
+    PairAbortReason.USER_CANCELLED: "pairing_error_cancelled",
+}
+
+
+def _error_alert(err: Exception) -> _AlertText:
+    """Map a pairing or management failure to a localized operator alert."""
+    if isinstance(err, SecurityActionError):
+        return _AlertText(err.alert_key, [err.detail] if err.detail is not None else None)
+    if isinstance(err, PairingAbortError):
+        key = _PAIR_ABORT_KEYS.get(err.reason)
+        if key is not None:
+            return _AlertText(key)
+        return _AlertText("pairing_error_aborted", [err.reason.value])
+    if isinstance(err, TimeoutError):
+        return _AlertText("pairing_error_timeout")
+    if isinstance(err, OSError):
+        return _AlertText("pairing_error_storage", [str(err)])
+    if isinstance(err, HandshakeAbortedError):
+        return _AlertText("pairing_error_handshake")
+    if isinstance(err, PairingError):
+        return _AlertText("pairing_error_failed", [str(err)])
+    return _AlertText("pairing_error_generic")
+
+
+def _alert_entry(text: _AlertText) -> ConfigEntry:
+    """Build an ALERT config entry from a localized alert descriptor."""
+    return ConfigEntry(key=text.key, type=ConfigEntryType.ALERT, translation_params=text.params)
+
+
+def _action_entry(action: str, *, advanced: bool = False) -> ConfigEntry:
+    """Build an ACTION config entry whose key mirrors its action."""
+    return ConfigEntry(key=action, type=ConfigEntryType.ACTION, action=action, advanced=advanced)
+
+
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
+    from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
     from aiosendspin.models.player import SupportedAudioFormat
+    from aiosendspin.noise.trust_store import ServerPairingRecord
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.media_items import MediaItemPalette
@@ -149,7 +260,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
 
-    from .provider import SendspinProvider
+    from .provider import PinPairingSession, SendspinProvider
 
 
 class SendspinBasePlayer(Player):
@@ -163,6 +274,7 @@ class SendspinBasePlayer(Player):
     api: SendspinClient
     unsub_event_cb: Callable[[], None] | None
     unsub_group_event_cb: Callable[[], None] | None
+    is_web_player: bool = False
 
     def __init__(
         self,
@@ -242,6 +354,41 @@ class SendspinBasePlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         self._unsubscribe_client_callbacks()
+
+    @property
+    def needs_setup(self) -> bool:
+        """
+        Whether the device is connected and encrypted but not yet usable for playback.
+
+        An unpaired device that has not been paired or allowed unpaired playback still
+        connects, but the server activates no roles for it. Reporting needs_setup keeps it
+        out of the ready-to-play targets while its settings (and the pairing actions) stay
+        reachable. Legacy unencrypted devices and the built-in web player can play as-is.
+        """
+        if self._is_bridge_or_web_player:
+            return False
+
+        # Deliberately no is_connected gate: between a (re)connect's hello and its first
+        # client/state, security and active roles are already valid while is_connected is not.
+
+        if self.api.connection_security is None:
+            return False
+        return not self.api.active_roles
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the player."""
+        entries = await super().get_config_entries(action, values)
+        entries.extend(await self._get_security_config_entries(action, values))
+        return entries
+
+    @property
+    def _is_bridge_or_web_player(self) -> bool:
+        """Whether this is a protocol bridge or built-in web/app player (skips pairing setup)."""
+        return self.player_id.startswith(BRIDGE_PREFIX) or self.is_web_player
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
@@ -419,6 +566,327 @@ class SendspinBasePlayer(Player):
             self._attr_group_members.remove(client_id)
             self.update_state()
 
+    async def _get_security_config_entries(
+        self,
+        action: str | None,
+        values: dict[str, ConfigValueType] | None,
+    ) -> list[ConfigEntry]:
+        """Build the pairing/security section entries, handling any pairing action."""
+        if self._is_bridge_or_web_player:
+            return []
+        if self.api.connection is None:
+            return []
+        provider = cast("SendspinProvider", self.provider)
+        alert: _AlertText | None = None
+        if action is not None:
+            alert = await self._handle_security_action(provider, action, values or {})
+
+        pin_session = provider.get_pin_session(self.player_id)
+        if pin_session is not None and pin_session.finished:
+            if alert is None and pin_session.error is not None:
+                alert = _error_alert(pin_session.error)
+            provider.clear_pin_session(self.player_id)
+            pin_session = None
+
+        status, actions = await self._security_state_entries(provider, pin_session)
+        entries = [status] if status is not None else []
+        if alert is not None:
+            entries.append(_alert_entry(alert))
+        return entries + actions
+
+    async def _security_state_entries(
+        self,
+        provider: SendspinProvider,
+        pin_session: PinPairingSession | None,
+    ) -> tuple[ConfigEntry | None, list[ConfigEntry]]:
+        """Return the current security-status entry and the available action entries."""
+        if not self.api.is_connected:
+            # The action dropped the connection (e.g. unpair); the client will reconnect
+            return ConfigEntry(key="security_status_disconnected", type=ConfigEntryType.LABEL), []
+
+        security = self.api.connection_security
+        if security is None:
+            return ConfigEntry(key="security_status_unencrypted", type=ConfigEntryType.ALERT), []
+
+        info = self.api.info_or_none
+        pairing_config = provider.pairing_config_snapshot(self.player_id)
+        record = await provider.server_api.pairing_store.record_by_client_id(self.player_id)
+        trusted_unpaired = (
+            await provider.server_api.pairing_store.trusted_unpaired(self.player_id) is not None
+        )
+
+        # psk_category is fixed at handshake time: right after an unpair the live connection
+        # still reports LONG_TERM while the record is already gone. The settings view refetches
+        # in exactly that window and will not observe the later reconnect until reopened, so
+        # require the record too or else render the unpaired end state immediately.
+        if security.psk_category is PskCategory.LONG_TERM and record is not None:
+            return (
+                ConfigEntry(key="security_status_paired", type=ConfigEntryType.LABEL),
+                await self._paired_entries(provider, info, record, pin_session, pairing_config),
+            )
+
+        status = (
+            ConfigEntry(key="security_status_unpaired", type=ConfigEntryType.ALERT)
+            if trusted_unpaired
+            else None
+        )
+
+        if pin_session is not None:
+            return status, self._pin_session_entries(pin_session)
+
+        if provider.is_token_pairing(self.player_id):
+            return status, self._token_session_entries()
+
+        actions = self._pair_offer_entries(info, pairing_config)
+        if trusted_unpaired:
+            actions.append(_action_entry(CONF_ACTION_REVOKE_UNPAIRED, advanced=True))
+        elif effective_unpaired_access(info, pairing_config):
+            actions.append(_action_entry(CONF_ACTION_ALLOW_UNPAIRED))
+        return status, actions
+
+    async def _paired_entries(
+        self,
+        provider: SendspinProvider,
+        info: ClientHelloPayload | None,
+        record: ServerPairingRecord,
+        pin_session: PinPairingSession | None,
+        pairing_config: ManagementResultData | None,
+    ) -> list[ConfigEntry]:
+        """Return the action entries for the paired view (sessions, management, unpair)."""
+        if pin_session is not None:
+            return self._pin_session_entries(pin_session)
+        entries: list[ConfigEntry] = []
+        if provider.get_management_session(self.player_id) is not None:
+            # Render from the snapshot the enter/patch actions keep fresh; only fetch if it is
+            # unexpectedly empty (e.g. a session opened without a fetch).
+            management_config = pairing_config
+            if management_config is None:
+                try:
+                    management_config = await provider.management_get_pairing_config(self.player_id)
+                except SecurityActionError as err:
+                    provider.exit_management(self.player_id)
+                    entries.append(_alert_entry(_error_alert(err)))
+            if management_config is not None:
+                entries.extend(self._management_section_entries(management_config))
+                return entries
+        entries.append(_action_entry(CONF_ACTION_MANAGEMENT_ENTER, advanced=True))
+        entries.extend(self._verify_offer_entry(info, record, pairing_config))
+        entries.append(_action_entry(CONF_ACTION_UNPAIR, advanced=True))
+        return entries
+
+    @staticmethod
+    def _pin_session_entries(pin_session: PinPairingSession) -> list[ConfigEntry]:
+        """Return the entries for the current state of a PIN pairing session."""
+        entries: list[ConfigEntry] = []
+        if pin_session.can_retry:
+            if pin_session.error is not None:
+                entries.append(_alert_entry(_error_alert(pin_session.error)))
+            else:
+                entries.append(ConfigEntry(key="pairing_error_generic", type=ConfigEntryType.ALERT))
+            entries.append(_action_entry(CONF_ACTION_PAIR_PIN_RETRY))
+        elif pin_session.awaiting_pin:
+            entries.append(
+                ConfigEntry(
+                    key="pairing_pin_prompt_gesture"
+                    if pin_session.awaiting_gesture
+                    else "pairing_pin_prompt",
+                    type=ConfigEntryType.LABEL,
+                )
+            )
+            entries.append(
+                ConfigEntry(
+                    key=CONF_PAIRING_PIN,
+                    type=ConfigEntryType.STRING,
+                    required=False,
+                    default_value="",
+                    value="",
+                )
+            )
+            entries.append(_action_entry(CONF_ACTION_PAIR_PIN_SUBMIT))
+        else:
+            entries.append(
+                ConfigEntry(
+                    key="pairing_pin_progress_gesture"
+                    if pin_session.awaiting_gesture
+                    else "pairing_pin_progress",
+                    type=ConfigEntryType.LABEL,
+                )
+            )
+        entries.append(_action_entry(CONF_ACTION_PAIR_PIN_CANCEL))
+        return entries
+
+    @staticmethod
+    def _token_session_entries() -> list[ConfigEntry]:
+        """Return the entries for the token-entry pairing submenu."""
+        return [
+            ConfigEntry(key="pairing_token_prompt", type=ConfigEntryType.LABEL),
+            ConfigEntry(
+                key=CONF_PAIRING_TOKEN,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="",
+                value="",
+            ),
+            _action_entry(CONF_ACTION_PAIR_TOKEN_SUBMIT),
+            _action_entry(CONF_ACTION_PAIR_TOKEN_CANCEL),
+        ]
+
+    @staticmethod
+    def _management_section_entries(config: ManagementResultData) -> list[ConfigEntry]:
+        """Return the entries for the open device-management section."""
+        entries: list[ConfigEntry] = [
+            ConfigEntry(key="management_status", type=ConfigEntryType.LABEL)
+        ]
+        if config.unpaired_access is not None:
+            action = (
+                CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE
+                if config.unpaired_access.enabled
+                else CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE
+            )
+            entries.append(_action_entry(action))
+        entries.extend(
+            SendspinBasePlayer._management_pin_method_entries(
+                config.static_pin,
+                CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE,
+                CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE,
+            )
+        )
+        entries.extend(
+            SendspinBasePlayer._management_pin_method_entries(
+                config.dynamic_pin,
+                CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE,
+                CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE,
+            )
+        )
+        entries.append(_action_entry(CONF_ACTION_MANAGEMENT_EXIT))
+        return entries
+
+    @staticmethod
+    def _management_pin_method_entries(
+        method: PairingMethodConfig | None,
+        enable_action: str,
+        disable_action: str,
+    ) -> list[ConfigEntry]:
+        """Return the toggle for one PIN pairing method, empty if the device lacks it."""
+        if method is None:
+            return []
+        action = disable_action if method.enabled else enable_action
+        return [_action_entry(action)]
+
+    @staticmethod
+    def _pair_offer_entries(
+        info: ClientHelloPayload | None, pairing_config: ManagementResultData | None
+    ) -> list[ConfigEntry]:
+        """Return the pairing entries matching the client's offered pair methods."""
+        pair_methods = effective_pair_methods(info, pairing_config)
+        offers_token = any(
+            descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods
+        )
+        pin_descriptors = [
+            descriptor
+            for descriptor in pair_methods
+            if descriptor.method in (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
+        ]
+        usable_pin_methods = {
+            descriptor.method for descriptor in pin_descriptors if not descriptor.locked_out
+        }
+
+        entries: list[ConfigEntry] = []
+        if usable_pin_methods:
+            entries.append(_action_entry(CONF_ACTION_PAIR_PIN_START))
+            if usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}:
+                entries.append(_action_entry(CONF_ACTION_PAIR_STATIC_PIN_START, advanced=True))
+        elif pin_descriptors:
+            entries.append(ConfigEntry(key="pin_locked_out", type=ConfigEntryType.ALERT))
+        if offers_token:
+            entries.append(_action_entry(CONF_ACTION_PAIR_TOKEN))
+        if not pair_methods:
+            entries.append(ConfigEntry(key="no_pair_methods", type=ConfigEntryType.ALERT))
+        return entries
+
+    @staticmethod
+    def _verify_offer_entry(
+        info: ClientHelloPayload | None,
+        record: ServerPairingRecord | None,
+        pairing_config: ManagementResultData | None,
+    ) -> list[ConfigEntry]:
+        """Return the device-presence verification action, only when it would add something."""
+        if info is None:
+            return []
+        offers_dynamic_pin = any(
+            descriptor.method is PairMethod.DYNAMIC_PIN and not descriptor.locked_out
+            for descriptor in effective_pair_methods(info, pairing_config)
+        )
+        if not offers_dynamic_pin:
+            return []
+        if record is not None and PairMethod.DYNAMIC_PIN in record.pair_methods:
+            return []
+        return [_action_entry(CONF_ACTION_VERIFY_PIN_START, advanced=True)]
+
+    async def _handle_security_action(
+        self,
+        provider: SendspinProvider,
+        action: str,
+        values: dict[str, ConfigValueType],
+    ) -> _AlertText | None:
+        """Execute a pairing action, returning a localized alert for the UI on failure."""
+        try:
+            if action == CONF_ACTION_PAIR_TOKEN:
+                provider.open_token_pairing(self.player_id)
+            elif action == CONF_ACTION_PAIR_TOKEN_SUBMIT:
+                token_value = str(values.get(CONF_PAIRING_TOKEN) or "").strip()
+                if not token_value:
+                    return _AlertText("pairing_token_required")
+                await provider.pair_with_token(self.player_id, token_value)
+                provider.close_token_pairing(self.player_id)
+            elif action == CONF_ACTION_PAIR_TOKEN_CANCEL:
+                provider.close_token_pairing(self.player_id)
+            elif action == CONF_ACTION_PAIR_PIN_START:
+                await provider.start_pin_pairing(self.player_id)
+            elif action == CONF_ACTION_PAIR_STATIC_PIN_START:
+                await provider.start_pin_pairing(self.player_id, static=True)
+            elif action == CONF_ACTION_PAIR_PIN_RETRY:
+                # A retryable session resumes in place, preserving its method and verify mode.
+                await provider.start_pin_pairing(self.player_id)
+            elif action == CONF_ACTION_VERIFY_PIN_START:
+                await provider.start_pin_pairing(self.player_id, verify=True)
+            elif action == CONF_ACTION_PAIR_PIN_SUBMIT:
+                pin = str(values.get(CONF_PAIRING_PIN) or "").strip()
+                if not pin:
+                    return _AlertText("pin_required")
+                await provider.submit_pin(self.player_id, pin)
+            elif action == CONF_ACTION_PAIR_PIN_CANCEL:
+                await provider.cancel_pin_pairing(self.player_id)
+            elif action == CONF_ACTION_UNPAIR:
+                await provider.unpair_client(self.player_id)
+            elif action == CONF_ACTION_ALLOW_UNPAIRED:
+                await provider.set_trusted_unpaired(self.player_id, enabled=True)
+            elif action == CONF_ACTION_REVOKE_UNPAIRED:
+                await provider.set_trusted_unpaired(self.player_id, enabled=False)
+            elif action == CONF_ACTION_MANAGEMENT_ENTER:
+                provider.enter_management(self.player_id)
+                try:
+                    await provider.management_get_pairing_config(self.player_id)
+                except SecurityActionError:
+                    provider.exit_management(self.player_id)
+                    raise
+            elif action == CONF_ACTION_MANAGEMENT_EXIT:
+                provider.exit_management(self.player_id)
+            elif action in _MANAGEMENT_ACTIONS:
+                await provider.management_set_pairing_config(
+                    self.player_id, _MANAGEMENT_ACTIONS[action]
+                )
+        except (
+            HandshakeAbortedError,
+            PairingError,
+            TimeoutError,
+            OSError,
+            SecurityActionError,
+            ValueError,
+        ) as err:
+            return _error_alert(err)
+        return None
+
 
 class SendspinPlayer(SendspinBasePlayer):
     """A sendspin audio player in Music Assistant."""
@@ -435,7 +903,6 @@ class SendspinPlayer(SendspinBasePlayer):
     # Queue item the current poller is targeting (so a track switch cancels it).
     _beat_retry_queue_item_id: str | None = None
     playback_session: SendspinPlaybackSession
-    is_web_player: bool = False
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
 
     @property
@@ -1334,6 +1801,7 @@ class SendspinPlayer(SendspinBasePlayer):
                     required=False,
                 )
             )
+        entries.extend(await super().get_config_entries(action, values))
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
         if player_role is not None:
