@@ -50,6 +50,8 @@ RECORDER_MAX_ENTRIES = 8640
 CPU_PROFILE_FIRST_DELAY = 60
 CPU_PROFILE_MIN_DURATION = 10
 CPU_PROFILE_MAX_DURATION = 300
+CPU_PROFILE_MIN_INTERVAL = 5  # minutes
+CPU_PROFILE_MAX_INTERVAL = 1440  # minutes
 
 
 class ProfilerProvider(PluginProvider):
@@ -291,7 +293,13 @@ class ProfilerProvider(PluginProvider):
 
     async def _cpu_profile_scheduler(self) -> None:
         """Periodically capture a CPU profile window."""
-        interval_minutes = self.get_config_value(CONF_CPU_PROFILE_INTERVAL, 30, return_type=int)
+        interval_minutes = min(
+            max(
+                self.get_config_value(CONF_CPU_PROFILE_INTERVAL, 30, return_type=int),
+                CPU_PROFILE_MIN_INTERVAL,
+            ),
+            CPU_PROFILE_MAX_INTERVAL,
+        )
         # small initial delay so a fresh install has profile data available quickly
         await asyncio.sleep(CPU_PROFILE_FIRST_DELAY)
         while True:

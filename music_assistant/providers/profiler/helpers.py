@@ -119,9 +119,10 @@ def extract_cpu_profile(duration_s: float, out_dir: str, top_n: int = 40) -> dic
     """
     stats = yappi.get_func_stats()
     captured_at = utc()
-    pstats_file = f"cpu_profile_{captured_at.strftime('%Y%m%d_%H%M%S')}.pstats"
+    pstats_file: str | None = None
     top_functions: list[dict[str, Any]] = []
     if not stats.empty():
+        pstats_file = f"cpu_profile_{captured_at.strftime('%Y%m%d_%H%M%S')}.pstats"
         stats.save(os.path.join(out_dir, pstats_file), type="pstat")
         stats.sort("ttot", "desc")
         for stat in stats:

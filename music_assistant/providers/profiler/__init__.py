@@ -26,7 +26,9 @@ from .provider import (
     CONF_CPU_PROFILE_INTERVAL,
     CONF_TRACEMALLOC_ENABLED,
     CPU_PROFILE_MAX_DURATION,
+    CPU_PROFILE_MAX_INTERVAL,
     CPU_PROFILE_MIN_DURATION,
+    CPU_PROFILE_MIN_INTERVAL,
     ProfilerProvider,
 )
 
@@ -90,7 +92,7 @@ async def get_config_entries(
             key=CONF_CPU_PROFILE_INTERVAL,
             type=ConfigEntryType.INTEGER,
             default_value=30,
-            range=(5, 1440),
+            range=(CPU_PROFILE_MIN_INTERVAL, CPU_PROFILE_MAX_INTERVAL),
             required=False,
             advanced=True,
             depends_on=CONF_CPU_PROFILE_ENABLED,

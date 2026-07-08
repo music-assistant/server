@@ -9,8 +9,9 @@ a support request) and uninstall it when done.
 
 1. Install the Profiler provider (Settings → Providers → Add provider → Profiler).
 2. Let it run while you reproduce the issue (measurements start immediately).
-3. Call the `profiler/report` API command (or grab `profiler/report.json` /
-   `report.md` from the server data directory).
+3. Call the `profiler/report` API command (each generated report is also saved as
+   `report.json` / `report.md` in the `profiler` folder inside the server data
+   directory).
 4. Paste the report into a GitHub issue or the LLM of your choice for analysis.
 5. Uninstall the provider.
 
