@@ -18,8 +18,9 @@ LLM for analysis.
 # human-readable output
 .venv/bin/python scripts/perf/run_benchmark.py --markdown
 
-# regression check against a baseline (exits non-zero on regression)
-.venv/bin/python scripts/perf/run_benchmark.py --compare scripts/perf/baseline.json
+# regression check: save a baseline once, compare against it later
+.venv/bin/python scripts/perf/run_benchmark.py --save-baseline
+.venv/bin/python scripts/perf/run_benchmark.py --compare   # exits non-zero on regression
 ```
 
 Requirements: the `test` extras (`uv pip install -e '.[test]'` — provides
@@ -65,17 +66,17 @@ every metric a higher value is worse.
 
 ## Baseline & comparing
 
-`baseline.json` is a full-mode report committed for reference. **Absolute
-numbers are machine-specific** — comparisons are only valid between runs on the
-same machine (and ideally the same power/thermal state). A CI comparison must
-run baseline-ref and candidate-ref back-to-back on the same runner; comparing
-against a baseline generated elsewhere is meaningless.
+**Absolute numbers are machine-specific** — comparisons are only valid between
+runs on the same machine (and ideally the same power/thermal state), so no
+baseline is committed to the repo. Instead, `--save-baseline` stores the report
+as your machine-local baseline in `~/.musicassistant-perf/` (`baseline-full.json`
+or `baseline-quick.json`, so the two modes never get mixed up) and a bare
+`--compare` checks against it. Passing an explicit path
+(`--compare some-report.json`) still works, e.g. to diff two saved reports from
+the same machine.
 
-Update the baseline after intentional performance changes:
-
-```shell
-.venv/bin/python scripts/perf/run_benchmark.py --out scripts/perf/baseline.json
-```
+Re-run `--save-baseline` after intentional performance changes to accept the
+new numbers as the reference.
 
 `--compare` flags a metric when it exceeds the baseline by more than 15%
 (relative), with per-metric overrides and small absolute floors to suppress

@@ -13,7 +13,11 @@ the CPU-relevant scenarios to capture per-scenario hotspot attribution
 
 Usage (from the repo root, with the repo venv):
   .venv/bin/python scripts/perf/run_benchmark.py [--quick] [--out report.json]
-      [--compare baseline.json] [--markdown] [--keep-data]
+      [--save-baseline] [--compare [baseline.json]] [--markdown] [--keep-data]
+
+Baselines are machine-specific, so they are stored per machine (and per mode) in
+~/.musicassistant-perf/ rather than in the repo: run once with --save-baseline,
+then use a bare --compare to check for regressions against it.
 
 Exit code is non-zero when --compare detects a regression beyond the thresholds
 (see report.py) or when the suite itself fails.
@@ -63,6 +67,7 @@ except ImportError:  # direct file execution: python scripts/perf/run_benchmark.
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 PERF_SERVER = SCRIPT_DIR / "perf_server.py"
+BASELINE_DIR = Path.home() / ".musicassistant-perf"
 
 SCHEMA_VERSION = 1
 SERVER_READY_TIMEOUT = 120
@@ -950,7 +955,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Music Assistant performance benchmark suite")
     parser.add_argument("--quick", action="store_true", help="small library, short scenarios")
     parser.add_argument("--out", type=Path, help="write the JSON report to this file")
-    parser.add_argument("--compare", type=Path, help="compare against a baseline report")
+    parser.add_argument(
+        "--save-baseline",
+        action="store_true",
+        help="save this report as the machine-local baseline for future --compare runs",
+    )
+    parser.add_argument(
+        "--compare",
+        nargs="?",
+        const="",
+        metavar="BASELINE",
+        help="compare against a baseline report (default: the machine-local baseline)",
+    )
     parser.add_argument(
         "--markdown", action="store_true", help="print a human-readable markdown report"
     )
@@ -959,6 +975,22 @@ def main() -> None:
     )
     args = parser.parse_args()
     _check_prerequisites()
+
+    # resolve and read the baseline upfront: fail before the suite runs, and
+    # read the old baseline before --save-baseline may overwrite it
+    baseline: dict[str, Any] | None = None
+    if args.compare is not None:
+        baseline_path = Path(args.compare) if args.compare else _baseline_path(args.quick)
+        if not baseline_path.is_file():
+            sys.exit(
+                f"no baseline found at {baseline_path} - generate one first with --save-baseline"
+            )
+        baseline = json.loads(baseline_path.read_text())
+        if baseline.get("meta", {}).get("quick") != args.quick:
+            print(
+                "warning: comparing a quick report against a full baseline (or vice versa)",
+                file=sys.stderr,
+            )
 
     params = QUICK_PARAMS if args.quick else FULL_PARAMS
     report = asyncio.run(run_suite(params, args.keep_data))
@@ -971,17 +1003,22 @@ def main() -> None:
     elif not args.out:
         print(json.dumps(report, indent=2))
 
-    if args.compare:
-        baseline = json.loads(args.compare.read_text())
-        if baseline.get("meta", {}).get("quick") != report["meta"]["quick"]:
-            print(
-                "warning: comparing a quick report against a full baseline (or vice versa)",
-                file=sys.stderr,
-            )
+    if args.save_baseline:
+        path = _baseline_path(args.quick)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2) + "\n")
+        print(f"baseline saved to {path}", file=sys.stderr)
+
+    if baseline is not None:
         lines, regressions = compare_reports(baseline, report)
         print("\n".join(lines))
         if regressions:
             sys.exit(1)
+
+
+def _baseline_path(quick: bool) -> Path:
+    """Return the machine-local baseline path for the given suite mode."""
+    return BASELINE_DIR / ("baseline-quick.json" if quick else "baseline-full.json")
 
 
 if __name__ == "__main__":
