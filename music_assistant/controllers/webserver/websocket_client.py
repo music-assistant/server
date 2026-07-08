@@ -180,7 +180,7 @@ class WebsocketClientHandler:
 
     async def _handle_command(self, msg: CommandMessage) -> None:
         """Handle an incoming command from the client."""
-        self._logger.debug("Handling command %s", msg.command)
+        self._logger.log(VERBOSE_LOG_LEVEL, "Handling command %s", msg.command)
 
         # Handle special "auth" command
         if msg.command == "auth":
