@@ -1,0 +1,30 @@
+{
+  "manifest": {
+    "description": "Records CPU, memory and event-loop diagnostics of the running server and turns them into a shareable report. Only install this provider temporarily to debug performance issues (or when asked to in a support request) and uninstall it when done - it is not meant for day-to-day use."
+  },
+  "config_entries": {
+    "profiler_note": {
+      "label": "The profiler runs continuously while this provider is installed: a flight recorder samples server health every 10 seconds, an event-loop monitor tracks scheduling delays and (optional) periodic CPU profile windows are captured. Generate the shareable report with the 'profiler/report' API command; the latest report is also written to the 'profiler' folder inside the server data directory. Uninstall this provider when you are done debugging."
+    },
+    "cpu_profile_enabled": {
+      "label": "Periodic CPU profiling",
+      "description": "Automatically capture a CPU profile window at a regular interval. The server runs slightly slower while a window is being captured."
+    },
+    "cpu_profile_duration": {
+      "label": "CPU profile window duration (seconds)",
+      "description": "How long each CPU profile window records before its results are processed."
+    },
+    "cpu_profile_interval": {
+      "label": "CPU profile interval (minutes)",
+      "description": "How often a new CPU profile window is captured automatically."
+    },
+    "action_run_cpu_profile": {
+      "label": "Capture an on-demand CPU profile window, for example while you are reproducing an issue. The result is included in the next report.",
+      "action_label": "Profile now"
+    },
+    "tracemalloc_enabled": {
+      "label": "Track memory allocations (tracemalloc)",
+      "description": "Trace Python memory allocations so the report can show the top allocation sites and their growth between reports. Warning: this roughly doubles memory-tracking overhead and slows the server down while enabled - only use it when hunting a memory leak."
+    }
+  }
+}
