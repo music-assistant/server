@@ -23,6 +23,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import get_primary_ip_address
@@ -101,6 +102,7 @@ class SonosPlayerProvider(PlayerProvider):
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]
         assert isinstance(player_id, str)  # for type checking
+        bootseq = try_parse_int(info.decoded_properties.get("bootseq"), None)
         # handle update for existing device
         if sonos_player := self.mass.players.get_player(player_id):
             assert isinstance(sonos_player, SonosPlayer), (
@@ -115,11 +117,25 @@ class SonosPlayerProvider(PlayerProvider):
                     cur_address,
                 )
                 sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, cur_address)
+            player_rebooted = (
+                bootseq is not None
+                and sonos_player.last_bootseq is not None
+                and bootseq > sonos_player.last_bootseq
+            )
+            sonos_player.last_bootseq = bootseq
             if not sonos_player.connected and cur_address:
                 self.logger.debug("Player back online: %s", sonos_player.display_name)
                 sonos_player.client.player_ip = cur_address
                 # schedule reconnect
                 sonos_player.reconnect()
+            elif player_rebooted:
+                # the player rebooted (e.g. firmware update) while we think we're still
+                # connected: the websocket may be dead without us noticing, so any
+                # playback events would silently no longer reach us - force a reconnect
+                self.logger.info("Player %s rebooted, reconnecting", sonos_player.display_name)
+                if cur_address:
+                    sonos_player.client.player_ip = cur_address
+                sonos_player.force_reconnect()
             self.mass.players.trigger_player_update(player_id)
             return
         # handle new player setup in a delayed task because mdns announcements

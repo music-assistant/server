@@ -89,6 +89,7 @@ class SonosPlayer(Player):
         super().__init__(prov, player_id)
         self.discovery_info = discovery_info
         self.connected: bool = False
+        self.last_bootseq: int | None = None
         self._listen_task: asyncio.Task[None] | None = None
         self.sonos_queue: SonosQueue = SonosQueue()
 
@@ -711,6 +712,19 @@ class SonosPlayer(Player):
         # use a task_id to prevent multiple reconnects
         task_id = f"sonos_reconnect_{self.player_id}"
         self.mass.call_later(delay, self._connect, delay, task_id=task_id)
+
+    def force_reconnect(self, delay: float = 1) -> None:
+        """Drop the current (possibly stale) connection and reconnect the player."""
+
+        async def _force_reconnect() -> None:
+            await self._disconnect()
+            await self._connect(int(delay))
+
+        if self.mass.closing:
+            return
+        # use a task_id to prevent multiple reconnects
+        task_id = f"sonos_reconnect_{self.player_id}"
+        self.mass.call_later(delay, _force_reconnect, task_id=task_id)
 
     async def sync_play_modes(self, queue_id: str) -> None:
         """Sync the play modes between MA and Sonos."""
