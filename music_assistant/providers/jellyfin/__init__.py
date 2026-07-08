@@ -445,9 +445,11 @@ class JellyfinProvider(MusicProvider):
             provider=self.instance_id,
             audio_format=audio_format(jellyfin_track),
             stream_type=StreamType.HTTP,
-            duration=int(runtime_ticks / 10000000)  # 10000000 ticks per second
-            if runtime_ticks
-            else None,
+            duration=(
+                int(runtime_ticks / 10000000)  # 10000000 ticks per second
+                if runtime_ticks is not None
+                else None
+            ),
             path=url,
             can_seek=True,
             allow_seek=True,
