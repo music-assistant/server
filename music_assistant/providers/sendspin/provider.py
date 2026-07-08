@@ -317,6 +317,10 @@ class SendspinProvider(PlayerProvider):
             player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}{player_id}"
         if player_id in self._virtual_players or self.server_api.get_client(player_id) is not None:
             raise SetupFailedError(f"Virtual player {player_id} already exists")
+        # a persisted config may only be reclaimed by the same owner
+        stored_owner = self._get_virtual_player_config_owner(player_id)
+        if stored_owner is not None and stored_owner != owner_instance_id:
+            raise SetupFailedError(f"Virtual player {player_id} is owned by {stored_owner}")
         self._virtual_players[player_id] = owner_instance_id
         try:
             self._register_virtual_player_client(player_id, display_name)
@@ -345,8 +349,9 @@ class SendspinProvider(PlayerProvider):
         :param player_id: The player_id returned by create_virtual_player.
         :raises ValueError: If the given player_id is not a (known) virtual player.
         """
-        if player_id not in self._virtual_players and not self._has_virtual_player_config(
-            player_id
+        if (
+            player_id not in self._virtual_players
+            and self._get_virtual_player_config_owner(player_id) is None
         ):
             raise ValueError(f"{player_id} is not a virtual player")
         self._virtual_players.pop(player_id, None)
@@ -653,13 +658,15 @@ class SendspinProvider(PlayerProvider):
         finally:
             self._finish_client_event(client_id)
 
-    def _has_virtual_player_config(self, player_id: str) -> bool:
-        """Return whether a stored player config marks the given id as a virtual player."""
+    def _get_virtual_player_config_owner(self, player_id: str) -> str | None:
+        """Return the owner instance id from a stored virtual player config, if any."""
         raw_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
-            return False
+            return None
         values = raw_conf.get("values")
-        return isinstance(values, dict) and values.get(CONF_VIRTUAL_PLAYER_OWNER) is not None
+        if not isinstance(values, dict):
+            return None
+        return cast("str | None", values.get(CONF_VIRTUAL_PLAYER_OWNER))
 
     def _register_virtual_player_client(self, player_id: str, display_name: str) -> None:
         """Register the silent external Sendspin client backing a virtual player."""

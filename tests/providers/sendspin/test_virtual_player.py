@@ -104,6 +104,26 @@ async def test_create_virtual_player_owner_not_loaded(mass: MusicAssistant) -> N
         )
 
 
+async def test_create_virtual_player_owned_by_other_provider(mass: MusicAssistant) -> None:
+    """Test that a persisted virtual player id can not be claimed by another owner."""
+    sendspin = _get_sendspin_provider(mass)
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}claimed"
+    mass.config.set(
+        f"{CONF_PLAYERS}/{player_id}",
+        {
+            "player_id": player_id,
+            "provider": sendspin.instance_id,
+            "values": {CONF_VIRTUAL_PLAYER_OWNER: "some_other_provider"},
+        },
+    )
+    with pytest.raises(SetupFailedError, match="owned by"):
+        await sendspin.create_virtual_player(
+            owner_instance_id=sendspin.instance_id,
+            display_name="Test Session",
+            player_id=player_id,
+        )
+
+
 async def test_remove_virtual_player(mass: MusicAssistant) -> None:
     """Test removing a virtual player cleans up player, client and config."""
     sendspin = _get_sendspin_provider(mass)
