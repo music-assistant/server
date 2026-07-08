@@ -5,8 +5,6 @@ import pathlib
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
-from music_assistant.constants import create_sample_rates_config_entry
-
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
@@ -25,11 +23,6 @@ CONF_HELP_LINK = (
     "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
 )
 
-# snapcast has fixed sample rate/bit depth so make this config entry static and hidden
-CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(
-    supported_sample_rates=[48000], supported_bit_depths=[16], hidden=True
-)
-
 DEFAULT_SNAPSERVER_IP = "127.0.0.1"
 DEFAULT_SNAPSERVER_PORT = 1705
 DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
@@ -38,6 +31,11 @@ DEFAULT_SNAPSERVER_CONFIG_FILE = "/etc/snapserver.conf"
 SHIPPED_SNAPSERVER_CONFIG_FILE = (
     pathlib.Path(__file__).parent / "snapserver" / "snapserver.conf"
 ).resolve()
+
+# snapserver has no TCP keepalive (https://github.com/snapcast/snapcast/issues/995) and
+# never times out abruptly powered-off clients, so we poll lastSeen freshness ourselves.
+SNAPCLIENT_LIVENESS_POLL_INTERVAL = 5  # poll_interval (seconds) for snapcast players
+SNAPCLIENT_STALE_THRESHOLD = 15  # mark unavailable if lastSeen frozen this long (seconds)
 
 # Socket path template for control script communication
 # The {queue_id} placeholder will be replaced with the actual queue ID

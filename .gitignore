@@ -1,5 +1,4 @@
 
-.DS_Store
 *.db
 *.pyc
 music_assistant/config.json
@@ -9,6 +8,10 @@ music_assistant/testrun.sh
 build/
 dist/
 venv/
+
+# Bundled app credentials - injected at build time, or a maintainer's local copy. Never commit.
+music_assistant/helpers/app_secrets.json
+app_vars.json
 .venv
 .venv*
 .mypy_cache/
@@ -19,10 +22,16 @@ venv/
 .idea
 .coverage
 uv.lock
-/.claude/worktrees
+/.claude/*
+!/.claude/skills
+!/.claude/skills/**
+.DS_Store
 docs/superpowers
 
 # Devenv
 .devenv*
 devenv.local.nix
 devenv.local.yaml
+
+# VS Code
+.vscode/launch.json

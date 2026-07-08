@@ -35,7 +35,7 @@ class UGPStream:
 
     def __init__(
         self,
-        audio_source: AsyncGenerator[bytes, None],
+        audio_source: AsyncGenerator[bytes],
         audio_format: AudioFormat,
         base_pcm_format: AudioFormat,
     ) -> None:
@@ -62,7 +62,7 @@ class UGPStream:
                 await self._task
         self._done.set()
 
-    async def subscribe_raw(self) -> AsyncGenerator[bytes, None]:
+    async def subscribe_raw(self) -> AsyncGenerator[bytes]:
         """
         Subscribe to the raw/unaltered audio stream.
 
@@ -86,7 +86,7 @@ class UGPStream:
 
     async def get_stream(
         self, output_format: AudioFormat, filter_params: list[str] | None = None
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Subscribe to the client specific audio stream."""
         # start the runner as soon as the (first) client connects
         async for chunk in get_ffmpeg_stream(

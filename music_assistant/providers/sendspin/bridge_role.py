@@ -1,4 +1,5 @@
-"""Reusable bridge player role for external player bridges.
+"""
+Reusable bridge player role for external player bridges.
 
 Provides a BridgePlayerRole that receives audio from Sendspin's PushStream
 and forwards it to an external player via callbacks. This role can be used
@@ -31,7 +32,8 @@ BRIDGE_ROLE_ID = "player@_bridge"
 
 
 class BridgePlayerRole(Role):
-    """Custom Sendspin player role for external player bridges.
+    """
+    Custom Sendspin player role for external player bridges.
 
     This role receives audio from Sendspin's PushStream and forwards it
     to an external player via callbacks. It bypasses the normal WebSocket
@@ -42,7 +44,8 @@ class BridgePlayerRole(Role):
     """
 
     def __init__(self, client: SendspinClient) -> None:
-        """Initialize the bridge player role.
+        """
+        Initialize the bridge player role.
 
         :param client: The Sendspin client this role belongs to.
         """
@@ -55,6 +58,10 @@ class BridgePlayerRole(Role):
         self._audio_requirements: AudioRequirements | None = None
         self._volume: int = 100
         self._muted: bool = False
+        # Bridge-specific timing reported to PushStream so server scheduling
+        # accounts for the downstream player's startup and jitter requirements.
+        self._required_lead_time_ms: int = 0
+        self._min_buffer_ms: int = 0
 
     def set_callbacks(
         self,
@@ -66,7 +73,8 @@ class BridgePlayerRole(Role):
         on_stream_end: Callable[[], None],
         initial_volume: int = 100,
     ) -> None:
-        """Wire up bridge callbacks after role creation.
+        """
+        Wire up bridge callbacks after role creation.
 
         :param on_audio_chunk: Callback to receive audio chunks.
         :param on_volume_change: Callback when volume level changes.
@@ -95,18 +103,55 @@ class BridgePlayerRole(Role):
         """Return role family name."""
         return "player"
 
-    def setup_audio_requirements(self) -> None:
-        """Set up audio requirements for bridge PCM format."""
+    def setup_audio_requirements(
+        self,
+        sample_rate: int = BRIDGE_SAMPLE_RATE,
+        bit_depth: int = BRIDGE_BIT_DEPTH,
+        channels: int = BRIDGE_CHANNELS,
+    ) -> None:
+        """
+        Set up audio requirements for bridge PCM format.
+
+        Call with the sink's native rate/depth so MA transcodes to the
+        correct format before delivering chunks. Defaults to the bridge
+        constants for callers that don't need format negotiation.
+        """
         self._audio_requirements = AudioRequirements(
-            sample_rate=BRIDGE_SAMPLE_RATE,
-            bit_depth=BRIDGE_BIT_DEPTH,
-            channels=BRIDGE_CHANNELS,
-            transformer=None,  # Raw PCM, no encoding
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            channels=channels,
+            transformer=None,
         )
+
+    @property
+    def preferred_format(self) -> AudioRequirements | None:
+        """Return the audio format declared via setup_audio_requirements."""
+        return self._audio_requirements
 
     def get_audio_requirements(self) -> AudioRequirements | None:
         """Return audio requirements for PushStream."""
         return self._audio_requirements
+
+    def set_timing(self, *, required_lead_time_ms: int, min_buffer_ms: int) -> None:
+        """
+        Configure timing values reported to PushStream for scheduling.
+
+        Call before or during a stream session to adjust the lead time and
+        ongoing buffer floor reported to the Sendspin send-ahead calculation.
+        Bridge implementations should reflect their downstream player's real
+        startup latency (CLI spawn, protocol handshake, device buffer fill)
+        and jitter requirements.
+        """
+        self._required_lead_time_ms = max(0, required_lead_time_ms)
+        self._min_buffer_ms = max(0, min_buffer_ms)
+
+    def get_required_lead_time_us(self) -> int:
+        """Return bridge startup lead time in microseconds."""
+        return self._required_lead_time_ms * 1_000
+
+    def get_min_buffer_us(self) -> int:
+        """Return bridge minimum ongoing buffer duration in microseconds."""
+        return self._min_buffer_ms * 1_000
 
     def get_player_volume(self) -> int | None:
         """Return current volume level."""
@@ -129,10 +174,6 @@ class BridgePlayerRole(Role):
         self._emit_volume_changed()
         if self._on_mute_change_cb:
             self._on_mute_change_cb(muted)
-
-    def _emit_volume_changed(self) -> None:
-        """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""
-        self._client._signal_event(VolumeChangedEvent(volume=self._volume, muted=self._muted))
 
     def on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Receive audio chunk from PushStream and forward to callback."""
@@ -166,6 +207,10 @@ class BridgePlayerRole(Role):
         LOGGER.debug("BridgePlayerRole stream ended for client %s", self._client.client_id)
         if self._on_stream_end_cb:
             self._on_stream_end_cb()
+
+    def _emit_volume_changed(self) -> None:
+        """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""
+        self._client._signal_event(VolumeChangedEvent(volume=self._volume, muted=self._muted))
 
 
 register_role(BRIDGE_ROLE_ID, lambda client: BridgePlayerRole(client=client))

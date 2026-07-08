@@ -1,4 +1,5 @@
-"""PCM normalization helpers for Yandex Music audio streams.
+"""
+PCM normalization helpers for Yandex Music audio streams.
 
 Contains format profiles, the AudioFormat factory, and pacing-args builder.
 """
@@ -14,7 +15,7 @@ from music_assistant_models.media_items import AudioFormat
 # Ensures MA's single ffmpeg receives a consistent format between tracks.
 # NOTE: AudioFormat is a *mutable* dataclass — MA's FFMpeg._log_reader_task
 # mutates input_format.codec_type in-place.  We MUST create a fresh copy for
-# every place that stores a reference (PluginSource.audio_format, PreBuffer,
+# every place that stores a reference (StreamDetails.audio_format, PreBuffer,
 # ffmpeg output_format) so that mutation of one doesn't corrupt the others.
 PCM_LOSSLESS_PARAMS: dict[str, Any] = {
     "content_type": ContentType.PCM_S24LE,

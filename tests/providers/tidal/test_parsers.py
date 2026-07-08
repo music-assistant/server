@@ -2,12 +2,11 @@
 
 import json
 import pathlib
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
-from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
-from syrupy.assertion import SnapshotAssertion
 
 from music_assistant.providers.tidal.parsers import (
     parse_album,
@@ -15,6 +14,10 @@ from music_assistant.providers.tidal.parsers import (
     parse_playlist,
     parse_track,
 )
+
+if TYPE_CHECKING:
+    from music_assistant_models.enums import MediaType
+    from syrupy.assertion import SnapshotAssertion
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.json"))

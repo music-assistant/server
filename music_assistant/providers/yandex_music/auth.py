@@ -1,4 +1,5 @@
-"""Yandex Music authentication flows.
+"""
+Yandex Music authentication flows.
 
 Two user-facing login paths, both backed by ``ya-passport-auth``:
 
@@ -53,7 +54,8 @@ def _build_device_code_page(
     verification_url: str,
     status_url: str,
 ) -> str:
-    """Render the HTML page shown to the user during Device Flow login.
+    """
+    Render the HTML page shown to the user during Device Flow login.
 
     Yandex's verification page does not pre-fill the code from query params,
     and the MA frontend opens auth URLs in a new tab, so the user would
@@ -191,7 +193,8 @@ def _build_device_code_page(
 
 
 async def perform_device_auth(mass: MusicAssistant, session_id: str) -> tuple[str, str, str]:
-    """Perform Yandex OAuth Device Flow and return credential tokens.
+    """
+    Perform Yandex OAuth Device Flow and return credential tokens.
 
     Asks Yandex for a device code, presents it to the user via an intermediate
     HTML page served from MA's own webserver, then polls until the user
@@ -279,11 +282,12 @@ async def perform_device_auth(mass: MusicAssistant, session_id: str) -> tuple[st
     except DeviceCodeTimeoutError as err:
         raise LoginFailed("Device authentication timed out. Please try again.") from err
     except YaPassportError as err:
-        raise LoginFailed(f"Yandex device auth error: {err}") from err
+        raise LoginFailed(f"Yandex device auth error ({type(err).__name__})") from err
 
 
 async def perform_qr_auth(mass: MusicAssistant, session_id: str) -> tuple[str, str]:
-    """Perform full QR authentication flow.
+    """
+    Perform full QR authentication flow.
 
     Opens a QR code popup via MA frontend, polls for scan confirmation,
     then returns tokens as plain strings for MA config storage.
@@ -309,11 +313,12 @@ async def perform_qr_auth(mass: MusicAssistant, session_id: str) -> tuple[str, s
     except QRTimeoutError as err:
         raise LoginFailed("QR authentication timed out. Please try again.") from err
     except YaPassportError as err:
-        raise LoginFailed(f"Yandex auth error: {err}") from err
+        raise LoginFailed(f"Yandex auth error ({type(err).__name__})") from err
 
 
 async def refresh_music_token(x_token: SecretStr) -> SecretStr:
-    """Exchange an x_token for a fresh music-scoped OAuth token.
+    """
+    Exchange an x_token for a fresh music-scoped OAuth token.
 
     Distinguishes transient Passport failures (network/rate limiting) from
     credential-invalid errors: only the latter raise ``LoginFailed``, so
@@ -323,17 +328,20 @@ async def refresh_music_token(x_token: SecretStr) -> SecretStr:
         async with PassportClient.create() as client:
             return await client.refresh_music_token(x_token)
     except (NetworkError, RateLimitedError) as err:
+        # Library exception strings may carry request bodies or token fragments;
+        # surface only the class name to keep MA logs and the frontend clean.
         raise ResourceTemporarilyUnavailable(
-            f"Yandex Passport temporarily unavailable: {err}"
+            f"Yandex Passport temporarily unavailable ({type(err).__name__})"
         ) from err
     except YaPassportError as err:
-        raise LoginFailed(f"Failed to refresh music token: {err}") from err
+        raise LoginFailed(f"Failed to refresh music token ({type(err).__name__})") from err
 
 
 async def refresh_credentials_via_passport(
     x_token: SecretStr, refresh_token: SecretStr
 ) -> Credentials:
-    """Silently re-issue the full credential triple using a refresh token.
+    """
+    Silently re-issue the full credential triple using a refresh token.
 
     Only available for accounts authenticated via the Device Flow (QR login
     does not yield a ``refresh_token``). Rotates both ``x_token`` and
@@ -347,16 +355,28 @@ async def refresh_credentials_via_passport(
             )
     except (NetworkError, RateLimitedError) as err:
         raise ResourceTemporarilyUnavailable(
-            f"Yandex Passport temporarily unavailable: {err}"
+            f"Yandex Passport temporarily unavailable ({type(err).__name__})"
         ) from err
     except YaPassportError as err:
-        raise LoginFailed(f"Failed to refresh credentials: {err}") from err
+        raise LoginFailed(f"Failed to refresh credentials ({type(err).__name__})") from err
 
 
 async def validate_x_token(x_token: SecretStr) -> bool:
-    """Return True if *x_token* is still accepted by Yandex Passport."""
+    """
+    Return True if *x_token* is still accepted by Yandex Passport.
+
+    A ``False`` return signals "rejected by Passport" — a terminal credential
+    failure. Transient network or rate-limit errors are re-raised so callers
+    can distinguish them from invalid credentials and avoid clearing a good
+    token on a temporary outage.
+
+    :raises NetworkError: Transient network failure reaching Passport.
+    :raises RateLimitedError: Passport returned 429.
+    """
     try:
         async with PassportClient.create() as client:
             return bool(await client.validate_x_token(x_token))
+    except NetworkError, RateLimitedError:
+        raise
     except YaPassportError:
         return False

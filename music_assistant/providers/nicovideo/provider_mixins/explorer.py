@@ -25,7 +25,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -38,7 +39,9 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             search_result.tracks = tracks
 
         # Search for both playlists and albums in a single API call for efficiency
-        list_media_types = [mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)]
+        list_media_types: list[MediaType] = [
+            mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)
+        ]
 
         if list_media_types:
             await self.service_manager.search.search_playlists_and_albums_by_keyword(
@@ -66,7 +69,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_recommendations",
-                    name="nicovideo recommendations",
+                    name="Recommended tracks",
+                    translation_key="recommended_tracks",
                     provider=self.instance_id,
                     icon="mdi-star-circle-outline",
                     items=UniqueList(main_recommendation_tracks),
@@ -79,7 +83,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_history",
-                    name="Recently watched (nicovideo history)",
+                    name="Recently played",
+                    translation_key="recently_played",
                     provider=self.instance_id,
                     icon="mdi-history",
                     items=UniqueList(history_tracks),
@@ -95,6 +100,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 RecommendationFolder(
                     item_id="nicovideo_following_activities",
                     name="New Tracks from Followed Users",
+                    translation_key="nicovideo_following_activities",
                     provider=self.instance_id,
                     icon="mdi-account-plus-outline",
                     items=UniqueList(following_activities_tracks),
@@ -107,7 +113,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_like_history",
-                    name="Recently liked (Like history)",
+                    name="Recently favorited tracks",
+                    translation_key="recent_favorite_tracks",
                     provider=self.instance_id,
                     icon="mdi-heart-outline",
                     items=UniqueList(like_history_tracks),
@@ -117,7 +124,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         return recommendation_folders
 
     @override
-    @use_cache(3600 * 6)  # Cache for 6 hours
+    @use_cache(3600 * 6, allow_expired_cache=True)  # Cache for 6 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         return await self.service_manager.user.get_similar_tracks(prov_track_id, limit)

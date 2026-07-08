@@ -58,18 +58,13 @@ async def get_config_entries(
     if hass_prov and hass_prov.hass.connected:
         async for state in get_hass_media_players(hass_prov):
             name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
-            player_entities.append(ConfigValueOption(name, state["entity_id"]))
+            player_entities.append(ConfigValueOption(state["entity_id"], title=name))
     return (
         ConfigEntry(
             key=CONF_PLAYERS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Player entities",
             required=True,
             options=player_entities,
-            description="Specify which HA media_player entity id's you "
-            "like to import as players in Music Assistant.\n\n"
-            "Note that only Media player entities will be listed which are "
-            "compatible with Music Assistant.",
         ),
     )

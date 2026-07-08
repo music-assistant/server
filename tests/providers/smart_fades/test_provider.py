@@ -8,9 +8,10 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 import pytest
 from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.providers.smart_fades.provider import SmartFadesProvider
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -131,6 +132,7 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     stream_details.queue_id = "test"
     stream_details.uri = "test://120bpm"
     stream_details.media_type = MediaType.TRACK
+    stream_details.duration = 120
 
     session_id = "test:test:test_120bpm"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -176,6 +178,9 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125, f"Expected BPM ~120, got {analysis.bpm:.1f}"
 
+    # the 120 BPM fixture is common time
+    assert analysis.beats_per_bar == 4
+
 
 async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock: Mock) -> None:
     """Test that extended analysis fields (energy, centroid, key) are populated."""
@@ -192,6 +197,7 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     stream_details.queue_id = "test"
     stream_details.uri = "test://120bpm"
     stream_details.media_type = MediaType.TRACK
+    stream_details.duration = 120
 
     session_id = "test:test:test_120bpm_extended"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -243,6 +249,17 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125
 
+    # v2: per-band RMS envelopes in extra_data, normalized by the full-band peak
+    assert analysis.extra_data is not None
+    band_rms = analysis.extra_data["band_rms"]
+    assert set(band_rms) == {"low", "low_mid", "mid", "high"}
+    for band in band_rms.values():
+        assert len(band) == 1800
+        assert all(v >= 0.0 for v in band)
+    # music with drums has real low-band content; bands are lists (JSON-safe)
+    assert isinstance(band_rms["low"], list)
+    assert max(band_rms["low"]) > 0.05
+
 
 async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider) -> None:
     """Test that _finalize returns an AudioAnalysisData on success."""
@@ -259,6 +276,7 @@ async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider
     stream_details.queue_id = "test"
     stream_details.uri = "test://finalize_return"
     stream_details.media_type = MediaType.TRACK
+    stream_details.duration = 120
 
     session_id = "test:test:test_finalize_return"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -276,8 +294,8 @@ async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider
     assert isinstance(result, AudioAnalysisData)
 
 
-async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider) -> None:
-    """Test that _finalize returns None when not enough beats are detected."""
+async def test_finalize_raises_when_not_enough_beats(provider: SmartFadesProvider) -> None:
+    """Test that _finalize raises AudioAnalysisError when not enough beats are detected."""
     audio_format = AudioFormat(
         content_type=ContentType.PCM_F32LE,
         bit_depth=32,
@@ -291,6 +309,7 @@ async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider)
     stream_details.queue_id = "test"
     stream_details.uri = "test://finalize_none"
     stream_details.media_type = MediaType.TRACK
+    stream_details.duration = 120
 
     session_id = "test:test:test_finalize_none"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -303,12 +322,34 @@ async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider)
         await provider.process_pcm_chunk(session_id, chunk)
         offset += chunk_size
 
-    # Patch _infer_beat_timings to return fewer than 2 beats → triggers early exit
-    with patch.object(
-        provider,
-        "_infer_beat_timings",
-        return_value=(np.array([0.5]), np.array([])),
+    # Patch _infer_beat_timings to return fewer than 2 beats → deterministic skip
+    with (
+        patch.object(
+            provider,
+            "_infer_beat_timings",
+            return_value=(np.array([0.5]), np.array([]), 4),
+        ),
+        pytest.raises(AudioAnalysisError, match="beat"),
     ):
-        result = await provider._finalize(session_id)
+        await provider._finalize(session_id)
 
-    assert result is None
+
+async def test_setup_raises_when_requirements_not_met(
+    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
+) -> None:
+    """setup() fails (before importing the heavy provider module) when requirements aren't met."""
+    from music_assistant.providers import smart_fades  # noqa: PLC0415
+
+    with (
+        patch(
+            "music_assistant.providers.smart_fades.verify_system_meets_requirements",
+            side_effect=SetupFailedError("unsupported system"),
+        ),
+        pytest.raises(SetupFailedError),
+    ):
+        await smart_fades.setup(mass_mock, manifest_mock, config_mock)
+
+
+async def test_analysis_version_is_2(provider: SmartFadesProvider) -> None:
+    """v2 = anti-aliased bins + band_rms extra_data + beats_per_bar."""
+    assert provider.analysis_version == 2

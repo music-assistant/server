@@ -283,9 +283,7 @@ async def test_play_track(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
         assert resp.status == 200
         data = await resp.json()
         assert data["status"] == "ok"
-        mass_mock.player_queues.play_media.assert_awaited_once_with(
-            "msx_test", "library://track/1", username=None
-        )
+        mass_mock.player_queues.play_media.assert_awaited_once_with("msx_test", "library://track/1")
     finally:
         await client.close()
 
@@ -563,7 +561,7 @@ async def test_msx_playlist_tracks(provider: MSXBridgeProvider, mass_mock: Mock)
     """GET /msx/playlists/{id}/tracks.json should return tracks with audio actions."""
     track = _make_track_mock()
 
-    async def _mock_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Any, None]:
+    async def _mock_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Any]:
         yield track
 
     mass_mock.music.playlists.tracks = Mock(side_effect=lambda *_a, **_k: _mock_playlist_tracks())
@@ -741,7 +739,7 @@ async def test_msx_playlist_playlist_endpoint(provider: MSXBridgeProvider, mass_
     """GET /msx/playlist/playlist/{id}.json should return playlist JSON."""
     track = _make_track_mock()
 
-    async def _mock_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Any, None]:
+    async def _mock_playlist_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Any]:
         yield track
 
     mass_mock.music.playlists.tracks = Mock(side_effect=lambda *_a, **_k: _mock_playlist_tracks())
@@ -813,7 +811,7 @@ def test_format_msx_track_duration_only(provider: MSXBridgeProvider) -> None:
 # --- Async iteration helpers for stream mocking ---
 
 
-async def _async_iter(items: list[Any]) -> AsyncGenerator[Any, None]:
+async def _async_iter(items: list[Any]) -> AsyncGenerator[Any]:
     """Async generator helper for mocking iter_chunked."""
     for item in items:
         yield item

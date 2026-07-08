@@ -84,7 +84,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
     )
@@ -106,16 +105,6 @@ class TuneInProvider(MusicProvider):
                 "Email address detected instead of username, "
                 "it is advised to use the tunein username instead of email."
             )
-
-    @staticmethod
-    def _browse_path_key(text: str) -> str:
-        """Convert a display name to a URL-safe path segment."""
-        if " (" in text:
-            text = text[: text.rfind(" (")]
-        result = "".join(c if c.isalnum() else "_" for c in text.strip())
-        while "__" in result:
-            result = result.replace("__", "_")
-        return result.strip("_") or "item"
 
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
         """Browse TuneIn catalog."""
@@ -199,12 +188,12 @@ class TuneInProvider(MusicProvider):
                         result.append(self._parse_radio_lazy(child))
         return result
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
 
         async def parse_items(
             items: list[dict[str, Any]], folder: str | None = None
-        ) -> AsyncGenerator[Radio, None]:
+        ) -> AsyncGenerator[Radio]:
             for item in items:
                 item_type = item.get("type", "")
                 if "unavailable" in item.get("key", ""):
@@ -276,9 +265,78 @@ class TuneInProvider(MusicProvider):
                 item_id="trending",
                 provider=self.instance_id,
                 name="Trending",
+                translation_key="trending_stations",
                 items=UniqueList(stations),
             )
         ]
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Get stream details for a radio station."""
+        if item_id.startswith("http"):
+            # custom url
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                ),
+                media_type=MediaType.RADIO,
+                stream_type=StreamType.HTTP,
+                path=item_id,
+                allow_seek=False,
+                can_seek=False,
+            )
+        if "--" in item_id:
+            # handle this for backwards compatibility
+            item_id = item_id.split("--", maxsplit=1)[0]
+        if stream_info := await self._get_stream_info(item_id):
+            # assuming here that the streams are sorted by quality (bitrate)
+            # and the first one is the best quality
+            preferred_stream = stream_info[0]
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                # set contenttype to unknown so ffmpeg can auto detect it
+                audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                media_type=MediaType.RADIO,
+                stream_type=StreamType.HTTP,
+                path=preferred_stream["url"],
+                allow_seek=False,
+                can_seek=False,
+            )
+        msg = f"Unable to retrieve stream details for {item_id}"
+        raise MediaNotFoundError(msg)
+
+    @use_cache(3600)
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 10
+    ) -> SearchResults:
+        """Perform search on Tune-in music provider."""
+        result = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return result
+        data = await self.__get_data("Search.ashx", query=search_query)
+        radios = []
+        if data and "body" in data:
+            count = 0
+            for item in data["body"]:
+                if item.get("type") == "audio" and "preset_id" in item:
+                    radios.append(self._parse_radio_lazy(item))
+                    count += 1
+                    if count >= limit:
+                        break
+        result.radio = radios
+        return result
+
+    @staticmethod
+    def _browse_path_key(text: str) -> str:
+        """Convert a display name to a URL-safe path segment."""
+        if " (" in text:
+            text = text[: text.rfind(" (")]
+        result = "".join(c if c.isalnum() else "_" for c in text.strip())
+        while "__" in result:
+            result = result.replace("__", "_")
+        return result.strip("_") or "item"
 
     def _parse_radio_lazy(self, details: dict[str, Any]) -> Radio:
         """Create a Radio from a browse item without fetching stream info."""
@@ -309,7 +367,7 @@ class TuneInProvider(MusicProvider):
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=img,
+                        path=img.replace("http://", "https://", 1),
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
@@ -387,7 +445,7 @@ class TuneInProvider(MusicProvider):
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=img,
+                        path=img.replace("http://", "https://", 1),
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
@@ -419,64 +477,6 @@ class TuneInProvider(MusicProvider):
             category=CACHE_CATEGORY_STREAMS,
         )
         return body_data
-
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get stream details for a radio station."""
-        if item_id.startswith("http"):
-            # custom url
-            return StreamDetails(
-                provider=self.instance_id,
-                item_id=item_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.UNKNOWN,
-                ),
-                media_type=MediaType.RADIO,
-                stream_type=StreamType.HTTP,
-                path=item_id,
-                allow_seek=False,
-                can_seek=False,
-            )
-        if "--" in item_id:
-            # handle this for backwards compatibility
-            item_id = item_id.split("--", maxsplit=1)[0]
-        if stream_info := await self._get_stream_info(item_id):
-            # assuming here that the streams are sorted by quality (bitrate)
-            # and the first one is the best quality
-            preferred_stream = stream_info[0]
-            return StreamDetails(
-                provider=self.instance_id,
-                item_id=item_id,
-                # set contenttype to unknown so ffmpeg can auto detect it
-                audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
-                media_type=MediaType.RADIO,
-                stream_type=StreamType.HTTP,
-                path=preferred_stream["url"],
-                allow_seek=False,
-                can_seek=False,
-            )
-        msg = f"Unable to retrieve stream details for {item_id}"
-        raise MediaNotFoundError(msg)
-
-    @use_cache(3600)
-    async def search(
-        self, search_query: str, media_types: list[MediaType], limit: int = 10
-    ) -> SearchResults:
-        """Perform search on Tune-in music provider."""
-        result = SearchResults()
-        if MediaType.RADIO not in media_types:
-            return result
-        data = await self.__get_data("Search.ashx", query=search_query)
-        radios = []
-        if data and "body" in data:
-            count = 0
-            for item in data["body"]:
-                if item.get("type") == "audio" and "preset_id" in item:
-                    radios.append(self._parse_radio_lazy(item))
-                    count += 1
-                    if count >= limit:
-                        break
-        result.radio = radios
-        return result
 
     async def __get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""

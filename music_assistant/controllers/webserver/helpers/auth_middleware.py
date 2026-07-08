@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, cast
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Final, Self, cast
 
 from aiohttp import web
-from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
@@ -21,15 +24,49 @@ if TYPE_CHECKING:
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
 
+_GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
+    {
+        Scope.LIBRARY_READ,
+        Scope.PLAYERS_READ,
+        Scope.PLAYERS_CONTROL,
+        Scope.QUEUES_READ,
+        Scope.QUEUES_CONTROL,
+        Scope.PROVIDERS_READ,
+        Scope.CONFIG_PLAYERS_READ,
+    }
+)
+_USER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
+    Scope.LIBRARY_WRITE,
+    Scope.CONFIG_PROVIDERS_READ,
+    Scope.CONFIG_CORE_READ,
+    Scope.USERS_INVITE,
+    Scope.SYSTEM_READ,
+}
+
+# Scopes granted to each of the builtin user roles.
+# Roles are identified by their (string) role id to allow for custom roles in the future:
+# a role id not present in this mapping simply grants no scopes at all.
+ROLE_SCOPES: Final[Mapping[str, frozenset[Scope]]] = {
+    UserRole.ADMIN: frozenset({Scope.ALL}),
+    UserRole.USER: _USER_SCOPES,
+    UserRole.GUEST: _GUEST_SCOPES,
+    # service accounts (such as the Home Assistant integration) get
+    # slightly elevated rights over a regular user
+    UserRole.SERVICE: _USER_SCOPES | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_IMPERSONATE},
+}
+
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
 current_token: ContextVar[str | None] = ContextVar("current_token", default=None)
+# ContextVar to impersonate another user. Admin permissions required. Used in HA context.
+impersonated_user: ContextVar[User | None] = ContextVar("impersonated_user", default=None)
 # ContextVar for tracking the sendspin player associated with the current connection
 sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", default=None)
 
 
 async def get_authenticated_user(request: web.Request) -> User | None:
-    """Get authenticated user from request.
+    """
+    Get authenticated user from request.
 
     :param request: The aiohttp request.
     """
@@ -132,7 +169,8 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
 
 async def require_authentication(request: web.Request) -> User:
-    """Require authentication for a request, raise 401 if not authenticated.
+    """
+    Require authentication for a request, raise 401 if not authenticated.
 
     :param request: The aiohttp request.
     """
@@ -145,15 +183,62 @@ async def require_authentication(request: web.Request) -> User:
     return user
 
 
-async def require_admin(request: web.Request) -> User:
-    """Require admin role for a request, raise 403 if not admin.
-
-    :param request: The aiohttp request.
+def has_scope(user: User, scope: Scope) -> bool:
     """
-    user = await require_authentication(request)
-    if user.role != UserRole.ADMIN:
-        raise web.HTTPForbidden(text="Admin access required")
-    return user
+    Check if the given user is granted the given scope (through its role).
+
+    :param user: The user to check.
+    :param scope: The scope required.
+    """
+    role_scopes = ROLE_SCOPES.get(user.role, frozenset())
+    return Scope.ALL in role_scopes or scope in role_scopes
+
+
+async def resolve_impersonated_user(mass: MusicAssistant, user: str) -> User:
+    """
+    Resolve and validate the user to impersonate for the current call.
+
+    The authenticated caller may always impersonate itself, impersonating
+    another user requires the users.impersonate scope.
+
+    :param mass: The MusicAssistant instance.
+    :param user: The user_id or username of the user to impersonate.
+    """
+    authenticated_user = current_user.get()
+    if authenticated_user is None:
+        raise InsufficientPermissions("Authentication is necessary to impersonate another user.")
+    target_user = await mass.webserver.auth.get_user(user)
+    if target_user is None:
+        target_user = await mass.webserver.auth.get_user_by_username(user)
+    if target_user is None:
+        raise InvalidDataError(f"A user with user id or name {user} is not available.")
+    if target_user.user_id != authenticated_user.user_id and not has_scope(
+        authenticated_user, Scope.USERS_IMPERSONATE
+    ):
+        raise InsufficientPermissions(
+            "The users.impersonate scope is required to impersonate another user."
+        )
+    return target_user
+
+
+async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, Any]) -> User | None:
+    """
+    Pop and resolve the optional impersonation argument for an API command invocation.
+
+    Returns the user to impersonate for the command, or None if no
+    impersonation was requested.
+
+    :param mass: The MusicAssistant instance.
+    :param args: The (mutable) arguments dict of the incoming command.
+    """
+    user_arg = args.pop("user", None)
+    # username is accepted as (deprecated) alias for user
+    username_arg = args.pop("username", None)
+    # deliberately treat None and empty string as "no impersonation requested":
+    # optional fields in automations/scripts commonly template to an empty string
+    if target := user_arg or username_arg:
+        return await resolve_impersonated_user(mass, str(target))
+    return None
 
 
 def get_current_user() -> User | None:
@@ -162,6 +247,8 @@ def get_current_user() -> User | None:
 
     :return: The current user or None if not authenticated.
     """
+    if impersonated_user := get_impersonated_user():
+        return impersonated_user
     return current_user.get()
 
 
@@ -172,6 +259,24 @@ def set_current_user(user: User | None) -> None:
     :param user: The user to set as current.
     """
     current_user.set(user)
+
+
+def get_impersonated_user() -> User | None:
+    """
+    Get the current impersonated user from context.
+
+    :return: The current impersonated user or None if not existing.
+    """
+    return impersonated_user.get()
+
+
+def set_impersonated_user(user: User | None) -> None:
+    """
+    Set the current impersonated user in context.
+
+    :param user: The user to set as impersonated.
+    """
+    impersonated_user.set(user)
 
 
 def get_current_token() -> str | None:
@@ -193,7 +298,8 @@ def set_current_token(token: str | None) -> None:
 
 
 def get_sendspin_player_id() -> str | None:
-    """Get the sendspin player ID associated with the current connection.
+    """
+    Get the sendspin player ID associated with the current connection.
 
     :return: The sendspin player ID or None if not a sendspin connection.
     """
@@ -201,7 +307,8 @@ def get_sendspin_player_id() -> str | None:
 
 
 def set_sendspin_player_id(player_id: str | None) -> None:
-    """Set the sendspin player ID for the current connection.
+    """
+    Set the sendspin player ID for the current connection.
 
     :param player_id: The sendspin player ID to set.
     """
@@ -209,7 +316,8 @@ def set_sendspin_player_id(player_id: str | None) -> None:
 
 
 def is_request_from_ingress(request: web.Request) -> bool:
-    """Check if request is coming from Home Assistant Ingress (internal network).
+    """
+    Check if request is coming from Home Assistant Ingress (internal network).
 
     Security is enforced by socket-level verification (IP/port binding), not headers.
     Only requests on the internal ingress TCP site (172.30.32.x:8094) are accepted.
@@ -241,7 +349,8 @@ def is_request_from_ingress(request: web.Request) -> bool:
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
-    """Authenticate requests and store user in context.
+    """
+    Authenticate requests and store user in context.
 
     :param request: The aiohttp request.
     :param handler: The request handler.
@@ -278,3 +387,45 @@ async def auth_middleware(request: web.Request, handler: Any) -> web.StreamRespo
     # Let the handler decide if authentication is required
     # The handler will call require_authentication() if needed
     return cast("web.StreamResponse", await handler(request))
+
+
+class ImpersonatedUser:
+    """
+    Optional impersonated user context manager, for use by internal (server) code.
+
+    API commands should instead be registered with the allow_impersonation flag,
+    which handles impersonation centrally in the command dispatch.
+
+    Nested use possible: passing None for the user is a no-op which preserves
+    any impersonation already active in the current context.
+    """
+
+    def __init__(self, mass: MusicAssistant, user: str | None) -> None:
+        """
+        Initialize ImpersonatedUser.
+
+        :param mass: The MusicAssistant instance.
+        :param user: The user_id or username of the user to impersonate, or None for a no-op.
+        """
+        self.mass = mass
+        self.user = user
+        self.previous_impersonated_user = impersonated_user.get()
+
+    async def __aenter__(self) -> Self:
+        """Set the impersonated user if applicable."""
+        if self.user is None:
+            # no-op: nothing to impersonate (e.g. playback from a hardware button
+            # or an external protocol without a user context)
+            return self
+        set_impersonated_user(await resolve_impersonated_user(self.mass, self.user))
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        """Unset the impersonated user."""
+        set_impersonated_user(self.previous_impersonated_user)
+        return None

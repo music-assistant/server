@@ -1,4 +1,5 @@
-"""ConfigEntry builders for the Yandex Smart Home provider.
+"""
+ConfigEntry builders for the Yandex Smart Home provider.
 
 Builds the numbered-step config form per connection type:
 
@@ -108,7 +109,8 @@ def should_show_button(
     cloud_instance_id: str,
     base_url: str,
 ) -> bool:
-    """Return True iff the auto-create action button is actionable now.
+    """
+    Return True iff the auto-create action button is actionable now.
 
     Hides the button when:
     - Mode is plain ``cloud`` (no custom skill exists there).
@@ -136,7 +138,8 @@ def auto_create_entries(
     verification_url: str | None,
     existing_artifacts_raw: str | None,
 ) -> Sequence[ConfigEntry]:
-    """Build the auto-create section of the config form.
+    """
+    Build the auto-create section of the config form.
 
     Empty list for ``cloud`` mode — the feature is meaningless without
     a custom skill.
@@ -152,11 +155,6 @@ def auto_create_entries(
             ConfigEntry(
                 key="auto_create_user_code",
                 type=ConfigEntryType.STRING,
-                label="Device code for ya.ru/device",
-                description=(
-                    "Open the URL below in your browser, log in to your "
-                    "Yandex account, and enter this code."
-                ),
                 value=user_code,
                 required=False,
                 help_link=verification_url or "https://ya.ru/device",
@@ -190,11 +188,6 @@ def auto_create_entries(
             key=CONF_ACTION_AUTO_CREATE,
             type=ConfigEntryType.ACTION,
             label=_action_label(artifacts.state),
-            description=(
-                "Runs the Yandex Device Flow login, then creates and "
-                "publishes the private Smart Home skill. Takes ~30 seconds "
-                "after you enter the code."
-            ),
             action=CONF_ACTION_AUTO_CREATE,
             action_label=_action_label(artifacts.state),
             hidden=not show_button,
@@ -216,7 +209,6 @@ def _hidden_state_entries(
         ConfigEntry(
             key=CONF_AUTO_CREATE_ARTIFACTS,
             type=ConfigEntryType.STRING,
-            label="Auto-create artifacts (internal)",
             hidden=True,
             required=False,
             value=existing_artifacts_raw,
@@ -224,7 +216,6 @@ def _hidden_state_entries(
         ConfigEntry(
             key=CONF_AUTO_CREATE_SESSION_ID,
             type=ConfigEntryType.STRING,
-            label="Auto-create session id (internal)",
             hidden=True,
             required=False,
             value=session_id,
@@ -251,7 +242,8 @@ def build_cloud_plus_entries(  # noqa: PLR0913
     skill_id: str = "",
     skill_token_set: bool = False,
 ) -> list[ConfigEntry]:
-    """Return the cloud_plus-mode config entries as three visible steps.
+    """
+    Return the cloud_plus-mode config entries as three visible steps.
 
     Step 1 (Register)       — always visible.
     Step 2 (Create skill)   — visible once cloud instance is registered.
@@ -307,10 +299,7 @@ def _step1_register_entries(is_registered: bool, cloud_instance_id: str) -> list
         ConfigEntry(
             key=CONF_ACTION_REGISTER,
             type=ConfigEntryType.ACTION,
-            label="Register cloud instance",
-            description="Registers a new instance on yaha-cloud.ru relay.",
             action=CONF_ACTION_REGISTER,
-            action_label="Register with cloud",
             hidden=is_registered,
             # No depends_on — see note above action_auto_create.
             category=_CAT_STEP_1_REGISTER,
@@ -331,7 +320,8 @@ def _create_skill_step_entries(
     skill_id: str = "",
     fully_configured: bool = False,
 ) -> list[ConfigEntry]:
-    """Shared builder for the Create-Skill step.
+    """
+    Shared builder for the Create-Skill step.
 
     Used by both cloud_plus Step 2 and direct single-step mode.
 
@@ -348,10 +338,6 @@ def _create_skill_step_entries(
             ConfigEntry(
                 key="auto_create_user_code",
                 type=ConfigEntryType.STRING,
-                label="Device code for ya.ru/device",
-                description=(
-                    "Open the URL below, log in to your Yandex account, and enter this code."
-                ),
                 value=user_code,
                 required=False,
                 help_link=verification_url or "https://ya.ru/device",
@@ -384,14 +370,7 @@ def _create_skill_step_entries(
             ConfigEntry(
                 key="label_direct_https_warning",
                 type=ConfigEntryType.LABEL,
-                label=(
-                    f"⚠️ MA's Base URL is {base_url or '<unset>'}. "
-                    "Direct mode requires a **publicly reachable HTTPS URL** — "
-                    "Yandex refuses to talk to a non-HTTPS backend. "
-                    "Set a reverse proxy with a real certificate and "
-                    "update Settings → Core → Webserver → Base URL, then "
-                    "reopen these settings."
-                ),
+                translation_params=[base_url or "<unset>"],
                 depends_on=CONF_CONNECTION_TYPE,
                 depends_on_value=connection_type,
                 category=category,
@@ -401,11 +380,6 @@ def _create_skill_step_entries(
             ConfigEntry(
                 key="current_ma_base_url",
                 type=ConfigEntryType.STRING,
-                label="Current MA Base URL (read-only)",
-                description=(
-                    "For reference. Change it in Settings → Core → Webserver "
-                    "→ Base URL; provider doesn't own this setting."
-                ),
                 required=False,
                 default_value=base_url or "",
                 depends_on=CONF_CONNECTION_TYPE,
@@ -425,10 +399,6 @@ def _create_skill_step_entries(
             key=CONF_ACTION_AUTO_CREATE,
             type=ConfigEntryType.ACTION,
             label=_action_label(artifacts.state),
-            description=(
-                "Runs the Yandex Device Flow login, then creates and "
-                "publishes the private Smart Home skill."
-            ),
             action=CONF_ACTION_AUTO_CREATE,
             action_label=_action_label(artifacts.state),
             hidden=not show_button,
@@ -467,11 +437,6 @@ def _create_skill_step_entries(
             ConfigEntry(
                 key="oauth_url",
                 type=ConfigEntryType.STRING,
-                label="OAuth URL (open to get token)",
-                description=(
-                    "Open this URL in your browser, approve, and copy the "
-                    "access_token from the resulting URL into the field below."
-                ),
                 required=False,
                 default_value=YANDEX_OAUTH_URL,
                 help_link=YANDEX_OAUTH_URL,
@@ -483,8 +448,6 @@ def _create_skill_step_entries(
             ConfigEntry(
                 key=CONF_SKILL_TOKEN,
                 type=ConfigEntryType.SECURE_STRING,
-                label="Skill OAuth Token",
-                description="Paste the OAuth token obtained from the URL above.",
                 required=False,
                 advanced=token_fields_advanced,
                 depends_on=CONF_CONNECTION_TYPE,
@@ -494,12 +457,6 @@ def _create_skill_step_entries(
             ConfigEntry(
                 key=CONF_SKILL_ID,
                 type=ConfigEntryType.STRING,
-                label="Skill ID",
-                description=(
-                    "UUID of your private Smart Home skill. Set automatically "
-                    "when auto-create succeeds; you can paste it manually if "
-                    "you created the skill by hand."
-                ),
                 required=False,
                 advanced=token_fields_advanced,
                 depends_on=CONF_CONNECTION_TYPE,
@@ -519,8 +476,6 @@ def _create_skill_step_entries(
             ConfigEntry(
                 key="skill_dialogs_link",
                 type=ConfigEntryType.STRING,
-                label="Open skill in Yandex.Dialogs",
-                description="Click the link to open the skill's page.",
                 required=False,
                 default_value=skill_url,
                 help_link=skill_url,
@@ -542,7 +497,8 @@ def _manual_fallback_entries(
     direct_client_secret: str,
     advanced: bool,
 ) -> list[ConfigEntry]:
-    """Copy-paste fields for creating the skill by hand.
+    """
+    Copy-paste fields for creating the skill by hand.
 
     ``advanced=True``  → hidden from the default view, shown when the
     user toggles Advanced. Used when auto-create is expected to work
@@ -597,8 +553,6 @@ def _manual_fallback_entries(
             ConfigEntry(
                 key=CONF_DIRECT_CLIENT_SECRET,
                 type=ConfigEntryType.SECURE_STRING,
-                label="Client Secret (→ Account linking)",
-                description="Copy to 'Account linking' → 'Client secret' field.",
                 required=False,
                 default_value=direct_client_secret,
                 advanced=advanced,
@@ -621,7 +575,6 @@ def _manual_fallback_entries(
         ConfigEntry(
             key="manual_dialogs_url",
             type=ConfigEntryType.STRING,
-            label="Yandex.Dialogs Console",
             required=False,
             default_value=YANDEX_DIALOGS_DEVELOPER_URL,
             help_link=YANDEX_DIALOGS_DEVELOPER_URL,
@@ -633,8 +586,6 @@ def _manual_fallback_entries(
         ConfigEntry(
             key="manual_backend_url",
             type=ConfigEntryType.STRING,
-            label="Backend URL (→ Basic info)",
-            description="Copy to 'Basic info' → 'Backend URL' in your skill.",
             required=False,
             # Reference-only fields use default_value so MA UI renders
             # the text without storing it as a mutable config value
@@ -649,8 +600,6 @@ def _manual_fallback_entries(
         ConfigEntry(
             key="manual_client_id",
             type=ConfigEntryType.STRING,
-            label="Client ID (→ Account linking)",
-            description="Copy to 'Account linking' → 'Client identifier' field.",
             required=False,
             default_value=client_id,
             advanced=advanced,
@@ -670,8 +619,6 @@ def _manual_fallback_entries(
                 ConfigEntry(
                     key="manual_client_secret",
                     type=ConfigEntryType.STRING,
-                    label="Client Secret value (for reference)",
-                    description=("Copy this string into 'Account linking' → 'Client secret'."),
                     required=False,
                     default_value=client_secret,
                     advanced=advanced,
@@ -686,7 +633,6 @@ def _manual_fallback_entries(
         ConfigEntry(
             key="manual_auth_url",
             type=ConfigEntryType.STRING,
-            label="Authorization URL (→ Account linking)",
             required=False,
             default_value=auth_url,
             advanced=advanced,
@@ -697,8 +643,6 @@ def _manual_fallback_entries(
         ConfigEntry(
             key="manual_token_url",
             type=ConfigEntryType.STRING,
-            label="Token URL (→ Account linking, both fields)",
-            description="Paste into BOTH 'Token endpoint' and 'Refresh token URL'.",
             required=False,
             default_value=token_url,
             advanced=advanced,
@@ -720,7 +664,8 @@ def _step2_create_skill_entries(
     skill_id: str = "",
     fully_configured: bool = False,
 ) -> list[ConfigEntry]:
-    """cloud_plus Step 2 — always emitted.
+    """
+    cloud_plus Step 2 — always emitted.
 
     The Create-Skill action button self-hides via ``should_show_button``
     when no cloud instance exists yet, but the section's other fields
@@ -744,7 +689,8 @@ def _step2_create_skill_entries(
 def _step3_link_entries(
     *, is_registered: bool, skill_id_set: bool, otp_code: str | None
 ) -> list[ConfigEntry]:
-    """Step 3 — get an OTP from the cloud and enter it in the Yandex app.
+    """
+    Step 3 — get an OTP from the cloud and enter it in the Yandex app.
 
     Hidden until both Step 1 (cloud registration) and Step 2 (skill
     created — ``skill_id_set``) are done: OTP linking only makes sense
@@ -775,8 +721,6 @@ def _step3_link_entries(
         ConfigEntry(
             key="otp_code",
             type=ConfigEntryType.STRING,
-            label="OTP Code",
-            description="Copy this code and enter it in the Yandex app.",
             required=False,
             value=otp_code,
             hidden=not otp_code,
@@ -787,11 +731,7 @@ def _step3_link_entries(
         ConfigEntry(
             key=CONF_ACTION_GET_OTP,
             type=ConfigEntryType.ACTION,
-            label="Get OTP code",
-            description="Get a fresh one-time password to link with Yandex.",
             action=CONF_ACTION_GET_OTP,
-            action_label="Get OTP code",
-            # No depends_on — see note above action_auto_create.
             category=_CAT_STEP_3_LINK,
         ),
     ]
@@ -815,7 +755,8 @@ def build_direct_entries(
     skill_id: str = "",
     skill_token_set: bool = False,
 ) -> list[ConfigEntry]:
-    """Return the direct-mode config entries as a single Create-Skill step.
+    """
+    Return the direct-mode config entries as a single Create-Skill step.
 
     direct mode has no yaha-cloud registration (Step 1) and no OTP
     linking (Step 3) — Yandex Dialogs' account-linking UI handles that

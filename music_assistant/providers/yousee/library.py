@@ -33,7 +33,7 @@ class YouSeeLibraryManager:
         self.auth = provider.auth
         self.logger = provider.logger
 
-    async def get_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         query = """
         query favoriteArtists($first: Int!, $after: String, $imageSize: Int = 512) {
@@ -64,7 +64,7 @@ class YouSeeLibraryManager:
             self.logger.log(VERBOSE_LOG_LEVEL, "Parsing artist item: %s", item)
             yield parse_artist(self.provider, item)
 
-    async def get_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         query = """
         query favoriteAlbums($first: Int!, $after: String, $imageSize: Int = 512) {
@@ -99,7 +99,7 @@ class YouSeeLibraryManager:
             self.logger.log(VERBOSE_LOG_LEVEL, "Parsing album item: %s", item)
             yield await parse_album(self.provider, item)
 
-    async def get_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         query = """
             query favoriteTracks($first: Int!, $after: String, $imageSize: Int = 512) {
@@ -150,7 +150,7 @@ class YouSeeLibraryManager:
             self.logger.log(VERBOSE_LOG_LEVEL, "Parsing track item: %s", item)
             yield await parse_track(self.provider, item)
 
-    async def get_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
         query = """
             query favoritePlaylists($first: Int!, $after: String, $imageSize: Int = 512) {

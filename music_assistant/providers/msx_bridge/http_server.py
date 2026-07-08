@@ -16,6 +16,7 @@ from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
 from .constants import (
@@ -53,7 +54,7 @@ def _int_param(query: MultiMapping[str], name: str, default: int, max_val: int =
     """Parse an integer query parameter safely, clamping to [0, max_val]."""
     try:
         return max(0, min(int(query.get(name, str(default))), max_val))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return default
 
 
@@ -66,7 +67,8 @@ def _strip_known_extension(value: str) -> str:
 
 
 def _sort_album_tracks(tracks: list[Any]) -> list[Any]:
-    """Sort album tracks deterministically.
+    """
+    Sort album tracks deterministically.
 
     MA sorts by (disc_number, track_number) but tracks with identical values
     get non-deterministic ordering between calls. Adding name as a tiebreaker
@@ -198,7 +200,8 @@ class MSXHTTPServer:
 
     @web.middleware
     async def _cors_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
-        """Add CORS headers to all responses.
+        """
+        Add CORS headers to all responses.
 
         Wildcard CORS is intentional: this server runs on LAN (default port 8099).
         The web player (/web) and MSX plugin (/msx/plugin.html) are served from the
@@ -1033,9 +1036,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 player._skip_ws_notify = True
 
             try:
-                await self.provider.mass.player_queues.play_media(
-                    player_id, uri, username=await self.provider.get_owner_username()
-                )
+                async with ImpersonatedUser(
+                    self.provider.mass, await self.provider.get_owner_username()
+                ):
+                    await self.provider.mass.player_queues.play_media(player_id, uri)
             finally:
                 if from_playlist:
                     player._skip_ws_notify = False
@@ -1110,7 +1114,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         media: Any,
         duration: int = 0,
     ) -> web.StreamResponse:
-        """Unified method to stream audio from MA to MSX via ffmpeg.
+        """
+        Unified method to stream audio from MA to MSX via ffmpeg.
 
         Supports three modes based on provider configuration:
         1. Independent (default): Each player gets its own ffmpeg stream
@@ -1200,7 +1205,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         out_format: AudioFormat,
         headers: dict[str, str],
     ) -> web.StreamResponse:
-        """Serve audio from a shared group stream.
+        """
+        Serve audio from a shared group stream.
 
         Multiple players in a group read from the same SharedGroupStream,
         which has a single ffmpeg producer.
@@ -1274,7 +1280,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             async for chunk in shared_stream.subscribe(player_id):
                 await response.write(chunk)
                 total_bytes += len(chunk)
-        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+        except ConnectionResetError, BrokenPipeError, ConnectionAbortedError:
             logger.debug(
                 "[SharedStream] Client %s disconnected after %d bytes",
                 player_id,
@@ -1386,7 +1392,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                     break
                 await response.write(chunk)
                 total_bytes += len(chunk)
-        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+        except ConnectionResetError, BrokenPipeError, ConnectionAbortedError:
             logger.debug("Client disconnected from stream %s", player_id)
         except asyncio.CancelledError:
             logger.debug("Stream cancelled for player %s", player_id)
@@ -1438,7 +1444,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         )
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
-        """WebSocket for push playback — clients subscribe by player_id.
+        """
+        WebSocket for push playback — clients subscribe by player_id.
 
         Uses the same player_id derivation (device_id or IP) as content and
         stream endpoints so broadcast_stop reaches the correct client.
@@ -1716,7 +1723,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """Process an inbound WebSocket message from MSX."""
         try:
             msg = json.loads(data)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             logger.debug("Invalid WS message from %s: %s", player_id, data)
             return
 
@@ -2041,9 +2048,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
 
-        await self.provider.mass.player_queues.play_media(
-            player_id, track_uri, username=await self.provider.get_owner_username()
-        )
+        async with ImpersonatedUser(self.provider.mass, await self.provider.get_owner_username()):
+            await self.provider.mass.player_queues.play_media(player_id, track_uri)
         return web.json_response({"status": "ok"})
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
@@ -2105,7 +2111,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         return None
 
     def _get_prefix(self, request: web.Request) -> str:
-        """Build URL prefix for JSON content, using our known port.
+        """
+        Build URL prefix for JSON content, using our known port.
 
         Uses aiohttp's parsed URL host (IPv6-safe, no port) and substitutes
         self.port. Note: host is still derived from the Host header; a crafted
