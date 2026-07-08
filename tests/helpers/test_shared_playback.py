@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,6 +13,7 @@ from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPl
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 
 def _create_mock_mass(venue_player: MagicMock | None) -> MagicMock:
@@ -145,7 +146,7 @@ async def test_venue_close_without_listeners() -> None:
 
 async def test_create_remote_session(mass: MusicAssistant) -> None:
     """A remote session creates a hidden virtual player that owns a queue."""
-    sendspin = mass.get_provider("sendspin")
+    sendspin = cast("SendspinProvider | None", mass.get_provider("sendspin"))
     assert sendspin is not None
 
     session = await SharedPlaybackSession.create_remote(
@@ -157,12 +158,20 @@ async def test_create_remote_session(mass: MusicAssistant) -> None:
     assert player is not None
     assert player.hidden_by_default is True
     assert mass.player_queues.get(session.queue_id) is not None
-    assert session.can_listen_in("any_web_player") is True
+    # listen-in is only possible for real, groupable sendspin players
+    guest_player_id = await sendspin.create_virtual_player(
+        owner_instance_id=sendspin.instance_id, display_name="Guest"
+    )
+    # refresh the host player's calculated state (normally debounced)
+    player.update_state(signal_event=False)
+    assert session.can_listen_in(guest_player_id) is True
+    assert session.can_listen_in("nonexistent_player") is False
+    await sendspin.remove_virtual_player(guest_player_id)
 
     await session.close()
     assert mass.players.get_player(session.player_id) is None
     # with the virtual host player gone, listen-in is no longer possible
-    assert session.can_listen_in("any_web_player") is False
+    assert session.can_listen_in(guest_player_id) is False
 
 
 async def test_create_remote_session_deterministic_id(mass: MusicAssistant) -> None:
