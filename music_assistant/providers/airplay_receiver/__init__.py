@@ -197,6 +197,10 @@ class AirPlayReceiverProvider(PluginProvider):
         # stream request — used to reject stale on_source_unselected callbacks
         # after a same-queue reconnect supersedes the previous request.
         self._active_session_id: str | None = None
+        # _pending_stop_task: the fire-and-forget cmd_stop issued on session
+        # stop. A quickly following play must await it, otherwise the late
+        # stop lands after play_media and kills the freshly started stream.
+        self._pending_stop_task: asyncio.Task[None] | None = None
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
@@ -687,11 +691,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 if target_player_id:
                     self.logger.info("Starting AirPlay playback on player %s", target_player_id)
                     self._active_player_id = target_player_id
-                    self.mass.create_task(
-                        self.mass.player_queues.play_media(
-                            target_player_id, str(self._audio_source.uri)
-                        )
-                    )
+                    self.mass.create_task(self._start_playback(target_player_id))
                 else:
                     self.logger.warning(
                         "AirPlay playback started but no player available. "
@@ -708,9 +708,26 @@ class AirPlayReceiverProvider(PluginProvider):
             # Write silence to the pipe so ffmpeg can produce a chunk and notice the
             # stream has stopped; the stop command below closes the generator path.
             self.mass.create_task(self._write_silence_to_unblock_stream())
-            # Stop the player that was using this source
+            # Stop the player that was using this source. Keep a handle on the
+            # task so a quickly following play can await it before starting.
             if current_player_id:
-                self.mass.create_task(self.mass.players.cmd_stop(current_player_id))
+                self._pending_stop_task = self.mass.create_task(
+                    self.mass.players.cmd_stop(current_player_id)
+                )
+
+    async def _start_playback(self, target_player_id: str) -> None:
+        """
+        Start playback of the AirPlay source on the target player.
+
+        Awaits any in-flight stop from a preceding session teardown first, so a
+        quick stop→play bounce (e.g. an AirPlay reconnect) cannot have the late
+        stop kill the freshly started stream.
+        """
+        if self._pending_stop_task and not self._pending_stop_task.done():
+            with suppress(Exception):
+                await self._pending_stop_task
+        self._pending_stop_task = None
+        await self.mass.player_queues.play_media(target_player_id, str(self._audio_source.uri))
 
     def _handle_volume_change(self, volume: int) -> None:
         """
