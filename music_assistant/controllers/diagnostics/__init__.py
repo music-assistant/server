@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import CoreConfig
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
 SCHEMA_VERSION = 1
@@ -67,7 +68,7 @@ CORE_CONTROLLER_ATTRS = (
 )
 
 type DiagnosticsSectionCallback = Callable[
-    [], dict[str, Any] | None | Awaitable[dict[str, Any] | None]
+    [], dict[str, SerializableType] | None | Awaitable[dict[str, SerializableType] | None]
 ]
 
 

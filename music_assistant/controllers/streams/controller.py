@@ -14,7 +14,7 @@ import struct
 import time
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
@@ -104,6 +104,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamMetadata
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
 
@@ -176,7 +177,7 @@ class StreamsController(CoreController):
         """Return whether a queue stream (single item or flow) is actively serving a player."""
         return self._active_output_streams > 0
 
-    async def get_diagnostics(self) -> dict[str, Any]:
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this controller to include in diagnostics reports."""
         return {
             "active_output_streams": self._active_output_streams,

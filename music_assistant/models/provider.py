@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
 # TypeVar for config value type inference
@@ -102,7 +103,7 @@ class Provider:
             task_id = f"provider_reload_{self.instance_id}"
             self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
 
-    async def get_diagnostics(self) -> dict[str, Any] | None:
+    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
         """
         Return optional diagnostics info for this provider to include in diagnostics reports.
 

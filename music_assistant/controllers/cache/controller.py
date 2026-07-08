@@ -28,14 +28,13 @@ from music_assistant.controllers.cache.constants import (
     LOGGER,
     MAX_CACHE_DB_SIZE_MB,
     SWR_FALLBACK_MAX_AGE,
-    SerializableType,
 )
 from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.json import async_json_loads, json_dumps
+from music_assistant.helpers.json import SerializableType, async_json_loads, json_dumps
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:

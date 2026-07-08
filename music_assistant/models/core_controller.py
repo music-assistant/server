@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, TypeVar, overload
+from typing import TYPE_CHECKING, TypeVar, overload
 
 from music_assistant_models.config_entries import ConfigValueType
 from music_assistant_models.enums import ProviderStage, ProviderType
@@ -15,6 +15,7 @@ from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, CoreConfig
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
 # TypeVar for config value type inference
@@ -98,7 +99,7 @@ class CoreController:
         """
         return self.config.get_value(key, default)
 
-    async def get_diagnostics(self) -> dict[str, Any] | None:
+    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
         """
         Return optional diagnostics info for this controller to include in diagnostics reports.
 

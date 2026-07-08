@@ -15,6 +15,10 @@ JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
 
 DO_NOT_SERIALIZE_TYPES = (MethodType, asyncio.Task)
 
+# Type alias for plain, JSON-serializable data.
+# Note: tuples are accepted but will be returned as lists after a JSON round-trip.
+SerializableType = str | int | float | bool | None | list[Any] | tuple[Any, ...] | dict[str, Any]
+
 
 def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
     """Parse the value to its serializable equivalent."""
