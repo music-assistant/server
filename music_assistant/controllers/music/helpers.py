@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType
+from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType, SearchResults
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.helpers.compare import create_safe_string
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from music_assistant_models.enums import MediaType
 
 
 def sort_search_result[SortItemT: MediaItemType | ItemMapping](
@@ -48,3 +53,35 @@ def sort_search_result[SortItemT: MediaItemType | ItemMapping](
     # so we add all remaining items in their original order. We just prioritize
     # exact name matches and library items.
     return UniqueList([*[x[1] for x in scored_items], *items])
+
+
+def filter_search_results(
+    results: SearchResults,
+    provider_domain: str,
+    skip_item_ids: set[tuple[MediaType, str, str]] | None,
+) -> SearchResults:
+    """
+    Return a copy of the given search results without the items in skip_item_ids.
+
+    :param results: The search results to filter.
+    :param provider_domain: Domain of the provider the results originate from.
+    :param skip_item_ids: Set of (media_type, provider_domain, item_id) tuples to filter out.
+    """
+    if not skip_item_ids:
+        return results
+
+    def _keep(item: MediaItemType | ItemMapping) -> bool:
+        return (item.media_type, provider_domain, item.item_id) not in skip_item_ids
+
+    # build a new SearchResults object as the original may be a (shared) cached object
+    return SearchResults(
+        artists=[x for x in results.artists if _keep(x)],
+        albums=[x for x in results.albums if _keep(x)],
+        genres=results.genres,
+        tracks=[x for x in results.tracks if _keep(x)],
+        playlists=[x for x in results.playlists if _keep(x)],
+        radio=[x for x in results.radio if _keep(x)],
+        audiobooks=[x for x in results.audiobooks if _keep(x)],
+        podcasts=[x for x in results.podcasts if _keep(x)],
+        sound_effects=results.sound_effects,
+    )

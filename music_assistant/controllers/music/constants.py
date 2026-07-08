@@ -18,6 +18,19 @@ DYNAMIC_RADIO_DYNAMIC_TARGET: Final[int] = 50
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 
+# max time to wait for a single provider's search results before
+# contributing empty results for it, so one slow provider can never block
+# the whole search; the provider search itself continues in the background
+# so its result is cached and available for a next search request
+SEARCH_PROVIDER_SOFT_TIMEOUT: Final[int] = 8
+# absolute max time a (background) provider search may run,
+# rate limited providers can be very slow to respond
+SEARCH_PROVIDER_HARD_TIMEOUT: Final[int] = 120
+# how long to cache raw per-provider search results
+SEARCH_CACHE_EXPIRATION_PROVIDER: Final[int] = 900
+# how long to cache combined search results (fast path for repeated searches)
+SEARCH_CACHE_EXPIRATION_COMBINED: Final[int] = 600
+
 # max time to wait for a single provider's recommendations before skipping it,
 # so one slow provider can never block the whole discover page
 RECOMMENDATIONS_PROVIDER_TIMEOUT: Final[int] = 30
