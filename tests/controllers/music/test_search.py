@@ -261,6 +261,34 @@ async def test_search_provider_cache_expiration_by_provider_type() -> None:
     assert local_writes[0].kwargs["expiration"] == SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER
 
 
+async def test_search_provider_without_streaming_attribute_gets_local_expiration() -> None:
+    """Providers lacking is_streaming_provider (e.g. plugins) get the short cache expiration."""
+    prov = _make_search_provider("prov_plugin")
+    del prov.is_streaming_provider
+    prov.search.return_value = SearchResults(
+        tracks=[_make_track("track1", "prov_plugin", "My Song")]
+    )
+    controller = _make_controller([prov])
+
+    result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
+
+    assert [track.item_id for track in result.tracks] == ["track1"]
+    writes = _cache_writes(controller, "prov_plugin")
+    assert writes[0].kwargs["expiration"] == SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER
+
+
+async def test_search_cache_write_failure_does_not_break_search() -> None:
+    """A failing cache write still returns the provider results."""
+    prov = _make_search_provider("prov_a")
+    prov.search.return_value = SearchResults(tracks=[_make_track("track1", "prov_a", "My Song")])
+    controller = _make_controller([prov])
+    controller.mass.cache.set = AsyncMock(side_effect=RuntimeError("cache boom"))  # type: ignore[method-assign]
+
+    result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
+
+    assert [track.item_id for track in result.tracks] == ["track1"]
+
+
 async def test_concurrent_identical_searches_share_one_provider_call() -> None:
     """Identical concurrent searches are coalesced into a single provider call."""
     prov = _make_search_provider("prov_a")

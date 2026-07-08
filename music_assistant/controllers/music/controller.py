@@ -489,12 +489,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # only cache the combined result if all providers contributed,
         # so a failed or timed out provider is retried on a next search
         if all_results_complete:
-            await self.mass.cache.set(
-                key=cache_key,
-                data=result.to_dict(),
-                expiration=SEARCH_CACHE_EXPIRATION_COMBINED,
-                provider=self.domain,
-                category=CACHE_CATEGORY_SEARCH_RESULTS,
+            await self._cache_search_results(
+                cache_key, result, SEARCH_CACHE_EXPIRATION_COMBINED, self.domain
             )
         return result
 
@@ -2261,16 +2257,32 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return None
         # only successful results are cached, so failed or timed out
         # provider searches are simply retried on a next search
-        await self.mass.cache.set(
-            key=cache_key,
-            data=result.to_dict(),
-            expiration=SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER
-            if prov.is_streaming_provider
+        await self._cache_search_results(
+            cache_key,
+            result,
+            # plugin providers do not declare is_streaming_provider,
+            # treat them as local so their results only get the short expiration
+            SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER
+            if getattr(prov, "is_streaming_provider", False)
             else SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
-            provider=prov.instance_id,
-            category=CACHE_CATEGORY_SEARCH_RESULTS,
+            prov.instance_id,
         )
         return result
+
+    async def _cache_search_results(
+        self, cache_key: str, result: SearchResults, expiration: int, provider: str
+    ) -> None:
+        """Store search results in the cache, logging (instead of raising) any cache errors."""
+        try:
+            await self.mass.cache.set(
+                key=cache_key,
+                data=result.to_dict(),
+                expiration=expiration,
+                provider=provider,
+                category=CACHE_CATEGORY_SEARCH_RESULTS,
+            )
+        except Exception as err:
+            self.logger.warning("Failed to cache search results for %s: %s", provider, str(err))
 
     def _get_covered_media_types(
         self, library_results: SearchResults, search_query: str
