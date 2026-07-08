@@ -1,0 +1,58 @@
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - stable
+      - dev
+  pull_request:
+    branches:
+      - stable
+      - dev
+  # `workflow_dispatch` allows CodSpeed to trigger backtest
+  # performance analysis in order to generate initial data.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # for OpenID Connect authentication with CodSpeed
+
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+env:
+  URLLIB3_NO_OVERRIDE: "1"
+
+jobs:
+  benchmarks:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
+          check-latest: true
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Cache uv packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('.python-version') }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
+
+      - name: Install dependencies
+        # --index-strategy: allow PyPI packages when also using the PyTorch extra index
+        # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+        run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt pytest-codspeed
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@v4
+        with:
+          mode: simulation
+          # -o addopts="" clears the default "--cov music_assistant" so coverage
+          # instrumentation does not interfere with the CodSpeed measurements.
+          run: pytest tests/benchmarks/ --codspeed -o addopts=""
