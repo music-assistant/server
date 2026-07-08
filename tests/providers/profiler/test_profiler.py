@@ -168,22 +168,34 @@ def test_log_error_counter() -> None:
     counter = LogErrorCounter()
     logger = logging.getLogger("test.profiler.dummy")
     record = logger.makeRecord(
-        "test.profiler.dummy", logging.ERROR, "file.py", 1, "secret message %s", ("arg",), None
+        "test.profiler.dummy",
+        logging.ERROR,
+        "/app/music_assistant/mass.py",
+        1,
+        "secret %s",
+        ("arg",),
+        None,
     )
     counter.emit(record)
     counter.emit(record)
-    # logger names are truncated so device identifiers in deep segments never leak
+    # records are keyed by code location: logger names may embed user-set names or device ids
     record_with_id = logger.makeRecord(
-        "aiofoo.server.connection.AA:BB:CC:DD", logging.WARNING, "file.py", 1, "msg", (), None
+        "music_assistant.Kitchen Sonos",
+        logging.WARNING,
+        "/app/music_assistant/providers/sonos/player.py",
+        42,
+        "msg",
+        (),
+        None,
     )
     counter.emit(record_with_id)
     summary = counter.summarize()
     assert summary["total_since_load"] == 3
-    assert summary["top"][0]["logger"] == "test.profiler.dummy"
+    assert summary["top"][0]["source"] == "music_assistant/mass.py:1"
     assert summary["top"][0]["count"] == 2
-    assert summary["top"][1]["logger"] == "aiofoo.server.connection"
+    assert summary["top"][1]["source"] == "music_assistant/providers/sonos/player.py:42"
     assert "secret" not in str(summary)
-    assert "AA:BB" not in str(summary)
+    assert "Kitchen" not in str(summary)
 
 
 def test_render_markdown() -> None:

@@ -29,7 +29,7 @@ personal data — so it is safe to share publicly.
   something is blocking the event loop (the usual cause of audio dropouts and a
   sluggish UI).
 - **Event & error counters** — events on the MA event bus counted by type; WARNING+
-  log records counted by logger/level/exception type (never message content).
+  log records counted by source location/level/exception type (never message content).
 - **Periodic CPU profile windows** (default on: 60s window every 30 minutes, first one
   ~1 minute after load) — yappi profile with CPU clock; top functions are included in
   the report and the full `.pstats` files (last 10) are kept in the profiler storage

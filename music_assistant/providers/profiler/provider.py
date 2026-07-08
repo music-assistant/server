@@ -322,6 +322,8 @@ class ProfilerProvider(PluginProvider):
         started = time.monotonic()
         try:
             yappi.set_clock_type("cpu")
+            # clear any leftovers from a previously aborted window as yappi accumulates
+            yappi.clear_stats()
             yappi.start(builtins=False)
             await asyncio.sleep(duration)
         finally:

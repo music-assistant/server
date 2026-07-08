@@ -52,8 +52,8 @@ class LogErrorCounter(logging.Handler):
     """
     Log handler that counts warnings/errors without storing any message content.
 
-    Only the logger name, log level and exception type are recorded, so the
-    aggregated counts are safe to include in a shareable report.
+    Only the source code location, log level and exception type are recorded, so
+    the aggregated counts are safe to include in a shareable report.
     """
 
     max_unique_keys = 200
@@ -67,13 +67,13 @@ class LogErrorCounter(logging.Handler):
         self._last_seen: dict[tuple[str, str, str], int] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Count the log record by logger name, level and exception type."""
+        """Count the log record by source code location, level and exception type."""
         exc_type = "-"
         if record.exc_info and record.exc_info[0]:
             exc_type = record.exc_info[0].__name__
-        # truncate the logger name as deeper segments may embed device identifiers
-        logger_name = ".".join(record.name.split(".")[:3])
-        key = (logger_name, record.levelname, exc_type)
+        # group by code location: logger names may embed user-set names or device ids
+        source = f"{sanitize_code_path(record.pathname)}:{record.lineno}"
+        key = (source, record.levelname, exc_type)
         self.total += 1
         if key not in self._counts and len(self._counts) >= self.max_unique_keys:
             self.dropped += 1
@@ -92,7 +92,7 @@ class LogErrorCounter(logging.Handler):
             self.release()
         top = [
             {
-                "logger": key[0],
+                "source": key[0],
                 "level": key[1],
                 "exception": key[2],
                 "count": count,
@@ -211,7 +211,10 @@ def collect_tracemalloc_stats(
         )
     growth = []
     if previous is not None:
-        for diff in snapshot.compare_to(previous, "lineno")[:top_n]:
+        # only report allocation sites that actually grew (compare_to sorts by absolute
+        # difference, so large frees would otherwise dominate the list)
+        grown = [diff for diff in snapshot.compare_to(previous, "lineno") if diff.size_diff > 0]
+        for diff in grown[:top_n]:
             frame = diff.traceback[0]
             growth.append(
                 {
