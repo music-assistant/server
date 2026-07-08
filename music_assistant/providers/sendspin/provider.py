@@ -338,7 +338,10 @@ class SendspinProvider(PlayerProvider):
         Remove a virtual Sendspin player and permanently delete its configuration.
 
         :param player_id: The player_id returned by create_virtual_player.
+        :raises ValueError: If the given player_id is not a virtual player id.
         """
+        if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX):
+            raise ValueError(f"{player_id} is not a virtual player")
         self._virtual_players.pop(player_id, None)
         if self.server_api.get_client(player_id) is not None:
             await self.server_api.remove_client(player_id)

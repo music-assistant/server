@@ -118,6 +118,13 @@ async def test_remove_virtual_player(mass: MusicAssistant) -> None:
     assert mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None
 
 
+async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant) -> None:
+    """Test that removal is refused for non-virtual player ids."""
+    sendspin = _get_sendspin_provider(mass)
+    with pytest.raises(ValueError, match="not a virtual player"):
+        await sendspin.remove_virtual_player("some_regular_player")
+
+
 async def test_virtual_player_removed_on_owner_unload(mass: MusicAssistant) -> None:
     """Test that unloading the owner provider removes its virtual players."""
     await mass.config.save_provider_config("profiler", {})
