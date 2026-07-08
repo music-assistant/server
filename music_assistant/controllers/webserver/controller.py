@@ -18,7 +18,6 @@ from concurrent import futures
 from contextlib import aclosing
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import quote
 
 import aiofiles
 from aiohttp import web
@@ -40,6 +39,7 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
 from music_assistant.controllers.webserver.helpers.ssl import (
     create_server_ssl_context,
@@ -48,7 +48,10 @@ from music_assistant.controllers.webserver.helpers.ssl import (
 )
 from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
+from music_assistant.helpers.redirect_validation import (
+    build_code_redirect_url,
+    is_allowed_redirect_url,
+)
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -85,6 +88,29 @@ MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
 
+def _get_publish_addresses(
+    bind_ip: str | None, publish_ip: str, all_ip_addresses: tuple[str, ...]
+) -> list[str]:
+    """
+    Return the IP addresses the webserver should publish/advertise.
+
+    :param bind_ip: The configured bind IP (None or a wildcard means all interfaces).
+    :param publish_ip: The resolved primary publish IP.
+    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    """
+    addresses = [publish_ip]
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        return addresses
+    # bound to all interfaces: also publish the primary address of the other
+    # IP family (if any) so both IPv4-only and IPv6-only clients can connect
+    publish_is_ipv6 = ":" in publish_ip
+    for ip in all_ip_addresses:
+        if (":" in ip) != publish_is_ipv6:
+            addresses.append(ip)
+            break
+    return addresses
+
+
 def _locale_from_request(request: web.Request) -> str | None:
     """
     Determine the UI locale for an HTTP request from the standard ``Accept-Language`` header.
@@ -115,6 +141,8 @@ class WebserverController(CoreController):
         self.clients: set[WebsocketClientHandler] = set()
         # the URL that the "auto" base_url setting resolves to, detected at setup
         self._auto_base_url: str = ""
+        self.bind_ip: str | None = None
+        self.publish_addresses: list[str] = []
         self.manifest.name = "Web Server (frontend and api)"
         self.manifest.description = (
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
@@ -262,6 +290,8 @@ class WebserverController(CoreController):
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
         routes.append(("POST", "/api", self._handle_jsonrpc_api_command))
+        # add diagnostics report download (handler enforces authentication itself)
+        routes.append(("GET", "/diagnostics", self.mass.diagnostics.handle_http_download))
         # add api documentation
         routes.append(("GET", "/api-docs", self._handle_api_intro))
         routes.append(("GET", "/api-docs/", self._handle_api_intro))
@@ -305,13 +335,18 @@ class WebserverController(CoreController):
         port_value = config.get_value(CONF_BIND_PORT)
         assert isinstance(port_value, int)
         self.publish_port = port_value
-        self.publish_ip = default_publish_ip
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
+        self.bind_ip = bind_ip
+        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+            self.publish_ip = bind_ip
+        else:
+            self.publish_ip = default_publish_ip
+        self.publish_addresses = _get_publish_addresses(bind_ip, self.publish_ip, all_ip_addresses)
         ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
         # resolve the URL that the "auto" base_url default (or an unset value) translates to
         protocol = "https" if ssl_enabled else "http"
         self._auto_base_url = (
-            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{self.publish_port}"
+            f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
         )
         base_url = self.base_url
         # print a big fat message in the log where the webserver is running
@@ -799,18 +834,7 @@ class WebserverController(CoreController):
                 if category != "trusted":
                     return web.Response(status=400, text="Invalid return_url")
 
-                # Insert code parameter before any hash fragment
-                code_param = f"code={quote(token, safe='')}"
-                if "#" in return_url:
-                    url_parts = return_url.split("#", 1)
-                    base_part = url_parts[0]
-                    hash_part = url_parts[1]
-                    separator = "&" if "?" in base_part else "?"
-                    redirect_url = f"{base_part}{separator}{code_param}#{hash_part}"
-                elif "?" in return_url:
-                    redirect_url = f"{return_url}&{code_param}"
-                else:
-                    redirect_url = f"{return_url}?{code_param}"
+                redirect_url = build_code_redirect_url(return_url, token)
 
                 response_data["redirect_to"] = redirect_url
                 self.logger.debug(
@@ -981,26 +1005,7 @@ class WebserverController(CoreController):
                 elif category == "external":
                     # External domain - require user consent
                     requires_consent = True
-            # Add code parameter to redirect URL (the token URL-encoded)
-            # Important: Insert code BEFORE any hash fragment (e.g., #/) to ensure
-            # it's in query params, not inside the hash where Vue Router can't access it
-            code_param = f"code={quote(token, safe='')}"
-
-            # Split URL by hash to insert code in the right place
-            if "#" in final_redirect_url:
-                # URL has a hash fragment (e.g., http://example.com/#/ or http://example.com/path#section)
-                url_parts = final_redirect_url.split("#", 1)
-                base_url = url_parts[0]
-                hash_part = url_parts[1]
-
-                # Add code to base URL (before hash)
-                separator = "&" if "?" in base_url else "?"
-                final_redirect_url = f"{base_url}{separator}{code_param}#{hash_part}"
-            # No hash fragment, simple case
-            elif "?" in final_redirect_url:
-                final_redirect_url = f"{final_redirect_url}&{code_param}"
-            else:
-                final_redirect_url = f"{final_redirect_url}?{code_param}"
+            final_redirect_url = build_code_redirect_url(final_redirect_url, token)
 
             # Load OAuth callback success page template and inject token and redirect URL
             oauth_callback_html_path = str(RESOURCES_DIR.joinpath("oauth_callback.html"))
@@ -1030,14 +1035,12 @@ class WebserverController(CoreController):
 
     async def _handle_setup_page(self, request: web.Request) -> web.Response:
         """Handle request for first-time setup page."""
-        # Validate return_url if provided
+        # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
-            is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
-            if not is_valid:
+            _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+            if category != "trusted":
                 return web.Response(status=400, text="Invalid return_url")
-        else:
-            return_url = "/"
 
         if self.auth.has_users:
             # this should not happen, but guard anyways
@@ -1102,13 +1105,24 @@ class WebserverController(CoreController):
             self.logger.info("First admin user created: %s", username)
 
             # Return token - frontend will complete onboarding via config/onboard_complete
-            return web.json_response(
-                {
-                    "success": True,
-                    "token": token,
-                    "user": user.to_dict(),
-                }
-            )
+            response_data: dict[str, Any] = {
+                "success": True,
+                "token": token,
+                "user": user.to_dict(),
+            }
+
+            # Only forward the token to a trusted destination (no consent step here).
+            return_url = body.get("return_url")
+            if return_url and isinstance(return_url, str):
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category == "trusted":
+                    response_data["redirect_to"] = build_code_redirect_url(
+                        return_url, token, {"onboard": "true"}
+                    )
+                else:
+                    self.logger.warning("Ignoring untrusted setup return_url: %s", return_url)
+
+            return web.json_response(response_data)
 
         except Exception as e:
             self.logger.exception("Error during setup")

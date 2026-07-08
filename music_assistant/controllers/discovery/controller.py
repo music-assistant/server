@@ -261,7 +261,9 @@ class DiscoveryController(CoreController):
         info = AsyncServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
+            addresses=[
+                await get_ip_pton(address) for address in self.mass.webserver.publish_addresses
+            ],
             port=self.mass.webserver.publish_port,
             properties=self.mass.get_server_info().to_dict(),
             server="mass.local.",

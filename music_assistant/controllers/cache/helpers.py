@@ -18,9 +18,9 @@ from typing import (
 from music_assistant.controllers.cache.constants import (
     DEFAULT_CACHE_EXPIRATION,
     LOGGER,
-    SerializableType,
 )
 from music_assistant.helpers.api import parse_value
+from music_assistant.helpers.json import SerializableType
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
