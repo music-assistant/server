@@ -48,6 +48,8 @@ _RE_MASS_ROOT_PATH = re.compile(r"(?:[A-Za-z]:)?[^\s\"']*[/\\]music_assistant[/\
 # URL userinfo (user:pass@host) and query strings (tokens/signatures live there)
 _RE_URL_USERINFO = re.compile(r"(\w+://)[^/\s@\"']+@")
 _RE_URL_QUERY = re.compile(r"(\w+://[^\s\"'<>]*?)\?[^\s\"'<>]*")
+# query strings on path-style (relative) request URLs, e.g. OAuth callbacks
+_RE_PATH_QUERY = re.compile(r"(?<!\w)(/[^\s\"'<>?]*)\?[^\s\"'<>]+")
 # secrets: JWT's, Authorization header schemes, key=value assignments, long token blobs
 _RE_JWT = re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*")
 _RE_AUTH_SCHEME = re.compile(r"(?i)\b(bearer|basic|digest)\s+[A-Za-z0-9\-._~+/=]{16,}")
@@ -61,17 +63,19 @@ _RE_SECRET_ASSIGNMENT = re.compile(
 _RE_LONG_TOKEN = re.compile(
     r"(?<![A-Za-z0-9+_-])(?=[A-Za-z0-9+_-]*\d)[A-Za-z0-9+_-]{32,}(?![A-Za-z0-9+_-])"
 )
-# media library paths: full paths (at least one path separator) and bare filenames
+# media library paths: full paths (at least one path separator) and bare filenames;
+# bare filenames may contain spaces, so unquoted/undelimited prose directly in front
+# of a media filename is redacted along with it (privacy beats message fidelity here)
 _RE_MEDIA_PATH = re.compile(
     rf"(?<!\w)(?:[A-Za-z]:)?(?:[/\\][^/\\\r\n]*?)+\.(?:{_MEDIA_FILE_EXTENSIONS})\b",
     re.IGNORECASE,
 )
 _RE_MEDIA_FILENAME = re.compile(
-    rf"(?<![\w/\\.])[^\s/\\:*?\"'<>|]+\.(?:{_MEDIA_FILE_EXTENSIONS})\b",
+    rf"(?<![\w/\\.])[^\s/\\:*?\"'<>|(][^/\\:*?\"'<>|\r\n]*\.(?:{_MEDIA_FILE_EXTENSIONS})\b",
     re.IGNORECASE,
 )
 _RE_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
-# MAC addresses (also common as/inside player ids), separator must be consistent
+# MAC addresses (also common as/inside player ids), colon or dash separated
 _RE_MAC_ADDRESS = re.compile(
     r"(?<![0-9A-Fa-f:-])[0-9A-Fa-f]{2}(?:([:-])[0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:-])"
 )
@@ -101,6 +105,7 @@ def sanitize_text(text: str) -> str:
     text = _RE_MASS_ROOT_PATH.sub("music_assistant/", text)
     text = _RE_URL_QUERY.sub(r"\1?<redacted-query>", text)
     text = _RE_URL_USERINFO.sub(r"\1<redacted>@", text)
+    text = _RE_PATH_QUERY.sub(r"\1?<redacted-query>", text)
     text = _RE_JWT.sub("<redacted-token>", text)
     text = _RE_AUTH_SCHEME.sub(r"\1 <redacted>", text)
     text = _RE_SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", text)

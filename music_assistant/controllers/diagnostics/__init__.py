@@ -104,8 +104,10 @@ class DiagnosticsController(CoreController):
         """
         Register a callback that contributes a named section to the diagnostics report.
 
-        The callback is invoked (with a timeout) whenever a report is requested and may
-        be sync or async. Returns a function to unregister the section again.
+        The callback is invoked whenever a report is requested and may be sync or
+        async. Async callbacks run with a timeout; sync callbacks run on the event
+        loop and must return quickly without blocking I/O. Returns a function to
+        unregister the section again.
 
         :param name: Unique name for the section within the report.
         :param callback: Callable returning the section data as a (JSON-safe) dict.
@@ -115,7 +117,9 @@ class DiagnosticsController(CoreController):
         self._sections[name] = callback
 
         def unregister() -> None:
-            self._sections.pop(name, None)
+            # only remove if this exact registration still owns the name
+            if self._sections.get(name) is callback:
+                self._sections.pop(name)
 
         return unregister
 

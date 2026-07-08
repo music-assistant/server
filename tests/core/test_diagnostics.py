@@ -42,12 +42,19 @@ if TYPE_CHECKING:
             ["Pink Floyd", "The Wall", "In The Flesh"],
             [".flac", "<path-"],
         ),
-        ("cannot read Highway to Hell.mp3", ["Hell.mp3"], [".mp3"]),
+        ("cannot read Highway to Hell.mp3", ["Highway", "Hell"], [".mp3", "<path-"]),
+        ("failed: '01 - In The Flesh.flac' not found", ["In The Flesh"], ["failed:", "not found"]),
         # URL credentials and query strings
         (
             "GET http://admin:hunter2@192.168.1.10/api?token=s3cr3t&x=1",
             ["admin:hunter2", "s3cr3t", "192.168.1.10"],
             ["<redacted>@", "<redacted-query>"],
+        ),
+        # query strings on relative request paths (e.g. OAuth callbacks)
+        (
+            "GET /callback?code=s3cr3tcode&state=abc failed",
+            ["s3cr3tcode"],
+            ["/callback?<redacted-query>", "failed"],
         ),
         # secret assignments in all common shapes
         ("password=hunter2", ["hunter2"], ["password=<redacted>"]),
@@ -293,6 +300,11 @@ async def test_register_section(mass: MusicAssistant) -> None:
     report = await mass.diagnostics.get_report()
     assert "profiler" not in report["sections"]
     assert "sync_section" not in report["sections"]
+    # a stale unregister handle must not remove a newer registration with the same name
+    mass.diagnostics.register_section("profiler", lambda: {"value": 2})
+    unregister()
+    report = await mass.diagnostics.get_report()
+    assert report["sections"]["profiler"] == {"value": 2}
 
 
 async def test_section_failure_isolation(mass: MusicAssistant) -> None:
