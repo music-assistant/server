@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
 from copy import deepcopy
 from ipaddress import ip_address
@@ -319,6 +320,10 @@ class SendspinProvider(PlayerProvider):
         owner_instance_id = owner.instance_id
         if player_id is None:
             player_id = uuid4().hex
+        elif not re.fullmatch(r"[a-zA-Z0-9_-]+", player_id):
+            raise SetupFailedError(
+                f"Invalid player_id {player_id}: only alphanumerics, '_' and '-' are allowed"
+            )
         if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX):
             player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}{player_id}"
         if player_id in self._virtual_players or self.server_api.get_client(player_id) is not None:
@@ -355,7 +360,7 @@ class SendspinProvider(PlayerProvider):
         :param player_id: The player_id returned by create_virtual_player.
         :raises ValueError: If the given player_id is not a (known) virtual player.
         """
-        if (
+        if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX) or (
             player_id not in self._virtual_players
             and self._get_virtual_player_config_owner(player_id) is None
         ):

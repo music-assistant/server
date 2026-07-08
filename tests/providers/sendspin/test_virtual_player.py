@@ -78,6 +78,17 @@ async def test_create_virtual_player_custom_id(mass: MusicAssistant) -> None:
     assert mass.players.get_player(player_id) is not None
 
 
+async def test_create_virtual_player_invalid_id(mass: MusicAssistant) -> None:
+    """Test that a player_id with unsafe characters is rejected."""
+    sendspin = _get_sendspin_provider(mass)
+    with pytest.raises(SetupFailedError, match="Invalid player_id"):
+        await sendspin.create_virtual_player(
+            owner_instance_id=sendspin.instance_id,
+            display_name="Test Session",
+            player_id="my/session",
+        )
+
+
 async def test_create_virtual_player_duplicate(mass: MusicAssistant) -> None:
     """Test that creating a duplicate virtual player raises."""
     sendspin = _get_sendspin_provider(mass)
