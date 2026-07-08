@@ -19,6 +19,10 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import (
+    SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
+    SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -66,6 +70,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
     prov.domain = domain or instance_id
     prov.name = instance_id
     prov.supported_features = {ProviderFeature.SEARCH}
+    prov.is_streaming_provider = True
     prov.search = AsyncMock(return_value=SearchResults())
     return prov
 
@@ -239,6 +244,21 @@ async def test_search_provider_cache_hit_avoids_provider_call() -> None:
 
     assert [track.item_id for track in result.tracks] == ["track1"]
     prov.search.assert_not_awaited()
+
+
+async def test_search_provider_cache_expiration_by_provider_type() -> None:
+    """Streaming provider results are cached longer than local provider results."""
+    prov_stream = _make_search_provider("prov_stream")
+    prov_local = _make_search_provider("prov_local")
+    prov_local.is_streaming_provider = False
+    controller = _make_controller([prov_stream, prov_local])
+
+    await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
+
+    stream_writes = _cache_writes(controller, "prov_stream")
+    local_writes = _cache_writes(controller, "prov_local")
+    assert stream_writes[0].kwargs["expiration"] == SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER
+    assert local_writes[0].kwargs["expiration"] == SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER
 
 
 async def test_concurrent_identical_searches_share_one_provider_call() -> None:

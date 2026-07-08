@@ -63,7 +63,8 @@ from music_assistant.controllers.music.constants import (
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RECOMMENDATIONS_PROVIDER_TIMEOUT,
     SEARCH_CACHE_EXPIRATION_COMBINED,
-    SEARCH_CACHE_EXPIRATION_PROVIDER,
+    SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
+    SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
     SEARCH_PROVIDER_HARD_TIMEOUT,
     SEARCH_PROVIDER_SOFT_TIMEOUT,
 )
@@ -2263,7 +2264,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.cache.set(
             key=cache_key,
             data=result.to_dict(),
-            expiration=SEARCH_CACHE_EXPIRATION_PROVIDER,
+            expiration=SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER
+            if prov.is_streaming_provider
+            else SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
             provider=prov.instance_id,
             category=CACHE_CATEGORY_SEARCH_RESULTS,
         )

@@ -26,8 +26,11 @@ SEARCH_PROVIDER_SOFT_TIMEOUT: Final[int] = 8
 # absolute max time a (background) provider search may run,
 # rate limited providers can be very slow to respond
 SEARCH_PROVIDER_HARD_TIMEOUT: Final[int] = 120
-# how long to cache raw per-provider search results
-SEARCH_CACHE_EXPIRATION_PROVIDER: Final[int] = 900
+# how long to cache raw per-provider search results; streaming catalogs barely
+# change so they can be cached a lot longer than local providers where the
+# user may add or change content at any time
+SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER: Final[int] = 24 * 3600
+SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER: Final[int] = 900
 # how long to cache combined search results (fast path for repeated searches)
 SEARCH_CACHE_EXPIRATION_COMBINED: Final[int] = 600
 
