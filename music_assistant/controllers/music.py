@@ -413,7 +413,9 @@ class MusicController(CoreController):
                 for prov_mapping in cast("MediaItemType", item).provider_mappings
             }
             # include results from library + all (unique) music providers
-            results_per_provider += await asyncio.gather(
+            # one failing provider must not break the entire search,
+            # so exceptions are logged and excluded from the results
+            gather_results = await asyncio.gather(
                 *[
                     self._search_provider(
                         search_query,
@@ -424,7 +426,13 @@ class MusicController(CoreController):
                     )
                     for provider_instance in search_providers
                 ],
+                return_exceptions=True,
             )
+            for res in gather_results:
+                if isinstance(res, SearchResults):
+                    results_per_provider.append(res)
+                else:
+                    self.logger.error("Search on provider failed", exc_info=res)
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
         result = SearchResults(
@@ -515,6 +523,8 @@ class MusicController(CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
+        # guard against a failing provider: return empty results instead of
+        # raising, so a global search can still succeed with the other providers
         try:
             prov_search_results = await prov.search(
                 search_query,
@@ -522,8 +532,11 @@ class MusicController(CoreController):
                 limit,
             )
         except MusicAssistantError as err:
-            self.logger.warning("Search on provider %s failed: %s", prov.name, err)
-            raise MusicAssistantError(f"Search failed due to an error on {prov.name}") from err
+            self.logger.warning("Search on provider %s failed: %s", prov.name, str(err))
+            return SearchResults()
+        except Exception as err:
+            self.logger.error("Search on provider %s failed: %s", prov.name, str(err), exc_info=err)
+            return SearchResults()
         if skip_item_ids:
             # filter out items already in skip_item_ids
             prov_search_results.artists = [
@@ -1054,7 +1067,7 @@ class MusicController(CoreController):
             # instead of bubbling MediaNotFoundError from get_item_by_uri.
             try:
                 uri_media_type, _, _ = await parse_uri(item)
-            except (InvalidProviderURI, InvalidProviderID):
+            except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
             if uri_media_type == MediaType.AUDIO_SOURCE:
                 raise UnsupportedFeaturedException("AudioSource items can not be favorites")
@@ -1162,7 +1175,7 @@ class MusicController(CoreController):
             # Mirrors the same guard in add_item_to_favorites.
             try:
                 uri_media_type, _, _ = await parse_uri(item)
-            except (InvalidProviderURI, InvalidProviderID):
+            except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
             if uri_media_type == MediaType.AUDIO_SOURCE:
                 raise UnsupportedFeaturedException("AudioSource items can not be library items")
@@ -2376,7 +2389,7 @@ class MusicController(CoreController):
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
@@ -2492,7 +2505,7 @@ class MusicController(CoreController):
                     metadata = json_loads(db_row["metadata"])
                     try:
                         datetime.fromisoformat(metadata["release_date"])
-                    except (KeyError, ValueError):
+                    except KeyError, ValueError:
                         # this is not a valid date, so we set it to None
                         metadata["release_date"] = None
                         await self.database.update(

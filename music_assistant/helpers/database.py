@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -87,7 +88,14 @@ def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[s
                 subparams.append(subparam_name)
                 count += 1
             params_str = ",".join(f":{x}" for x in subparams)
-            result_query = result_query.replace(f" :{key}", f" ({params_str})")
+            # replace the placeholder with the expanded (:_param_x, ...) list;
+            # consume optional parens already around the placeholder and use a
+            # word boundary so placeholders sharing the same prefix are untouched
+            result_query = re.sub(
+                rf"\(\s*:{re.escape(key)}\b\s*\)|:{re.escape(key)}\b",
+                f"({params_str})",
+                result_query,
+            )
         else:
             result_params[key] = value
     return (result_query, result_params)

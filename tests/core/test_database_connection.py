@@ -8,7 +8,11 @@ from typing import Any
 
 import pytest
 
-from music_assistant.helpers.database import DatabaseConnection, get_sqlite_memory_settings
+from music_assistant.helpers.database import (
+    DatabaseConnection,
+    get_sqlite_memory_settings,
+    query_params,
+)
 from music_assistant.mass import MusicAssistant
 
 GIB = 1024**3
@@ -151,3 +155,27 @@ async def test_setup_clamps_pragma_values(tmp_path: pathlib.Path) -> None:
         assert await _read_pragma_int(db, "mmap_size") == 0
     finally:
         await db.close()
+
+
+def test_query_params_expands_list_values() -> None:
+    """Test that list params are expanded into placeholders in all placeholder notations."""
+    query, params = query_params(
+        "SELECT * FROM items WHERE id IN :ids AND name = :name",
+        {"ids": [1, 2], "name": "foo"},
+    )
+    assert query == "SELECT * FROM items WHERE id IN (:_param_0,:_param_1) AND name = :name"
+    assert params == {"_param_0": 1, "_param_1": 2, "name": "foo"}
+    # placeholder already wrapped in parens must not end up double-wrapped
+    query, params = query_params("SELECT * FROM items WHERE id IN(:ids)", {"ids": [1, 2]})
+    assert query == "SELECT * FROM items WHERE id IN(:_param_0,:_param_1)"
+    assert params == {"_param_0": 1, "_param_1": 2}
+
+
+def test_query_params_leaves_prefixed_placeholders_untouched() -> None:
+    """Test that expanding a list param does not corrupt placeholders sharing its prefix."""
+    query, params = query_params(
+        "SELECT * FROM items WHERE id IN :ids AND other = :ids_extra",
+        {"ids": [1], "ids_extra": 2},
+    )
+    assert query == "SELECT * FROM items WHERE id IN (:_param_0) AND other = :ids_extra"
+    assert params == {"_param_0": 1, "ids_extra": 2}
