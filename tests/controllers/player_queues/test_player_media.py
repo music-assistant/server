@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track, UniqueList
+from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.media_items import (
+    ItemMapping,
+    MediaItemImage,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -63,13 +70,18 @@ def _controller() -> PlayerQueuesController:
 
 
 def _queue_item() -> QueueItem:
-    """Return a queue item backed by a real track."""
+    """Return a queue item backed by a real track with artwork."""
     return QueueItem(
         queue_id=QUEUE_ID,
         queue_item_id="item_1",
         name="Daft Punk - One More Time",
         duration=320,
         media_item=_track(),
+        image=MediaItemImage(
+            type=ImageType.THUMB,
+            path="https://example.com/cover.jpg",
+            provider="library",
+        ),
     )
 
 
@@ -82,6 +94,7 @@ async def test_player_media_keeps_metadata_by_default() -> None:
 
     assert media.title == "One More Time"
     assert media.artist == "Daft Punk"
+    assert media.image_url == cast("MagicMock", ctrl.mass.metadata.get_image_url).return_value
     assert media.uri == _queue_item().uri
     assert media.duration == 320
 
@@ -98,6 +111,8 @@ async def test_player_media_redacted_when_flag_set() -> None:
     assert media.artist == ""
     assert media.album == ""
     assert media.image_url == MASS_LOGO_ONLINE
+    # the track's own artwork must never be resolved while redaction is active
+    cast("MagicMock", ctrl.mass.metadata.get_image_url).assert_not_called()
     # the fields needed for playback must remain intact
     assert media.uri == _queue_item().uri
     assert media.duration == 320

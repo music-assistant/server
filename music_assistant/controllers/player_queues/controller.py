@@ -349,9 +349,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         Enable or disable redaction of media details for the given queue.
 
         Intended for the plugin owning the queue: while enabled, all PlayerMedia sent to
-        players carries neutral metadata (no track title/artist/album/image), so media
-        details do not leak to player displays or connected integrations.
-        The flag is not persisted and resets when the queue is (re)created.
+        players carries neutral metadata (generic title, no artist/album and a generic
+        logo image), so media details do not leak to player displays or connected
+        integrations. The flag is not persisted and resets when the queue is (re)created.
 
         :param queue_id: The queue to configure.
         :param redact: True to redact media details, False to restore normal metadata.
