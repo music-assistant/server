@@ -6,20 +6,29 @@ import logging
 import pathlib
 import threading
 from collections.abc import AsyncGenerator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 
 import pytest
-from music_assistant_models.auth import AuthProviderType, UserRole
+from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
-from music_assistant.controllers.webserver.auth import AuthenticationManager
+from music_assistant.controllers.webserver.auth import (
+    JOIN_CODE_LENGTH,
+    TOKEN_ABSOLUTE_MAX_EXPIRATION,
+    TOKEN_GUEST_EXPIRATION,
+    TOKEN_LONG_LIVED_EXPIRATION,
+    TOKEN_SHORT_LIVED_EXPIRATION,
+    AuthenticationManager,
+)
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
     get_current_user,
+    has_scope,
+    resolve_command_impersonation,
     set_current_token,
     set_current_user,
     set_impersonated_user,
@@ -492,35 +501,118 @@ async def test_homeassistant_system_user(auth_manager: AuthenticationManager) ->
     assert system_user is not None
     assert system_user.username == HOMEASSISTANT_SYSTEM_USER
     assert system_user.display_name == "Home Assistant Integration"
-    assert system_user.role == UserRole.USER
+    assert system_user.role == UserRole.SERVICE
 
     # Getting it again should return the same user
     system_user2 = await auth_manager.get_homeassistant_system_user()
     assert system_user2.user_id == system_user.user_id
 
 
-async def test_homeassistant_system_user_token(auth_manager: AuthenticationManager) -> None:
+async def test_homeassistant_system_user_token_stable_across_restarts(
+    auth_manager: AuthenticationManager,
+) -> None:
     """
-    Test Home Assistant system user token creation.
+    Test that a valid Home Assistant integration token is reused on repeated announces.
+
+    The addon announces on every startup; re-minting each time would invalidate the
+    token the HA integration still holds (issue #158174). Repeated calls must return
+    the exact same token so the re-announce is idempotent.
 
     :param auth_manager: AuthenticationManager instance.
     """
-    # Get or create token
     token1 = await auth_manager.get_homeassistant_system_user_token()
     assert token1 is not None
 
-    # Getting it again should create a new token (old one is replaced)
+    # A later startup (restart) returns the same token unchanged.
     token2 = await auth_manager.get_homeassistant_system_user_token()
-    assert token2 is not None
+    assert token2 == token1
+
+    user = await auth_manager.authenticate_with_token(token1)
+    assert user is not None
+    assert user.username == HOMEASSISTANT_SYSTEM_USER
+
+
+async def test_homeassistant_system_user_token_reissued_when_invalid(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a fresh token is minted once the existing one is revoked or gone.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    token1 = await auth_manager.get_homeassistant_system_user_token()
+
+    # Drop the token row, as would happen if it expired or was revoked.
+    token_id = auth_manager.jwt_helper.get_token_id(token1)
+    await auth_manager.database.delete("auth_tokens", {"token_id": token_id})
+
+    token2 = await auth_manager.get_homeassistant_system_user_token()
+    assert token2 != token1
+    assert await auth_manager.authenticate_with_token(token2) is not None
+    assert await auth_manager.authenticate_with_token(token1) is None
+
+
+async def test_homeassistant_system_user_token_rotated_before_absolute_max(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the Home Assistant integration token is rotated before its absolute cap.
+
+    The integration cannot reauth while running as an addon, so the token must be
+    replaced (and re-announced) before the absolute lifetime cap silently strands
+    the integration (issue #171938). The superseded token must remain valid so the
+    integration keeps working until it reloads with the new one.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    token1 = await auth_manager.get_homeassistant_system_user_token()
+    token_id = auth_manager.jwt_helper.get_token_id(token1)
+
+    # Age the token into the rotation window (close to the absolute cap, still valid).
+    now = utc()
+    created_at = now - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION - 1)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_id},
+        {
+            "created_at": created_at.isoformat(),
+            "expires_at": (now + timedelta(days=1)).isoformat(),
+        },
+    )
+
+    # The next (periodic) announce must mint a replacement.
+    token2 = await auth_manager.get_homeassistant_system_user_token()
     assert token2 != token1
 
-    # Old token should not work
-    user1 = await auth_manager.authenticate_with_token(token1)
-    assert user1 is None
+    # Both tokens work: the old one until it expires, the new one going forward.
+    assert await auth_manager.authenticate_with_token(token1) is not None
+    assert await auth_manager.authenticate_with_token(token2) is not None
 
-    # New token should work
-    user2 = await auth_manager.authenticate_with_token(token2)
-    assert user2 is not None
+    # The new token is stable again on subsequent announces.
+    assert await auth_manager.get_homeassistant_system_user_token() == token2
+
+
+async def test_homeassistant_system_user_token_cleans_up_expired_rows(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that expired Home Assistant integration token rows are removed on rotation.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    token1 = await auth_manager.get_homeassistant_system_user_token()
+    token_id = auth_manager.jwt_helper.get_token_id(token1)
+
+    # Expire the token entirely so the next announce mints a replacement.
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_id},
+        {"expires_at": (utc() - timedelta(days=1)).isoformat()},
+    )
+
+    token2 = await auth_manager.get_homeassistant_system_user_token()
+    assert token2 != token1
+    assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
 
 
 async def test_update_user_role(auth_manager: AuthenticationManager) -> None:
@@ -747,6 +839,160 @@ async def test_long_lived_token_no_auto_renewal(auth_manager: AuthenticationMana
     assert updated_expires_at == initial_expires_at
 
 
+async def test_long_lived_token_default_is_one_year() -> None:
+    """Test that the long-lived token default lifetime is 365 days."""
+    assert TOKEN_LONG_LIVED_EXPIRATION == 365
+
+
+async def test_token_absolute_max_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a short-lived token past its absolute max lifetime cannot be renewed.
+
+    The sliding window keeps a session alive on use, but a token created longer than
+    the absolute maximum ago must be rejected regardless of the sliding expiration.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="absmaxuser", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "Abs Max Test", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+
+    # Created past the absolute max but with a future sliding expires_at, so only the cap can reject it.
+    created_at = utc() - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)
+    future_expires = utc() + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_row["token_id"]},
+        {"created_at": created_at.isoformat(), "expires_at": future_expires.isoformat()},
+    )
+
+    # Token must be rejected and the row deleted.
+    authenticated_user = await auth_manager.authenticate_with_token(token)
+    assert authenticated_user is None
+
+    deleted_row = await auth_manager.database.get_row(
+        "auth_tokens", {"token_id": token_row["token_id"]}
+    )
+    assert deleted_row is None
+
+
+async def test_legacy_token_absolute_max_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the absolute max lifetime is also enforced on the legacy hash-token path.
+
+    Legacy (non-JWT) tokens authenticate via a hash lookup that shares the same cap logic,
+    so a hash token created past the absolute maximum must be rejected and its row deleted.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="legacyabsmax", role=UserRole.USER)
+
+    # A non-JWT token string forces the legacy hash-based lookup path.
+    raw_token = "legacy-hash-token-absmax"
+    token_id = "legacy-absmax-token-id"
+    # Created past the absolute max but with a future sliding expires_at, so only the cap can reject it.
+    created_at = utc() - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)
+    future_expires = utc() + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+    await auth_manager.database.insert(
+        "auth_tokens",
+        {
+            "token_id": token_id,
+            "user_id": user.user_id,
+            "token_hash": hashlib.sha256(raw_token.encode()).hexdigest(),
+            "name": "Legacy Abs Max Test",
+            "created_at": created_at.isoformat(),
+            "expires_at": future_expires.isoformat(),
+            "is_long_lived": 0,
+        },
+    )
+
+    # Token must be rejected and the row deleted.
+    assert await auth_manager.authenticate_with_token(raw_token) is None
+    assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
+
+
+async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that revoke_tokens_for_user commits so the tokens no longer authenticate.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="guestrevoke", role=UserRole.GUEST)
+    token = await auth_manager.create_token(user, "Guest Token", is_long_lived=False)
+
+    # Token works before revocation
+    assert await auth_manager.authenticate_with_token(token) is not None
+
+    revoked = await auth_manager.revoke_tokens_for_user(user)
+    assert revoked == 1
+
+    # Reopen the raw connection to roll back any uncommitted tx: an uncommitted DELETE would resurrect the row.
+    await auth_manager.database._db.close()
+    await auth_manager.database.setup()
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    assert await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash}) is None
+    assert await auth_manager.authenticate_with_token(token) is None
+
+
+async def test_short_lived_jwt_exp_carries_absolute_max(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a short-lived JWT's exp claim equals the absolute max lifetime.
+
+    The database expires_at enforces the sliding idle window; an exp claim shorter
+    than the absolute max would cut off active sessions before renewal can happen.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="jwtexpuser", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "JWT Exp Test", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    created_at = datetime.fromisoformat(token_row["created_at"])
+
+    payload = auth_manager.jwt_helper.decode_token(token, verify_exp=False)
+    expected = created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)
+    assert payload["exp"] == int(expected.timestamp())
+
+    # The database keeps the shorter sliding window as source of truth
+    expires_at = datetime.fromisoformat(token_row["expires_at"])
+    assert expires_at - created_at == timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+
+
+async def test_guest_token_fixed_short_lifetime(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that guest tokens get a short fixed lifetime and never renew on use.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="guestexpiry", role=UserRole.GUEST)
+    token = await auth_manager.create_token(user, "Guest Session", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    created_at = datetime.fromisoformat(token_row["created_at"])
+    expires_at = datetime.fromisoformat(token_row["expires_at"])
+    assert expires_at - created_at == timedelta(days=TOKEN_GUEST_EXPIRATION)
+
+    # The JWT exp claim must match the fixed window, not the absolute max
+    payload = auth_manager.jwt_helper.decode_token(token, verify_exp=False)
+    assert payload["exp"] == int(expires_at.timestamp())
+
+    # Authenticating must not extend the expiration (no sliding window for guests)
+    assert await auth_manager.authenticate_with_token(token) is not None
+    updated_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert updated_row is not None
+    assert updated_row["expires_at"] == token_row["expires_at"]
+
+
 async def test_username_case_insensitive_creation(auth_manager: AuthenticationManager) -> None:
     """
     Test that usernames are normalized to lowercase on creation.
@@ -966,7 +1212,7 @@ async def test_generate_join_code(auth_manager: AuthenticationManager) -> None:
     )
 
     assert code is not None
-    assert len(code) == 6  # JOIN_CODE_LENGTH
+    assert len(code) == JOIN_CODE_LENGTH
     assert code.isalnum()
     assert expires_at is not None
     assert expires_at > utc()
@@ -1266,13 +1512,14 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
     admin_user = await auth_manager.create_user(username="admin", role=UserRole.ADMIN)
     standard_user_a = await auth_manager.create_user(username="user_a", role=UserRole.USER)
     standard_user_b = await auth_manager.create_user(username="user_b", role=UserRole.USER)
+    service_user = await auth_manager.create_user(username="service", role=UserRole.SERVICE)
 
     # non-authenticated user must raise
     set_current_user(None)
     with pytest.raises(InsufficientPermissions):
         async with ImpersonatedUser(auth_manager.mass, "user_a"):
             ...
-    # non-admin impersonation attempt must raise
+    # impersonation attempt without the users.impersonate scope must raise
     set_current_user(standard_user_a)
     with pytest.raises(InsufficientPermissions):
         async with ImpersonatedUser(auth_manager.mass, "admin"):
@@ -1283,20 +1530,20 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
         async with ImpersonatedUser(auth_manager.mass, "wrong_username"):
             ...
 
-    # verify, that a standard user not attempting personation changes the current user
-    # to the caller temporarily and restores the impersonated user afterwards
+    # verify that a standard user may impersonate itself (by username or user_id)
     set_current_user(standard_user_a)
-    set_impersonated_user(standard_user_b)  # simulate nested use
-
-    assert get_current_user() == standard_user_b
+    set_impersonated_user(None)
     async with ImpersonatedUser(auth_manager.mass, "user_a"):
         assert get_current_user() == standard_user_a
-    assert get_current_user() == standard_user_b
-    async with ImpersonatedUser(auth_manager.mass, None):
+    async with ImpersonatedUser(auth_manager.mass, standard_user_a.user_id):
         assert get_current_user() == standard_user_a
+    # passing None is a no-op which preserves any active impersonation
+    set_impersonated_user(standard_user_b)
+    async with ImpersonatedUser(auth_manager.mass, None):
+        assert get_current_user() == standard_user_b
     assert get_current_user() == standard_user_b
 
-    # verify, that an admin user may impersonate another user
+    # verify that an admin user may impersonate another user
     set_current_user(admin_user)
 
     set_impersonated_user(None)  # non-nested use
@@ -1310,16 +1557,13 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
         assert get_current_user() == standard_user_a
     assert get_current_user() == standard_user_b
 
-    # verify, that an admin user not attempting impersonation is treated normally
-    set_current_user(admin_user)
+    # verify that a service user may impersonate another user (users.impersonate scope)
+    set_current_user(service_user)
     set_impersonated_user(None)
-    assert get_current_user() == admin_user
-    async with ImpersonatedUser(auth_manager.mass, "admin"):
-        assert get_current_user() == admin_user
-    assert get_current_user() == admin_user
-    async with ImpersonatedUser(auth_manager.mass, None):
-        assert get_current_user() == admin_user
-    assert get_current_user() == admin_user
+    assert has_scope(service_user, Scope.USERS_IMPERSONATE)
+    async with ImpersonatedUser(auth_manager.mass, "user_a"):
+        assert get_current_user() == standard_user_a
+    assert get_current_user() == service_user
 
 
 async def test_impersonated_user_anonymous_playback_is_noop(
@@ -1342,3 +1586,160 @@ async def test_impersonated_user_anonymous_playback_is_noop(
     with pytest.raises(InsufficientPermissions):
         async with ImpersonatedUser(auth_manager.mass, "user_a"):
             ...
+
+
+async def test_join_code_length_at_least_12() -> None:
+    """Verify join codes are long enough to resist brute force (security finding 7.3.2)."""
+    assert JOIN_CODE_LENGTH >= 12
+
+
+async def test_exchange_join_code_rate_limited(auth_manager: AuthenticationManager) -> None:
+    """
+    Verify repeated failed join code exchanges get throttled (security finding 7.3.2).
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    # Three failures trip the progressive delay threshold.
+    for _ in range(3):
+        result = await auth_manager.exchange_join_code("WRONGCODE123")
+        assert result["success"] is False
+
+    # The next attempt must be rejected for rate limiting, not just "invalid".
+    result = await auth_manager.exchange_join_code("WRONGCODE123")
+    assert result["success"] is False
+    assert "too many" in result["error"].lower()
+
+
+async def test_exchange_join_code_rate_limit_concurrent_burst(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify concurrent failed exchanges cannot race past the rate limiter.
+
+    Without serialization, parallel requests all pass the rate limit check
+    before any of them records a failure, allowing brute-force bursts.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    results = await asyncio.gather(
+        *(auth_manager.exchange_join_code("WRONGCODE123") for _ in range(10))
+    )
+
+    assert all(result["success"] is False for result in results)
+    # Only the first 3 attempts may reach the actual code check; the rest must be throttled.
+    invalid_count = sum(1 for result in results if "invalid" in result["error"].lower())
+    throttled_count = sum(1 for result in results if "too many" in result["error"].lower())
+    assert invalid_count == 3
+    assert throttled_count == 7
+
+
+async def test_exchange_join_code_success_does_not_reset_rate_limit(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify a successful exchange does not clear the failed-attempt counter.
+
+    The rate limit key is global, so clearing on success would let an attacker
+    holding any valid code reset the counter at will and bypass throttling.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="norstuser", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    # A couple of failures, still below the throttle threshold.
+    for _ in range(2):
+        assert (await auth_manager.exchange_join_code("NOPE12345678"))["success"] is False
+
+    # A valid exchange still succeeds but must not wipe the counter.
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+    # The third failure trips the threshold, throttling further attempts.
+    assert (await auth_manager.exchange_join_code("NOPE12345678"))["success"] is False
+    result = await auth_manager.exchange_join_code(code)
+    assert result["success"] is False
+    assert "too many" in result["error"].lower()
+
+
+async def test_resolve_command_impersonation(auth_manager: AuthenticationManager) -> None:
+    """Test resolving the impersonation argument of an incoming API command."""
+    admin_user = await auth_manager.create_user(username="admin", role=UserRole.ADMIN)
+    standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
+    set_current_user(admin_user)
+    set_impersonated_user(None)
+
+    # no user argument present is a no-op and leaves other args untouched
+    args: dict[str, object] = {"queue_id": "abc"}
+    assert await resolve_command_impersonation(auth_manager.mass, args) is None
+    assert args == {"queue_id": "abc"}
+
+    # an empty string is deliberately treated as "no impersonation requested"
+    # (optional fields in automations/scripts commonly template to an empty string)
+    args = {"queue_id": "abc", "user": ""}
+    assert await resolve_command_impersonation(auth_manager.mass, args) is None
+    assert args == {"queue_id": "abc"}
+
+    # the user argument is popped and resolved (by username)
+    args = {"queue_id": "abc", "user": "user_a"}
+    resolved = await resolve_command_impersonation(auth_manager.mass, args)
+    assert resolved == standard_user
+    assert args == {"queue_id": "abc"}
+
+    # the user argument is also resolved by user_id
+    args = {"user": standard_user.user_id}
+    resolved = await resolve_command_impersonation(auth_manager.mass, args)
+    assert resolved == standard_user
+
+    # username is accepted as (deprecated) alias for user
+    args = {"username": "user_a"}
+    resolved = await resolve_command_impersonation(auth_manager.mass, args)
+    assert resolved == standard_user
+    assert args == {}
+
+    # a caller without the users.impersonate scope may not impersonate another user
+    set_current_user(standard_user)
+    with pytest.raises(InsufficientPermissions):
+        await resolve_command_impersonation(auth_manager.mass, {"user": "admin"})
+
+
+def test_has_scope() -> None:
+    """Test the scope check for each of the builtin user roles."""
+
+    def _user(role: str) -> User:
+        return User(user_id="abc123", username="testuser", role=role)
+
+    # admin has all scopes through the wildcard
+    assert has_scope(_user(UserRole.ADMIN), Scope.CONFIG_CORE_WRITE)
+    assert has_scope(_user(UserRole.ADMIN), Scope.LIBRARY_MANAGE)
+    # regular user
+    assert has_scope(_user(UserRole.USER), Scope.LIBRARY_WRITE)
+    assert has_scope(_user(UserRole.USER), Scope.CONFIG_CORE_READ)
+    assert not has_scope(_user(UserRole.USER), Scope.CONFIG_CORE_WRITE)
+    assert not has_scope(_user(UserRole.USER), Scope.USERS_IMPERSONATE)
+    # guest
+    assert has_scope(_user(UserRole.GUEST), Scope.LIBRARY_READ)
+    assert not has_scope(_user(UserRole.GUEST), Scope.LIBRARY_WRITE)
+    assert not has_scope(_user(UserRole.GUEST), Scope.CONFIG_CORE_READ)
+    # service
+    assert has_scope(_user(UserRole.SERVICE), Scope.USERS_IMPERSONATE)
+    assert has_scope(_user(UserRole.SERVICE), Scope.CONFIG_PLAYERS_WRITE)
+    assert not has_scope(_user(UserRole.SERVICE), Scope.CONFIG_CORE_WRITE)
+    # an unknown (custom) role id is fail-closed and grants no scopes at all
+    assert not has_scope(_user("some_future_role"), Scope.LIBRARY_READ)
+
+
+async def test_homeassistant_system_user_has_service_role(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that the Home Assistant system user is created with the service role."""
+    system_user = await auth_manager.get_homeassistant_system_user()
+    assert system_user.role == UserRole.SERVICE
+
+    # a pre-existing system user with the old user role is migrated to service
+    await auth_manager.database.update(
+        "users", {"user_id": system_user.user_id}, {"role": UserRole.USER.value}
+    )
+    await auth_manager._migrate_system_user_role()
+    migrated_user = await auth_manager.get_user(system_user.user_id)
+    assert migrated_user is not None
+    assert migrated_user.role == UserRole.SERVICE

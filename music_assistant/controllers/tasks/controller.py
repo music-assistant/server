@@ -13,7 +13,7 @@ from threading import get_ident
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.background_task import (
     BackgroundTask,
     TaskMetadata,
@@ -23,7 +23,10 @@ from music_assistant_models.background_task import (
 from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.models.core_controller import CoreController
 
@@ -94,7 +97,7 @@ class TasksController(CoreController):
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
 
-    @api_command("tasks/list")
+    @api_command("tasks/list", required_scope=Scope.SYSTEM_READ)
     def list_tasks(self) -> list[BackgroundTask]:
         """Return all visible managed tasks."""
         return self.list_tasks_for_user(get_current_user())
@@ -103,17 +106,17 @@ class TasksController(CoreController):
         """Return tasks visible to the given user."""
         return [managed.task_info for managed in get_visible_tasks(self._tasks.values(), user)]
 
-    @api_command("tasks/get")
+    @api_command("tasks/get", required_scope=Scope.SYSTEM_READ)
     def get_task(self, task_id: str) -> BackgroundTask:
         """Return a single task by id."""
         return self._get_visible_managed_task(task_id, get_current_user()).task_info
 
-    @api_command("tasks/log")
+    @api_command("tasks/log", required_scope=Scope.SYSTEM_READ)
     def get_task_log(self, task_id: str) -> str:
         """Return the log buffer for a single task."""
         return "\n".join(self._get_visible_managed_task(task_id, get_current_user()).task_info.logs)
 
-    @api_command("tasks/run", required_role=UserRole.ADMIN)
+    @api_command("tasks/run", required_scope=Scope.SYSTEM_MANAGE)
     def run_task(self, task_id: str) -> BackgroundTask:
         """Queue a task for immediate execution."""
         managed = self._get_managed_task(task_id)
@@ -127,7 +130,7 @@ class TasksController(CoreController):
         )
         return managed.task_info
 
-    @api_command("tasks/retry", required_role=UserRole.ADMIN)
+    @api_command("tasks/retry", required_scope=Scope.SYSTEM_MANAGE)
     def retry_task(self, task_id: str) -> BackgroundTask:
         """Retry a failed or cancelled task."""
         managed = self._get_managed_task(task_id)
@@ -147,14 +150,14 @@ class TasksController(CoreController):
         )
         return managed.task_info
 
-    @api_command("tasks/cancel", required_role=UserRole.ADMIN)
+    @api_command("tasks/cancel", required_scope=Scope.SYSTEM_MANAGE)
     def cancel_task(self, task_id: str) -> BackgroundTask:
         """Cancel a pending or running task."""
         managed = self._get_managed_task(task_id)
         self._cancel_managed_task(managed)
         return managed.task_info
 
-    @api_command("tasks/set_enabled", required_role=UserRole.ADMIN)
+    @api_command("tasks/set_enabled", required_scope=Scope.SYSTEM_MANAGE)
     def set_task_enabled(self, task_id: str, enabled: bool) -> BackgroundTask:
         """Enable or disable automatic scheduling for a recurring task."""
         managed = self._get_managed_task(task_id)
@@ -177,7 +180,7 @@ class TasksController(CoreController):
             self._schedule_task_update(force=True)
         return managed.task_info
 
-    @api_command("tasks/update_schedule", required_role=UserRole.ADMIN)
+    @api_command("tasks/update_schedule", required_scope=Scope.SYSTEM_MANAGE)
     def update_task_schedule(
         self,
         task_id: str,
@@ -202,7 +205,7 @@ class TasksController(CoreController):
             self._schedule_task_update(force=True)
         return managed.task_info
 
-    @api_command("tasks/remove", required_role=UserRole.ADMIN)
+    @api_command("tasks/remove", required_scope=Scope.SYSTEM_MANAGE)
     def remove_task(self, task_id: str) -> None:
         """Remove a finished task from history."""
         managed = self._get_managed_task(task_id)
@@ -211,7 +214,7 @@ class TasksController(CoreController):
         self._tasks.pop(task_id, None)
         self._schedule_task_update(force=True)
 
-    @api_command("tasks/clear_finished", required_role=UserRole.ADMIN)
+    @api_command("tasks/clear_finished", required_scope=Scope.SYSTEM_MANAGE)
     def clear_finished_tasks(self) -> None:
         """Remove finished non-scheduled tasks from history."""
         for task_id in [task_id for task_id, task in self._tasks.items() if task.can_remove]:
@@ -482,7 +485,7 @@ class TasksController(CoreController):
         managed = self._get_managed_task(task_id)
         if (
             user is not None
-            and user.role != UserRole.ADMIN
+            and not has_scope(user, Scope.SYSTEM_MANAGE)
             and managed.task_info.user_id != user.user_id
         ):
             raise InvalidDataError(f"Task {task_id} not found")

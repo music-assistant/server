@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from copy import deepcopy
@@ -12,6 +11,7 @@ from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -59,11 +59,9 @@ from music_assistant.controllers.music.constants import (
     CONF_DELETED_PROVIDERS,
     CONF_RESET_DB,
     DATABASE_CLEANUP_TASK_ID,
-    DYNAMIC_RADIO_BASE_SAMPLE_SIZE,
-    DYNAMIC_RADIO_DYNAMIC_TARGET,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
-    RADIO_TRACK_MAX_DURATION_SECS,
+    RECOMMENDATIONS_PROVIDER_TIMEOUT,
 )
 from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
 from music_assistant.controllers.music.helpers import sort_search_result
@@ -76,10 +74,8 @@ from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    ImpersonatedUser,
-    get_current_user,
-)
+from music_assistant.controllers.music.recency import RecencyEngine
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.database import UNSET, DatabaseConnection
@@ -128,6 +124,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.genres = GenreController(self.mass)
+        self.recency = RecencyEngine(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         self.manifest.name = "Music controller"
@@ -219,7 +216,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ],
         )
 
-    @api_command("music/sync")
+    @api_command("music/sync", required_scope=Scope.LIBRARY_MANAGE)
     async def start_sync(
         self,
         media_types: list[MediaType] | None = None,
@@ -280,7 +277,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
         ]
 
-    @api_command("music/search")
+    @api_command("music/search", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def search(
         self,
         search_query: str,
@@ -485,7 +482,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     result.podcasts = cast("list[Podcast]", search_results)
         return result
 
-    @api_command("music/browse")
+    @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
     async def browse(
         self, path: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -568,7 +565,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         prov_items = await cast("MusicProvider", browse_prov).browse(path=path)
         return [*prepend_items, *prov_items]
 
-    @api_command("music/recently_played_items")
+    @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
         self,
         limit: int = 10,
@@ -648,12 +645,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         return result
 
-    @api_command("music/recently_added_tracks")
+    @api_command("music/recently_added_tracks", required_scope=Scope.LIBRARY_READ)
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
         return await self.tracks.library_items(limit=limit, order_by="timestamp_added_desc")
 
-    @api_command("music/in_progress_items")
+    @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
     async def in_progress_items(
         self, limit: int = 10, all_users: bool = False
     ) -> list[ItemMapping]:
@@ -768,7 +765,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         return result
 
-    @api_command("music/item_by_uri")
+    @api_command("music/item_by_uri", required_scope=Scope.LIBRARY_READ)
     async def get_item_by_uri(
         self, uri: str, allow_update_metadata: bool = False
     ) -> MediaItemType | BrowseFolder:
@@ -781,7 +778,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/recommendations")
+    @api_command("music/recommendations", required_scope=Scope.LIBRARY_READ)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations."""
         providers_with_recommendations = self.mass.get_providers_supporting_feature(
@@ -801,84 +798,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # so the result is sorted as each provider delivered
         return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
 
-    async def get_dynamic_radio_tracks(
-        self,
-        seeds: list[MediaItemType],
-        *,
-        include_base_tracks: bool = False,
-        target_size: int = 25,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Generate a dynamic radio track pool from one or more seed media items.
-
-        :param seeds: Seed media items (Track, Artist, Album, Playlist, ...) used as sources.
-        :param include_base_tracks: When True, interleave the sampled base tracks into the result
-            using the BDDBDD pattern. When False, only similar tracks are returned.
-        :param target_size: Maximum number of dynamic (similar) tracks to sample into the result.
-            When ``include_base_tracks`` is True, base tracks are added on top of this cap.
-        :param preferred_provider_instances: Provider instance IDs preferred for similar lookups.
-        :raises UnsupportedFeaturedException: When no base tracks could be derived from any seed.
-        """
-        seen: set[Track] = set()
-        available_base_tracks: list[Track] = []
-        for seed in random.sample(seeds, len(seeds)):
-            ctrl = self.get_controller(seed.media_type)
-            try:
-                base_tracks_for_seed = await ctrl.radio_mode_base_tracks(
-                    seed,  # type: ignore[arg-type]
-                    preferred_provider_instances,
-                )
-            except UnsupportedFeaturedException:
-                continue
-            for track in base_tracks_for_seed:
-                if track not in seen:
-                    seen.add(track)
-                    available_base_tracks.append(track)
-        if not available_base_tracks:
-            raise UnsupportedFeaturedException("Radio mode not available for source items")
-
-        base_tracks = random.sample(
-            available_base_tracks,
-            min(DYNAMIC_RADIO_BASE_SAMPLE_SIZE, len(available_base_tracks)),
-        )
-        dynamic_tracks: set[Track] = set()
-        for allow_lookup in (False, True):
-            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
-                break
-            for base_track in base_tracks:
-                try:
-                    similar = await self.tracks.similar_tracks(
-                        base_track.item_id,
-                        base_track.provider,
-                        allow_lookup=allow_lookup,
-                        preferred_provider_instances=preferred_provider_instances,
-                    )
-                except MediaNotFoundError:
-                    continue
-                for track in similar:
-                    if track not in base_tracks and track.duration <= RADIO_TRACK_MAX_DURATION_SECS:
-                        dynamic_tracks.add(track)
-                if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
-                    break
-
-        result: list[Track] = []
-        dynamic_tracks_list = list(dynamic_tracks)
-        if include_base_tracks:
-            result.append(base_tracks[0])
-            if len(base_tracks) > 1:
-                for base_track in base_tracks[1:]:
-                    result.append(base_track)
-                    if len(dynamic_tracks_list) > 2:
-                        result += random.sample(dynamic_tracks_list, 2)
-                    else:
-                        result += dynamic_tracks_list
-        remaining_dynamic = [t for t in dynamic_tracks_list if t not in result]
-        if remaining_dynamic:
-            result += random.sample(remaining_dynamic, min(len(remaining_dynamic), target_size))
-        return result
-
-    @api_command("music/item")
+    @api_command("music/item", required_scope=Scope.LIBRARY_READ)
     async def get_item(
         self,
         media_type: MediaType,
@@ -923,7 +843,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/get_library_item")
+    @api_command("music/get_library_item", required_scope=Scope.LIBRARY_READ)
     async def get_library_item_by_prov_id(
         self,
         media_type: MediaType,
@@ -937,7 +857,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
 
-    @api_command("music/favorites/add_item")
+    @api_command("music/favorites/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_favorites(
         self,
         item: str | MediaItemType | ItemMapping,
@@ -989,7 +909,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
 
-    @api_command("music/favorites/remove_item")
+    @api_command("music/favorites/remove_item", required_scope=Scope.LIBRARY_WRITE)
     async def remove_item_from_favorites(
         self,
         media_type: MediaType,
@@ -1013,7 +933,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
 
-    @api_command("music/library/remove_item")
+    @api_command("music/library/remove_item", required_scope=Scope.LIBRARY_WRITE)
     async def remove_item_from_library(
         self, media_type: MediaType, library_item_id: str | int, recursive: bool = True
     ) -> None:
@@ -1040,7 +960,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # remove from library
         await ctrl.remove_item_from_library(library_item_id, recursive)
 
-    @api_command("music/library/add_item")
+    @api_command("music/library/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_library(
         self, item: str | MediaItemType | ItemMapping, overwrite_existing: bool = False
     ) -> MediaItemType:
@@ -1120,7 +1040,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for media_item in items:
                 tg.create_task(self.refresh_item(media_item))
 
-    @api_command("music/refresh_item")
+    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_MANAGE)
     async def refresh_item(  # noqa: PLR0915
         self,
         media_item: str | MediaItemType,
@@ -1229,7 +1149,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         return library_item
 
-    @api_command("music/mark_played")
+    @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_played(
         self,
         media_item: MediaItemType,
@@ -1271,6 +1191,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "media_type": media_item.media_type.value,
             "name": media_item.name,
             "image": serialize_to_json(media_item.image.to_dict()) if media_item.image else None,
+            # store lightweight artist mappings so playlog rows can later be matched or
+            # resolved by artist without an extra provider lookup
+            "artists": serialize_to_json(
+                [ItemMapping.from_item(artist).to_dict() for artist in artists]
+            )
+            if (artists := getattr(media_item, "artists", None))
+            else None,
             "fully_played": fully_played,
             "seconds_played": seconds_played,
             "timestamp": timestamp,
@@ -1401,7 +1328,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 ids.add(db_artist.item_id)
         return ids
 
-    @api_command("music/mark_unplayed")
+    @api_command("music/mark_unplayed", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_unplayed(
         self,
         media_item: MediaItemType,
@@ -1471,7 +1398,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
             await self.database.commit()
 
-    @api_command("music/track_by_name")
+    @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
         self,
         track_name: str,
@@ -1699,7 +1626,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return self.podcasts
         if media_type == MediaType.GENRE:
             return self.genres
-        raise NotImplementedError
+        raise NotImplementedError(
+            f"No media controller available for media type: {media_type.value}"
+        )
 
     def get_provider_instances(
         self, domain: str, return_unavailable: bool = False
@@ -1922,7 +1851,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 mappings_added = True
         return mappings_added
 
-    @api_command("music/add_provider_mapping")
+    @api_command("music/add_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)
     async def add_provider_mapping(
         self, media_type: MediaType, db_id: str, mapping: ProviderMapping
     ) -> None:
@@ -1930,7 +1859,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
-    @api_command("music/remove_provider_mapping")
+    @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)
     async def remove_provider_mapping(
         self, media_type: MediaType, db_id: str, mapping: ProviderMapping
     ) -> None:
@@ -1938,7 +1867,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.remove_provider_mapping(db_id, mapping.provider_instance, mapping.item_id)
 
-    @api_command("music/match_providers")
+    @api_command("music/match_providers", required_scope=Scope.LIBRARY_MANAGE)
     async def match_providers(self, media_type: MediaType, db_id: str) -> None:
         """Search for mappings on all providers for the given library item."""
         ctrl = self.get_controller(media_type)
@@ -2077,30 +2006,27 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         return bool(conf_value)
 
-    @api_command("music/item_by_name")
+    @api_command("music/item_by_name", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_item_by_name(
         self,
         name: str,
         artist: str | None = None,
         album: str | None = None,
         media_type: MediaType | None = None,
-        username: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name."""
-        async with ImpersonatedUser(self.mass, username):
-            return await self._get_item_by_name(name, artist, album, media_type)
+        return await self._get_item_by_name(name, artist, album, media_type)
 
-    @api_command("music/verify_item_uri")
-    async def verify_item_uri(self, uri: str, username: str | None = None) -> bool:
+    @api_command(
+        "music/verify_item_uri", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
+    async def verify_item_uri(self, uri: str) -> bool:
         """
         Verify whether a uri points to a valid, accessible item.
 
         :param uri: The uri to verify.
-        :param username: Optional user to additionally verify access for. Requires
-            the authenticated caller to also have access to the item.
         """
-        async with ImpersonatedUser(self.mass, username):
-            return await self._handle_verify_item_uri(uri)
+        return await self._handle_verify_item_uri(uri)
 
     def _apply_user_provider_filter(
         self,
@@ -2313,7 +2239,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> list[RecommendationFolder]:
         """Return recommendations from a provider."""
         try:
-            return await provider.recommendations()
+            async with asyncio.timeout(RECOMMENDATIONS_PROVIDER_TIMEOUT):
+                return await provider.recommendations()
+        except TimeoutError:
+            self.logger.warning(
+                "Timeout while fetching recommendations from %s; skipping for this request",
+                provider.name,
+            )
+            return []
         except Exception as err:
             self.logger.warning(
                 "Error while fetching recommendations from %s: %s",
@@ -2331,7 +2264,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         async def run_sync() -> None:
             try:
                 async with self._sync_lock:
-                    await provider.sync_library(media_type)
+                    # suppress per-item events during sync; a large library would otherwise
+                    # emit one (serialized per client) for every item. Subscribers refresh
+                    # on MUSIC_SYNC_COMPLETED and track progress via TASKS_UPDATED instead.
+                    token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+                    try:
+                        await provider.sync_library(media_type)
+                    finally:
+                        SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
             finally:
                 self.mass.call_later(
                     0,

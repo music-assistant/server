@@ -15,6 +15,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.track_filter import filter_tracks
 
 from .helpers.utils import is_catalog_id, is_library_id
 from .parsers import (
@@ -238,7 +239,7 @@ class AppleMusicMediaManager:
                     fresh_id,
                 )
                 tracks = await self._fetch_station_tracks(fresh_id)
-        return tracks
+        return filter_tracks(tracks)
 
     async def _fetch_station_tracks(self, station_id: str) -> list[Track]:
         """Fetch tracks for a station ID from the Apple Music API."""

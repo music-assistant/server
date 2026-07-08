@@ -90,6 +90,7 @@ class SendspinProvider(PlayerProvider):
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
+    _bridge_underlying_players: dict[str, str]
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
@@ -113,6 +114,7 @@ class SendspinProvider(PlayerProvider):
         self.server_api.set_visualizer_pitch_enabled(enabled=False)
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
+        self._bridge_underlying_players = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
@@ -152,6 +154,19 @@ class SendspinProvider(PlayerProvider):
         """
         self._bridge_identifiers[client_id] = identifiers
 
+    def register_bridge_underlying_player(self, client_id: str, underlying_player_id: str) -> None:
+        """
+        Pre-register the underlying player a bridge client runs on top of.
+
+        Called by bridge managers before registering an external player, so that
+        the resulting SendspinPlayer carries the derived-transport edge and the
+        protocol linking layer can resolve its parent deterministically.
+
+        :param client_id: The bridge client_id that will be used for registration.
+        :param underlying_player_id: The player_id of the player the bridge rides on.
+        """
+        self._bridge_underlying_players[client_id] = underlying_player_id
+
     def register_bridge_static_delay_default(self, client_id: str, default_ms: int) -> None:
         """
         Register a protocol-specific default static delay for a bridge client.
@@ -189,6 +204,7 @@ class SendspinProvider(PlayerProvider):
         client_id: str,
         identifiers: dict[IdentifierType, str],
         bridge_hello: ClientHelloPayload,
+        underlying_player_id: str | None = None,
     ) -> bool:
         """
         Post-claim an already-registered SendspinPlayer as a bridge client.
@@ -206,6 +222,8 @@ class SendspinProvider(PlayerProvider):
         :param bridge_hello: The bridge's intended ClientHelloPayload. Its
             player_support.supported_commands gates which volume/mute features
             the player is allowed to expose.
+        :param underlying_player_id: The player_id of the player the bridge rides
+            on, establishing the derived-transport edge for protocol linking.
         :return: True if a matching SendspinPlayer was found and updated.
         """
         player = self.mass.players.get_player(client_id)
@@ -213,6 +231,8 @@ class SendspinProvider(PlayerProvider):
             return False
         for id_type, id_value in identifiers.items():
             player.device_info.add_identifier(id_type, id_value)
+        if underlying_player_id is not None:
+            player._attr_underlying_player_id = underlying_player_id
         bridge_supported_commands: list[PlayerCommand] = []
         if bridge_hello.player_support:
             bridge_supported_commands = list(bridge_hello.player_support.supported_commands)
@@ -255,7 +275,7 @@ class SendspinProvider(PlayerProvider):
         await self.server_api.start_server(
             port=8927,
             host=self.mass.streams.bind_ip,
-            advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
+            advertise_addresses=[self.mass.streams.publish_ip],
         )
         for address in self._manual_ip_config:
             try:
@@ -362,6 +382,9 @@ class SendspinProvider(PlayerProvider):
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
         bridge_player_type = self._bridge_player_types.pop(client_id, None)
+        underlying_player_id = self._bridge_underlying_players.pop(client_id, None)
+        if underlying_player_id is None and existing_player is not None:
+            underlying_player_id = existing_player.underlying_player_id
         static_delay_default_ms = self._bridge_static_delay_defaults.pop(client_id, None)
         if static_delay_default_ms is None and isinstance(existing_player, SendspinPlayer):
             static_delay_default_ms = existing_player.static_delay_default_ms
@@ -389,6 +412,8 @@ class SendspinProvider(PlayerProvider):
         if extra_ids:
             for id_type, id_value in extra_ids.items():
                 player.device_info.add_identifier(id_type, id_value)
+        if underlying_player_id is not None:
+            player._attr_underlying_player_id = underlying_player_id
         if static_delay_default_ms is not None and isinstance(player, SendspinPlayer):
             player.static_delay_default_ms = static_delay_default_ms
         return player
@@ -520,6 +545,7 @@ class SendspinProvider(PlayerProvider):
                 return
             if previous_type == PlayerType.PROTOCOL and existing_player.type != PlayerType.PROTOCOL:
                 existing_player.set_protocol_parent_id(None)
+                existing_player._attr_underlying_player_id = None
             await self.mass.players.register_or_update(existing_player)
         finally:
             self._finish_client_event(client_id)

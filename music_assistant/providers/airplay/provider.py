@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import socket
 from contextlib import suppress
 from ipaddress import ip_address
@@ -12,6 +14,7 @@ from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
     get_ip_pton,
@@ -122,7 +125,7 @@ class AirPlayProvider(PlayerProvider):
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
-            await bridge_manager.stop_all()
+            await bridge_manager.close()
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
@@ -234,7 +237,7 @@ class AirPlayProvider(PlayerProvider):
         await self.mass.players.register(player)
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
-        await self._bridge_manager.setup_bridge(player)
+        await self._bridge_manager.evaluate_bridge(player)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -283,6 +286,18 @@ class AirPlayProvider(PlayerProvider):
                 path,
                 body,
             )
+            # machine-parseable capture of raw DACP traffic for building replay test fixtures
+            if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                capture = {
+                    "player": player.name if player else None,
+                    "active_remote": active_remote,
+                    "method": headers_split[0].split(" ", 1)[0],
+                    "path": path,
+                    "headers": headers,
+                    "body": body,
+                    "raw_b64": base64.b64encode(raw_request).decode("ascii"),
+                }
+                self.logger.log(VERBOSE_LOG_LEVEL, "AIRPLAY_DACP_CAPTURE %s", json.dumps(capture))
             if not player:
                 return
             if player.protocol_parent_id and (

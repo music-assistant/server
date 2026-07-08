@@ -21,8 +21,6 @@ from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from music_assistant.helpers.datetime import now
-
 from ..debug.event_buffer import EventBuffer
 from ..debug.inspect_serializer import dump
 from ..debug.log_reader import SafeLogTail
@@ -31,6 +29,7 @@ from ..models import (
     EventBufferStats,
     EventSnapshot,
     HealthSummary,
+    LogStatsResult,
     LogTailResult,
     PackageVersions,
     PlayerInspect,
@@ -44,7 +43,12 @@ from ..models import (
     RouteList,
 )
 from ..tags import Tag
-from ._common import TIMEOUT_FAST, TIMEOUT_INTERACTIVE, confirm_or_raise
+from ._common import (
+    TIMEOUT_FAST,
+    TIMEOUT_INTERACTIVE,
+    confirm_or_raise,
+    lean_schema_view,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -177,20 +181,35 @@ def _register_logs_tool(sub: FastMCP, mass: MusicAssistant) -> None:
         lines: int = 200,
         level: str | None = None,
         component_regex: str | None = None,
+        search: str | None = None,
         since_seconds: int | None = None,
+        before: str | None = None,
         name: str = "musicassistant.log",
     ) -> LogTailResult:
         """
-        Return the last N parsed lines of musicassistant.log with optional filters.
+        Return the last N matching log records with optional filters.
 
-        Bearer tokens and common secret patterns are redacted before lines are returned.
-        See also: debug_recent_events for state transitions in the same window.
+        Multi-line records (tracebacks) are returned whole, and ``lines``
+        counts *matching records* — filters apply before the limit, so
+        ``lines=5, level="ERROR"`` is "the 5 most recent errors". When the
+        page is incomplete, ``has_more`` / ``response_truncated`` are set and
+        ``next_call_hint`` carries a ready-to-use follow-up call. To watch the
+        log "live", re-call periodically with ``since_seconds`` covering the
+        polling gap. Bearer tokens and common secret patterns are redacted.
+        See also: debug_log_stats for a cheap aggregate view before pulling
+        raw records; debug_recent_events for state transitions.
 
-        :param lines: Number of lines to return (clamped to [1, 2000], default 200).
-        :param level: Optional level filter (e.g. ``"ERROR"``).
+        :param lines: Number of matching records to return (clamped to [1, 2000]).
+        :param level: Minimum severity, case-insensitive — e.g. ``"warning"``
+            returns WARNING, ERROR and CRITICAL records.
         :param component_regex: Optional regex matched against the component name.
-        :param since_seconds: When set, only entries with parseable timestamps within
-            this many seconds of "now" are returned.
+        :param search: Optional case-insensitive regex matched against the full
+            record text, including traceback lines.
+        :param since_seconds: When set, only records within this many seconds
+            of "now" are returned.
+        :param before: Paging cursor — an ISO timestamp, or the exact
+            ``offset:<n>`` value from a previous result's ``next_call_hint``
+            (the offset form is lossless when many records share a timestamp).
         :param name: Log file basename within ``$HOME/.musicassistant/``. Only the
             canonical log and its rotated siblings (``.log.1`` … ``.log.5``) are
             allowed.
@@ -202,9 +221,35 @@ def _register_logs_tool(sub: FastMCP, mass: MusicAssistant) -> None:
             lines=lines,
             level=level,
             component_regex=component_regex,
+            search=search,
             since_seconds=since_seconds,
+            before=before,
             name=name,
         )
+
+    @sub.tool(
+        tags={Tag.DEBUG_LOGS},
+        annotations=_readonly("Log statistics"),
+        timeout=TIMEOUT_FAST,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def log_stats(
+        since_seconds: int | None = None,
+        name: str = "musicassistant.log",
+    ) -> LogStatsResult:
+        """
+        Aggregate view of the log: record counts per level, top components, time range.
+
+        Use this before ``debug_tail_log`` to scope a problem cheaply — the
+        counts show whether (and where) errors exist without spending context
+        on raw lines. Scans at most 10 MB from the end of the file
+        (``truncated`` is set when the cap fires).
+
+        :param since_seconds: Restrict the window to the last N seconds.
+        :param name: Log file basename within ``$HOME/.musicassistant/``. Only the
+            canonical log and its rotated siblings (``.log.1`` … ``.log.5``) are
+            allowed.
+        """
+        return await asyncio.to_thread(tail.stats, since_seconds=since_seconds, name=name)
 
 
 def build_debug_server(
@@ -214,6 +259,7 @@ def build_debug_server(
     event_buffer: EventBuffer | None = None,
     logs_enabled: bool = True,
     reload_lock: asyncio.Lock | None = None,
+    lean_schema: bool = False,
 ) -> FastMCP:
     """
     Build the ``debug`` sub-server.
@@ -230,19 +276,22 @@ def build_debug_server(
     :param reload_lock: Lock serialising ``debug_reload_provider`` for this
         runtime. Defaults to a fresh per-server lock so independent servers
         (e.g. test instances) never serialise against one another.
+    :param lean_schema: When True, tools omit their ``outputSchema`` to shrink
+        the namespace's context footprint for hosts without tool-search.
     """
     sub = FastMCP(name="debug")
-    _register_inspect_tools(sub, mass)
-    _register_logs_tool(sub, mass)
-    _register_events_tools(sub, mass, event_buffer)
-    _register_providers_tools(sub, mass)
+    target = lean_schema_view(sub) if lean_schema else sub
+    _register_inspect_tools(target, mass)
+    _register_logs_tool(target, mass)
+    _register_events_tools(target, mass, event_buffer)
+    _register_providers_tools(target, mass)
     _register_reload_tool(
-        sub,
+        target,
         mass,
         require_confirmation=require_confirmation,
         reload_lock=reload_lock if reload_lock is not None else asyncio.Lock(),
     )
-    _register_health_tool(sub, mass, buffer=event_buffer, logs_enabled=logs_enabled)
+    _register_health_tool(target, mass, buffer=event_buffer, logs_enabled=logs_enabled)
     return sub
 
 
@@ -599,10 +648,12 @@ def _register_health_tool(
             else:
                 from datetime import datetime  # noqa: PLC0415
 
+                from music_assistant.helpers.datetime import now as ma_now  # noqa: PLC0415
+
                 subscribed_at = datetime.fromisoformat(stats.subscribed_since)
                 elapsed_min = max(
                     1.0 / 60,
-                    (now() - subscribed_at).total_seconds() / 60.0,
+                    (ma_now() - subscribed_at).total_seconds() / 60.0,
                 )
                 events_per_min = {
                     et: round(count / elapsed_min, 2) for et, count in stats.by_type.items()

@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -13,7 +14,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Playlist
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
 from music_assistant.controllers.tasks.context import (
@@ -73,16 +74,34 @@ class PlaylistController(MediaControllerBase[Playlist]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/create_playlist", self.create_playlist)
-        self.mass.register_api_command("music/playlists/playlist_tracks", self.tracks)
         self.mass.register_api_command(
-            "music/playlists/add_playlist_tracks", self.add_playlist_tracks
+            f"music/{api_base}/create_playlist",
+            self.create_playlist,
+            required_scope=Scope.LIBRARY_WRITE,
         )
         self.mass.register_api_command(
-            "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
+            "music/playlists/playlist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
         )
-        self.mass.register_api_command("music/playlists/export_playlist", self.export_playlist)
-        self.mass.register_api_command("music/playlists/import_playlist", self.import_playlist)
+        self.mass.register_api_command(
+            "music/playlists/add_playlist_tracks",
+            self.add_playlist_tracks,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+        self.mass.register_api_command(
+            "music/playlists/remove_playlist_tracks",
+            self.remove_playlist_tracks,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+        self.mass.register_api_command(
+            "music/playlists/export_playlist",
+            self.export_playlist,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
+            "music/playlists/import_playlist",
+            self.import_playlist,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
 
     async def tracks(
         self,
@@ -252,24 +271,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             priority=True,
         )
 
-    async def radio_mode_base_tracks(
-        self,
-        item: Playlist,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Playlist to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        return [
-            x
-            async for x in self.tracks(item.item_id, item.provider)
-            # Radio mode only works with Tracks (filter out all other types)
-            if isinstance(x, Track) and x.available
-        ]
-
     async def match_providers(self, db_item: Playlist) -> None:
         """
         Try to find match on all (streaming) providers for the provided (database) item.
@@ -394,7 +395,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "is_editable": item.is_editable,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
@@ -402,6 +402,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "is_dynamic": item.is_dynamic,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         # update/set provider_mappings table
         await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -441,9 +443,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "owner": update.owner or cur_item.owner,
                 "is_editable": update.is_editable,
                 "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
                 "supported_mediatypes": serialize_to_json(update.supported_mediatypes),
@@ -452,6 +451,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 if update.date_added
                 else UNSET,
             },
+        )
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
         provider_mappings = (

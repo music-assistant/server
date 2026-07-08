@@ -1,182 +1,20 @@
-"""
-Tests for the smart fades FFmpeg filter builders.
-
-The FrequencySweepFilter must produce a true frequency sweep: an ``asendcmd``
-command sequence that moves the lowpass/highpass cutoff frequency over time,
-rather than blending a fixed-cutoff wet path against the dry signal.
-"""
+"""Tests for the smart fades FFmpeg filter builders (the toolset)."""
 
 from __future__ import annotations
 
 import logging
-import re
 
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
     FadeOutTrimFilter,
-    FrequencySweepFilter,
+    PeakFilter,
+    ShelfFilter,
+    ShelfType,
 )
 
 LOGGER = logging.getLogger(__name__)
-
-# matches "<timestamp> <filter>@<instance> f <frequency>" entries inside asendcmd
-CMD_RE = re.compile(r"(\d+\.\d+) ((?:low|high)pass@\w+) f (\d+(?:\.\d+)?)")
-
-
-def _make_filter(
-    *,
-    sweep_type: str = "lowpass",
-    target_freq: int = 2000,
-    duration: float = 10.0,
-    start_time: float = 5.0,
-    sweep_direction: str = "fade_in",
-    poles: int = 1,
-    curve_type: str = "linear",
-    stream_type: str = "fadeout",
-) -> FrequencySweepFilter:
-    """Return a FrequencySweepFilter with sensible defaults for tests."""
-    return FrequencySweepFilter(
-        logger=LOGGER,
-        sweep_type=sweep_type,
-        target_freq=target_freq,
-        duration=duration,
-        start_time=start_time,
-        sweep_direction=sweep_direction,
-        poles=poles,
-        curve_type=curve_type,
-        stream_type=stream_type,
-    )
-
-
-def _parse_sweep(filter_strings: list[str]) -> tuple[str, list[tuple[float, float]]]:
-    """Extract (sweep_chain, [(timestamp, frequency), ...]) from the filter strings."""
-    sweep_chains = [f for f in filter_strings if "asendcmd" in f]
-    assert len(sweep_chains) == 1, f"expected exactly one asendcmd chain in {filter_strings}"
-    chain = sweep_chains[0]
-    steps = [(float(ts), float(freq)) for ts, _, freq in CMD_RE.findall(chain)]
-    assert steps, f"no frequency commands found in {chain}"
-    return chain, steps
-
-
-def test_lowpass_fade_in_sweeps_from_open_to_target() -> None:
-    """Applying a lowpass sweeps the cutoff from fully open down to the target."""
-    sweep = _make_filter(sweep_type="lowpass", sweep_direction="fade_in", target_freq=2000)
-    chain, steps = _parse_sweep(sweep.apply("[fadein]", "[fadeout]"))
-
-    freqs = [freq for _, freq in steps]
-    assert freqs[0] >= 18000, "sweep must start with the filter effectively open"
-    assert freqs[-1] == pytest.approx(2000, rel=0.01)
-    assert freqs == sorted(freqs, reverse=True), "cutoff must move monotonically down"
-    # the initial filter cutoff must match the first command so there is no jump
-    assert f"=f={int(freqs[0])}" in chain
-
-
-def test_highpass_fade_out_sweeps_from_target_to_open() -> None:
-    """Removing a highpass sweeps the cutoff from the target down until open."""
-    sweep = _make_filter(
-        sweep_type="highpass",
-        sweep_direction="fade_out",
-        target_freq=2000,
-        start_time=0.0,
-        stream_type="fadein",
-    )
-    _, steps = _parse_sweep(sweep.apply("[fadein]", "[fadeout]"))
-
-    freqs = [freq for _, freq in steps]
-    assert freqs[0] == pytest.approx(2000, rel=0.01)
-    assert freqs[-1] <= 30, "sweep must end with the highpass effectively open"
-    assert freqs == sorted(freqs, reverse=True), "cutoff must move monotonically down"
-
-
-def test_sweep_commands_cover_the_configured_window() -> None:
-    """Command timestamps span [start_time, start_time + duration]."""
-    sweep = _make_filter(start_time=5.0, duration=10.0)
-    _, steps = _parse_sweep(sweep.apply("[fadein]", "[fadeout]"))
-
-    timestamps = [ts for ts, _ in steps]
-    assert timestamps[0] == pytest.approx(5.0, abs=0.01)
-    assert timestamps[-1] == pytest.approx(15.0, abs=0.01)
-    assert timestamps == sorted(timestamps)
-    # fine-grained enough to be perceived as continuous
-    assert len(timestamps) >= 50
-
-
-def test_logarithmic_curve_sweeps_faster_initially_than_linear() -> None:
-    """The logarithmic curve must reach a lower cutoff at mid-sweep than linear."""
-
-    def freq_at_midpoint(curve_type: str) -> float:
-        sweep = _make_filter(curve_type=curve_type, start_time=0.0, duration=10.0)
-        _, steps = _parse_sweep(sweep.apply("[fadein]", "[fadeout]"))
-        return min(freq for ts, freq in steps if ts <= 5.0)
-
-    assert freq_at_midpoint("logarithmic") < freq_at_midpoint("linear")
-
-
-def test_exponential_curve_sweeps_slower_initially_than_linear() -> None:
-    """The exponential curve must keep a higher cutoff at mid-sweep than linear."""
-
-    def freq_at_midpoint(curve_type: str) -> float:
-        sweep = _make_filter(curve_type=curve_type, start_time=0.0, duration=10.0)
-        _, steps = _parse_sweep(sweep.apply("[fadein]", "[fadeout]"))
-        return min(freq for ts, freq in steps if ts <= 5.0)
-
-    assert freq_at_midpoint("exponential") > freq_at_midpoint("linear")
-
-
-def test_poles_are_passed_through() -> None:
-    """The poles option must end up in the generated filter chain."""
-    sweep = _make_filter(poles=2)
-    chain, _ = _parse_sweep(sweep.apply("[fadein]", "[fadeout]"))
-    assert "poles=2" in chain
-
-
-def test_fadeout_stream_labels_and_passthrough() -> None:
-    """Processing the fadeout stream passes the fadein stream through untouched."""
-    sweep = _make_filter(stream_type="fadeout")
-    filter_strings = sweep.apply("[fadein]", "[fadeout]")
-
-    assert sweep.output_fadeout_label == "fadeout_lowpass"
-    assert sweep.output_fadein_label == "fadein_passthrough"
-    passthrough = next(f for f in filter_strings if "anull" in f)  # codespell:ignore anull
-    assert passthrough.startswith("[fadein]")
-    assert passthrough.endswith("[fadein_passthrough]")
-    sweep_chain, _ = _parse_sweep(filter_strings)
-    assert sweep_chain.startswith("[fadeout]")
-    assert sweep_chain.endswith("[fadeout_lowpass]")
-
-
-def test_fadein_stream_labels_and_passthrough() -> None:
-    """Processing the fadein stream passes the fadeout stream through untouched."""
-    sweep = _make_filter(
-        sweep_type="highpass", sweep_direction="fade_out", stream_type="fadein", start_time=0.0
-    )
-    filter_strings = sweep.apply("[fadein]", "[fadeout]")
-
-    assert sweep.output_fadeout_label == "fadeout_passthrough"
-    assert sweep.output_fadein_label == "fadein_highpass"
-    passthrough = next(f for f in filter_strings if "anull" in f)  # codespell:ignore anull
-    assert passthrough.startswith("[fadeout]")
-    assert passthrough.endswith("[fadeout_passthrough]")
-    sweep_chain, _ = _parse_sweep(filter_strings)
-    assert sweep_chain.startswith("[fadein]")
-    assert sweep_chain.endswith("[fadein_highpass]")
-
-
-def test_sweep_instances_are_unique_per_stream_type() -> None:
-    """Both stream types must use distinct filter instance names for asendcmd."""
-    fadeout_sweep = _make_filter(stream_type="fadeout")
-    fadein_sweep = _make_filter(
-        sweep_type="highpass", sweep_direction="fade_out", stream_type="fadein"
-    )
-    out_chain, _ = _parse_sweep(fadeout_sweep.apply("[fadein]", "[fadeout]"))
-    in_chain, _ = _parse_sweep(fadein_sweep.apply("[fadein]", "[fadeout]"))
-    out_match = CMD_RE.search(out_chain)
-    in_match = CMD_RE.search(in_chain)
-    assert out_match is not None
-    assert in_match is not None
-    assert out_match.group(2) != in_match.group(2)
 
 
 def test_fadeout_trim_trims_fadeout_and_passes_fadein_through() -> None:
@@ -223,3 +61,89 @@ def test_crossfade_requires_exactly_one_length() -> None:
         CrossfadeFilter(logger=LOGGER)
     with pytest.raises(ValueError, match="exactly one"):
         CrossfadeFilter(logger=LOGGER, crossfade_duration=5.0, crossfade_samples=220500)
+
+
+class TestShelfFilter:
+    """asendcmd-driven shelving EQ on one stream, passthrough on the other."""
+
+    def test_fadeout_lowshelf_strings(self) -> None:
+        """A fadeout lowshelf emits an asendcmd gain schedule and a fadein passthrough."""
+        f = ShelfFilter(
+            LOGGER,
+            ShelfType.LOW,
+            100,
+            [(0.0, 0.0), (30.0, -13.0), (31.0, -26.0)],
+            "fadeout",
+        )
+        strings = f.apply("[1]", "[0]")
+        assert len(strings) == 2
+        # passthrough for the untouched stream
+        assert any("anull" in s and "[1]" in s for s in strings)  # codespell:ignore anull
+        chain = next(s for s in strings if "[0]" in s)
+        assert "asendcmd=" in chain
+        assert "lowshelf@fadeout_low" in chain
+        assert "g=0.00" in chain  # initial gain from the first step
+        assert "f=100" in chain
+        assert "30.000 lowshelf@fadeout_low g -13.00" in chain
+
+    def test_fadein_highshelf_processes_other_stream(self) -> None:
+        """A fadein highshelf processes the incoming stream and passes the outgoing through."""
+        f = ShelfFilter(LOGGER, ShelfType.HIGH, 13000, [(0.0, -20.0), (5.0, 0.0)], "fadein")
+        strings = f.apply("[1]", "[0]")
+        chain = next(s for s in strings if "[1]" in s)
+        assert "highshelf@fadein_high" in chain
+        assert "g=-20.00" in chain
+        passthrough = next(s for s in strings if "[0]" in s)
+        assert "anull" in passthrough  # codespell:ignore anull
+
+    def test_labels_unique_per_band_and_stream(self) -> None:
+        """Output labels differ per band and stream so four instances can coexist."""
+        a = ShelfFilter(LOGGER, ShelfType.LOW, 100, [(0.0, -26.0)], "fadein")
+        b = ShelfFilter(LOGGER, ShelfType.HIGH, 13000, [(0.0, -20.0)], "fadein")
+        assert a.output_fadein_label != b.output_fadein_label
+        assert a.output_fadeout_label != b.output_fadeout_label
+        c = ShelfFilter(LOGGER, ShelfType.LOW, 100, [(0.0, -26.0)], "fadeout")
+        assert a.output_fadein_label != c.output_fadein_label
+
+
+class TestPeakFilter:
+    """asendcmd-driven parametric peak EQ (mid swap) on one stream, passthrough on the other."""
+
+    def test_fadeout_peak_strings(self) -> None:
+        """A fadeout peak emits an asendcmd gain schedule and a fadein passthrough."""
+        f = PeakFilter(
+            LOGGER,
+            1200,
+            2.5,
+            [(0.0, 0.0), (30.0, -4.0), (31.0, -8.0)],
+            "fadeout",
+        )
+        strings = f.apply("[1]", "[0]")
+        assert len(strings) == 2
+        assert any("anull" in s and "[1]" in s for s in strings)  # codespell:ignore anull
+        chain = next(s for s in strings if "[0]" in s)
+        assert "asendcmd=" in chain
+        assert "equalizer@fadeout_mid" in chain
+        assert "g=0.00" in chain
+        assert "f=1200:width_type=o:width=2.5" in chain
+        assert "30.000 equalizer@fadeout_mid g -4.00" in chain
+
+    def test_fadein_peak_processes_other_stream(self) -> None:
+        """A fadein peak processes the incoming stream and passes the outgoing through."""
+        f = PeakFilter(LOGGER, 1200, 2.5, [(0.0, -8.0), (5.0, 0.0)], "fadein")
+        strings = f.apply("[1]", "[0]")
+        chain = next(s for s in strings if "[1]" in s)
+        assert "equalizer@fadein_mid" in chain
+        assert "g=-8.00" in chain
+        passthrough = next(s for s in strings if "[0]" in s)
+        assert "anull" in passthrough  # codespell:ignore anull
+
+    def test_labels_unique_and_no_collision_with_shelf(self) -> None:
+        """Peak labels differ per stream and don't collide with ShelfFilter's labels."""
+        a = PeakFilter(LOGGER, 1200, 2.5, [(0.0, -8.0)], "fadein")
+        b = PeakFilter(LOGGER, 1200, 2.5, [(0.0, -8.0)], "fadeout")
+        assert a.output_fadein_label != b.output_fadein_label
+        low = ShelfFilter(LOGGER, ShelfType.LOW, 100, [(0.0, -26.0)], "fadein")
+        high = ShelfFilter(LOGGER, ShelfType.HIGH, 13000, [(0.0, -20.0)], "fadein")
+        assert a.output_fadein_label not in {low.output_fadein_label, high.output_fadein_label}
+        assert a.output_fadeout_label not in {low.output_fadeout_label, high.output_fadeout_label}

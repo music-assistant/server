@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -10,6 +11,24 @@ from music_assistant.providers.sonic_similarity.clap_index import CLAP_EMBEDDING
 from music_assistant.providers.sonic_similarity.constants import SIMILARITY_PRESETS
 from music_assistant.providers.sonic_similarity.models import SimilarParams
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
+
+_MUSIC_WORD = re.compile(r"\bmusic\b", re.IGNORECASE)
+
+
+def format_text_query(query: str) -> str:
+    """
+    Frame a bare query as ``<query> music`` for the CLAP text encoder.
+
+    Skipped when the query already contains the word "music" (case-insensitive);
+    an empty or whitespace-only query returns "".
+
+    :param query: Raw user query.
+    """
+    # CLAP was trained on audio captions, so the " music" suffix matches that form.
+    cleaned = query.strip()
+    if not cleaned or _MUSIC_WORD.search(cleaned):
+        return cleaned
+    return f"{cleaned} music"
 
 
 def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
@@ -55,7 +74,7 @@ def _parse_similar_params(  # noqa: PLR0913
     seed_weights: list[float] | None = None,
     diversity: float = 0.0,
     preset: str = "balanced",
-    candidates: int = 50,
+    candidates: int = 200,
     filter_genres: list[str] | None = None,
     filter_providers: list[str] | None = None,
     exclude_track_ids: list[str] | None = None,

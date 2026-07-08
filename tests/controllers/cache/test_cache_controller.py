@@ -1,6 +1,7 @@
 """Tests for cache controller."""
 
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -9,8 +10,9 @@ from unittest.mock import AsyncMock, patch
 import aiofiles
 import pytest
 
-from music_assistant.constants import DB_TABLE_CACHE, VACUUM_MIN_RECLAIM_RATIO
+from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.cache import MAX_CACHE_DB_SIZE_MB, CacheController
+from music_assistant.controllers.cache.constants import DB_SCHEMA_VERSION, SWR_FALLBACK_MAX_AGE
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
 
@@ -57,6 +59,22 @@ async def test_set_and_get_string(cache: CacheController) -> None:
     await cache.set("test_key", "hello", provider="test")
     result = await cache.get("test_key", provider="test")
     assert result == "hello"
+
+
+async def test_get_expiration(cache: CacheController) -> None:
+    """get_expiration returns the stored expiry epoch, also for expired rows."""
+    before = int(time.time())
+    await cache.set("exp_key", {"a": 1}, provider="test", expiration=500)
+    expires = await cache.get_expiration("exp_key", provider="test")
+    assert expires is not None
+    assert abs(expires - (before + 500)) <= 5
+    # a missing key yields None
+    assert await cache.get_expiration("missing_key", provider="test") is None
+    # an expired-but-present row still reports its (past) expiration
+    await cache.set("expired_key", "x", provider="test", expiration=-100)
+    expired = await cache.get_expiration("expired_key", provider="test")
+    assert expired is not None
+    assert expired < int(time.time())
 
 
 async def test_set_and_get_int(cache: CacheController) -> None:
@@ -460,3 +478,146 @@ async def test_setup_runs_vacuum_when_reclaimable(
     ):
         await cache._setup_database()
     mock_vacuum.assert_awaited_once_with()
+
+
+# --- upsert (in-place write) ---
+
+
+async def test_set_upserts_in_place(cache: CacheController) -> None:
+    """Test that overwriting a key updates the row in place instead of replacing it."""
+    assert cache.database is not None
+    await cache.set("k", "v1", provider="test")
+    row = await cache.database.get_row(
+        DB_TABLE_CACHE, {"category": 0, "provider": "test", "key": "k"}
+    )
+    assert row is not None
+    row_id = row["id"]
+
+    await cache.set("k", "v2", provider="test")
+    assert await cache.get("k", provider="test") == "v2"
+    # a single row that kept its id — an INSERT OR REPLACE would delete it and assign a new id
+    assert await cache.database.get_count(DB_TABLE_CACHE) == 1
+    row = await cache.database.get_row(
+        DB_TABLE_CACHE, {"category": 0, "provider": "test", "key": "k"}
+    )
+    assert row is not None
+    assert row["id"] == row_id
+
+
+# --- secondary indexes ---
+
+
+async def _index_names(cache: CacheController) -> set[str]:
+    """Return the names of all indexes on the cache table."""
+    assert cache.database is not None
+    rows = await cache.database.get_rows_from_query(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = :table",
+        {"table": DB_TABLE_CACHE},
+    )
+    return {str(row["name"]) for row in rows}
+
+
+async def test_only_key_provider_index_is_created(cache: CacheController) -> None:
+    """Test that only the (key, provider) secondary index is created besides the autoindex."""
+    names = await _index_names(cache)
+    assert f"{DB_TABLE_CACHE}_key_provider_idx" in names
+    # the UNIQUE(category, key, provider) constraint provides an autoindex
+    assert any(name.startswith("sqlite_autoindex") for name in names)
+    # the redundant indexes are not (re)created
+    for removed in (
+        "category_idx",
+        "key_idx",
+        "provider_idx",
+        "category_key_idx",
+        "category_provider_idx",
+        "category_key_provider_idx",
+    ):
+        assert f"{DB_TABLE_CACHE}_{removed}" not in names
+
+
+async def test_migration_drops_redundant_indexes(mass_minimal: MusicAssistant) -> None:
+    """Test that opening a pre-v9 database migrates cleanly and drops the redundant indexes."""
+    db_path = os.path.join(mass_minimal.cache_path, "cache.db")
+    redundant = (
+        ("category_idx", "category"),
+        ("key_idx", "key"),
+        ("provider_idx", "provider"),
+        ("category_key_idx", "category,key"),
+        ("category_provider_idx", "category,provider"),
+        ("category_key_provider_idx", "category,key,provider"),
+        ("key_provider_idx", "key,provider"),
+    )
+    # build a v8 database with the old (full) index set and one row
+    old_db = DatabaseConnection(db_path)
+    await old_db.setup()
+    await old_db.execute(
+        f"CREATE TABLE {DB_TABLE_SETTINGS}(key TEXT PRIMARY KEY, value TEXT, type TEXT)"
+    )
+    await old_db.execute(
+        f"""CREATE TABLE {DB_TABLE_CACHE}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [category] INTEGER NOT NULL DEFAULT 0,
+            [key] TEXT NOT NULL,
+            [provider] TEXT NOT NULL,
+            [expires] INTEGER NOT NULL,
+            [data] TEXT NULL,
+            [checksum] TEXT NULL,
+            [persistent] INTEGER NOT NULL DEFAULT 0,
+            [allow_expired_cache] INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(category, key, provider)
+        )"""
+    )
+    for suffix, columns in redundant:
+        await old_db.execute(
+            f"CREATE INDEX {DB_TABLE_CACHE}_{suffix} ON {DB_TABLE_CACHE}({columns})"
+        )
+    await old_db.execute(
+        f"INSERT INTO {DB_TABLE_SETTINGS}(key, value, type) VALUES ('version', '8', 'str')"
+    )
+    await old_db.execute(
+        f"INSERT INTO {DB_TABLE_CACHE}(category, key, provider, expires, data) "
+        "VALUES (0, 'kept', 'test', 9999999999, '\"payload\"')"
+    )
+    await old_db.commit()
+    await old_db.close()
+
+    # opening the controller runs the migration
+    await mass_minimal.cache._setup_database()
+    cache = mass_minimal.cache
+    assert cache.database is not None
+
+    version_row = await cache.database.get_row(DB_TABLE_SETTINGS, {"key": "version"})
+    assert version_row is not None
+    assert version_row["value"] == str(DB_SCHEMA_VERSION)
+
+    names = await _index_names(cache)
+    assert f"{DB_TABLE_CACHE}_key_provider_idx" in names
+    for suffix, _ in redundant[:-1]:  # every index except key_provider is dropped
+        assert f"{DB_TABLE_CACHE}_{suffix}" not in names
+
+    # existing data survived the migration
+    assert await cache.get("kept", provider="test") == "payload"
+
+
+# --- stale-while-revalidate cleanup ---
+
+
+async def test_auto_cleanup_removes_stale_swr_rows(cache: CacheController) -> None:
+    """Test that auto_cleanup removes SWR fallback rows expired beyond the grace window."""
+    # expired but within the grace window -> kept as fallback
+    await cache.set("recent", "data", provider="test", expiration=-1, allow_expired_cache=True)
+    # expired well beyond the grace window -> removed
+    await cache.set(
+        "ancient",
+        "data",
+        provider="test",
+        expiration=-(SWR_FALLBACK_MAX_AGE + 86400),
+        allow_expired_cache=True,
+    )
+    await cache.auto_cleanup()
+
+    assert await cache.get("recent", provider="test", allow_expired_cache=True) == "data"
+    assert (
+        await cache.get("ancient", provider="test", default="gone", allow_expired_cache=True)
+        == "gone"
+    )

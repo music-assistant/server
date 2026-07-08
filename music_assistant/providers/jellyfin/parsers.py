@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.util import parse_title_and_version
 
 from .const import (
@@ -34,6 +35,7 @@ from .const import (
     ITEM_KEY_CONTAINER,
     ITEM_KEY_ID,
     ITEM_KEY_IMAGE_TAGS,
+    ITEM_KEY_INDEX_NUMBER,
     ITEM_KEY_MEDIA_CHANNELS,
     ITEM_KEY_MEDIA_CODEC,
     ITEM_KEY_MEDIA_SOURCES,
@@ -52,7 +54,6 @@ from .const import (
     ITEM_KEY_SORT_NAME,
     ITEM_KEY_USER_DATA,
     MEDIA_IMAGE_TYPES,
-    UNKNOWN_ARTIST_MAPPING,
     USER_DATA_KEY_IS_FAVORITE,
 )
 
@@ -73,7 +74,7 @@ def parse_album(
     name, version = parse_title_and_version(jellyfin_album[ITEM_KEY_NAME])
     album = Album(
         item_id=album_id,
-        provider=DOMAIN,
+        provider=instance_id,
         name=name,
         version=version,
         provider_mappings={
@@ -136,7 +137,7 @@ def parse_album(
                 )
             )
     else:
-        album.artists.append(UNKNOWN_ARTIST_MAPPING)
+        album.artists.append(_unknown_artist_mapping(instance_id))
 
     user_data = jellyfin_album.get(ITEM_KEY_USER_DATA, {})
     album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
@@ -151,7 +152,7 @@ def parse_artist(
     artist = Artist(
         item_id=artist_id,
         name=jellyfin_artist[ITEM_KEY_NAME],
-        provider=DOMAIN,
+        provider=instance_id,
         provider_mappings={
             ProviderMapping(
                 item_id=str(artist_id),
@@ -227,7 +228,7 @@ def parse_track(
     )
 
     track.disc_number = jellyfin_track.get(ITEM_KEY_PARENT_INDEX_NUM, 0)
-    track.track_number = jellyfin_track.get("IndexNumber", 0)
+    track.track_number = jellyfin_track.get(ITEM_KEY_INDEX_NUMBER, 0)
     if track.track_number is not None and track.track_number >= 0:
         track.position = track.track_number
 
@@ -244,7 +245,7 @@ def parse_track(
                 )
             )
     else:
-        track.artists.append(UNKNOWN_ARTIST_MAPPING)
+        track.artists.append(_unknown_artist_mapping(instance_id))
 
     if ITEM_KEY_ALBUM_ID in jellyfin_track:
         if not (album_name := jellyfin_track.get(ITEM_KEY_ALBUM)):
@@ -260,7 +261,7 @@ def parse_track(
     if ITEM_KEY_RUNTIME_TICKS in jellyfin_track:
         track.duration = int(
             jellyfin_track[ITEM_KEY_RUNTIME_TICKS] / 10000000
-        )  # 10000000 ticks per millisecond
+        )  # 10000000 ticks per second
     if ITEM_KEY_MUSICBRAINZ_TRACK in jellyfin_track[ITEM_KEY_PROVIDER_IDS]:
         track_mbid = jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
         try:
@@ -283,7 +284,7 @@ def parse_playlist(
     playlistid = jellyfin_playlist[ITEM_KEY_ID]
     playlist = Playlist(
         item_id=playlistid,
-        provider=DOMAIN,
+        provider=instance_id,
         name=jellyfin_playlist[ITEM_KEY_NAME],
         provider_mappings={
             ProviderMapping(
@@ -300,6 +301,15 @@ def parse_playlist(
     playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
     playlist.is_editable = False
     return playlist
+
+
+def _unknown_artist_mapping(instance_id: str) -> ItemMapping:
+    return ItemMapping(
+        media_type=MediaType.ARTIST,
+        item_id=UNKNOWN_ARTIST,
+        provider=instance_id,
+        name=UNKNOWN_ARTIST,
+    )
 
 
 def _get_artwork(

@@ -169,7 +169,6 @@ class MusicCastPlayer(Player):
             PlayerFeature.PAUSE,  # for non MA control, see pause method
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
-            PlayerFeature.SET_MEMBERS,
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
@@ -437,6 +436,12 @@ class MusicCastPlayer(Player):
                 self._get_player_id_from_zone_device(x) for x in self.zone_device.musiccast_group
             ]
 
+        # disallow set members (i.e. a zone to become a group leader) if it is currently grouped to the main zone
+        if self.zone_device.source_id == MC_SOURCE_MAIN_SYNC:
+            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
+        else:
+            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+
         # PLAYER OPTIONS
         # see https://github.com/vigonotion/aiomusiccast/blob/main/aiomusiccast/capabilities.py
         # capability can be any instance of OptionSetter, BinarySetter, NumberSetter, NumberSensor,
@@ -647,21 +652,13 @@ class MusicCastPlayer(Player):
             return
 
         # skip zone handling if disabled via setting
-        if bool(
-            await self.mass.config.get_player_config_value(
-                player_id, CONF_PLAYER_HANDLE_SOURCE_DISABLED
-            )
-        ):
+        if mass_player.get_config_value(CONF_PLAYER_HANDLE_SOURCE_DISABLED):
             self.logger.debug("Ignoring zone handling for player %s.", player_id)
             return
 
         self.logger.debug("Handling zone for player %s.", player_id)
 
-        _source = str(
-            await self.mass.config.get_player_config_value(
-                player_id, CONF_PLAYER_SWITCH_SOURCE_NON_NET
-            )
-        )
+        _source = mass_player.get_config_value(CONF_PLAYER_SWITCH_SOURCE_NON_NET, return_type=str)
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
         if _source not in _allowed_sources:
@@ -676,9 +673,7 @@ class MusicCastPlayer(Player):
             _source = _allowed_sources.pop()
 
         await mass_player.select_source(_source)
-        _turn_off = bool(
-            await self.mass.config.get_player_config_value(player_id, CONF_PLAYER_TURN_OFF_ON_LEAVE)
-        )
+        _turn_off = mass_player.get_config_value(CONF_PLAYER_TURN_OFF_ON_LEAVE, return_type=bool)
         if _turn_off:
             await asyncio.sleep(2)
             await mass_player.power(powered=False)

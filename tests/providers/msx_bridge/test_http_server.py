@@ -283,9 +283,7 @@ async def test_play_track(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
         assert resp.status == 200
         data = await resp.json()
         assert data["status"] == "ok"
-        mass_mock.player_queues.play_media.assert_awaited_once_with(
-            "msx_test", "library://track/1", username=None
-        )
+        mass_mock.player_queues.play_media.assert_awaited_once_with("msx_test", "library://track/1")
     finally:
         await client.close()
 

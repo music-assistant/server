@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import logging
-from typing import TYPE_CHECKING, Any, final
+from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
+from music_assistant_models.config_entries import ConfigValueType
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
@@ -19,6 +21,9 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
+
+# TypeVar for config value type inference
+_ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
 
 class Provider:
@@ -196,11 +201,47 @@ class Provider:
                 f"Provider {self.name} does not support feature {feature.name}"
             )
 
+    @overload
+    def get_config_value(
+        self, key: str, default: _ConfigValueT, *, return_type: builtins.type[_ConfigValueT] = ...
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: builtins.type[_ConfigValueT]
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: None = ...
+    ) -> ConfigValueType: ...
+
+    def get_config_value(
+        self,
+        key: str,
+        default: ConfigValueType = None,
+        *,
+        return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
+    ) -> _ConfigValueT | ConfigValueType:
+        """
+        Return a single config value from this provider's active configuration.
+
+        Entry defaults are already applied to the active configuration, so the
+        default is only returned when the key itself is not present.
+
+        :param key: The config key to retrieve.
+        :param default: Value to return when the key is not present in the config.
+        :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
+        """
+        return self.config.get_value(key, default)
+
     def _update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
         """Update a config value."""
+        # the config controller also updates the cached copy within this provider instance
         self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
-        # also update the cached copy within the provider instance
-        self.config.values[key].value = value
 
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
         """Set log level from config."""

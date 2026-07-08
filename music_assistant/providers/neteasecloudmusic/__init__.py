@@ -50,6 +50,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.track_filter import filter_tracks
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -729,8 +730,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
         # NCM often returns http://p*.music.126.net links.
         # In secure/ingress contexts these can be blocked as mixed content,
         # which makes the frontend fall back to a generic provider icon.
-        if url.startswith("http://") and "music.126.net" in url:
-            return "https://" + url[len("http://") :]
+        if url.startswith("http://"):
+            host = urlparse(url).hostname or ""
+            if host == "music.126.net" or host.endswith(".music.126.net"):
+                return "https://" + url[len("http://") :]
         return url
 
     def _make_image_list(
@@ -1751,7 +1754,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 break
             if no_new_rounds >= 2:
                 break
-        return result
+        return filter_tracks(result)
 
     async def _get_heart_mode_seed(self) -> tuple[str, str, str | None] | None:
         """Resolve heart mode seed ids as (seed_song_id, playlist_id, image_url)."""
@@ -1844,7 +1847,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 continue
             with suppress(InvalidDataError):
                 result.append(self._parse_track(song_obj))
-        return result
+        return filter_tracks(result)
 
     async def _build_dynamic_radio_folder(self) -> RecommendationFolder | None:
         """Build recommendation folder with dynamic playlist items."""

@@ -89,7 +89,7 @@ async def test_reload_timeout_populates_last_error(
     mass.get_provider = MagicMock(return_value=not_ready)
 
     # Speed the 5s poll up so the test stays fast.
-    # Use ``from music_assistant.providers.fastmcp_server.tools import debug`` (not ``import provider.tools.debug as``):
+    # Use ``from music_assistant.providers.fastmcp_server.tools import debug`` (not ``import music_assistant.providers.fastmcp_server.tools.debug as``):
     # the upstream import-path rewrite only translates ``from music_assistant.providers.fastmcp_server.`` imports.
     from music_assistant.providers.fastmcp_server.tools import debug as debug_mod  # noqa: PLC0415
 

@@ -58,6 +58,7 @@ def manager(mock_api: MagicMock) -> AppleMusicRecommendationManager:
     provider._storefront = "us"
     provider.logger = MagicMock()
     provider.mass.cache.get = AsyncMock(return_value=None)
+    provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
     provider.api_client = mock_api
 

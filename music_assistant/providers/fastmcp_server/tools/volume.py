@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def _vol_annotations(*, title: str, idempotent: bool) -> ToolAnnotations:
-    """Default volume-tool annotations: never destructive, never open-world."""
+    """Build default volume-tool annotations: never destructive, never open-world."""
     return ToolAnnotations(
         title=title,
         readOnlyHint=False,

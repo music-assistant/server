@@ -9,10 +9,10 @@ and listens for player commands.
 
 import json
 import logging
+import os
 import socket
 import sys
 import threading
-import urllib.parse
 from collections.abc import Callable
 from contextlib import suppress
 from time import sleep
@@ -79,6 +79,9 @@ class MusicAssistantControl:
         logger.info("Shutdown requested by server")
         self.stop()
         self._shutdown_event.set()
+        # force exit; the main thread is blocked in sys.stdin.readline()
+        sys.stdout.flush()
+        os._exit(0)
 
     def handle_snapcast_request(self, request: dict[str, Any]) -> None:
         """Handle (JSON RPC) message from Snapcast."""
@@ -100,6 +103,7 @@ class MusicAssistantControl:
                     "id": id,
                 }
             )
+            return
 
         if cmd == "Control":
             command = request["params"]["command"]
@@ -237,7 +241,7 @@ class MusicAssistantControl:
             logger.error(f"Invalid JSON: {e}")
             return
 
-        if data.get("command") == "shutdown":
+        if data.get("event") == "shutdown":
             self.shutdown()
             return
 
@@ -280,14 +284,12 @@ class MusicAssistantControl:
         }
         image_url: str | None = None
         if current_queue_item and (media_item := current_queue_item.get("media_item")):
-            if image_path := current_queue_item.get("image", {}).get("path"):
-                image_path_encoded = urllib.parse.quote_plus(image_path)
+            if proxy_id := current_queue_item.get("image", {}).get("proxy_id"):
                 image_url = (
                     # we prefer the streamserver for the imageproxy because it is enabled by default
                     # where the api server is by default protected
-                    f"http://{format_ip_for_url(self.streamserver_ip)}:{self.streamserver_port}/imageproxy?path={image_path_encoded}"
-                    f"&provider={current_queue_item['image']['provider']}"
-                    "&size=512"
+                    f"http://{format_ip_for_url(self.streamserver_ip)}:{self.streamserver_port}"
+                    f"/imageproxy/{proxy_id}?size=512"
                 )
             properties["metadata"] = {
                 "trackId": media_item["uri"],
@@ -385,14 +387,25 @@ if __name__ == "__main__":
             line = sys.stdin.readline()
             if not line:  # EOF
                 break
+            request: Any = None
             try:
-                ctrl.handle_snapcast_request(json.loads(line))
-            except Exception as e:
+                request = json.loads(line)
+                ctrl.handle_snapcast_request(request)
+            except json.JSONDecodeError as e:
                 send(
                     {
                         "jsonrpc": "2.0",
                         "error": {"code": -32700, "message": "Parse error", "data": str(e)},
-                        "id": id,
+                        "id": None,
+                    }
+                )
+            except (KeyError, TypeError, AttributeError, ValueError) as e:
+                # malformed request (e.g. missing params), reply instead of dying
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32603, "message": "Internal error", "data": str(e)},
+                        "id": request.get("id") if isinstance(request, dict) else None,
                     }
                 )
     finally:

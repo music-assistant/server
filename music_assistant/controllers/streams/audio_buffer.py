@@ -14,8 +14,8 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Callable
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import (
@@ -45,16 +45,20 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 
-# Callback signature for chunk observers: (chunk_position_seconds, pcm_data, is_last_chunk)
-# When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
-ChunkCallback = Callable[[int, bytes, bool], Awaitable[None]]
-
 # Callback signature for cancel observers: invoked when the buffer is cancelled/cleared.
 CancelCallback = Callable[[], None]
 
 
 class AudioBufferEOF(Exception):
     """Exception raised when the audio buffer reaches end-of-file."""
+
+
+class AudioBufferDiscarded(Exception):
+    """
+    Raised when a passive (analysis) reader requests a chunk evicted from the retained window.
+
+    Means the reader is a full window behind playback, so its session is dropped.
+    """
 
 
 class AudioBuffer:
@@ -101,7 +105,6 @@ class AudioBuffer:
         self._producer_error: Exception | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
         self.ready = asyncio.Event()
-        self._chunk_callbacks: list[ChunkCallback] = []
         self._cancel_callbacks: list[CancelCallback] = []
 
     # -- Properties --
@@ -133,19 +136,12 @@ class AudioBuffer:
         """Return number of seconds of audio currently available."""
         return len(self._chunks)
 
+    @property
+    def first_buffered_chunk(self) -> int:
+        """Return the chunk number of the oldest chunk still retained in the buffer."""
+        return self._discarded_chunks
+
     # -- Public methods --
-
-    def register_chunk_callback(self, callback: ChunkCallback) -> None:
-        """
-        Register a callback to receive raw PCM chunks as they are buffered.
-
-        The callback receives (chunk_position_seconds, pcm_data, is_last_chunk).
-        When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
-        Callbacks must be non-blocking.
-
-        :param callback: Callable receiving (position_seconds, pcm_data, is_last_chunk).
-        """
-        self._chunk_callbacks.append(callback)
 
     def register_cancel_callback(self, callback: CancelCallback) -> None:
         """
@@ -209,6 +205,34 @@ class AudioBuffer:
             except AudioBufferEOF:
                 break
 
+    async def read_chunk_for_analysis(self, chunk_number: int) -> bytes:
+        """
+        Return one PCM chunk for a passive (analysis) reader, waiting until it is available.
+
+        A read-only accessor: it leaves the buffer untouched — no discard, no producer-space
+        signalling, no inactivity-timer reset — so an analysis reader never affects playback's
+        buffering.
+
+        :param chunk_number: Absolute chunk index to read.
+        :raises AudioBufferEOF: the stream ended before this chunk.
+        :raises AudioBufferDiscarded: the chunk has been evicted from the retained window (the
+            reader is a full window behind playback) or the buffer was torn down.
+        """
+        async with self._data_available:
+            while True:
+                if self.cancelled:
+                    raise AudioBufferDiscarded
+                if chunk_number < self._discarded_chunks:
+                    raise AudioBufferDiscarded
+                index = chunk_number - self._discarded_chunks
+                if index < len(self._chunks):
+                    return self._chunks[index]
+                if self._producer_error:
+                    raise self._producer_error
+                if self._eof_received:
+                    raise AudioBufferEOF
+                await self._data_available.wait()
+
     async def get_stream(
         self,
         output_format: AudioFormat,
@@ -252,10 +276,14 @@ class AudioBuffer:
             chunk_count = 0
             status = "running"
             try:
-                async for chunk in audio_source:
-                    chunk_count += 1
-                    await self._put(chunk)
-                    await asyncio.sleep(0)
+                # aclosing guarantees the source generator (and any ffmpeg chain
+                # behind it) is finalized immediately when this task is cancelled,
+                # instead of lingering until garbage collection.
+                async with aclosing(audio_source):
+                    async for chunk in audio_source:
+                        chunk_count += 1
+                        await self._put(chunk)
+                        await asyncio.sleep(0)
                 await self._set_eof()
             except asyncio.CancelledError:
                 status = "cancelled"
@@ -314,7 +342,6 @@ class AudioBuffer:
             self._cancelled = True
             self._producer_error = None
             self.ready.clear()
-            self._chunk_callbacks.clear()
             self._cancel_callbacks.clear()
             self._data_available.notify_all()
             self._space_available.notify_all()
@@ -434,8 +461,12 @@ class AudioBuffer:
         # skip AudioSource — it's an open-ended live stream so analysis would never finalize
         # (radio still runs analysis; the analyzer caps it at 10 minutes)
         if seek_position_ms == 0 and streamdetails.media_type != MediaType.AUDIO_SOURCE:
-            # audio analysis providers (loudness, beat tracking, key detection, etc.)
-            await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+            # audio analysis providers (loudness, beat tracking, key detection, etc.).
+            # Fire-and-forget: analysis setup — including a possible model (re)load — must never
+            # delay the buffer fill. The analysis worker reads the retained chunks once ready.
+            mass.create_task(
+                mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+            )
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
@@ -463,7 +494,6 @@ class AudioBuffer:
 
         Waits for space when the buffer is full (backpressure).
         """
-        chunk_position = -1
         async with self._lock:
             if self._cancelled:
                 return
@@ -496,18 +526,6 @@ class AudioBuffer:
 
             self._data_available.notify_all()
 
-        # notify chunk callbacks outside the lock
-        if chunk_position >= 0 and self._chunk_callbacks:
-            failed: list[ChunkCallback] = []
-            for callback in self._chunk_callbacks:
-                try:
-                    await callback(chunk_position, chunk, False)
-                except Exception:
-                    LOGGER.exception("Chunk callback failed, removing it")
-                    failed.append(callback)
-            for cb in failed:
-                self._chunk_callbacks.remove(cb)
-
     async def _set_eof(self) -> None:
         """Signal that no more data will be added to the buffer."""
         async with self._lock:
@@ -521,14 +539,6 @@ class AudioBuffer:
                 self.ready.set()
             self._data_available.notify_all()
             self._space_available.notify_all()
-
-        # notify chunk callbacks of EOF (empty bytes with is_last_chunk=True)
-        total_chunks = self._discarded_chunks + len(self._chunks)
-        for callback in list(self._chunk_callbacks):
-            try:
-                await callback(total_chunks, b"", True)
-            except Exception:
-                LOGGER.exception("Chunk callback failed at EOF")
 
     async def _get(self, chunk_number: int = 0) -> bytes:
         """

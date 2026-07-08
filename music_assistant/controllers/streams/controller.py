@@ -8,12 +8,12 @@ purely to stream audio packets to players.
 from __future__ import annotations
 
 import asyncio
-import gc
 import logging
 import os
 import struct
 import time
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
@@ -49,7 +49,9 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
+    CONF_PLAYER_QUEUES,
     CONF_PUBLISH_IP,
+    CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
@@ -83,7 +85,11 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
+from music_assistant.helpers.util import (
+    format_ip_for_url,
+    get_ip_addresses,
+    sanitize_http_header_value,
+)
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
@@ -156,11 +162,19 @@ class StreamsController(CoreController):
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
         self._audio_analysis = AudioAnalysisController(self)
+        # Number of queue streams (single item or flow) actively serving a player right now.
+        # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
+        # queue stream is live. Announcements are a separate path that never runs analysis.
+        self._active_output_streams = 0
 
     @property
     def audio_analysis(self) -> AudioAnalysisController:
         """Return the AudioAnalysisController instance."""
         return self._audio_analysis
+
+    def output_stream_active(self) -> bool:
+        """Return whether a queue stream (single item or flow) is actively serving a player."""
+        return self._active_output_streams > 0
 
     @property
     def base_url(self) -> str:
@@ -205,7 +219,7 @@ class StreamsController(CoreController):
             if self.smart_fades_available
             else CrossfadeMode.STANDARD_CROSSFADE
         )
-        mode = self.mass.config.get_raw_player_queue_config_value(
+        mode = self.mass.config.get_effective_player_queue_config_value(
             queue.queue_id, CONF_CROSSFADE_MODE, default_mode
         )
         if mode == CrossfadeMode.SMART_CROSSFADE and self.smart_fades_available:
@@ -276,7 +290,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_PUBLISH_IP,
                 type=ConfigEntryType.STRING,
-                default_value=ip_addresses[0],
+                default_value=CONF_VALUE_AUTO,
                 required=False,
                 category="generic",
                 advanced=True,
@@ -330,7 +344,11 @@ class StreamsController(CoreController):
         await check_ffmpeg_version()
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT, DEFAULT_PORT)
-        self.publish_ip = config.get_value(CONF_PUBLISH_IP)
+        publish_ip = str(config.get_value(CONF_PUBLISH_IP) or CONF_VALUE_AUTO)
+        if publish_ip == CONF_VALUE_AUTO:
+            # resolve the "auto" default (or an unset value) to this server's primary IP
+            publish_ip = (await get_ip_addresses(include_ipv6=True))[0]
+        self.publish_ip = publish_ip
         self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
@@ -365,9 +383,6 @@ class StreamsController(CoreController):
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
             ],
         )
-        # Start periodic garbage collection task
-        # This ensures memory from audio buffers and streams is cleaned up regularly
-        self.mass.call_later(900, self._periodic_garbage_collection)  # 15 minutes
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -499,7 +514,8 @@ class StreamsController(CoreController):
         if not (queue := self.mass.player_queues.get(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         session_id = request.match_info["session_id"]
-        if queue.session_id and session_id != queue.session_id:
+        pq_data = self.mass.player_queues.queue_data(queue.queue_id)
+        if pq_data.session_id and session_id != pq_data.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
@@ -541,9 +557,7 @@ class StreamsController(CoreController):
                 head_fmt = ContentType.WAV.value
             headers = {
                 **DEFAULT_STREAM_HEADERS,
-                "icy-name": queue_item.name.replace("\n", " ")
-                .replace("\r", " ")
-                .replace("\t", " "),
+                "icy-name": sanitize_http_header_value(queue_item.name),
                 "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
                 "Content-Type": get_mime_type(head_fmt),
             }
@@ -631,8 +645,10 @@ class StreamsController(CoreController):
             )
 
             # prepare request, add some DLNA/UPNP compatible headers
-            # icy-name is sanitized to avoid a "Potential header injection attack" by aiohttp
+            # icy-name is sanitized (all control chars, not just newlines) to avoid a
+            # "Potential header injection attack" ValueError by aiohttp
             # see https://github.com/music-assistant/support/issues/4913
+            # and https://github.com/music-assistant/support/issues/5791
             # use realtime DLNA flags for radio (sender-paced) since the source delivers slowly
             dlna_features = (
                 DLNA_CONTENT_FEATURES_REALTIME
@@ -641,18 +657,14 @@ class StreamsController(CoreController):
             )
             headers = {
                 **DEFAULT_STREAM_HEADERS,
-                "icy-name": queue_item.name.replace("\n", " ")
-                .replace("\r", " ")
-                .replace("\t", " "),
+                "icy-name": sanitize_http_header_value(queue_item.name),
                 "contentFeatures.dlna.org": dlna_features,
                 "Content-Type": get_mime_type(output_format.output_format_str),
             }
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
-            http_profile = await self.mass.config.get_player_config_value(
-                player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-            )
+            http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
             if http_profile == "forced_content_length" and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -679,9 +691,10 @@ class StreamsController(CoreController):
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
-                # fallback matches CONF_ENTRY_CROSSFADE_DURATION's default
-                standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
-                    queue.queue_id, CONF_CROSSFADE_DURATION, 8
+                # crossfade duration is a global (queue controller) setting; fallback matches
+                # CONF_ENTRY_CROSSFADE_DURATION's default
+                standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                    CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
                 )
             if (
                 crossfade_mode != CrossfadeMode.DISABLED
@@ -749,37 +762,48 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
-            async for chunk in audio_bytes:
-                try:
-                    await resp.write(chunk)
-                    bytes_sent += len(chunk)
-                    if not first_chunk_received:
-                        first_chunk_received = True
-                        # inform the queue that the track is now loaded in the buffer
-                        # so for example the next track can be enqueued
-                        self.mass.player_queues.track_loaded_in_buffer(
-                            queue_item.queue_id, queue_item.queue_item_id
-                        )
-                except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
-                    if (
-                        first_chunk_received
-                        and not player.stop_called
-                        and queue_item.streamdetails.duration  # ignore for radio streams
-                    ):
-                        # Player disconnected (unexpected) after receiving at least some data
-                        # This could indicate buffering issues, network problems,
-                        # or player-specific issues.
-                        self.logger.warning(
-                            "Player %s disconnected prematurely from stream for %s (%s) - "
-                            "error: %s, sent %d bytes, content_length=%s",
-                            queue.display_name,
-                            queue_item.name,
-                            queue_item.uri,
-                            err.__class__.__name__,
-                            bytes_sent,
-                            resp.content_length,
-                        )
-                    break
+            # Mark this player as actively streaming so audio analysis yields CPU to playback
+            # for the duration of the transfer (see audio_analysis.playback_active).
+            self._active_output_streams += 1
+            try:
+                # aclosing guarantees the generator (and thus the ffmpeg process chain
+                # behind it) is torn down immediately when the player disconnects
+                # mid-stream, instead of lingering until garbage collection finalizes
+                # the abandoned generator.
+                async with aclosing(audio_bytes):
+                    async for chunk in audio_bytes:
+                        try:
+                            await resp.write(chunk)
+                            bytes_sent += len(chunk)
+                            if not first_chunk_received:
+                                first_chunk_received = True
+                                # inform the queue that the track is now loaded in the buffer
+                                # so for example the next track can be enqueued
+                                self.mass.player_queues.track_loaded_in_buffer(
+                                    queue_item.queue_id, queue_item.queue_item_id
+                                )
+                        except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
+                            if (
+                                first_chunk_received
+                                and not player.stop_called
+                                and queue_item.streamdetails.duration  # ignore for radio streams
+                            ):
+                                # Player disconnected (unexpected) after receiving at least
+                                # some data. This could indicate buffering issues, network
+                                # problems, or player-specific issues.
+                                self.logger.warning(
+                                    "Player %s disconnected prematurely from stream for %s (%s) - "
+                                    "error: %s, sent %d bytes, content_length=%s",
+                                    queue.display_name,
+                                    queue_item.name,
+                                    queue_item.uri,
+                                    err.__class__.__name__,
+                                    bytes_sent,
+                                    resp.content_length,
+                                )
+                            break
+            finally:
+                self._active_output_streams -= 1
             if queue_item.streamdetails.stream_error:
                 self.logger.error(
                     "Error streaming QueueItem %s (%s) to %s",
@@ -832,7 +856,7 @@ class StreamsController(CoreController):
                         exc_info=True,
                     )
 
-    async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:
+    async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream Queue Flow audio to player."""
         self._log_request(request)
         queue_id = request.match_info["queue_id"]
@@ -890,9 +914,7 @@ class StreamsController(CoreController):
             headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-        )
+        http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
         if http_profile == "forced_content_length":
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
@@ -911,7 +933,10 @@ class StreamsController(CoreController):
         # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
         self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
 
-        async for chunk in get_ffmpeg_stream(
+        # Mark this player as actively streaming so audio analysis yields CPU to playback
+        # for the duration of the flow stream (see audio_analysis.playback_active).
+        self._active_output_streams += 1
+        audio_bytes = get_ffmpeg_stream(
             audio_input=self.audio.get_queue_flow_stream(
                 queue=queue, start_queue_item=start_queue_item, pcm_format=flow_pcm_format
             ),
@@ -927,37 +952,46 @@ class StreamsController(CoreController):
             # allow buffer ahead of a few seconds and read rest in (near) realtime
             extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
-        ):
-            try:
-                await resp.write(chunk)
-            except BrokenPipeError, ConnectionResetError, ConnectionError:
-                # race condition
-                break
+        )
+        try:
+            # aclosing guarantees the flow stream (and thus the ffmpeg process chain
+            # behind it) is torn down immediately when the player disconnects
+            # mid-stream, instead of lingering until garbage collection finalizes
+            # the abandoned generator.
+            async with aclosing(audio_bytes):
+                async for chunk in audio_bytes:
+                    try:
+                        await resp.write(chunk)
+                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                        # race condition
+                        break
 
-            if not enable_icy:
-                continue
+                    if not enable_icy:
+                        continue
 
-            # if icy metadata is enabled, send the icy metadata after the chunk
-            if (
-                # use current item here and not buffered item, otherwise
-                # the icy metadata will be too much ahead
-                (current_item := queue.current_item)
-                and current_item.streamdetails
-                and current_item.streamdetails.stream_title
-            ):
-                title = current_item.streamdetails.stream_title
-            elif queue and current_item and current_item.name:
-                title = current_item.name
-            else:
-                title = "Music Assistant"
-            metadata = f"StreamTitle='{title}';".encode()
-            if icy_preference == "full" and current_item and current_item.image:
-                metadata += f"StreamURL='{current_item.image.path}'".encode()
-            while len(metadata) % 16 != 0:
-                metadata += b"\x00"
-            length = len(metadata)
-            length_b = chr(int(length / 16)).encode()
-            await resp.write(length_b + metadata)
+                    # if icy metadata is enabled, send the icy metadata after the chunk
+                    if (
+                        # use current item here and not buffered item, otherwise
+                        # the icy metadata will be too much ahead
+                        (current_item := queue.current_item)
+                        and current_item.streamdetails
+                        and current_item.streamdetails.stream_title
+                    ):
+                        title = current_item.streamdetails.stream_title
+                    elif queue and current_item and current_item.name:
+                        title = current_item.name
+                    else:
+                        title = "Music Assistant"
+                    metadata = f"StreamTitle='{title}';".encode()
+                    if icy_preference == "full" and current_item and current_item.image:
+                        metadata += f"StreamURL='{current_item.image.path}'".encode()
+                    while len(metadata) % 16 != 0:
+                        metadata += b"\x00"
+                    length = len(metadata)
+                    length_b = chr(int(length / 16)).encode()
+                    await resp.write(length_b + metadata)
+        finally:
+            self._active_output_streams -= 1
 
         return resp
 
@@ -984,20 +1018,26 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        http_profile = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
+        mass_player = self.mass.players.get_player(player_id)
+        http_profile = (
+            mass_player.get_config_value(CONF_HTTP_PROFILE, "default") if mass_player else "default"
         )
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
             data = b""
-            async for chunk in self.get_announcement_stream(
+            announcement_stream = self.get_announcement_stream(
                 announcement_url=announce_data["announcement_url"],
                 output_format=audio_format,
                 pre_announce=announce_data["pre_announce"],
                 pre_announce_url=announce_data["pre_announce_url"],
-            ):
-                data += chunk
+            )
+            # aclosing guarantees the stream (and thus the ffmpeg process chain behind
+            # it) is torn down immediately when the request is cancelled, instead of
+            # lingering until garbage collection finalizes the abandoned generator.
+            async with aclosing(announcement_stream):
+                async for chunk in announcement_stream:
+                    data += chunk
             return web.Response(
                 body=data,
                 content_type=get_mime_type(audio_format.output_format_str),
@@ -1021,16 +1061,22 @@ class StreamsController(CoreController):
             announce_data["announcement_url"],
             player.state.name,
         )
-        async for chunk in self.get_announcement_stream(
+        announcement_stream = self.get_announcement_stream(
             announcement_url=announce_data["announcement_url"],
             output_format=audio_format,
             pre_announce=announce_data["pre_announce"],
             pre_announce_url=announce_data["pre_announce_url"],
-        ):
-            try:
-                await resp.write(chunk)
-            except BrokenPipeError, ConnectionResetError:
-                break
+        )
+        # aclosing guarantees the stream (and thus the ffmpeg process chain behind
+        # it) is torn down immediately when the player disconnects mid-stream,
+        # instead of lingering until garbage collection finalizes the abandoned
+        # generator.
+        async with aclosing(announcement_stream):
+            async for chunk in announcement_stream:
+                try:
+                    await resp.write(chunk)
+                except BrokenPipeError, ConnectionResetError:
+                    break
 
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
@@ -1244,22 +1290,33 @@ class StreamsController(CoreController):
 
         async def fetch_announcement() -> None:
             fmt = announcement_url.rsplit(".", maxsplit=1)[-1]
+            eof_pending = True
+            stream = get_ffmpeg_stream(
+                audio_input=announcement_url,
+                input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+                output_format=pcm_format,
+                chunk_size=calculate_content_length(pcm_format, 1),
+            )
             try:
-                async for chunk in get_ffmpeg_stream(
-                    audio_input=announcement_url,
-                    input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
-                    output_format=pcm_format,
-                    chunk_size=calculate_content_length(pcm_format, 1),
-                ):
-                    await announcement_data.put(chunk)
+                # aclosing guarantees the ffmpeg stream is torn down immediately
+                # when this task gets cancelled while blocked on the queue put.
+                async with aclosing(stream):
+                    async for chunk in stream:
+                        await announcement_data.put(chunk)
+            except asyncio.CancelledError:
+                # consumer is gone: skip the end-of-stream sentinel because the
+                # queue may be full and nobody will drain it anymore
+                eof_pending = False
+                raise
             except AudioError as err:
                 self.logger.warning(
                     "Failed to fetch announcement audio from %s: %s", announcement_url, err
                 )
             finally:
-                await announcement_data.put(None)  # always signal end of stream
+                if eof_pending:
+                    await announcement_data.put(None)  # always signal end of stream
 
-        self.mass.create_task(fetch_announcement())
+        fetch_task = self.mass.create_task(fetch_announcement())
 
         async def _announcement_stream() -> AsyncGenerator[bytes]:
             """Generate the PCM audio stream for the announcement + optional pre-announce."""
@@ -1284,17 +1341,28 @@ class StreamsController(CoreController):
                     break
                 yield announcement_chunk
 
-        if output_format == pcm_format:
-            # no need to re-encode, just yield the raw PCM stream
-            async for chunk in _announcement_stream():
-                yield chunk
-            return
+        try:
+            if output_format == pcm_format:
+                # no need to re-encode, just yield the raw PCM stream
+                raw_stream = _announcement_stream()
+                async with aclosing(raw_stream):
+                    async for chunk in raw_stream:
+                        yield chunk
+                return
 
-        # stream final announcement in requested output format
-        async for chunk in get_ffmpeg_stream(
-            audio_input=_announcement_stream(), input_format=pcm_format, output_format=output_format
-        ):
-            yield chunk
+            # stream final announcement in requested output format
+            encoded_stream = get_ffmpeg_stream(
+                audio_input=_announcement_stream(),
+                input_format=pcm_format,
+                output_format=output_format,
+            )
+            async with aclosing(encoded_stream):
+                async for chunk in encoded_stream:
+                    yield chunk
+        finally:
+            # stop fetching when the consumer goes away early (e.g. player
+            # disconnected); no-op when the fetch already completed normally
+            fetch_task.cancel()
 
     async def _wrap_with_audio_source_lifecycle(
         self,
@@ -1364,18 +1432,6 @@ class StreamsController(CoreController):
             self.logger.debug(
                 "Got %s request to %s from %s", request.method, request.path, request.remote
             )
-
-    async def _periodic_garbage_collection(self) -> None:
-        """Periodic garbage collection to free up memory from audio buffers and streams."""
-        self.logger.log(VERBOSE_LOG_LEVEL, "Running periodic garbage collection...")
-        # Run gc.collect on the event loop thread to avoid thread-safety issues
-        # with StreamWriter.__del__ calling close() which requires the event loop thread
-        collected = gc.collect()
-        self.logger.log(
-            VERBOSE_LOG_LEVEL, "Garbage collection completed, collected %d objects", collected
-        )
-        # Schedule next run in 15 minutes
-        self.mass.call_later(900, self._periodic_garbage_collection)
 
     def _setup_smart_fades_logger(self, config: CoreConfig) -> None:
         """Set up smart fades logger level."""

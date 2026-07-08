@@ -9,6 +9,11 @@ CONF_EXTRA_ALLOWED_ORIGINS = "extra_allowed_origins"
 CONF_ENFORCE_AUDIENCE = "enforce_audience"
 CONF_REQUIRE_CONFIRMATION = "require_confirmation"
 CONF_CONNECT_EXTERNAL_URL = "connect_external_url"
+# Read at sub-server build time (affects tool registration), so it is
+# deliberately NOT in PERMISSION_KEYS/RESOURCE_KEYS below — toggling it falls
+# through to a full runtime restart rather than a tag-filter hot-swap.
+CONF_LEAN_ADMIN_SCHEMA = "lean_admin_schema"
+CONF_TRUST_FORWARDED_PROTO = "trust_forwarded_proto"
 
 DEFAULT_MOUNT_PATH = "/mcp/v1"
 
