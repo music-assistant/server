@@ -85,10 +85,9 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
 
-BROKEN_AIRPLAY_MODELS = (
-    # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
-    # Samsung will work with AirPlay2 once PTP timing is implemented for the MA build
-    ("Samsung", "*"),
+BROKEN_AIRPLAY_MODELS: tuple[tuple[str, str], ...] = (
+    # Models that are known to have broken AirPlay support (both RAOP and AirPlay 2)
+    # These players are disabled by default
 )
 
 AIRPLAY_2_DEFAULT_MODELS = (
@@ -96,6 +95,8 @@ AIRPLAY_2_DEFAULT_MODELS = (
     # These use the translated/friendly model names from get_model_info()
     ("Ubiquiti Inc.", "*"),
     ("LG Electronics", "*"),
+    # Samsung devices only work with AirPlay 2 (using PTP timing), RAOP is broken
+    ("Samsung", "*"),
 )
 
 BROKEN_AIRPLAY_WARN = ConfigEntry(

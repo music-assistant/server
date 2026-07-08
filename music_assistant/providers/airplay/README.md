@@ -65,6 +65,7 @@ airplay/
 ├── stream_session.py     # Manages streaming sessions for synchronized playback
 ├── pairing.py           # HAP and RAOP pairing implementations
 ├── helpers.py           # Utility functions (NTP conversion, model detection, etc.)
+├── ptp.py               # Lifecycle management of the shared PTP timing daemon
 ├── constants.py         # Constants and enums
 ├── protocols/
 │   ├── _protocol.py     # Base protocol class with shared logic
@@ -72,7 +73,8 @@ airplay/
 │   └── airplay2.py      # AirPlay 2 streaming implementation
 └── bin/                 # Platform-specific CLI binaries
     ├── cliraop-*        # RAOP streaming binaries
-    └── cliap2-*         # AirPlay 2 streaming binaries
+    ├── cliap2-*         # AirPlay 2 streaming binaries
+    └── airptpd-*        # PTP timing daemon binaries
 ```
 
 ## Protocol Selection: RAOP vs AirPlay 2
@@ -347,6 +349,14 @@ The provider automatically selects the correct binary based on:
 
 Binaries are located in [bin/](bin/) directory and validated on first use.
 
+### PTP Timing Daemon (airptpd)
+
+AirPlay 2 devices can use PTP (IEEE 1588) instead of NTP for clock synchronization. Some devices (e.g. Samsung) *only* support PTP timing and stay silent with NTP.
+
+The provider runs a single shared `airptpd` daemon (in the foreground, supervised and restarted on crash) for the whole host while it is loaded. The `cliap2` processes attach to it through shared memory and automatically prefer PTP when the daemon is available.
+
+The daemon binds UDP ports 319/320, which requires elevated privileges. If it cannot start (e.g. ports in use or insufficient privileges), AirPlay 2 playback falls back to NTP timing and a warning is logged.
+
 ### Binary Communication
 
 **Input** (stdin):
@@ -442,8 +452,8 @@ The provider creates players with different types based on whether the device is
 ### Broken AirPlay Models
 
 Some devices have known broken AirPlay implementations (see `BROKEN_AIRPLAY_MODELS` in [constants.py](constants.py)):
-- **Samsung devices**: Known issues with both RAOP and AirPlay 2
 - These players are disabled by default
+- **Samsung devices**: Only work with AirPlay 2 using PTP timing (requires the `airptpd` daemon to be running), RAOP is broken
 
 ### Limitations
 

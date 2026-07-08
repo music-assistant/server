@@ -34,6 +34,7 @@ from .constants import (
 )
 from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
+from .ptp import AirPtpDaemon
 from .sendspin_bridge import SendspinBridgeManager
 
 # TODO: AirPlay provider
@@ -48,6 +49,7 @@ class AirPlayProvider(PlayerProvider):
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
+    _ptp_daemon: AirPtpDaemon
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
@@ -82,6 +84,11 @@ class AirPlayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
+
+        # start the shared PTP timing daemon last (and non-fatal)
+        # so a failing init step cannot leak the daemon process
+        self._ptp_daemon = AirPtpDaemon(self.logger)
+        await self._ptp_daemon.start()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -132,6 +139,8 @@ class AirPlayProvider(PlayerProvider):
         # shutdown DACP zeroconf service
         if self._dacp_info:
             await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
+        if ptp_daemon := getattr(self, "_ptp_daemon", None):
+            await ptp_daemon.stop()
 
     def get_players(self) -> list[AirPlayPlayer]:
         """Return all airplay players belonging to this instance."""

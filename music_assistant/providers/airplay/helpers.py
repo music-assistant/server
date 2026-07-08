@@ -220,6 +220,25 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
     raise RuntimeError(msg)
 
 
+async def get_airptpd_binary() -> str:
+    """
+    Find the correct airptpd (PTP timing daemon) binary belonging to the platform.
+
+    :raises RuntimeError: If the binary cannot be found or fails validation.
+    """
+    base_path = os.path.join(os.path.dirname(__file__), "bin")
+    system = platform.system().lower().replace("darwin", "macos")
+    architecture = platform.machine().lower()
+    binary_path = os.path.join(base_path, f"airptpd-{system}-{architecture}")
+    try:
+        returncode, output = await check_output(binary_path, "-V")
+        if returncode == 0 and output.strip().decode().startswith("libairptp"):
+            return binary_path
+    except OSError:
+        pass
+    raise RuntimeError(f"Unable to locate airptpd binary for {system}/{architecture}")
+
+
 def get_ntp_timestamp() -> int:
     """
     Get current NTP timestamp (64-bit).
