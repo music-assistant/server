@@ -116,15 +116,17 @@ def sanitize_text(text: str) -> str:
 
 def sanitize_data[DataT](data: DataT) -> DataT:
     """
-    Recursively sanitize all string values inside a (JSON-serializable) data structure.
+    Recursively sanitize all strings (including dict keys) inside a data structure.
 
-    :param data: Plain data (dicts/lists/scalars) to sanitize in depth.
+    :param data: Plain data (dicts/lists/tuples/scalars) to sanitize in depth.
     """
     if isinstance(data, str):
         return sanitize_text(data)  # type: ignore[return-value]
     if isinstance(data, dict):
-        return {key: sanitize_data(value) for key, value in data.items()}  # type: ignore[return-value]
-    if isinstance(data, (list, tuple)):
+        return {sanitize_data(key): sanitize_data(value) for key, value in data.items()}  # type: ignore[return-value]
+    if isinstance(data, tuple):
+        return tuple(sanitize_data(value) for value in data)  # type: ignore[return-value]
+    if isinstance(data, list):
         return [sanitize_data(value) for value in data]  # type: ignore[return-value]
     return data
 

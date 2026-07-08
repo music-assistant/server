@@ -108,12 +108,17 @@ def test_sanitize_data_recurses() -> None:
         "outer": [{"msg": "password=hunter2"}, "mail me at a@b.com"],
         "count": 42,
         "flag": True,
+        "point": (1, "b@c.com"),
+        "/home/marcel/Music/secret song.mp3": "path as key",
     }
     result = sanitize_data(data)
     assert result["outer"][0]["msg"] == "password=<redacted>"
     assert "a@b.com" not in result["outer"][1]
     assert result["count"] == 42
     assert result["flag"] is True
+    assert result["point"] == (1, "<redacted-email>")
+    # dict keys must be sanitized too
+    assert not any("secret song" in key for key in result)
 
 
 def _emit_exception(handler: DiagnosticsLogHandler, message: str = "it broke") -> None:
