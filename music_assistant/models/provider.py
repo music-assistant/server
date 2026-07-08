@@ -213,7 +213,7 @@ class Provider:
             )
 
     @final
-    def signal_provider_event(self, data: Any, sub_scope: str | None = None) -> None:
+    def signal_provider_event(self, data: SerializableType, sub_scope: str | None = None) -> None:
         """
         Signal a custom provider event to all subscribers (e.g. connected clients).
 
@@ -221,7 +221,7 @@ class Provider:
         optionally suffixed with /sub_scope to allow clients to distinguish
         multiple event streams from the same provider.
 
-        :param data: The (JSON serializable) event payload, defined by the provider.
+        :param data: The JSON serializable event payload, defined by the provider.
         :param sub_scope: Optional sub scope to append to the object_id.
         """
         object_id = f"{self.instance_id}/{sub_scope}" if sub_scope else self.instance_id
