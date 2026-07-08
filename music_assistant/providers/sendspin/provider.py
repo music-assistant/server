@@ -338,10 +338,10 @@ class SendspinProvider(PlayerProvider):
             await self._wait_for_virtual_player(player_id)
         except Exception as err:
             self._virtual_players.pop(player_id, None)
-            if self.server_api.get_client(player_id) is not None:
-                await self.server_api.remove_client(player_id)
             # purge any partially registered player and its config
             await self.mass.players.unregister(player_id, permanent=True)
+            if self.server_api.get_client(player_id) is not None:
+                await self.server_api.remove_client(player_id)
             self.mass.players.delete_player_config(player_id)
             if isinstance(err, SetupFailedError):
                 raise
@@ -366,10 +366,12 @@ class SendspinProvider(PlayerProvider):
         ):
             raise ValueError(f"{player_id} is not a virtual player")
         self._virtual_players.pop(player_id, None)
+        # unregister the player first so the client removed event handler
+        # can not race us with a non-permanent unregister
+        await self.mass.players.unregister(player_id, permanent=True)
         if self.server_api.get_client(player_id) is not None:
             await self.server_api.remove_client(player_id)
-        await self.mass.players.unregister(player_id, permanent=True)
-        # the config may linger when the player was already unregistered
+        # the config may linger when the player was never registered
         self.mass.players.delete_player_config(player_id)
         self.logger.info("Virtual player %s removed", player_id)
 
