@@ -961,8 +961,9 @@ class PartyPlugin(PluginProvider):
         """
         self._validate_guest_access()
 
-        if self._session is not None:
-            await self._session.remove_guest_listener(web_player_id)
+        async with self._session_lock:
+            if self._session is not None:
+                await self._session.remove_guest_listener(web_player_id)
 
         self.logger.info("Guest player %s stopped listening in", web_player_id)
         return {"success": True}
