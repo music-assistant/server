@@ -371,7 +371,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for prov_mapping in cast("MediaItemType", item).provider_mappings
             }
             # include results from library + all (unique) music providers
-            results_per_provider += await asyncio.gather(
+            # one failing provider must not break the entire search,
+            # so exceptions are logged and excluded from the results
+            gather_results = await asyncio.gather(
                 *[
                     self._search_provider(
                         search_query,
@@ -382,7 +384,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     )
                     for provider_instance in search_providers
                 ],
+                return_exceptions=True,
             )
+            for res in gather_results:
+                if isinstance(res, SearchResults):
+                    results_per_provider.append(res)
+                else:
+                    self.logger.error("Search on provider failed", exc_info=res)
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
         result = SearchResults(
@@ -2103,6 +2111,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
+        # guard against a failing provider: return empty results instead of
+        # raising, so a global search can still succeed with the other providers
         try:
             prov_search_results = await prov.search(
                 search_query,
@@ -2110,8 +2120,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 limit,
             )
         except MusicAssistantError as err:
-            self.logger.warning("Search on provider %s failed: %s", prov.name, err)
-            raise MusicAssistantError(f"Search failed due to an error on {prov.name}") from err
+            self.logger.warning("Search on provider %s failed: %s", prov.name, str(err))
+            return SearchResults()
+        except Exception as err:
+            self.logger.error("Search on provider %s failed: %s", prov.name, str(err), exc_info=err)
+            return SearchResults()
         if skip_item_ids:
             # filter out items already in skip_item_ids
             prov_search_results.artists = [
