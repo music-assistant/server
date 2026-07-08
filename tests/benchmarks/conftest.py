@@ -11,6 +11,7 @@ hermetic setup of the deep-dive harness in scripts/perf/.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import socket
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any
@@ -18,8 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
 import pytest_asyncio
-from pytest_codspeed.instruments import MeasurementMode
-from pytest_codspeed.plugin import get_plugin
 from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.controllers.config.controller import ConfigController
@@ -27,6 +26,7 @@ from music_assistant.mass import MusicAssistant
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+    from contextlib import AbstractAsyncContextManager
     from pathlib import Path
 
 # Local-only builtin providers that are allowed to load. Everything else with
@@ -51,24 +51,6 @@ SYNC_TIMEOUT_SECONDS = 300.0
 
 _ORIG_CONFIG_SETUP = ConfigController.setup
 _ORIG_LOAD_BUILTIN = MusicAssistant._load_builtin_providers
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    """Register the custom markers used by the benchmark suite."""
-    config.addinivalue_line(
-        "markers",
-        "single_run: benchmark whose body cannot be re-run on the same fixture state",
-    )
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip single-run benchmarks when CodSpeed measures by re-running (walltime mode)."""
-    if not _walltime_mode_active(config):
-        return
-    skip = pytest.mark.skip(reason="not idempotent; run without --codspeed or in simulation mode")
-    for item in items:
-        if item.get_closest_marker("single_run"):
-            item.add_marker(skip)
 
 
 def expected_track_count(library_size: dict[str, int]) -> int:
@@ -105,19 +87,23 @@ async def wait_for_sync_complete(mass: MusicAssistant, expected_tracks: int) -> 
     await _wait_for(_synced, timeout=SYNC_TIMEOUT_SECONDS)
 
 
-@pytest_asyncio.fixture
-async def unstarted_mass(tmp_path: Path) -> AsyncGenerator[MusicAssistant]:
-    """Yield a hermetic MusicAssistant instance that has not been started yet."""
-    async with _hermetic_instance(tmp_path) as mass:
-        yield mass
+@pytest.fixture
+def hermetic_server(
+    tmp_path: Path,
+) -> Callable[[], AbstractAsyncContextManager[MusicAssistant]]:
+    """
+    Return a factory producing async context managers for fresh hermetic instances.
 
+    Every call yields a brand-new unstarted instance on its own data dir, so
+    benchmark bodies that boot a server stay re-runnable when the measurement
+    tool invokes them multiple times (warmup + measured rounds).
+    """
+    counter = itertools.count()
 
-@pytest_asyncio.fixture
-async def started_mass(tmp_path: Path) -> AsyncGenerator[MusicAssistant]:
-    """Yield a started hermetic MusicAssistant instance with an empty library."""
-    async with _hermetic_instance(tmp_path) as mass:
-        await mass.start()
-        yield mass
+    def _factory() -> AbstractAsyncContextManager[MusicAssistant]:
+        return _hermetic_instance(tmp_path / f"instance_{next(counter)}")
+
+    return _factory
 
 
 @pytest_asyncio.fixture
@@ -252,9 +238,3 @@ async def _wait_for(predicate: Callable[[], Awaitable[bool]], timeout: float) ->
         await asyncio.sleep(0.1)
         elapsed += 0.1
     raise TimeoutError(f"condition not met within {timeout}s")
-
-
-def _walltime_mode_active(config: pytest.Config) -> bool:
-    """Return True when pytest-codspeed is enabled in walltime (multi-run) mode."""
-    plugin = get_plugin(config)
-    return plugin.is_codspeed_enabled and plugin.mode is MeasurementMode.WallTime

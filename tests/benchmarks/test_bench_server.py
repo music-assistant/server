@@ -2,9 +2,9 @@
 Macro benchmarks for server lifecycle and library sync.
 
 Each benchmark measures one expensive core operation end-to-end on a hermetic
-MusicAssistant instance: server boot, the initial sync of a music provider and
-a no-op re-sync of an already synced library. The noop resync is the key sync
-regression metric: it must stay cheap because it runs on every scheduled sync.
+MusicAssistant instance. The bodies are self-contained (each run boots its own
+fresh instance where needed) so they can safely be invoked multiple times by
+the measurement tool (warmup + measured rounds).
 """
 
 from __future__ import annotations
@@ -21,21 +21,31 @@ from .conftest import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractAsyncContextManager
+
     from music_assistant.mass import MusicAssistant
 
-
-@pytest.mark.benchmark
-@pytest.mark.single_run
-async def test_server_boot(unstarted_mass: MusicAssistant) -> None:
-    """Benchmark a cold server boot: all core controllers + builtin providers."""
-    await unstarted_mass.start()
+    ServerFactory = Callable[[], AbstractAsyncContextManager[MusicAssistant]]
 
 
 @pytest.mark.benchmark
-@pytest.mark.single_run
-async def test_initial_sync(started_mass: MusicAssistant) -> None:
-    """Benchmark the initial library sync of a freshly added music provider."""
-    await sync_test_provider(started_mass, SMALL_LIBRARY_SIZE)
+async def test_server_boot(hermetic_server: ServerFactory) -> None:
+    """Benchmark a full server lifecycle: boot all core controllers, then shutdown."""
+    async with hermetic_server() as mass:
+        await mass.start()
+
+
+@pytest.mark.benchmark
+async def test_initial_sync(hermetic_server: ServerFactory) -> None:
+    """
+    Benchmark boot plus the initial library sync of a freshly added music provider.
+
+    Compare against ``test_server_boot`` to isolate the sync cost itself.
+    """
+    async with hermetic_server() as mass:
+        await mass.start()
+        await sync_test_provider(mass, SMALL_LIBRARY_SIZE)
 
 
 @pytest.mark.benchmark
