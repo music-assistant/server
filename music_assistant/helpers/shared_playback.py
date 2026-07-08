@@ -126,12 +126,12 @@ class SharedPlaybackSession:
 
         :param web_player_id: The player_id of the guest's web player.
         """
+        if (host_player := self._get_host_player()) is None:
+            return False
         if self._mode == SharedPlaybackMode.REMOTE:
             # guest web players are Sendspin players just like the virtual
             # player leading the session, so grouping is always possible
             return True
-        if (host_player := self._get_host_player()) is None:
-            return False
         if PlayerFeature.SET_MEMBERS not in host_player.state.supported_features:
             return False
         return (

@@ -475,9 +475,10 @@ class PartyPlugin(PluginProvider):
 
         # Tear down the shared playback session (detaches guest listeners and,
         # in remote mode, removes the virtual player)
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
+        async with self._session_lock:
+            if self._session is not None:
+                await self._session.close()
+                self._session = None
 
         # Revoke all guest tokens when:
         # 1. The plugin is being removed entirely (is_removed=True)

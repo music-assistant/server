@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.auth import UserRole
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers import guest_access
 
@@ -25,12 +27,22 @@ def _create_mock_mass() -> MagicMock:
 async def test_get_or_create_guest_user_returns_existing() -> None:
     """An existing guest user is returned without creating a new one."""
     mass = _create_mock_mass()
-    existing_user = MagicMock()
+    existing_user = MagicMock(role=UserRole.GUEST)
     mass.webserver.auth.get_user_by_username.return_value = existing_user
 
     user = await guest_access.get_or_create_guest_user(mass, "party_guest", "Party Guest")
 
     assert user is existing_user
+    mass.webserver.auth.create_user.assert_not_awaited()
+
+
+async def test_get_or_create_guest_user_rejects_non_guest() -> None:
+    """An existing user with a non-guest role is never reused for guest access."""
+    mass = _create_mock_mass()
+    mass.webserver.auth.get_user_by_username.return_value = MagicMock(role=UserRole.ADMIN)
+
+    with pytest.raises(InvalidDataError):
+        await guest_access.get_or_create_guest_user(mass, "party_guest", "Party Guest")
     mass.webserver.auth.create_user.assert_not_awaited()
 
 

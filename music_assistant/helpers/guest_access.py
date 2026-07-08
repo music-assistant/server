@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import UserRole
+from music_assistant_models.errors import InvalidDataError
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -28,9 +29,13 @@ async def get_or_create_guest_user(mass: MusicAssistant, username: str, display_
     :param username: Unique username for the guest account.
     :param display_name: Human readable display name for the guest account.
     :return: The (existing or newly created) guest User.
+    :raises InvalidDataError: If the username belongs to a non-guest account.
     """
     auth = mass.webserver.auth
     if user := await auth.get_user_by_username(username):
+        # never hand out guest access on a higher privileged account
+        if user.role != UserRole.GUEST:
+            raise InvalidDataError(f"User {username} exists but is not a guest account")
         return user
     return await auth.create_user(
         username=username,

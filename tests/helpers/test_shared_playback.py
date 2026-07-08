@@ -161,6 +161,8 @@ async def test_create_remote_session(mass: MusicAssistant) -> None:
 
     await session.close()
     assert mass.players.get_player(session.player_id) is None
+    # with the virtual host player gone, listen-in is no longer possible
+    assert session.can_listen_in("any_web_player") is False
 
 
 async def test_create_remote_session_deterministic_id(mass: MusicAssistant) -> None:
