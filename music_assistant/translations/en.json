@@ -1665,6 +1665,7 @@
   "provider.profiler.config_entries.profiler_note.label": "The profiler runs continuously while this provider is installed: a flight recorder samples server health every 10 seconds, an event-loop monitor tracks scheduling delays and (optional) periodic CPU profile windows are captured. Generate the shareable report with the 'profiler/report' API command; the latest report is also written to the 'profiler' folder inside the server data directory. Uninstall this provider when you are done debugging.",
   "provider.profiler.config_entries.tracemalloc_enabled.description": "Trace Python memory allocations so the report can show the top allocation sites and their growth between reports. Warning: this roughly doubles memory-tracking overhead and slows the server down while enabled - only use it when hunting a memory leak.",
   "provider.profiler.config_entries.tracemalloc_enabled.label": "Track memory allocations (tracemalloc)",
+  "provider.profiler.manifest.description": "Records CPU, memory and event-loop diagnostics of the running server and turns them into a shareable report. Only install this provider temporarily to debug performance issues (or when asked to in a support request) and uninstall it when done - it is not meant for day-to-day use.",
   "provider.qobuz.config_entries.quality.description": "Maximum streaming quality. Lower quality will be used if selected quality is unavailable.",
   "provider.qobuz.config_entries.quality.label": "Stream Quality",
   "provider.qobuz.config_entries.quality.options.27": "Hi-Res 192kHz/24 bit",
