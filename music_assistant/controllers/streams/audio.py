@@ -2059,6 +2059,7 @@ class StreamsAudio:
         start_queue_item: QueueItem,
         pcm_format: AudioFormat,
         session_id: str | None = None,
+        flow_player: Player | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -2069,6 +2070,10 @@ class StreamsAudio:
         :param start_queue_item: First queue item in the flow stream.
         :param pcm_format: Shared PCM format for the complete flow stream.
         :param session_id: Queue session that owns processing-detail updates.
+        :param flow_player: The (protocol) player actually consuming the flow stream.
+            Must be the same player that was used to select ``pcm_format`` so
+            restart decisions are made against the correct supported sample rates
+            and flow mode configuration. Falls back to the queue's player when omitted.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -2109,14 +2114,8 @@ class StreamsAudio:
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
-        flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
-        )
-        flow_player = self.mass.players.get_player(queue.queue_id)
-        flow_supported_sample_rates = (
-            sorted({sr for sr, _ in flow_player.get_supported_sample_rates()})
-            if flow_player
-            else []
+        flow_mode_sample_rate_conf, flow_supported_sample_rates = self._flow_restart_context(
+            queue.queue_id, flow_player
         )
         # note: get_crossfade_mode() already falls back to standard when smart fades aren't
         # available (no analysis provider / minimal buffer), so crossfade_mode is safe to use.
@@ -3106,6 +3105,34 @@ class StreamsAudio:
             bit_depth=bit_depth,
             channels=streamdetails.audio_format.channels,
         )
+
+    def _flow_restart_context(
+        self, queue_id: str, flow_player: Player | None
+    ) -> tuple[str, list[int]]:
+        """
+        Resolve the flow mode config and supported sample rates for restart decisions.
+
+        Prefers the (protocol) player actually consuming the flow stream — the same
+        player the flow's PCM format was anchored on — over the queue's (wrapper)
+        player, whose config may lack the audio/protocol specific entries.
+
+        :param queue_id: The queue ID, used as fallback when no flow player is given.
+        :param flow_player: The (protocol) player consuming the flow stream, if known.
+        :return: Tuple of (flow mode sample rate config value, sorted supported rates).
+        """
+        if flow_player is None:
+            flow_player = self.mass.players.get_player(queue_id)
+        if flow_player is None:
+            flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
+                queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
+            )
+            return flow_mode_sample_rate_conf, []
+        flow_mode_sample_rate_conf = cast(
+            "str",
+            flow_player.config.get_value(CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART),
+        )
+        supported_sample_rates = sorted({sr for sr, _ in flow_player.get_supported_sample_rates()})
+        return flow_mode_sample_rate_conf, supported_sample_rates
 
     def _flow_stream_needs_restart(
         self,
