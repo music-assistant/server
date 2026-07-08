@@ -1,0 +1,19 @@
+# On PRs only the changed providers' tests run, so a single report is partial by
+# design. Keep coverage informational (never blocks a PR) and carry coverage
+# forward per flag so a partial upload doesn't look like a coverage drop.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+flags:
+  full:
+    carryforward: true
+  partial:
+    carryforward: true
+
+comment: false

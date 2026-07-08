@@ -1,0 +1,20 @@
+{
+  "config_entries": {
+    "client_id": {
+      "label": "Client ID"
+    },
+    "authorization": {
+      "label": "Authorization"
+    }
+  },
+  "media": {
+    "recommendations": {
+      "soundcloud_feed": {
+        "name": "SoundCloud Feed"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream tracks, remixes, and user-uploaded music from the SoundCloud community."
+  }
+}

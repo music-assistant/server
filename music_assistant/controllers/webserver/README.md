@@ -391,7 +391,10 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 1. Define route handler in [controller.py](controller.py) (for HTTP endpoints)
 2. Use `@api_command()` decorator for WebSocket commands (in respective controllers)
-3. Specify authentication requirements: `authenticated=True` or `required_role="admin"`
+3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>`
+4. Optionally set `allow_impersonation=True` to let callers execute the command on behalf of
+   another user via the injected `user` argument (requires the `users.impersonate` scope
+   when targeting another user)
 
 ### Testing Authentication
 
@@ -424,13 +427,18 @@ async def my_command():
     # ... use token ...
 ```
 
-**Requiring admin role:**
+**Requiring a scope:**
 ```python
-@api_command("admin_only_command", required_role="admin")
+from music_assistant_models.auth import Scope
+
+@api_command("admin_only_command", required_scope=Scope.CONFIG_CORE_WRITE)
 async def admin_command():
-    # Only admins can call this
+    # Only users whose role grants the config.core.write scope can call this
     pass
 ```
+
+Scopes are granted to users through their role, see `ROLE_SCOPES` in
+[helpers/auth_middleware.py](helpers/auth_middleware.py) for the builtin role definitions.
 
 ### Database Migrations
 

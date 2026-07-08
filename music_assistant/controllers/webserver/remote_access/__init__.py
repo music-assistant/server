@@ -1,4 +1,5 @@
-"""Remote Access subcomponent for the Webserver Controller.
+"""
+Remote Access subcomponent for the Webserver Controller.
 
 This module manages WebRTC-based remote access to Music Assistant instances.
 It connects to a signaling server and handles incoming WebRTC connections,
@@ -13,14 +14,14 @@ from typing import TYPE_CHECKING, cast
 
 from awesomeversion import AwesomeVersion
 from mashumaro import DataClassDictMixin
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_CORE
-from music_assistant.controllers.webserver.remote_access.gateway import WebRTCGateway
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.helpers.webrtc_certificate import (
+    get_or_create_remote_id,
     get_or_create_webrtc_certificate,
-    get_remote_id_from_certificate,
 )
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
     from music_assistant.controllers.webserver import WebserverController
+    from music_assistant.controllers.webserver.remote_access.gateway import WebRTCGateway
     from music_assistant.providers.hass import HomeAssistantProvider
 
 # Signaling server URL
@@ -69,9 +71,9 @@ class RemoteAccessManager:
 
     async def setup(self) -> None:
         """Initialize the remote access manager."""
-        self._certificate = get_or_create_webrtc_certificate(self.mass.storage_path)
-
-        self._remote_id = get_remote_id_from_certificate(self._certificate)
+        # derive the Remote ID without importing aiortc, so a disabled instance keeps
+        # aiortc/PyAV (~51MB) out of memory while the remote_access/info endpoint still works
+        self._remote_id = get_or_create_remote_id(self.mass.storage_path)
 
         enabled_value = self.mass.config.get(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", False)
         self._enabled = bool(enabled_value)
@@ -87,115 +89,15 @@ class RemoteAccessManager:
         for unload_cb in self._on_unload_callbacks:
             unload_cb()
 
-    async def _schedule_start(self) -> None:
-        """Schedule a debounced gateway start, cancelling any existing connection first."""
-        # Cancel any pending timer
-        self.mass.cancel_timer(TASK_ID_START_GATEWAY)
-        # Stop any existing gateway
-        await self.stop()
-        # Schedule new start
-        self.logger.debug("Scheduling remote access gateway start in %s seconds", STARTUP_DELAY)
-        self.mass.call_later(
-            STARTUP_DELAY,
-            self._start_gateway,
-            task_id=TASK_ID_START_GATEWAY,
-        )
-
-    async def _start_gateway(self) -> None:
-        """Start the remote access gateway (internal implementation)."""
-        if not self._enabled:
-            self.logger.debug("Remote access disabled, skipping start")
-            return
-
-        base_url = self.mass.webserver.base_url
-        local_ws_url = base_url.replace("http", "ws")
-        if not local_ws_url.endswith("/"):
-            local_ws_url += "/"
-        local_ws_url += "ws"
-
-        ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
-        self._using_ha_cloud = bool(ha_cloud_available and ice_servers)
-
-        mode = "optimized" if self._using_ha_cloud else "basic"
-        self.logger.info("Starting remote access in %s mode", mode)
-
-        sendspin_url = f"ws://{format_ip_for_url(str(self.mass.streams.publish_ip))}:8927/sendspin"
-
-        self.gateway = WebRTCGateway(
-            http_session=self.mass.http_session,
-            remote_id=self._remote_id,
-            certificate=self._certificate,
-            signaling_url=SIGNALING_SERVER_URL,
-            local_ws_url=local_ws_url,
-            sendspin_url=sendspin_url,
-            ice_servers=ice_servers,
-            # Pass callback to get fresh ICE servers for each client connection
-            # This ensures TURN credentials are always valid
-            ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
-            # Pass callback to set sendspin player on websocket client
-            set_sendspin_player_callback=self.webserver.set_sendspin_player_for_webrtc_session,
-        )
-
-        await self.gateway.start()
-
     async def stop(self) -> None:
         """Stop the remote access gateway."""
         if self.gateway:
             await self.gateway.stop()
             self.gateway = None
 
-    async def _on_providers_updated(self, event: MassEvent) -> None:
-        """Handle providers updated event to detect HA Cloud status changes.
-
-        :param event: The providers updated event.
-        """
-        if not self._enabled:
-            return
-
-        # Check if HA Cloud status changed
-        ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
-        new_using_ha_cloud = bool(ha_cloud_available and ice_servers)
-
-        if new_using_ha_cloud != self._using_ha_cloud:
-            self.logger.info("HA Cloud status changed, restarting remote access")
-            await self._schedule_start()
-
-    async def _get_ha_cloud_status(self) -> tuple[bool, list[dict[str, str]] | None]:
-        """Get Home Assistant Cloud status and ICE servers.
-
-        :return: Tuple of (ha_cloud_available, ice_servers).
-        """
-        ha_provider = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
-        if not ha_provider:
-            return False, None
-        try:
-            hass_client = ha_provider.hass
-            if not hass_client or not hass_client.connected:
-                return False, None
-
-            result = await hass_client.send_command("cloud/status")
-            logged_in = result.get("logged_in", False)
-            active_subscription = result.get("active_subscription", False)
-            if not (logged_in and active_subscription):
-                return False, None
-            # HA Cloud is available, get ICE servers
-            # The cloud/webrtc/ice_servers command was added in HA 2025.12.0b6
-            if AwesomeVersion(hass_client.version) >= AwesomeVersion("2025.12.0b6"):
-                if ice_servers := await hass_client.send_command("cloud/webrtc/ice_servers"):
-                    return True, ice_servers
-            else:
-                self.logger.debug(
-                    "HA version %s not supported for optimized WebRTC mode "
-                    "(requires 2025.12.0b6 or later)",
-                    hass_client.version,
-                )
-            self.logger.debug("HA Cloud available but no ICE servers returned")
-        except Exception as err:
-            self.logger.exception("Error getting HA Cloud status: %s", err)
-        return False, None
-
     async def get_ice_servers(self) -> list[dict[str, str]]:
-        """Get ICE servers for WebRTC connections.
+        """
+        Get ICE servers for WebRTC connections.
 
         Returns HA Cloud TURN servers if available, otherwise returns public STUN servers.
         This method can be called regardless of whether remote access is enabled.
@@ -241,6 +143,117 @@ class RemoteAccessManager:
         """Return the persistent WebRTC DTLS certificate."""
         return self._certificate
 
+    async def _schedule_start(self) -> None:
+        """Schedule a debounced gateway start, cancelling any existing connection first."""
+        # Cancel any pending timer
+        self.mass.cancel_timer(TASK_ID_START_GATEWAY)
+        # Stop any existing gateway
+        await self.stop()
+        # Schedule new start
+        self.logger.debug("Scheduling remote access gateway start in %s seconds", STARTUP_DELAY)
+        self.mass.call_later(
+            STARTUP_DELAY,
+            self._start_gateway,
+            task_id=TASK_ID_START_GATEWAY,
+        )
+
+    async def _start_gateway(self) -> None:
+        """Start the remote access gateway (internal implementation)."""
+        if not self._enabled:
+            self.logger.debug("Remote access disabled, skipping start")
+            return
+
+        # imported here (and the certificate built here) so aiortc/PyAV is only
+        # loaded when remote access is actually enabled, never at idle
+        from music_assistant.controllers.webserver.remote_access.gateway import (  # noqa: PLC0415
+            WebRTCGateway,
+        )
+
+        self._certificate = get_or_create_webrtc_certificate(self.mass.storage_path)
+
+        base_url = self.mass.webserver.base_url
+        local_ws_url = base_url.replace("http", "ws")
+        if not local_ws_url.endswith("/"):
+            local_ws_url += "/"
+        local_ws_url += "ws"
+
+        ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
+        self._using_ha_cloud = bool(ha_cloud_available and ice_servers)
+
+        mode = "optimized" if self._using_ha_cloud else "basic"
+        self.logger.info("Starting remote access in %s mode", mode)
+
+        sendspin_url = f"ws://{format_ip_for_url(str(self.mass.streams.publish_ip))}:8927/sendspin"
+
+        self.gateway = WebRTCGateway(
+            http_session=self.mass.http_session,
+            remote_id=self._remote_id,
+            certificate=self._certificate,
+            signaling_url=SIGNALING_SERVER_URL,
+            local_ws_url=local_ws_url,
+            sendspin_url=sendspin_url,
+            ice_servers=ice_servers,
+            # Pass callback to get fresh ICE servers for each client connection
+            # This ensures TURN credentials are always valid
+            ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
+            # Pass callback to set sendspin player on websocket client
+            set_sendspin_player_callback=self.webserver.set_sendspin_player_for_webrtc_session,
+        )
+
+        await self.gateway.start()
+
+    async def _on_providers_updated(self, event: MassEvent) -> None:
+        """
+        Handle providers updated event to detect HA Cloud status changes.
+
+        :param event: The providers updated event.
+        """
+        if not self._enabled:
+            return
+
+        # Check if HA Cloud status changed
+        ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
+        new_using_ha_cloud = bool(ha_cloud_available and ice_servers)
+
+        if new_using_ha_cloud != self._using_ha_cloud:
+            self.logger.info("HA Cloud status changed, restarting remote access")
+            await self._schedule_start()
+
+    async def _get_ha_cloud_status(self) -> tuple[bool, list[dict[str, str]] | None]:
+        """
+        Get Home Assistant Cloud status and ICE servers.
+
+        :return: Tuple of (ha_cloud_available, ice_servers).
+        """
+        ha_provider = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
+        if not ha_provider:
+            return False, None
+        try:
+            hass_client = ha_provider.hass
+            if not hass_client or not hass_client.connected:
+                return False, None
+
+            result = await hass_client.send_command("cloud/status")
+            logged_in = result.get("logged_in", False)
+            active_subscription = result.get("active_subscription", False)
+            if not (logged_in and active_subscription):
+                return False, None
+            # HA Cloud is available, get ICE servers
+            # The cloud/webrtc/ice_servers command was added in HA 2025.12.0b6
+            if AwesomeVersion(hass_client.version) >= AwesomeVersion("2025.12.0b6"):
+                if ice_servers := await hass_client.send_command("cloud/webrtc/ice_servers"):
+                    return True, ice_servers
+            else:
+                self.logger.debug(
+                    "HA version %s not supported for optimized WebRTC mode "
+                    "(requires 2025.12.0b6 or later)",
+                    hass_client.version,
+                )
+            self.logger.debug("HA Cloud available but no ICE servers returned")
+        except Exception as err:
+            self.logger.exception("Error getting HA Cloud status: %s", err)
+        return False, None
+
     def _register_api_commands(self) -> None:
         """Register API commands for remote access."""
 
@@ -256,7 +269,8 @@ class RemoteAccessManager:
             )
 
         async def configure_remote_access(enabled: bool) -> RemoteAccessInfo:
-            """Configure remote access settings.
+            """
+            Configure remote access settings.
 
             :param enabled: Enable or disable remote access.
             """
@@ -275,11 +289,13 @@ class RemoteAccessManager:
 
         self._on_unload_callbacks.append(
             self.mass.register_api_command(
-                "remote_access/info", get_remote_access_info, required_role="admin"
+                "remote_access/info", get_remote_access_info, required_scope=Scope.SYSTEM_MANAGE
             )
         )
         self._on_unload_callbacks.append(
             self.mass.register_api_command(
-                "remote_access/configure", configure_remote_access, required_role="admin"
+                "remote_access/configure",
+                configure_remote_access,
+                required_scope=Scope.SYSTEM_MANAGE,
             )
         )

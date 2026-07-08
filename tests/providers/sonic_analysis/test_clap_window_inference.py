@@ -22,13 +22,17 @@ def _make_provider(
     embedding_value: float = 0.5,
     similarity_row: list[float] | None = None,
 ) -> tuple[SonicAnalysisProvider, MagicMock, MagicMock]:
-    """Stub provider with a mocked CLAP model returning predictable tensors.
+    """
+    Stub provider with a mocked CLAP model returning predictable tensors.
 
     :returns: (provider, fake_model_mock, fake_logger_mock).
     """
     p = SonicAnalysisProvider.__new__(SonicAnalysisProvider)
     fake_logger = MagicMock()
     p.logger = fake_logger
+    # _run_offloaded reads mass.streams.audio_analysis.analysis_semaphore; a plain Mock
+    # attribute is not an asyncio.Semaphore, so offloads fall back to a plain worker thread.
+    p.mass = MagicMock()
 
     fake_model = MagicMock()
     sim = similarity_row if similarity_row is not None else [1.0, 2.0, 3.0, 4.0]
@@ -128,7 +132,8 @@ async def test_calls_compute_similarity_with_text_embeddings() -> None:
 
 
 def test_single_window_inference_sync_returns_none_when_model_is_none() -> None:
-    """_single_window_inference_sync returns None cleanly when the CLAP model is unloaded.
+    """
+    _single_window_inference_sync returns None cleanly when the CLAP model is unloaded.
 
     Simulates the unload() race: model is nulled before the sync thread reads it.
     """
@@ -154,7 +159,8 @@ def test_single_window_inference_sync_returns_none_when_text_embeddings_are_none
 
 @pytest.mark.asyncio
 async def test_run_single_clap_window_handles_none_return_from_sync() -> None:
-    """_run_single_clap_window does not log a warning when inference returns None (unload race).
+    """
+    _run_single_clap_window does not log a warning when inference returns None (unload race).
 
     The unload race: model is non-None at the early-return check in _run_single_clap_window,
     but is nulled before the sync thread reads it, causing _single_window_inference_sync to

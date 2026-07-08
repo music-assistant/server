@@ -48,11 +48,18 @@ if TYPE_CHECKING:
 
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.music.media.base import (
+        AudiobookSyncDetails,
+        LibraryItemSyncDetails,
+        TrackSyncDetails,
+    )
+
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 
 
 class MusicProvider(Provider):
-    """Base representation of a Music Provider (controller).
+    """
+    Base representation of a Music Provider (controller).
 
     Music Provider implementations should inherit from this base model.
     """
@@ -81,7 +88,8 @@ class MusicProvider(Provider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -91,42 +99,42 @@ class MusicProvider(Provider):
             raise NotImplementedError
         return SearchResults()
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library/subscribed audiobooks from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_genres(self) -> AsyncGenerator[str, None]:
+    async def get_library_genres(self) -> AsyncGenerator[str]:
         """Retrieve library genres from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
@@ -136,66 +144,79 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist.
+        """
+        Get a list of all albums for the given artist.
 
         Only called if provider supports ProviderFeature.ARTIST_ALBUMS.
         """
         raise NotImplementedError
 
+    async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
+        """
+        Get a list of all tracks for the given artist.
+
+        Only called if provider supports ProviderFeature.ARTIST_TRACKS.
+        """
+        raise NotImplementedError
+
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of most popular tracks for the given artist.
+        """
+        Get a list of most popular tracks for the given artist.
 
         Only called if provider supports ProviderFeature.ARTIST_TOPTRACKS.
         """
         raise NotImplementedError
 
-    async def get_album(self, prov_album_id: str) -> Album:
-        """Get full album details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_ALBUMS.
+    async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:
         """
+        Get a list of most popular albums for the given artist.
+
+        Only called if provider supports ProviderFeature.ARTIST_TOPALBUMS.
+        """
+        raise NotImplementedError
+
+    async def get_album(self, prov_album_id: str) -> Album:
+        """Get full album details by id."""
         raise NotImplementedError
 
     async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_TRACKS.
-        """
+        """Get full track details by id."""
         raise NotImplementedError
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get full playlist details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
-        """
+        """Get full playlist details by id."""
         raise NotImplementedError
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_RADIOS.
-        """
+        """Get full radio details by id."""
         raise NotImplementedError
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get full audiobook details by id.
+        """Get full audiobook details by id."""
+        raise NotImplementedError
 
-        Only called if provider supports ProviderFeature.LIBRARY_AUDIOBOOKS.
+    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """
+        Get a list of all audiobooks for the given author.
+
+        Only called if provider supports ProviderFeature.AUTHOR_AUDIOBOOKS.
+        """
+        raise NotImplementedError
+
+    async def get_narrator_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """
+        Get a list of all audiobooks for the given narrator.
+
+        Only called if provider supports ProviderFeature.NARRATOR_AUDIOBOOKS.
         """
         raise NotImplementedError
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get full podcast details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get full podcast details by id."""
         raise NotImplementedError
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
-        """Get (full) podcast episode details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get (full) podcast episode details by id."""
         raise NotImplementedError
 
     async def get_item_genre_names(self, media_type: MediaType, item_id: str) -> set[str]:
@@ -206,10 +227,7 @@ class MusicProvider(Provider):
         self,
         prov_album_id: str,
     ) -> list[Track]:
-        """Get album tracks for given album id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_ALBUMS.
-        """
+        """Get album tracks for given album id."""
         raise NotImplementedError
 
     async def get_playlist_tracks(
@@ -217,20 +235,14 @@ class MusicProvider(Provider):
         prov_playlist_id: str,
         page: int = 0,
     ) -> Sequence[PlaylistPlayableItem]:
-        """Get all playlist tracks for given playlist id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
-        """
+        """Get all playlist tracks for given playlist id."""
         raise NotImplementedError
 
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Get all PodcastEpisodes for given podcast id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+    ) -> AsyncGenerator[PodcastEpisode]:
+        """Get all PodcastEpisodes for given podcast id."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
@@ -368,7 +380,8 @@ class MusicProvider(Provider):
             raise NotImplementedError
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Add track(s) to playlist.
+        """
+        Add track(s) to playlist.
 
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
         """
@@ -377,21 +390,24 @@ class MusicProvider(Provider):
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
-        """Remove track(s) from playlist.
+        """
+        Remove track(s) from playlist.
 
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
         """
         raise NotImplementedError
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a new playlist on provider with given name and targeting media_types.
+        """
+        Create a new playlist on provider with given name and targeting media_types.
 
         Only called if provider supports ProviderFeature.PLAYLIST_CREATE.
         """
         raise NotImplementedError
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Retrieve a dynamic list of similar tracks based on the provided track.
+        """
+        Retrieve a dynamic list of similar tracks based on the provided track.
 
         Only called if provider supports ProviderFeature.SIMILAR_TRACKS.
         """
@@ -429,7 +445,7 @@ class MusicProvider(Provider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Return the (custom) audio stream for the provider item.
 
@@ -501,7 +517,8 @@ class MusicProvider(Provider):
         return path
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
@@ -813,40 +830,43 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_artists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ARTIST, item_count, prov_item.name)
-            library_item = await self.mass.music.artists.get_library_item_by_prov_mappings(
+            sync_details = await self.mass.music.artists.get_library_item_sync_details(
                 prov_item.provider_mappings,
             )
             try:
-                if not library_item:
-                    # add item to the library
-                    for prov_map in prov_item.provider_mappings:
-                        prov_map.in_library = True
-                    library_item = await self.mass.music.artists.add_item_to_library(prov_item)
-                elif not self._check_provider_mappings(library_item, prov_item, True):
-                    # existing library item but provider mapping doesn't match
-                    library_item = await self.mass.music.artists.update_item_in_library(
-                        library_item.item_id, prov_item
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.artists.add_item_to_library(prov_item)
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                    elif self._library_item_needs_update(sync_details, prov_item):
+                        library_item = await self.mass.music.artists.update_item_in_library(
+                            sync_details.item_id, prov_item
+                        )
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                    else:
+                        db_id = sync_details.item_id
+                        favorite = sync_details.favorite
+                    if not favorite and prov_item.favorite:
+                        # existing library item not favorite but should be
+                        await self.mass.music.artists.set_favorite(db_id, True)
+                    fallback_genres = (
+                        set(prov_item.metadata.genres)
+                        if prov_item.metadata and prov_item.metadata.genres
+                        else None
                     )
-                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                    # update date_added if it changed
-                    library_item = await self.mass.music.artists.update_item_in_library(
-                        library_item.item_id, prov_item
+                    await self._sync_item_genres(
+                        MediaType.ARTIST,
+                        prov_item.item_id,
+                        db_id,
+                        fallback_genres,
                     )
-                if not library_item.favorite and prov_item.favorite:
-                    # existing library item not favorite but should be
-                    await self.mass.music.artists.set_favorite(library_item.item_id, True)
-                fallback_genres = (
-                    set(prov_item.metadata.genres)
-                    if prov_item.metadata and prov_item.metadata.genres
-                    else None
-                )
-                await self._sync_item_genres(
-                    MediaType.ARTIST,
-                    prov_item.item_id,
-                    int(library_item.item_id),
-                    fallback_genres,
-                )
-                cur_db_ids.add(int(library_item.item_id))
+                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
                 self.logger.warning(
@@ -857,57 +877,65 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.ARTIST, prov_item.uri, err)
         return cur_db_ids
 
+    def library_sync_album_tracks_enabled(self) -> bool:
+        """Return whether all tracks of an album should be imported into the library."""
+        return bool(
+            self.config.get_value(
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
+            )
+        )
+
     async def _sync_library_albums(self) -> set[int]:
         """Sync Library Albums to Music Assistant library."""
         self.logger.debug("Start sync of Albums to Music Assistant library.")
         cur_db_ids: set[int] = set()
-        conf_sync_album_tracks = self.config.get_value(
-            CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
-            CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
-        )
-        sync_album_tracks = bool(conf_sync_album_tracks)
+        sync_album_tracks = self.library_sync_album_tracks_enabled()
         item_count = 0
         async for prov_item in self.get_library_albums():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ALBUM, item_count, prov_item.name)
-            library_item = await self.mass.music.albums.get_library_item_by_prov_mappings(
+            sync_details = await self.mass.music.albums.get_library_item_sync_details(
                 prov_item.provider_mappings,
             )
             try:
-                if not library_item:
-                    # add item to the library
-                    for prov_map in prov_item.provider_mappings:
-                        prov_map.in_library = True
-                    library_item = await self.mass.music.albums.add_item_to_library(prov_item)
-                elif not self._check_provider_mappings(library_item, prov_item, True):
-                    # existing library item but provider mapping doesn't match
-                    library_item = await self.mass.music.albums.update_item_in_library(
-                        library_item.item_id, prov_item
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.albums.add_item_to_library(prov_item)
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                    elif self._library_item_needs_update(sync_details, prov_item):
+                        library_item = await self.mass.music.albums.update_item_in_library(
+                            sync_details.item_id, prov_item
+                        )
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                    else:
+                        db_id = sync_details.item_id
+                        favorite = sync_details.favorite
+                    if not favorite and prov_item.favorite:
+                        # existing library item not favorite but should be
+                        await self.mass.music.albums.set_favorite(db_id, True)
+                    fallback_genres = (
+                        set(prov_item.metadata.genres)
+                        if prov_item.metadata and prov_item.metadata.genres
+                        else None
                     )
-                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                    # update date_added if it changed
-                    library_item = await self.mass.music.albums.update_item_in_library(
-                        library_item.item_id, prov_item
+                    await self._sync_item_genres(
+                        MediaType.ALBUM,
+                        prov_item.item_id,
+                        db_id,
+                        fallback_genres,
                     )
-                if not library_item.favorite and prov_item.favorite:
-                    # existing library item not favorite but should be
-                    await self.mass.music.albums.set_favorite(library_item.item_id, True)
-                fallback_genres = (
-                    set(prov_item.metadata.genres)
-                    if prov_item.metadata and prov_item.metadata.genres
-                    else None
-                )
-                await self._sync_item_genres(
-                    MediaType.ALBUM,
-                    prov_item.item_id,
-                    int(library_item.item_id),
-                    fallback_genres,
-                )
-                cur_db_ids.add(int(library_item.item_id))
+                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
                 # optionally add album tracks to library
                 if sync_album_tracks:
-                    await self._sync_album_tracks(prov_item)
+                    await self.import_album_tracks(prov_item.item_id, prov_item.name)
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Skipping sync of album %s - error details: %s",
@@ -917,41 +945,52 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
 
-    async def _sync_album_tracks(self, provider_album: Album) -> None:
-        """Sync Album Tracks to Music Assistant library."""
+    async def import_album_tracks(self, prov_album_id: str, album_name: str | None = None) -> None:
+        """
+        Import all tracks of the given (provider) album into the Music Assistant library.
+
+        :param prov_album_id: The provider item id of the album.
+        :param album_name: Optional album name, used for logging/progress only.
+        """
         self.logger.debug(
-            "Start sync of Album Tracks to Music Assistant library for album %s.",
-            provider_album.name,
+            "Importing Album Tracks into the Music Assistant library for album %s.",
+            album_name or prov_album_id,
         )
         for item_count, prov_track in enumerate(
-            await self.get_album_tracks(provider_album.item_id), start=1
+            await self.get_album_tracks(prov_album_id), start=1
         ):
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
-            library_track = await self.mass.music.tracks.get_library_item_by_prov_mappings(
+            sync_details = await self.mass.music.tracks.get_library_item_sync_details(
                 prov_track.provider_mappings,
             )
             try:
-                if not library_track:
-                    # add item to the library
-                    for prov_map in prov_track.provider_mappings:
-                        prov_map.in_library = True
-                    library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
-                elif not self._check_provider_mappings(library_track, prov_track, True):
-                    # existing library track but provider mapping doesn't match
-                    library_track = await self.mass.music.tracks.update_item_in_library(
-                        library_track.item_id, prov_track
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_track.provider_mappings:
+                            prov_map.in_library = True
+                        library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
+                        db_id = int(library_track.item_id)
+                    elif not self._check_provider_mappings(sync_details, prov_track, True):
+                        # existing library track but provider mapping doesn't match
+                        library_track = await self.mass.music.tracks.update_item_in_library(
+                            sync_details.item_id, prov_track
+                        )
+                        db_id = int(library_track.item_id)
+                    else:
+                        db_id = sync_details.item_id
+                    fallback_genres = (
+                        set(prov_track.metadata.genres)
+                        if prov_track.metadata and prov_track.metadata.genres
+                        else None
                     )
-                fallback_genres = (
-                    set(prov_track.metadata.genres)
-                    if prov_track.metadata and prov_track.metadata.genres
-                    else None
-                )
-                await self._sync_item_genres(
-                    MediaType.TRACK,
-                    prov_track.item_id,
-                    int(library_track.item_id),
-                    fallback_genres,
-                )
+                    await self._sync_item_genres(
+                        MediaType.TRACK,
+                        prov_track.item_id,
+                        db_id,
+                        fallback_genres,
+                    )
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
                 self.logger.warning(
@@ -961,6 +1000,37 @@ class MusicProvider(Provider):
                 )
                 self._report_sync_task_failure(MediaType.TRACK, prov_track.uri, err)
 
+    def _validate_audiobook_author_narrator_types(self, prov_item: Audiobook) -> None:
+        """Validate that authors/narrators types match the provider's supported features."""
+        if ProviderFeature.AUTHOR_AUDIOBOOKS in self.supported_features and not all(
+            isinstance(author, Artist) for author in prov_item.authors
+        ):
+            raise MusicAssistantError(
+                f"Provider {self.name} supports ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+                f" item {prov_item.name} does not exclusively provide Artist instances."
+            )
+        if ProviderFeature.NARRATOR_AUDIOBOOKS in self.supported_features and not all(
+            isinstance(narrator, Artist) for narrator in prov_item.narrators
+        ):
+            raise MusicAssistantError(
+                f"Provider {self.name} supports ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+                f" item {prov_item.name} does not exclusively provide Artist instances."
+            )
+        if ProviderFeature.AUTHOR_AUDIOBOOKS not in self.supported_features and not all(
+            isinstance(author, str) for author in prov_item.authors
+        ):
+            raise MusicAssistantError(
+                f"Provider {self.name} does not support ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+                f" item {prov_item.name} does not exclusively provide strings."
+            )
+        if ProviderFeature.NARRATOR_AUDIOBOOKS not in self.supported_features and not all(
+            isinstance(narrator, str) for narrator in prov_item.narrators
+        ):
+            raise MusicAssistantError(
+                f"Provider {self.name} does not support ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+                f" item {prov_item.name} does not exclusively provide strings."
+            )
+
     async def _sync_library_audiobooks(self) -> set[int]:
         """Sync Library Audiobooks to Music Assistant library."""
         self.logger.debug("Start sync of Audiobooks to Music Assistant library.")
@@ -969,54 +1039,84 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_audiobooks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.AUDIOBOOK, item_count, prov_item.name)
-            library_item = await self.mass.music.audiobooks.get_library_item_by_prov_mappings(
-                prov_item.provider_mappings,
+            sync_details = cast(
+                "AudiobookSyncDetails | None",
+                await self.mass.music.audiobooks.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                ),
             )
             try:
-                if not library_item:
-                    # add item to the library
-                    for prov_map in prov_item.provider_mappings:
-                        prov_map.in_library = True
-                    library_item = await self.mass.music.audiobooks.add_item_to_library(prov_item)
-                elif not self._check_provider_mappings(library_item, prov_item, True):
-                    # existing library item but provider mapping doesn't match
-                    library_item = await self.mass.music.audiobooks.update_item_in_library(
-                        library_item.item_id, prov_item
+                self._validate_audiobook_author_narrator_types(prov_item)
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.audiobooks.add_item_to_library(
+                            prov_item
+                        )
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                        lib_fully_played = library_item.fully_played
+                        lib_resume_position_ms = library_item.resume_position_ms
+                    elif self._library_item_needs_update(sync_details, prov_item):
+                        library_item = await self.mass.music.audiobooks.update_item_in_library(
+                            sync_details.item_id, prov_item
+                        )
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                        lib_fully_played = library_item.fully_played
+                        lib_resume_position_ms = library_item.resume_position_ms
+                    else:
+                        # detect a change in ProviderFeature
+                        # (stored authors/narrators are plain strings but the provider
+                        # now supplies full Artist objects)
+                        prov_author = prov_item.authors[0] if prov_item.authors else None
+                        prov_narrator = prov_item.narrators[0] if prov_item.narrators else None
+                        if (sync_details.author_is_str and not isinstance(prov_author, str)) or (
+                            sync_details.narrator_is_str and not isinstance(prov_narrator, str)
+                        ):
+                            library_item = await self.mass.music.audiobooks.update_item_in_library(
+                                sync_details.item_id, prov_item
+                            )
+                            db_id = int(library_item.item_id)
+                            favorite = library_item.favorite
+                            lib_fully_played = library_item.fully_played
+                            lib_resume_position_ms = library_item.resume_position_ms
+                        else:
+                            db_id = sync_details.item_id
+                            favorite = sync_details.favorite
+                            lib_fully_played = sync_details.fully_played
+                            lib_resume_position_ms = sync_details.resume_position_ms
+
+                    if not favorite and prov_item.favorite:
+                        # existing library item not favorite but should be
+                        await self.mass.music.audiobooks.set_favorite(db_id, True)
+                    # check if resume_position_ms or fully_played changed
+                    if (
+                        prov_item.resume_position_ms is not None
+                        and prov_item.fully_played is not None
+                        and (
+                            lib_resume_position_ms != prov_item.resume_position_ms
+                            or lib_fully_played != prov_item.fully_played
+                        )
+                    ):
+                        await self.mass.music.audiobooks.update_item_in_library(db_id, prov_item)
+
+                    fallback_genres = (
+                        set(prov_item.metadata.genres)
+                        if prov_item.metadata and prov_item.metadata.genres
+                        else None
                     )
-                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                    # update date_added if it changed
-                    library_item = await self.mass.music.audiobooks.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                if not library_item.favorite and prov_item.favorite:
-                    # existing library item not favorite but should be
-                    await self.mass.music.audiobooks.set_favorite(library_item.item_id, True)
-                # check if resume_position_ms or fully_played changed
-                if (
-                    prov_item.resume_position_ms is not None
-                    and prov_item.fully_played is not None
-                    and (
-                        library_item.resume_position_ms != prov_item.resume_position_ms
-                        or library_item.fully_played != prov_item.fully_played
-                    )
-                ):
-                    library_item = await self.mass.music.audiobooks.update_item_in_library(
-                        library_item.item_id, prov_item
+                    await self._sync_item_genres(
+                        MediaType.AUDIOBOOK,
+                        prov_item.item_id,
+                        db_id,
+                        fallback_genres,
                     )
 
-                fallback_genres = (
-                    set(prov_item.metadata.genres)
-                    if prov_item.metadata and prov_item.metadata.genres
-                    else None
-                )
-                await self._sync_item_genres(
-                    MediaType.AUDIOBOOK,
-                    prov_item.item_id,
-                    int(library_item.item_id),
-                    fallback_genres,
-                )
-
-                cur_db_ids.add(int(library_item.item_id))
+                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
                 self.logger.warning(
@@ -1044,29 +1144,43 @@ class MusicProvider(Provider):
                 prov_item.provider_mappings,
             )
             try:
-                if not library_item:
-                    # add item to the library
-                    for prov_map in prov_item.provider_mappings:
-                        prov_map.in_library = True
-                    library_item = await self.mass.music.playlists.add_item_to_library(prov_item)
-                elif not self._check_provider_mappings(library_item, prov_item, True):
-                    # existing library item but provider mapping doesn't match
-                    library_item = await self.mass.music.playlists.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                    # update date_added if it changed
-                    library_item = await self.mass.music.playlists.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                elif prov_item.supported_mediatypes != library_item.supported_mediatypes:
-                    # update if supported mediatypes changed
-                    library_item = await self.mass.music.playlists.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                if not library_item.favorite and prov_item.favorite:
-                    # existing library item not favorite but should be
-                    await self.mass.music.playlists.set_favorite(library_item.item_id, True)
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not library_item:
+                        # add item to the library
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.playlists.add_item_to_library(
+                            prov_item
+                        )
+                    elif (
+                        self._library_item_needs_update(library_item, prov_item)
+                        # or the supported mediatypes changed
+                        or prov_item.supported_mediatypes != library_item.supported_mediatypes
+                    ):
+                        library_item = await self.mass.music.playlists.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
+                    elif (
+                        prov_item.is_dynamic
+                        and not library_item.is_editable
+                        and (
+                            prov_item.name != library_item.name
+                            or prov_item.metadata.images != library_item.metadata.images
+                        )
+                    ):
+                        # the provider is the sole source of truth for non-editable dynamic
+                        # playlists (e.g. Pandora/personalized-radio stations): overwrite=True
+                        # replaces the full stored record (not just name/images), which is fine
+                        # here since there's no local customization on these to lose. Restricted
+                        # to is_dynamic so static non-editable playlists (e.g. provider
+                        # "favorites") keep their locally-enriched metadata/images.
+                        library_item = await self.mass.music.playlists.update_item_in_library(
+                            library_item.item_id, prov_item, overwrite=True
+                        )
+                    if not library_item.favorite and prov_item.favorite:
+                        # existing library item not favorite but should be
+                        await self.mass.music.playlists.set_favorite(library_item.item_id, True)
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
                 # optionally sync playlist tracks
@@ -1099,32 +1213,38 @@ class MusicProvider(Provider):
             item_count += 1
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
             controller = self.mass.music.get_controller(prov_track.media_type)
-            library_track = await controller.get_library_item_by_prov_mappings(
+            sync_details = await controller.get_library_item_sync_details(
                 prov_track.provider_mappings,
             )
             try:
-                if not library_track:
-                    # add item to the library
-                    for prov_map in prov_track.provider_mappings:
-                        prov_map.in_library = True
-                    library_track = await controller.add_item_to_library(prov_track)  # type: ignore[arg-type]
-                elif not self._check_provider_mappings(library_track, prov_track, True):
-                    # existing library track but provider mapping doesn't match
-                    library_track = await controller.update_item_in_library(
-                        library_track.item_id,
-                        prov_track,  # type: ignore[arg-type]
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_track.provider_mappings:
+                            prov_map.in_library = True
+                        library_track = await controller.add_item_to_library(prov_track)  # type: ignore[arg-type]
+                        db_id = int(library_track.item_id)
+                    elif not self._check_provider_mappings(sync_details, prov_track, True):
+                        # existing library track but provider mapping doesn't match
+                        library_track = await controller.update_item_in_library(
+                            sync_details.item_id,
+                            prov_track,  # type: ignore[arg-type]
+                        )
+                        db_id = int(library_track.item_id)
+                    else:
+                        db_id = sync_details.item_id
+                    fallback_genres = (
+                        set(prov_track.metadata.genres)
+                        if prov_track.metadata and prov_track.metadata.genres
+                        else None
                     )
-                fallback_genres = (
-                    set(prov_track.metadata.genres)
-                    if prov_track.metadata and prov_track.metadata.genres
-                    else None
-                )
-                await self._sync_item_genres(
-                    MediaType.TRACK,
-                    prov_track.item_id,
-                    int(library_track.item_id),
-                    fallback_genres,
-                )
+                    await self._sync_item_genres(
+                        MediaType.TRACK,
+                        prov_track.item_id,
+                        db_id,
+                        fallback_genres,
+                    )
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
                 self.logger.warning(
@@ -1142,11 +1262,14 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_tracks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_item.name)
-            library_item = await self.mass.music.tracks.get_library_item_by_prov_mappings(
-                prov_item.provider_mappings,
+            sync_details = cast(
+                "TrackSyncDetails | None",
+                await self.mass.music.tracks.get_library_item_sync_details(
+                    prov_item.provider_mappings,
+                ),
             )
             try:
-                if not library_item and not prov_item.available:
+                if not sync_details and not prov_item.available:
                     # skip unavailable tracks
                     # TODO: do we want to search for substitutes at this point ?
                     self.logger.debug(
@@ -1154,36 +1277,42 @@ class MusicProvider(Provider):
                         prov_item.uri,
                     )
                     continue
-                if not library_item:
-                    # add item to the library
-                    for prov_map in prov_item.provider_mappings:
-                        prov_map.in_library = True
-                    library_item = await self.mass.music.tracks.add_item_to_library(prov_item)
-                elif not self._check_provider_mappings(library_item, prov_item, True):
-                    # existing library item but provider mapping doesn't match
-                    library_item = await self.mass.music.tracks.update_item_in_library(
-                        library_item.item_id, prov_item
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.tracks.add_item_to_library(prov_item)
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                    elif self._library_item_needs_update(sync_details, prov_item) or (
+                        # or backfill a missing album(_tracks) link for existing tracks
+                        prov_item.album and not sync_details.has_album
+                    ):
+                        library_item = await self.mass.music.tracks.update_item_in_library(
+                            sync_details.item_id, prov_item
+                        )
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                    else:
+                        db_id = sync_details.item_id
+                        favorite = sync_details.favorite
+                    if not favorite and prov_item.favorite:
+                        # existing library item not favorite but should be
+                        await self.mass.music.tracks.set_favorite(db_id, True)
+                    fallback_genres = (
+                        set(prov_item.metadata.genres)
+                        if prov_item.metadata and prov_item.metadata.genres
+                        else None
                     )
-                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                    # update date_added if it changed
-                    library_item = await self.mass.music.tracks.update_item_in_library(
-                        library_item.item_id, prov_item
+                    await self._sync_item_genres(
+                        MediaType.TRACK,
+                        prov_item.item_id,
+                        db_id,
+                        fallback_genres,
                     )
-                if not library_item.favorite and prov_item.favorite:
-                    # existing library item not favorite but should be
-                    await self.mass.music.tracks.set_favorite(library_item.item_id, True)
-                fallback_genres = (
-                    set(prov_item.metadata.genres)
-                    if prov_item.metadata and prov_item.metadata.genres
-                    else None
-                )
-                await self._sync_item_genres(
-                    MediaType.TRACK,
-                    prov_item.item_id,
-                    int(library_item.item_id),
-                    fallback_genres,
-                )
-                cur_db_ids.add(int(library_item.item_id))
+                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
                 self.logger.warning(
@@ -1202,46 +1331,47 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_podcasts():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PODCAST, item_count, prov_item.name)
-            library_item = await self.mass.music.podcasts.get_library_item_by_prov_mappings(
+            sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
                 prov_item.provider_mappings,
             )
             try:
-                if not library_item:
-                    # add item to the library
-                    for prov_map in prov_item.provider_mappings:
-                        prov_map.in_library = True
-                    library_item = await self.mass.music.podcasts.add_item_to_library(prov_item)
-                elif not self._check_provider_mappings(library_item, prov_item, True):
-                    # existing library item but provider mapping doesn't match
-                    library_item = await self.mass.music.podcasts.update_item_in_library(
-                        library_item.item_id, prov_item
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.podcasts.add_item_to_library(prov_item)
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                    elif self._library_item_needs_update(sync_details, prov_item):
+                        library_item = await self.mass.music.podcasts.update_item_in_library(
+                            sync_details.item_id, prov_item
+                        )
+                        db_id = int(library_item.item_id)
+                        favorite = library_item.favorite
+                    else:
+                        db_id = sync_details.item_id
+                        favorite = sync_details.favorite
+                    if not favorite and prov_item.favorite:
+                        # existing library item not favorite but should be
+                        await self.mass.music.podcasts.set_favorite(db_id, True)
+                    fallback_genres = (
+                        set(prov_item.metadata.genres)
+                        if prov_item.metadata and prov_item.metadata.genres
+                        else None
                     )
-                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                    # update date_added if it changed
-                    library_item = await self.mass.music.podcasts.update_item_in_library(
-                        library_item.item_id, prov_item
+                    await self._sync_item_genres(
+                        MediaType.PODCAST,
+                        prov_item.item_id,
+                        db_id,
+                        fallback_genres,
                     )
-                if not library_item.favorite and prov_item.favorite:
-                    # existing library item not favorite but should be
-                    await self.mass.music.podcasts.set_favorite(library_item.item_id, True)
-                fallback_genres = (
-                    set(prov_item.metadata.genres)
-                    if prov_item.metadata and prov_item.metadata.genres
-                    else None
-                )
-                await self._sync_item_genres(
-                    MediaType.PODCAST,
-                    prov_item.item_id,
-                    int(library_item.item_id),
-                    fallback_genres,
-                )
-                cur_db_ids.add(int(library_item.item_id))
+                cur_db_ids.add(db_id)
                 await asyncio.sleep(0)  # yield to eventloop
 
                 # precache podcast episodes
-                async for _ in self.mass.music.podcasts.episodes(
-                    library_item.item_id, library_item.provider
-                ):
+                async for _ in self.mass.music.podcasts.episodes(str(db_id), "library"):
                     await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
                 self.logger.warning(
@@ -1264,24 +1394,20 @@ class MusicProvider(Provider):
                 prov_item.provider_mappings,
             )
             try:
-                if not library_item:
-                    # add item to the library
-                    for prov_map in prov_item.provider_mappings:
-                        prov_map.in_library = True
-                    library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                elif not self._check_provider_mappings(library_item, prov_item, True):
-                    # existing library item but provider mapping doesn't match
-                    library_item = await self.mass.music.radio.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                    # update date_added if it changed
-                    library_item = await self.mass.music.radio.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                if not library_item.favorite and prov_item.favorite:
-                    # existing library item not favorite but should be
-                    await self.mass.music.radio.set_favorite(library_item.item_id, True)
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not library_item:
+                        # add item to the library
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await self.mass.music.radio.add_item_to_library(prov_item)
+                    elif self._library_item_needs_update(library_item, prov_item):
+                        library_item = await self.mass.music.radio.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
+                    if not library_item.favorite and prov_item.favorite:
+                        # existing library item not favorite but should be
+                        await self.mass.music.radio.set_favorite(library_item.item_id, True)
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
 
@@ -1314,7 +1440,7 @@ class MusicProvider(Provider):
     async def iter_playlist_tracks(
         self,
         prov_playlist_id: str,
-    ) -> AsyncGenerator[PlaylistPlayableItem, None]:
+    ) -> AsyncGenerator[PlaylistPlayableItem]:
         """Iterate playlist tracks for the given provider playlist id."""
         page = 0
         while True:
@@ -1328,7 +1454,7 @@ class MusicProvider(Provider):
                 yield track
             page += 1
 
-    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType, None]:
+    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
         """Return library generator for given media_type."""
         if media_type == MediaType.ARTIST:
             return self.get_library_artists()
@@ -1346,8 +1472,21 @@ class MusicProvider(Provider):
             return self.get_library_podcasts()
         raise NotImplementedError
 
+    def _library_item_needs_update(
+        self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
+    ) -> bool:
+        """Return True if the library item needs an update from the given provider item."""
+        if not self._check_provider_mappings(library_item, prov_item, True):
+            # provider mapping doesn't match the library item
+            return True
+        # the item's date_added changed on the provider
+        return bool(prov_item.date_added and library_item.date_added != prov_item.date_added)
+
     def _check_provider_mappings(
-        self, library_item: MediaItemType, provider_item: MediaItemType, in_library: bool
+        self,
+        library_item: MediaItemType | LibraryItemSyncDetails,
+        provider_item: MediaItemType,
+        in_library: bool,
     ) -> bool:
         """Check if provider mapping(s) are consistent between library and provider items."""
         for provider_mapping in provider_item.provider_mappings:

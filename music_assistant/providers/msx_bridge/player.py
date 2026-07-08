@@ -102,7 +102,8 @@ class MSXPlayer(Player):
             self.update_state()
 
     def on_ws_disconnected(self) -> None:
-        """Mark player unavailable when last WebSocket client disconnects while playing.
+        """
+        Mark player unavailable when last WebSocket client disconnects while playing.
 
         If the player was playing when the TV dropped the WS connection,
         mark it unavailable so MA reflects the actual state.
@@ -205,7 +206,7 @@ class MSXPlayer(Player):
                     duration = getattr(queue_item.media_item, "duration", None) or duration
                 if queue_item.image:
                     image_url = self.mass.metadata.get_image_url(
-                        queue_item.image, size=500, prefer_stream_server=True
+                        queue_item.image, size=512, prefer_stream_server=True
                     )
                 if duration is None and queue_item.duration:
                     duration = queue_item.duration
@@ -214,7 +215,8 @@ class MSXPlayer(Player):
         return title, artist, image_url, duration
 
     def _get_group_member_ids(self) -> list[str]:
-        """Get IDs of group members (excluding self).
+        """
+        Get IDs of group members (excluding self).
 
         Only returns members when this player is the sync leader.
         MA's SyncGroupPlayer forwards play_media to the sync leader,
@@ -306,7 +308,8 @@ class MSXPlayer(Player):
         await self._propagate_to_group_members("play")
 
     async def _resume_from_pause(self) -> None:
-        """Resume playback after pause — tell MSX to unpause its native player.
+        """
+        Resume playback after pause — tell MSX to unpause its native player.
 
         Note: the HTTP audio stream stays open during pause. For short pauses
         the chunk buffer (maxsize=32) absorbs the gap. Long pauses (minutes)
@@ -368,7 +371,8 @@ class MSXPlayer(Player):
             cast("MSXBridgeProvider", self.provider).notify_seek(self.player_id, position_seconds)
 
     def update_position(self, position: float) -> None:
-        """Update elapsed time from a WebSocket position report.
+        """
+        Update elapsed time from a WebSocket position report.
 
         Only accepts updates while PLAYING — late reports arriving after
         pause() would overwrite the correctly accumulated elapsed_time.
@@ -386,7 +390,8 @@ class MSXPlayer(Player):
         self.update_state()
 
     async def poll(self) -> None:
-        """Poll player for state updates.
+        """
+        Poll player for state updates.
 
         Raises PlayerUnavailableError if the player was marked unavailable
         (e.g. WS disconnected while playing — TV likely went offline).
@@ -396,7 +401,10 @@ class MSXPlayer(Player):
         """
         if not self._attr_available:
             raise PlayerUnavailableError(
-                f"MSX TV {self.display_name} is offline (WebSocket disconnected)"
+                f"MSX TV {self.display_name} is offline (WebSocket disconnected)",
+                translation_key="player_offline",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
             )
         if (
             self._attr_playback_state == PlaybackState.PLAYING
@@ -420,7 +428,8 @@ class MSXPlayer(Player):
             self.update_state()
 
     async def wait_for_media(self, timeout: float = 10.0) -> PlayerMedia | None:
-        """Wait for play_media() to set current_media, with timeout.
+        """
+        Wait for play_media() to set current_media, with timeout.
 
         Fast path: current_media already set — return immediately.
         Slow path: wait for play_media() to signal. The event is cleared at the start
