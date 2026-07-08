@@ -129,7 +129,10 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (!url) return '';
         if (isHttpUrl(url)) {
             try {
-                return new URL(url).host === location.host ? url : '';
+                var parsed = new URL(url);
+                if (parsed.host !== location.host) return '';
+                // rebuild from parsed parts so a "//evil.com/x" pathname can't change the host
+                return BASE + parsed.pathname + parsed.search;
             } catch (e) {
                 return '';
             }
