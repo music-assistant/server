@@ -41,6 +41,14 @@ async def test_root_html(http_client: TestClient[Any, Any]) -> None:
     assert "MSX" in body
 
 
+async def test_root_html_escapes_host_header(http_client: TestClient[Any, Any]) -> None:
+    """A crafted Host header must not be reflected unescaped (XSS)."""
+    resp = await http_client.get("/", headers={"Host": 'evil"><script>alert(1)</script>'})
+    assert resp.status == 200
+    body = await resp.text()
+    assert "<script>alert(1)</script>" not in body
+
+
 async def test_start_json(http_client: TestClient[Any, Any]) -> None:
     """GET /msx/start.json should return launcher menu config."""
     resp = await http_client.get("/msx/start.json")

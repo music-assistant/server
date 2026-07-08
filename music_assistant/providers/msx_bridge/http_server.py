@@ -253,7 +253,8 @@ class MSXHTTPServer:
     async def _handle_root(self, request: web.Request) -> web.Response:
         """Serve status dashboard."""
         players = self.provider.players
-        base = self._get_prefix(request)
+        # base is derived from the Host header, so escape it before embedding in HTML
+        base = html_escape(self._get_prefix(request))
         player_rows = []
         for p in players:
             row = (
@@ -261,7 +262,7 @@ class MSXHTTPServer:
                 f"{html_escape(p.display_name)} — {html_escape(p.playback_state.value)}"
                 f"</span>"
             )
-            row += f'<form method="post" action="{base}/api/quick-stop/{p.player_id}" '
+            row += f'<form method="post" action="{base}/api/quick-stop/{html_escape(p.player_id)}" '
             row += 'style="display:inline">'
             row += '<button type="submit" class="btn">Quick stop</button></form></li>'
             player_rows.append(row)
