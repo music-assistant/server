@@ -283,6 +283,7 @@ class SqueezelitePlayer(Player):
             self,
             start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
             crossfade_enabled=crossfade_enabled,
+            overlay_active=bool(queue and queue.overlay_enabled and queue.overlay_source),
         )
 
         # select audio source, we force flow mode
