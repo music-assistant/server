@@ -19,7 +19,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TRACKS,
     ProviderFeature.ARTIST_TOPTRACKS,
