@@ -323,6 +323,9 @@ class SendspinProvider(PlayerProvider):
             self._virtual_players.pop(player_id, None)
             if self.server_api.get_client(player_id) is not None:
                 await self.server_api.remove_client(player_id)
+            # purge any partially registered player and its config
+            await self.mass.players.unregister(player_id, permanent=True)
+            self.mass.players.delete_player_config(player_id)
             if isinstance(err, SetupFailedError):
                 raise
             raise SetupFailedError(f"Failed to create virtual player {player_id}") from err
