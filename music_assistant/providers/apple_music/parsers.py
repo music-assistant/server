@@ -143,19 +143,9 @@ def parse_album(
             )
         },
     )
-    if artists := relationships.get("artists"):
-        album.artists = UniqueList([parse_artist(provider, artist) for artist in artists["data"]])
-    elif artist_name := normalize_unicode(attributes.get("artistName")):
-        album.artists = UniqueList(
-            [
-                ItemMapping(
-                    media_type=MediaType.ARTIST,
-                    provider=provider.instance_id,
-                    item_id=artist_name,
-                    name=artist_name,
-                )
-            ]
-        )
+    album_artists = _parse_album_artists(provider, attributes, relationships)
+    if album_artists:
+        album.artists = album_artists
     if release_date := attributes.get("releaseDate"):
         album.year = int(release_date.split("-")[0])
     if genres := attributes.get("genreNames"):
@@ -197,6 +187,51 @@ def parse_album(
         album.album_type = inferred_type
     album.favorite = is_favourite or False
     return album
+
+
+def _parse_album_artists(
+    provider: AppleMusicProvider,
+    attributes: dict[str, Any],
+    relationships: dict[str, Any],
+) -> UniqueList[Artist | ItemMapping] | None:
+    """Parse the album artists from an album's attributes and relationships."""
+    album_artist_name = normalize_unicode(attributes.get("artistName"))
+    # compilations may reference unresolvable placeholder artists that carry
+    # no details at all; those only yield a useless id-as-name mapping
+    artist_objs = [
+        artist
+        for artist in relationships.get("artists", {}).get("data", [])
+        if _has_artist_details(artist)
+    ]
+    artists = UniqueList([parse_artist(provider, artist) for artist in artist_objs])
+    if album_artist_name and attributes.get("isCompilation"):
+        # compilations may reference a single contributing artist instead of
+        # the album-level artist (e.g. 'Various Artists', localized), so only
+        # keep the related artists when they match the album-level artist;
+        # multiple related artists (DJ-mix compilations) are kept as-is
+        if len(artists) == 1 and artists[0].name != album_artist_name:
+            artists = UniqueList()
+    if artists:
+        return artists
+    if album_artist_name:
+        return UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    provider=provider.instance_id,
+                    item_id=album_artist_name,
+                    name=album_artist_name,
+                )
+            ]
+        )
+    return None
+
+
+def _has_artist_details(artist_obj: dict[str, Any]) -> bool:
+    """Check if an artist object holds enough details to parse it."""
+    if "attributes" in artist_obj:
+        return True
+    return bool(artist_obj.get("relationships", {}).get("catalog", {}).get("data"))
 
 
 def parse_track(
