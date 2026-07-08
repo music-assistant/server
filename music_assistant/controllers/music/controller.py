@@ -426,6 +426,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for item in sublist
                 if item is not None
             ][:limit],
+            genres=[
+                item
+                for sublist in zip_longest(*[x.genres for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
             tracks=[
                 item
                 for sublist in zip_longest(*[x.tracks for x in results_per_provider])
@@ -456,18 +462,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for item in sublist
                 if item is not None
             ][:limit],
+            sound_effects=[
+                item
+                for sublist in zip_longest(*[x.sound_effects for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
         )
 
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
         # matches and library items first
-        result.artists = sort_search_result(search_query, result.artists)
-        result.albums = sort_search_result(search_query, result.albums)
-        result.tracks = sort_search_result(search_query, result.tracks)
-        result.playlists = sort_search_result(search_query, result.playlists)
-        result.radio = sort_search_result(search_query, result.radio)
-        result.audiobooks = sort_search_result(search_query, result.audiobooks)
-        result.podcasts = sort_search_result(search_query, result.podcasts)
+        for field in (
+            "artists",
+            "albums",
+            "genres",
+            "tracks",
+            "playlists",
+            "radio",
+            "audiobooks",
+            "podcasts",
+            "sound_effects",
+        ):
+            setattr(result, field, sort_search_result(search_query, getattr(result, field)))
         # only cache the combined result if all providers contributed,
         # so a failed or timed out provider is retried on a next search
         if all_results_complete:
@@ -2210,11 +2227,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 prov.name,
             )
             return None
-        except MusicAssistantError as err:
-            self.logger.warning("Search on provider %s failed: %s", prov.name, str(err))
-            return None
-        except Exception as err:
-            self.logger.error("Search on provider %s failed: %s", prov.name, str(err), exc_info=err)
+        if prov_search_results is None:
             return None
         return filter_search_results(prov_search_results, prov.domain, skip_item_ids)
 
@@ -2225,10 +2238,26 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_types: list[MediaType],
         limit: int,
         cache_key: str,
-    ) -> SearchResults:
-        """Execute the actual search on a provider and cache the result."""
-        async with asyncio.timeout(SEARCH_PROVIDER_HARD_TIMEOUT):
-            result = await prov.search(search_query, media_types, limit)
+    ) -> SearchResults | None:
+        """
+        Execute the actual search on a provider and cache the result.
+
+        Returns None if the provider search failed or timed out. All errors are
+        handled here (and not raised) as this coroutine runs as a background task
+        that may outlive the request that started it.
+        """
+        try:
+            async with asyncio.timeout(SEARCH_PROVIDER_HARD_TIMEOUT):
+                result = await prov.search(search_query, media_types, limit)
+        except TimeoutError:
+            self.logger.warning("Search on provider %s timed out", prov.name)
+            return None
+        except MusicAssistantError as err:
+            self.logger.warning("Search on provider %s failed: %s", prov.name, str(err))
+            return None
+        except Exception as err:
+            self.logger.error("Search on provider %s failed: %s", prov.name, str(err), exc_info=err)
+            return None
         # only successful results are cached, so failed or timed out
         # provider searches are simply retried on a next search
         await self.mass.cache.set(

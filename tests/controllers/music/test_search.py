@@ -10,7 +10,13 @@ from unittest.mock import AsyncMock, Mock
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Artist, ProviderMapping, SearchResults, Track
+from music_assistant_models.media_items import (
+    Artist,
+    Genre,
+    ProviderMapping,
+    SearchResults,
+    Track,
+)
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.models.music_provider import MusicProvider
@@ -285,6 +291,22 @@ async def test_search_dedup_filters_provider_items_already_in_library() -> None:
     result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
 
     assert [track.item_id for track in result.tracks] == ["lib1", "track2"]
+
+
+async def test_search_includes_genre_results_from_library() -> None:
+    """Genre results from the library search end up in the combined search result."""
+    library_genre = Genre(
+        item_id="genre1", provider="library", name="Rock", provider_mappings=set()
+    )
+    prov = _make_search_provider("prov_a")
+    controller = _make_controller([prov])
+    controller.search_library = AsyncMock(  # type: ignore[method-assign]
+        return_value=SearchResults(genres=[library_genre])
+    )
+
+    result = await controller.search("Rock", media_types=[MediaType.GENRE], limit=5)
+
+    assert [genre.item_id for genre in result.genres] == ["genre1"]
 
 
 async def test_search_providers_param_restricts_search() -> None:

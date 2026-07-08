@@ -77,11 +77,11 @@ def filter_search_results(
     return SearchResults(
         artists=[x for x in results.artists if _keep(x)],
         albums=[x for x in results.albums if _keep(x)],
-        genres=results.genres,
+        genres=[x for x in results.genres if _keep(x)],
         tracks=[x for x in results.tracks if _keep(x)],
         playlists=[x for x in results.playlists if _keep(x)],
         radio=[x for x in results.radio if _keep(x)],
         audiobooks=[x for x in results.audiobooks if _keep(x)],
         podcasts=[x for x in results.podcasts if _keep(x)],
-        sound_effects=results.sound_effects,
+        sound_effects=[x for x in results.sound_effects if _keep(x)],
     )
