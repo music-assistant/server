@@ -993,6 +993,33 @@ async def test_guest_token_fixed_short_lifetime(auth_manager: AuthenticationMana
     assert updated_row["expires_at"] == token_row["expires_at"]
 
 
+async def test_guest_cannot_create_long_lived_token(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a guest cannot create a long-lived token for their own account.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    guest = await auth_manager.create_user(username="guesttoken", role=UserRole.GUEST)
+    set_current_user(guest)
+
+    with pytest.raises(InsufficientPermissions):
+        await auth_manager.create_long_lived_token("Guest Escalation")
+
+
+async def test_no_long_lived_token_for_guest_account(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a long-lived token cannot be created for a guest account, even by an admin.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="tokenadmin", role=UserRole.ADMIN)
+    guest = await auth_manager.create_user(username="guesttarget", role=UserRole.GUEST)
+    set_current_user(admin)
+
+    with pytest.raises(InsufficientPermissions):
+        await auth_manager.create_long_lived_token("Guest Token", user_id=guest.user_id)
+
+
 async def test_username_case_insensitive_creation(auth_manager: AuthenticationManager) -> None:
     """
     Test that usernames are normalized to lowercase on creation.

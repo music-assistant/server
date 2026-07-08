@@ -1023,6 +1023,8 @@ class AuthenticationManager:
         Short-lived tokens (for regular user sessions) are only created during login
         and auto-renew on each use (sliding 30-day expiration window).
 
+        Long-lived tokens cannot be created for guest accounts.
+
         :param name: The name/description for the token (e.g., "Home Assistant", "Mobile App").
         :param user_id: Optional user ID to create token for (admin only).
         :return: The created token string.
@@ -1043,6 +1045,10 @@ class AuthenticationManager:
                 raise InvalidDataError("User not found")
         else:
             target_user = current_user
+
+        # Guest access is temporary by design, deny tokens that would outlive it
+        if target_user.role == UserRole.GUEST:
+            raise InsufficientPermissions("Long-lived tokens cannot be created for guest accounts")
 
         # Create a long-lived token (only long-lived tokens can be created via this command)
         token = await self.create_token(target_user, name, is_long_lived=True)
