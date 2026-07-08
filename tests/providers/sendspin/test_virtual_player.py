@@ -119,10 +119,13 @@ async def test_remove_virtual_player(mass: MusicAssistant) -> None:
 
 
 async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant) -> None:
-    """Test that removal is refused for non-virtual player ids."""
+    """Test that removal is refused for players that are not virtual players."""
     sendspin = _get_sendspin_provider(mass)
     with pytest.raises(ValueError, match="not a virtual player"):
         await sendspin.remove_virtual_player("some_regular_player")
+    # even a prefixed id is refused when it was never created as virtual player
+    with pytest.raises(ValueError, match="not a virtual player"):
+        await sendspin.remove_virtual_player(f"{VIRTUAL_PLAYER_ID_PREFIX}unknown")
 
 
 async def test_virtual_player_removed_on_owner_unload(mass: MusicAssistant) -> None:

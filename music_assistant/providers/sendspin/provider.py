@@ -341,9 +341,11 @@ class SendspinProvider(PlayerProvider):
         Remove a virtual Sendspin player and permanently delete its configuration.
 
         :param player_id: The player_id returned by create_virtual_player.
-        :raises ValueError: If the given player_id is not a virtual player id.
+        :raises ValueError: If the given player_id is not a (known) virtual player.
         """
-        if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX):
+        if player_id not in self._virtual_players and not self._has_virtual_player_config(
+            player_id
+        ):
             raise ValueError(f"{player_id} is not a virtual player")
         self._virtual_players.pop(player_id, None)
         if self.server_api.get_client(player_id) is not None:
@@ -648,6 +650,14 @@ class SendspinProvider(PlayerProvider):
             await self.mass.players.register_or_update(existing_player)
         finally:
             self._finish_client_event(client_id)
+
+    def _has_virtual_player_config(self, player_id: str) -> bool:
+        """Return whether a stored player config marks the given id as a virtual player."""
+        raw_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+            return False
+        values = raw_conf.get("values")
+        return isinstance(values, dict) and values.get(CONF_VIRTUAL_PLAYER_OWNER) is not None
 
     def _register_virtual_player_client(self, player_id: str, display_name: str) -> None:
         """Register the silent external Sendspin client backing a virtual player."""
