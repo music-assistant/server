@@ -111,9 +111,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         allow_dynamic_tracks: bool = False,
     ) -> AsyncGenerator[PlaylistPlayableItem]:
         """Return playlist tracks for the given provider playlist id."""
+        library_item: Playlist | None = None
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
+
+        # An explicit (user-initiated) refresh of a dynamic playlist regenerates its
+        # content, so the stored playlist metadata (genres etc.) must be recomputed
+        # from the new tracks afterwards.
+        refresh_dynamic_metadata = (
+            force_refresh and library_item is not None and library_item.is_dynamic
+        )
 
         # Playback/refill requests for dynamic playlists need fresh tracks from the provider.
         # Browse requests may reuse cached tracks.
@@ -136,6 +144,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
             for track in tracks:
                 yield track
             page += 1
+
+        if refresh_dynamic_metadata and library_item is not None:
+            # reads the freshly cached track sample, so the recomputed metadata
+            # matches the tracks just returned
+            self.mass.create_task(
+                self.mass.metadata.update_metadata(library_item, force_refresh=True)
+            )
 
     async def create_playlist(
         self,
