@@ -40,11 +40,13 @@ def webserver(mass_minimal: MusicAssistant) -> WebserverController:
     return webserver
 
 
-def create_ws_client(webserver: WebserverController, username: str) -> WebsocketClientHandler:
+def create_ws_client(
+    webserver: WebserverController, username: str, role: UserRole = UserRole.ADMIN
+) -> WebsocketClientHandler:
     """Create an authenticated + event-subscribed websocket client handler (no real socket)."""
     request = make_mocked_request("GET", "/ws", app=web.Application())
     client = WebsocketClientHandler(webserver, request)
-    client._authenticated_user = User(user_id=username, username=username, role=UserRole.ADMIN)
+    client._authenticated_user = User(user_id=username, username=username, role=role)
     client._subscribe_to_events()
     return client
 
@@ -93,3 +95,20 @@ async def test_tasks_updated_payload_per_user(
     assert "task-for-user2" not in msg1
     assert "task-for-user2" in msg2
     assert "task-for-user1" not in msg2
+
+
+async def test_provider_event_delivered_to_guest_clients(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+) -> None:
+    """PROVIDER_EVENT reaches all clients, including guest-scoped ones."""
+    guest = create_ws_client(webserver, "guest1", role=UserRole.GUEST)
+    admin = create_ws_client(webserver, "admin1")
+
+    mass_minimal.signal_event(EventType.PROVIDER_EVENT, "music_quiz--abcd/game_state", {"round": 1})
+    await drain_event_callbacks()
+
+    msg_guest = get_written_message(guest)
+    msg_admin = get_written_message(admin)
+    assert msg_guest == msg_admin
+    assert "music_quiz--abcd/game_state" in msg_guest
