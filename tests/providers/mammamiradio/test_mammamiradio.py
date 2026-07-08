@@ -303,6 +303,22 @@ async def test_handle_async_init_v1_non_json_falls_back_to_healthz(
     assert provider._use_v1 is False
 
 
+async def test_handle_async_init_healthz_connection_error_raises(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """An older addon (v1 404) whose /healthz probe hits a connection error raises."""
+    mass_mock.http_session.get = MagicMock(
+        side_effect=_route_get(
+            {
+                "/api/integrations/v1/now-playing": _make_response_ctx(404),
+                "/healthz": _make_failing_ctx(aiohttp.ClientConnectionError("nope")),
+            }
+        )
+    )
+    with pytest.raises(ProviderUnavailableError):
+        await provider.handle_async_init()
+
+
 async def test_handle_async_init_v1_array_payload_falls_back_to_healthz(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
@@ -951,13 +967,17 @@ async def test_callback_alternates_now_then_upnext(
     # Call 1 — first frame of the segment is the "Now" view, no "Up next".
     await provider._update_stream_metadata(details, 0)
     desc1 = details.stream_metadata.description
-    assert desc1 is None or "Up next:" not in desc1
 
     # Call 2 — same segment, alternates to "Up next".
     await provider._update_stream_metadata(details, 0)
-    assert "Up next: Chiacchiere" in details.stream_metadata.description
+    desc2 = details.stream_metadata.description
 
-    # Segment change — resets the alternation back to "Now".
+    # Call 3 — same segment, back to "Now" (show_upcoming is now True again).
+    await provider._update_stream_metadata(details, 0)
+    desc3 = details.stream_metadata.description
+
+    # Segment change while show_upcoming is True — only the reset logic can
+    # produce a "Now" frame here; without it this call would render "Up next".
     payload2 = {
         "now_streaming": {"type": "music", "label": "B", "started": 2, "metadata": {"title": "B"}},
         "upcoming": [{"type": "banter", "label": "Chiacchiere"}],
@@ -965,8 +985,12 @@ async def test_callback_alternates_now_then_upnext(
     }
     mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(payload2))
     await provider._update_stream_metadata(details, 0)
-    desc3 = details.stream_metadata.description
-    assert desc3 is None or "Up next:" not in desc3
+    desc4 = details.stream_metadata.description
+
+    assert desc1 is None
+    assert desc2 == "Up next: Chiacchiere"
+    assert desc3 is None
+    assert desc4 is None
 
 
 async def test_callback_offline_public_status_leaves_prior_metadata(
@@ -1034,7 +1058,7 @@ async def test_callback_handles_null_now_streaming(
 async def test_handle_async_init_raises_on_timeout(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """A timeout probing /healthz surfaces as ProviderUnavailableError."""
+    """A timeout on the init probe (v1 endpoint) surfaces as ProviderUnavailableError."""
     mass_mock.http_session.get = MagicMock(return_value=_make_failing_ctx(TimeoutError("slow")))
     with pytest.raises(ProviderUnavailableError):
         await provider.handle_async_init()
@@ -1405,6 +1429,48 @@ async def test_v1_callback_swallows_unreachable_keeps_prior(
     assert details.stream_metadata is prior
 
 
+async def test_v1_callback_http_error_keeps_prior(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A mid-stream 5xx from the v1 endpoint must not raise and keeps the prior frame."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"v1"'))
+    await provider._update_stream_metadata(details, 0)
+    prior = details.stream_metadata
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(None, status=503))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
+async def test_v1_callback_non_dict_payload_keeps_prior(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A JSON array from the v1 endpoint mid-stream is ignored, prior frame kept."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"v1"'))
+    await provider._update_stream_metadata(details, 0)
+    prior = details.stream_metadata
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(["unexpected", "array"]))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
+async def test_v1_callback_bad_json_keeps_prior(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A non-JSON body from the v1 endpoint mid-stream is ignored, prior frame kept."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"v1"'))
+    await provider._update_stream_metadata(details, 0)
+    prior = details.stream_metadata
+    mass_mock.http_session.get = MagicMock(return_value=_make_bad_json_ctx())
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
 async def test_v1_callback_resets_alternation_on_segment_change(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
@@ -1421,6 +1487,7 @@ async def test_v1_callback_resets_alternation_on_segment_change(
         side_effect=[
             _make_v1_ctx(_V1_MUSIC, etag='W/"a"'),
             _make_v1_ctx(_V1_MUSIC, etag='W/"a"'),
+            _make_v1_ctx(_V1_MUSIC, etag='W/"a"'),
             _make_v1_ctx(other, etag='W/"b"'),
         ]
     )
@@ -1428,11 +1495,16 @@ async def test_v1_callback_resets_alternation_on_segment_change(
     d1 = details.stream_metadata.description
     await provider._update_stream_metadata(details, 0)  # Up-next
     d2 = details.stream_metadata.description
-    await provider._update_stream_metadata(details, 0)  # new segment -> reset to Now
+    await provider._update_stream_metadata(details, 0)  # Now again (show_upcoming -> True)
     d3 = details.stream_metadata.description
+    # Segment change while show_upcoming is True — only the reset logic can
+    # produce a "Now" frame here; without it this call would render "Up next".
+    await provider._update_stream_metadata(details, 0)
+    d4 = details.stream_metadata.description
     assert d1 is None
     assert d2 == "Up next: Chiacchiere"
     assert d3 is None
+    assert d4 is None
     assert details.stream_metadata.title == "OtherSong"
 
 
