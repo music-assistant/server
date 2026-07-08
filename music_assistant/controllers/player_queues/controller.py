@@ -344,6 +344,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
 
+    def set_redact_media_details(self, queue_id: str, redact: bool) -> None:
+        """
+        Enable or disable redaction of media details for the given queue.
+
+        Intended for the plugin owning the queue: while enabled, all PlayerMedia sent to
+        players carries neutral metadata (no track title/artist/album/image), so media
+        details do not leak to player displays or connected integrations.
+        The flag is not persisted and resets when the queue is (re)created.
+
+        :param queue_id: The queue to configure.
+        :param redact: True to redact media details, False to restore normal metadata.
+        """
+        self._queue_data[queue_id].redact_media_details = redact
+
     # Two timebases are used in this controller when variable playback speed is in
     # effect (atempo applied server-side):
     #   "stream-time"  — seconds of audio the player has played (post-atempo).
@@ -1460,7 +1474,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 "original_uri": queue_item.uri,
             },
         )
-        if queue_item.media_item:
+        if queue_data.redact_media_details:
+            # the queue-owning plugin requested neutral metadata; a real (logo) image is used
+            # because some player displays render empty image fields as broken placeholders
+            media.title = "Music Assistant"
+            media.artist = ""
+            media.album = ""
+        elif queue_item.media_item:
             media.title = queue_item.media_item.name
             media.artist = getattr(queue_item.media_item, "artist_str", "")
             media.album = (

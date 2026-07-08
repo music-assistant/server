@@ -64,6 +64,9 @@ class PlayerQueueData:
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
+    # when set (by the plugin owning the queue), all PlayerMedia handed to players carries
+    # neutral metadata so track details never reach player displays or connected integrations
+    redact_media_details: bool = False
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False
