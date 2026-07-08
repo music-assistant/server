@@ -31,13 +31,13 @@ def _mock_library_item(
 def _mock_controller(
     media_type: MediaType,
     items_by_prov_id: dict[str, MagicMock] | None = None,
-    library_items: list[MagicMock] | None = None,
+    provider_items: list[MagicMock] | None = None,
 ) -> MagicMock:
     """Create a mock media type controller.
 
     :param media_type: The media type this controller handles.
     :param items_by_prov_id: Map of prov_item_id -> library item for get_library_item_by_prov_id.
-    :param library_items: Items returned by library_items().
+    :param provider_items: Items returned by get_library_items_by_prov_id().
     """
     ctrl = MagicMock()
     ctrl.media_type = media_type
@@ -54,7 +54,7 @@ def _mock_controller(
     ctrl.get_library_item = AsyncMock()
     ctrl.add_provider_mapping = AsyncMock()
     ctrl.remove_provider_mapping = AsyncMock()
-    ctrl.library_items = AsyncMock(return_value=library_items or [])
+    ctrl.get_library_items_by_prov_id = AsyncMock(return_value=provider_items or [])
     return ctrl
 
 
@@ -74,6 +74,7 @@ def mock_mass() -> MagicMock:
         MediaType.RADIO,
         MediaType.AUDIOBOOK,
         MediaType.PODCAST,
+        MediaType.GENRE,
     ):
         controllers[mt] = _mock_controller(mt)
 
@@ -276,7 +277,9 @@ class TestListTags:
             MediaType.TRACK,
             provider_mappings={tag_mapping, other_mapping},
         )
-        mock_mass._test_controllers[MediaType.TRACK].library_items = AsyncMock(return_value=[track])
+        mock_mass._test_controllers[MediaType.TRACK].get_library_items_by_prov_id = AsyncMock(
+            return_value=[track]
+        )
 
         result = await provider.list_tags()
 
@@ -310,8 +313,10 @@ class TestListTags:
         track = _mock_library_item(1, "Track", MediaType.TRACK, {track_tag})
         playlist = _mock_library_item(2, "Playlist", MediaType.PLAYLIST, {playlist_tag})
 
-        mock_mass._test_controllers[MediaType.TRACK].library_items = AsyncMock(return_value=[track])
-        mock_mass._test_controllers[MediaType.PLAYLIST].library_items = AsyncMock(
+        mock_mass._test_controllers[MediaType.TRACK].get_library_items_by_prov_id = AsyncMock(
+            return_value=[track]
+        )
+        mock_mass._test_controllers[MediaType.PLAYLIST].get_library_items_by_prov_id = AsyncMock(
             return_value=[playlist]
         )
 

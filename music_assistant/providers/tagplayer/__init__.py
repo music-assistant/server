@@ -38,6 +38,7 @@ TAGGABLE_MEDIA_TYPES = (
     MediaType.RADIO,
     MediaType.AUDIOBOOK,
     MediaType.PODCAST,
+    MediaType.GENRE,
 )
 
 
@@ -161,7 +162,9 @@ class TagPlayerProvider(PluginProvider):
         tags: list[dict[str, Any]] = []
         for media_type in TAGGABLE_MEDIA_TYPES:
             controller = self.mass.music.get_controller(media_type)
-            items = await controller.library_items(provider=self.instance_id)
+            items = await controller.get_library_items_by_prov_id(
+                provider_instance=self.instance_id
+            )
             for item in items:
                 for mapping in item.provider_mappings:
                     if mapping.provider_instance == self.instance_id:
