@@ -83,17 +83,22 @@ class LogErrorCounter(logging.Handler):
 
     def summarize(self, top_n: int = 50) -> dict[str, Any]:
         """Return the aggregated warning/error counts, largest first."""
+        # take a snapshot under the handler lock as emit() may run in other threads
+        self.acquire()
+        try:
+            top_counts = sorted(self._counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+            last_seen = dict(self._last_seen)
+        finally:
+            self.release()
         top = [
             {
                 "logger": key[0],
                 "level": key[1],
                 "exception": key[2],
                 "count": count,
-                "last_seen_ts_unix": self._last_seen.get(key, 0),
+                "last_seen_ts_unix": last_seen.get(key, 0),
             }
-            for key, count in sorted(self._counts.items(), key=lambda kv: kv[1], reverse=True)[
-                :top_n
-            ]
+            for key, count in top_counts
         ]
         return {"total_since_load": self.total, "unique_keys_dropped": self.dropped, "top": top}
 
