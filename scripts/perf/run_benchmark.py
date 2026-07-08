@@ -71,7 +71,8 @@ PLAYBACK_READY_TIMEOUT = 30
 SYNC_POLL_INTERVAL = 0.25
 # 44.1 kHz / 16 bit / stereo WAV is 176400 bytes/s; limiting curl to ~1x realtime
 # makes the stream consumption deterministic and realistic for the whole window
-STREAM_RATE_LIMIT = "176k"
+STREAM_RATE_BYTES_PER_SEC = 176 * 1024
+STREAM_RATE_LIMIT = f"{STREAM_RATE_BYTES_PER_SEC // 1024}k"
 STREAMING_PLAYERS = 2
 MEDIA_ITEM_EVENTS_SETTLE_SECONDS = 2.0
 
@@ -634,7 +635,14 @@ async def _consume_stream(url: str, duration: int) -> None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    finally:
+        # on cancellation (ctrl-c or a sibling stream failing) curl is not
+        # killed automatically and would keep downloading until --max-time
+        if proc.returncode is None:
+            with contextlib.suppress(OSError):
+                proc.kill()
     elapsed = time.perf_counter() - started
     # 28 = --max-time reached (expected), 18 = partial transfer on close
     if proc.returncode not in (0, 18, 28):
@@ -643,6 +651,14 @@ async def _consume_stream(url: str, duration: int) -> None:
         raise BenchmarkError(
             f"stream ended prematurely after {elapsed:.1f}s "
             f"(rc={proc.returncode}, http/bytes={stdout.decode()}): {stderr.decode()[:300]}"
+        )
+    # a connection that stays open but stops sending data would otherwise pass
+    http_code, _, downloaded = stdout.decode().strip().partition(" ")
+    min_bytes = int(STREAM_RATE_BYTES_PER_SEC * duration * 0.5)
+    if http_code != "200" or int(downloaded or 0) < min_bytes:
+        raise BenchmarkError(
+            f"stream stalled (http={http_code}, downloaded {downloaded} bytes, "
+            f"expected >={min_bytes}): {stderr.decode()[:300]}"
         )
 
 
@@ -661,7 +677,10 @@ async def scenario_streaming(
     cpu_start = cpu_seconds(server.ps)
     ffmpeg_sampler.start()
     wall_start = time.perf_counter()
-    await asyncio.gather(*(_consume_stream(url, duration) for url in urls))
+    # TaskGroup cancels the sibling streams as soon as one fails
+    async with asyncio.TaskGroup() as tg:
+        for url in urls:
+            tg.create_task(_consume_stream(url, duration))
     wall_seconds = time.perf_counter() - wall_start
     cpu_end = cpu_seconds(server.ps)
     ffmpeg_cpu = ffmpeg_sampler.stop()
@@ -806,9 +825,9 @@ async def run_profiled_pass(data_dir: Path, params: SuiteParams) -> dict[str, An
                 player_ids = demo_players[:STREAMING_PLAYERS]
                 urls = await start_flow_playback(ws, control, player_ids, server)
                 await control.yappi_start()
-                await asyncio.gather(
-                    *(_consume_stream(url, params.profiled_streaming_seconds) for url in urls)
-                )
+                async with asyncio.TaskGroup() as tg:
+                    for url in urls:
+                        tg.create_task(_consume_stream(url, params.profiled_streaming_seconds))
                 yappi_top["streaming"] = await control.yappi_stop()
                 await stop_playback(ws, player_ids)
             finally:
