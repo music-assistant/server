@@ -1218,6 +1218,73 @@ async def test_generate_join_code(auth_manager: AuthenticationManager) -> None:
     assert expires_at > utc()
 
 
+async def test_get_join_code_expiry(auth_manager: AuthenticationManager) -> None:
+    """
+    Test looking up the expiry for a specific active join code.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="joinexpiryuser", role=UserRole.GUEST)
+
+    code, expires_at = await auth_manager.generate_join_code(
+        user=user,
+        expires_in_hours=24,
+    )
+
+    assert await auth_manager.get_join_code_expiry(code, user) == expires_at
+    assert await auth_manager.get_join_code_expiry(code.lower(), user) == expires_at
+    assert await auth_manager.get_join_code_expiry("BADCODE", user) is None
+
+
+async def test_get_join_code_expiry_requires_matching_user(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that join code expiry lookup can be scoped to a specific user.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="joinexpiryowner", role=UserRole.GUEST)
+    other_user = await auth_manager.create_user(
+        username="joinexpiryother",
+        role=UserRole.GUEST,
+    )
+
+    code, expires_at = await auth_manager.generate_join_code(
+        user=user,
+        expires_in_hours=24,
+    )
+
+    assert await auth_manager.get_join_code_expiry(code, user) == expires_at
+    assert await auth_manager.get_join_code_expiry(code) == expires_at
+    assert await auth_manager.get_join_code_expiry(code, other_user) is None
+
+
+async def test_get_join_code_expiry_expired(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that expired join codes have no active expiry.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="joinexpiryexpired", role=UserRole.GUEST)
+
+    code, _ = await auth_manager.generate_join_code(
+        user=user,
+        expires_in_hours=24,
+    )
+    code_row = await auth_manager.database.get_row("join_codes", {"code": code})
+    assert code_row is not None
+
+    past_time = utc() - timedelta(hours=1)
+    await auth_manager.database.update(
+        "join_codes",
+        {"code_id": code_row["code_id"]},
+        {"expires_at": past_time.isoformat()},
+    )
+
+    assert await auth_manager.get_join_code_expiry(code, user) is None
+
+
 async def test_generate_join_code_non_guest_rejected(
     auth_manager: AuthenticationManager,
 ) -> None:

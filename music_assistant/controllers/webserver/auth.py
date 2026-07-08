@@ -1445,6 +1445,28 @@ class AuthenticationManager:
         row = await cursor.fetchone()
         return str(row["code"]) if row else None
 
+    async def get_join_code_expiry(self, code: str, user: User | None = None) -> datetime | None:
+        """
+        Get the expiry datetime for an active join code.
+
+        :param code: The join code to look up.
+        :param user: Optional user that must own the join code.
+        :return: The expiry datetime if the code is active, None otherwise.
+        """
+        query = """
+            SELECT expires_at FROM join_codes
+            WHERE code = :code
+            AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
+            """
+        params: dict[str, Any] = {"code": code.upper(), "now": utc().isoformat()}
+        if user is not None:
+            query += "AND user_id = :user_id "
+            params["user_id"] = user.user_id
+        cursor = await self.database.execute(query + "LIMIT 1", params)
+        row = await cursor.fetchone()
+        return datetime.fromisoformat(str(row["expires_at"])) if row else None
+
     @api_command("auth/join_code/exchange", authenticated=False)
     async def exchange_join_code(self, code: str) -> dict[str, Any]:
         """
