@@ -265,9 +265,12 @@ default, expose no volume controls (member volumes apply instead), and are
 removed automatically when the owning provider unloads. Stale configurations
 of virtual players whose owner no longer exists are swept on provider startup.
 
-Virtual player registrations are in-memory only: when the Sendspin provider
-itself reloads (or the server restarts), they are gone and the owning provider
-must call `create_virtual_player` again to restore its session anchor.
+Virtual players are never auto-restored: when the Sendspin provider reloads
+(or the server restarts), the owning provider must call `create_virtual_player`
+again to restore its session anchor. The player's configuration (including the
+owner marker) may persist across restarts and is reused when the same owner
+recreates the same player id; it is deleted on `remove_virtual_player` or swept
+at startup once the owner provider no longer exists.
 
 ## Related Documentation
 
