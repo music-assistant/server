@@ -2287,22 +2287,18 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _get_stream_details_for_sound_effect(self, item_id: str) -> StreamDetails:
         """Return the streamdetails for a sound effect."""
-        # sound effects are never stored in the library so we need to parse the file
+        # sound effects are never stored in the library so we parse the file,
+        # served from cache unless the file changed on disk
         file_item = await self.resolve(item_id)
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        sound_effect = await self._get_or_parse_sound_effect(file_item)
+        prov_mapping = next(x for x in sound_effect.provider_mappings if x.item_id == item_id)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse(file_item.ext or tags.format),
-                sample_rate=tags.sample_rate,
-                bit_depth=tags.bits_per_sample,
-                channels=tags.channels,
-                bit_rate=tags.bit_rate,
-            ),
+            audio_format=prov_mapping.audio_format,
             media_type=MediaType.SOUND_EFFECT,
             stream_type=StreamType.LOCAL_FILE,
-            duration=try_parse_int(tags.duration or 0),
+            duration=sound_effect.duration,
             size=file_item.file_size,
             data=file_item,
             path=file_item.absolute_path,
