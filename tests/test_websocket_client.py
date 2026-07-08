@@ -24,6 +24,8 @@ def _create_client(user_role: UserRole | None, handler: APICommandHandler) -> An
     client._logger = MagicMock()
     client.mass = MagicMock()
     client.mass.command_handlers = {handler.command: handler}
+    # close the coroutine passed to create_task to avoid "never awaited" warnings
+    client.mass.create_task = MagicMock(side_effect=lambda coro, *_: coro.close())
     client._authenticated_user = (
         User(user_id="user_1", username="tester", role=user_role) if user_role else None
     )
