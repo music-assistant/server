@@ -279,8 +279,7 @@ class MSXHTTPServer:
         sendspin_port = "8927"
         sendspin_url = f"http://{hostname}:{sendspin_port}"
         kiosk_html5_url = f"{base}/web?kiosk=1"
-        # compose from the raw prefix and escape the full URL so the host-derived
-        # value is HTML-escaped as a whole (including the & separators)
+        # escape the composed URL as a whole: host-derived prefix plus & separators
         sendspin_query = f"sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
         sendspin_web_url = html_escape(f"{prefix}/web?{sendspin_query}")
         sendspin_kiosk_url = html_escape(f"{prefix}/web?kiosk=1&{sendspin_query}")

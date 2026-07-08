@@ -131,8 +131,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             try {
                 var parsed = new URL(url);
                 if (parsed.host !== location.host) return '';
-                // Rebuild from parsed parts so the request host is always ours,
-                // even for tricky inputs like a "//evil.com/x" pathname.
+                // rebuild from parsed parts so a "//evil.com/x" pathname can't change the host
                 return BASE + parsed.pathname + parsed.search;
             } catch (e) {
                 return '';
