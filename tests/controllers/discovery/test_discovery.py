@@ -60,6 +60,7 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
     )
     mass_minimal.webserver = MagicMock(
         publish_ip="127.0.0.1",
+        publish_addresses=["127.0.0.1"],
         publish_port=8095,
         base_url="http://127.0.0.1:8095",
     )
@@ -103,6 +104,35 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
         ip_version=IPVersion.All,
         interfaces=["192.168.1.10", "fd00::1%2"],
     )
+
+
+async def test_mass_service_advertises_webserver_publish_addresses(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The advertisement must contain exactly the webserver's publish addresses."""
+    mass_minimal.webserver = MagicMock(
+        publish_ip="192.168.1.10",
+        publish_addresses=["192.168.1.10", "fd00::10"],
+        publish_port=8095,
+        base_url="http://192.168.1.10:8095",
+    )
+    mock_zc = MagicMock(spec=AsyncZeroconf)
+    mock_zc.async_register_service = AsyncMock()
+    mock_zc.async_update_service = AsyncMock()
+    mass_minimal.discovery._aiozc = mock_zc
+
+    with (
+        patch(
+            "music_assistant.controllers.discovery.controller.AsyncServiceInfo"
+        ) as mock_service_info,
+        patch(
+            "music_assistant.controllers.discovery.controller.get_ip_pton",
+            new=AsyncMock(side_effect=lambda ip: ip.encode()),
+        ),
+    ):
+        await mass_minimal.discovery._register_mass_service()
+
+    assert mock_service_info.call_args.kwargs["addresses"] == [b"192.168.1.10", b"fd00::10"]
 
 
 async def test_async_find_mdns_service_matches_exact_device_name(mass: MusicAssistant) -> None:
