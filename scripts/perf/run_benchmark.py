@@ -74,6 +74,9 @@ SERVER_READY_TIMEOUT = 120
 SYNC_TIMEOUT = 1800
 PLAYBACK_READY_TIMEOUT = 30
 SYNC_POLL_INTERVAL = 0.25
+# control-channel handlers are near-instant; a bounded per-request timeout keeps a
+# stuck server from hanging the suite past its scenario deadlines
+CONTROL_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60)
 # 44.1 kHz / 16 bit / stereo WAV is 176400 bytes/s; limiting curl to ~1x realtime
 # makes the stream consumption deterministic and realistic for the whole window
 STREAM_RATE_BYTES_PER_SEC = 176 * 1024
@@ -222,13 +225,17 @@ class ControlClient:
 
     async def get(self, path: str) -> dict[str, Any]:
         """Perform a GET request against the control channel."""
-        async with self._session.get(f"{self._base_url}{path}") as resp:
+        async with self._session.get(
+            f"{self._base_url}{path}", timeout=CONTROL_REQUEST_TIMEOUT
+        ) as resp:
             resp.raise_for_status()
             return await resp.json()
 
     async def post(self, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         """Perform a POST request against the control channel."""
-        async with self._session.post(f"{self._base_url}{path}", json=body) as resp:
+        async with self._session.post(
+            f"{self._base_url}{path}", json=body, timeout=CONTROL_REQUEST_TIMEOUT
+        ) as resp:
             resp.raise_for_status()
             return await resp.json()
 
