@@ -1226,5 +1226,64 @@ class TestPlayAnnouncementCleanup:
         assert announcements == {}
 
 
+class TestScheduleActiveOutputProtocolClear:
+    """Test the polling behavior of schedule_active_output_protocol_clear."""
+
+    def _setup(
+        self, mock_mass: MagicMock, playback_state: PlaybackState
+    ) -> tuple[PlayerController, MagicMock]:
+        """Create a controller and a mock player in the given playback state."""
+        mock_mass.loop = MagicMock()
+        mock_mass.loop.time.return_value = 100.0
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.player_id = "player_1"
+        player.state.playback_state = playback_state
+        return controller, player
+
+    def _run_check(self, mock_mass: MagicMock) -> None:
+        """Invoke the (re)scheduled check callback captured by call_later."""
+        delay, check = mock_mass.call_later.call_args.args
+        assert delay == 0.5
+        assert mock_mass.call_later.call_args.kwargs == {
+            "task_id": "clear_active_protocol_player_1"
+        }
+        mock_mass.call_later.reset_mock()
+        check()
+
+    def test_reschedules_while_playing(self, mock_mass: MagicMock) -> None:
+        """The check reschedules itself while the player still reports PLAYING."""
+        controller, player = self._setup(mock_mass, PlaybackState.PLAYING)
+        controller.schedule_active_output_protocol_clear(player)
+
+        self._run_check(mock_mass)
+
+        player.set_active_output_protocol.assert_not_called()
+        mock_mass.call_later.assert_called_once()
+
+    def test_clears_once_player_stopped_playing(self, mock_mass: MagicMock) -> None:
+        """The protocol is cleared as soon as the player no longer reports PLAYING."""
+        controller, player = self._setup(mock_mass, PlaybackState.PLAYING)
+        controller.schedule_active_output_protocol_clear(player)
+
+        self._run_check(mock_mass)
+        player.state.playback_state = PlaybackState.IDLE
+        self._run_check(mock_mass)
+
+        player.set_active_output_protocol.assert_called_once_with(None)
+        mock_mass.call_later.assert_not_called()
+
+    def test_clears_at_deadline_while_still_playing(self, mock_mass: MagicMock) -> None:
+        """The protocol is force-cleared at the deadline even if PLAYING never drops."""
+        controller, player = self._setup(mock_mass, PlaybackState.PLAYING)
+        controller.schedule_active_output_protocol_clear(player)
+
+        mock_mass.loop.time.return_value = 110.0
+        self._run_check(mock_mass)
+
+        player.set_active_output_protocol.assert_called_once_with(None)
+        mock_mass.call_later.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

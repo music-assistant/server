@@ -289,12 +289,7 @@ class TestActiveProtocolDomain:
         # use getattr to defeat mypy's narrowing after the earlier assignment,
         # since it can't see that _dissolve_syncgroup mutates sync_leader.
         assert getattr(sgp, "sync_leader") is None  # noqa: B009
-        mass.call_later.assert_called_once_with(
-            5,
-            leader.set_active_output_protocol,
-            None,
-            task_id="clear_active_protocol_leader",
-        )
+        mass.players.schedule_active_output_protocol_clear.assert_called_once_with(leader)
 
 
 class TestControllerLockCategory:

@@ -2349,6 +2349,30 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_stop(player_id)
             await self.cmd_play(player_id)
 
+    def schedule_active_output_protocol_clear(self, player: Player) -> None:
+        """
+        Clear the player's active output protocol once it stops playing.
+
+        Devices may keep reporting PLAYING for a short while after a stop
+        command, so the clear happens as soon as the player no longer reports
+        PLAYING (with a deadline as fallback). Starting a new session cancels
+        the pending clear (see Player.set_active_output_protocol).
+
+        :param player: The player whose active output protocol must be cleared.
+        """
+        deadline = self.mass.loop.time() + 10
+
+        def check() -> None:
+            if (
+                player.state.playback_state != PlaybackState.PLAYING
+                or self.mass.loop.time() >= deadline
+            ):
+                player.set_active_output_protocol(None)
+                return
+            self.mass.call_later(0.5, check, task_id=f"clear_active_protocol_{player.player_id}")
+
+        self.mass.call_later(0.5, check, task_id=f"clear_active_protocol_{player.player_id}")
+
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
         return iter(self._players.values())
@@ -4017,12 +4041,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # If there are still protocol group members, keep the protocol active so that
         # when playback resumes it continues on the same protocol.
         if target_player.player_id == player.player_id or len(target_player.group_members) <= 1:
-            self.mass.call_later(
-                5,
-                player.set_active_output_protocol,
-                None,
-                task_id=f"clear_active_protocol_{player_id}",
-            )
+            self.schedule_active_output_protocol_clear(player)
 
     async def _handle_cmd_play(self, player_id: str) -> None:
         """
