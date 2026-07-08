@@ -309,6 +309,12 @@ class SendspinProvider(PlayerProvider):
         """
         if (owner := self.mass.get_provider(owner_instance_id)) is None:
             raise SetupFailedError(f"Owner provider {owner_instance_id} is not loaded")
+        if owner.instance_id != owner_instance_id and (
+            len(self.mass.get_provider_instances(owner.domain)) > 1
+        ):
+            raise SetupFailedError(
+                f"Multiple instances exist for {owner_instance_id}: pass an exact instance id"
+            )
         # normalize a provider domain to the actual instance id
         owner_instance_id = owner.instance_id
         if player_id is None:
@@ -751,11 +757,6 @@ class SendspinProvider(PlayerProvider):
                 values = {}
             owner_instance_id = values.get(CONF_VIRTUAL_PLAYER_OWNER)
             if owner_instance_id is None:
-                if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX):
-                    continue
-                # a prefixed config without owner marker is a leftover of an
-                # interrupted creation and can never be claimed again
-                self.mass.players.delete_player_config(player_id)
                 continue
             if self.mass.config.get(f"{CONF_PROVIDERS}/{owner_instance_id}") is not None:
                 # owner still configured; it will recreate its virtual players

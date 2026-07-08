@@ -186,7 +186,7 @@ async def test_orphan_virtual_player_config_sweep(mass: MusicAssistant) -> None:
                 "values": {CONF_VIRTUAL_PLAYER_OWNER: owner},
             },
         )
-    # a prefixed config without owner marker (interrupted creation)
+    # a prefixed config without owner marker must be left alone
     mass.config.set(
         f"{CONF_PLAYERS}/{leftover_id}",
         {"player_id": leftover_id, "provider": sendspin.instance_id, "values": {}},
@@ -201,6 +201,6 @@ async def test_orphan_virtual_player_config_sweep(mass: MusicAssistant) -> None:
     sendspin._remove_orphan_virtual_player_configs()
 
     assert mass.config.get(f"{CONF_PLAYERS}/{orphan_id}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{leftover_id}") is None
+    assert mass.config.get(f"{CONF_PLAYERS}/{leftover_id}") is not None
     assert mass.config.get(f"{CONF_PLAYERS}/{kept_id}") is not None
     assert mass.config.get(f"{CONF_PLAYERS}/{foreign_id}") is not None
