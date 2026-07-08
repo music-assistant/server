@@ -81,7 +81,8 @@ class TagPlayerProvider(PluginProvider):
         self._unregister_commands.clear()
 
     async def link_tag(self, tag_id: str, target: str) -> dict[str, Any]:
-        """Link a tag identifier to a library media item.
+        """
+        Link a tag identifier to a library media item.
 
         Adds a provider mapping with available=False on the target item so the tag
         resolves to it via URI (tagplayer://<media_type>/<tag_id>) without interfering
@@ -90,8 +91,7 @@ class TagPlayerProvider(PluginProvider):
         :param tag_id: The tag identifier (NFC serial, QR code content, etc.).
         :param target: Media path like "track/42" or "playlist/5".
         """
-        if not tag_id or not tag_id.strip():
-            raise ValueError("tag_id cannot be empty")
+        self._validate_tag_id(tag_id)
 
         media_type, library_id = self._parse_target(target)
         controller = self.mass.music.get_controller(media_type)
@@ -121,7 +121,8 @@ class TagPlayerProvider(PluginProvider):
         return {"tag_id": tag_id, "target": target, "uri": uri}
 
     async def unlink_tag(self, tag_id: str) -> dict[str, str]:
-        """Remove a tag mapping.
+        """
+        Remove a tag mapping.
 
         :param tag_id: The tag identifier to unlink.
         """
@@ -139,7 +140,8 @@ class TagPlayerProvider(PluginProvider):
         return {"tag_id": tag_id}
 
     async def get_tag(self, tag_id: str) -> dict[str, Any]:
-        """Get the mapping for a single tag.
+        """
+        Get the mapping for a single tag.
 
         :param tag_id: The tag identifier to look up.
         """
@@ -185,7 +187,8 @@ class TagPlayerProvider(PluginProvider):
         player_id: str,
         queue_option: QueueOption = QueueOption.PLAY,
     ) -> None:
-        """Resolve a tag and play the linked media on a player.
+        """
+        Resolve a tag and play the linked media on a player.
 
         :param tag_id: The tag identifier to play.
         :param player_id: The player to play on.
@@ -206,10 +209,12 @@ class TagPlayerProvider(PluginProvider):
         await self.mass.player_queues.play_media(player_id, library_item, queue_option)
 
     async def _find_tagged_item(self, tag_id: str) -> tuple[MediaType, MediaItemType] | None:
-        """Search all media types for a library item with the given tag mapping.
+        """
+        Search all media types for a library item with the given tag mapping.
 
         :param tag_id: The tag identifier to search for.
         """
+        self._validate_tag_id(tag_id)
         for media_type in TAGGABLE_MEDIA_TYPES:
             controller = self.mass.music.get_controller(media_type)
             if item := await controller.get_library_item_by_prov_id(tag_id, self.instance_id):
@@ -217,8 +222,19 @@ class TagPlayerProvider(PluginProvider):
         return None
 
     @staticmethod
+    def _validate_tag_id(tag_id: str) -> None:
+        """
+        Validate that a tag identifier is non-empty.
+
+        :param tag_id: The tag identifier to validate.
+        """
+        if not tag_id or not tag_id.strip():
+            raise ValueError("tag_id cannot be empty")
+
+    @staticmethod
     def _parse_target(target: str) -> tuple[MediaType, int]:
-        """Parse a target string like 'track/42' into (MediaType, library_id).
+        """
+        Parse a target string like 'track/42' into (MediaType, library_id).
 
         :param target: Target string in the format "media_type/library_id".
         """

@@ -33,7 +33,8 @@ def _mock_controller(
     items_by_prov_id: dict[str, MagicMock] | None = None,
     provider_items: list[MagicMock] | None = None,
 ) -> MagicMock:
-    """Create a mock media type controller.
+    """
+    Create a mock media type controller.
 
     :param media_type: The media type this controller handles.
     :param items_by_prov_id: Map of prov_item_id -> library item for get_library_item_by_prov_id.
@@ -387,6 +388,16 @@ class TestFindTaggedItem:
         """Should return None when no media type has the tag."""
         result = await provider._find_tagged_item("nonexistent")
         assert result is None
+
+    @pytest.mark.parametrize("tag_id", ["", "   "])
+    async def test_empty_tag_id_raises(self, provider: TagPlayerProvider, tag_id: str) -> None:
+        """Empty or whitespace-only tag_id should raise ValueError for all tag commands."""
+        with pytest.raises(ValueError, match="tag_id cannot be empty"):
+            await provider.unlink_tag(tag_id)
+        with pytest.raises(ValueError, match="tag_id cannot be empty"):
+            await provider.get_tag(tag_id)
+        with pytest.raises(ValueError, match="tag_id cannot be empty"):
+            await provider.play_tag(tag_id, "player1")
 
 
 class TestParseTarget:
