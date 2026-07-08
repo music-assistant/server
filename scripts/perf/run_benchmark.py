@@ -643,6 +643,8 @@ async def _consume_stream(url: str, duration: int) -> None:
         if proc.returncode is None:
             with contextlib.suppress(OSError):
                 proc.kill()
+            with contextlib.suppress(asyncio.CancelledError):
+                await proc.wait()
     elapsed = time.perf_counter() - started
     # 28 = --max-time reached (expected), 18 = partial transfer on close
     if proc.returncode not in (0, 18, 28):
