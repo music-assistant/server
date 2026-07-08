@@ -17,7 +17,6 @@ from collections.abc import Awaitable, Callable
 from concurrent import futures
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import quote
 
 import aiofiles
 from aiohttp import web
@@ -44,7 +43,10 @@ from music_assistant.controllers.webserver.helpers.ssl import (
 )
 from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
+from music_assistant.helpers.redirect_validation import (
+    build_code_redirect_url,
+    is_allowed_redirect_url,
+)
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -770,18 +772,7 @@ class WebserverController(CoreController):
                 if category != "trusted":
                     return web.Response(status=400, text="Invalid return_url")
 
-                # Insert code parameter before any hash fragment
-                code_param = f"code={quote(token, safe='')}"
-                if "#" in return_url:
-                    url_parts = return_url.split("#", 1)
-                    base_part = url_parts[0]
-                    hash_part = url_parts[1]
-                    separator = "&" if "?" in base_part else "?"
-                    redirect_url = f"{base_part}{separator}{code_param}#{hash_part}"
-                elif "?" in return_url:
-                    redirect_url = f"{return_url}&{code_param}"
-                else:
-                    redirect_url = f"{return_url}?{code_param}"
+                redirect_url = build_code_redirect_url(return_url, token)
 
                 response_data["redirect_to"] = redirect_url
                 self.logger.debug(
@@ -952,26 +943,7 @@ class WebserverController(CoreController):
                 elif category == "external":
                     # External domain - require user consent
                     requires_consent = True
-            # Add code parameter to redirect URL (the token URL-encoded)
-            # Important: Insert code BEFORE any hash fragment (e.g., #/) to ensure
-            # it's in query params, not inside the hash where Vue Router can't access it
-            code_param = f"code={quote(token, safe='')}"
-
-            # Split URL by hash to insert code in the right place
-            if "#" in final_redirect_url:
-                # URL has a hash fragment (e.g., http://example.com/#/ or http://example.com/path#section)
-                url_parts = final_redirect_url.split("#", 1)
-                base_url = url_parts[0]
-                hash_part = url_parts[1]
-
-                # Add code to base URL (before hash)
-                separator = "&" if "?" in base_url else "?"
-                final_redirect_url = f"{base_url}{separator}{code_param}#{hash_part}"
-            # No hash fragment, simple case
-            elif "?" in final_redirect_url:
-                final_redirect_url = f"{final_redirect_url}&{code_param}"
-            else:
-                final_redirect_url = f"{final_redirect_url}?{code_param}"
+            final_redirect_url = build_code_redirect_url(final_redirect_url, token)
 
             # Load OAuth callback success page template and inject token and redirect URL
             oauth_callback_html_path = str(RESOURCES_DIR.joinpath("oauth_callback.html"))
@@ -1003,14 +975,12 @@ class WebserverController(CoreController):
 
     async def _handle_setup_page(self, request: web.Request) -> web.Response:
         """Handle request for first-time setup page."""
-        # Validate return_url if provided
+        # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
-            is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
-            if not is_valid:
+            _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+            if category != "trusted":
                 return web.Response(status=400, text="Invalid return_url")
-        else:
-            return_url = "/"
 
         if self.auth.has_users:
             # this should not happen, but guard anyways
@@ -1075,13 +1045,24 @@ class WebserverController(CoreController):
             self.logger.info("First admin user created: %s", username)
 
             # Return token - frontend will complete onboarding via config/onboard_complete
-            return web.json_response(
-                {
-                    "success": True,
-                    "token": token,
-                    "user": user.to_dict(),
-                }
-            )
+            response_data: dict[str, Any] = {
+                "success": True,
+                "token": token,
+                "user": user.to_dict(),
+            }
+
+            # Only forward the token to a trusted destination (no consent step here).
+            return_url = body.get("return_url")
+            if return_url and isinstance(return_url, str):
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category == "trusted":
+                    response_data["redirect_to"] = build_code_redirect_url(
+                        return_url, token, {"onboard": "true"}
+                    )
+                else:
+                    self.logger.warning("Ignoring untrusted setup return_url: %s", return_url)
+
+            return web.json_response(response_data)
 
         except Exception as e:
             self.logger.exception("Error during setup")
