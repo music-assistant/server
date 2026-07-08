@@ -9,6 +9,7 @@ events are never lost while a command result is being awaited.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import statistics
 import time
@@ -76,6 +77,8 @@ class PerfWsClient:
         """Close the websocket connection."""
         if self._reader_task:
             self._reader_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._reader_task
         if self._ws:
             await self._ws.close()
         if self._session:
@@ -129,7 +132,7 @@ class PerfWsClient:
             async for msg in self._ws:
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     break
-                self._handle_message(json.loads(msg.data), len(msg.data))
+                self._handle_message(json.loads(msg.data), len(msg.data.encode()))
         finally:
             # fail fast on a closed/errored connection instead of letting callers
             # wait out their full command timeouts
