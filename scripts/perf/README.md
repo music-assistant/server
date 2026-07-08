@@ -92,10 +92,12 @@ for borderline results run the suite twice.
 
 ### CI
 
-Runner variance on shared GitHub-hosted runners is far larger than the
-regressions this suite is meant to catch, so there is no scheduled CI job.
-The manually-dispatched `perf-benchmark` workflow mitigates this by running
-baseline-ref and candidate-ref back-to-back in `--quick` mode on the same
-runner and posting the comparison as a job summary — useful as a smoke check
-for large regressions (its thresholds are advisory, not a merge gate). For
-trustworthy numbers, run the full suite locally.
+Automatic per-PR performance checks are handled by **CodSpeed**
+(`.github/workflows/codspeed.yml` + `tests/benchmarks/`): it measures CPU
+instruction counts under valgrind, which is deterministic on shared runners,
+and comments on PRs that touch core code. Use this suite instead for local
+deep-dives: it measures real wall/CPU time, RSS, streaming and loop lag on a
+full server process — things CodSpeed's in-process model cannot see. Runner
+variance on shared GitHub-hosted runners is far larger than the regressions
+the timing-based metrics are meant to catch, so this suite has no CI job of
+its own.
