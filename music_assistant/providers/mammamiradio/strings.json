@@ -2,7 +2,7 @@
   "config_entries": {
     "mammamiradio_url": {
       "label": "Mamma Mi Radio URL",
-      "description": "URL of your Mamma Mi Radio HA addon (default matches the stock addon configuration)."
+      "description": "Public base URL of your Mamma Mi Radio HA addon. Do not include an admin token; the default matches the stock addon configuration."
     }
   },
   "manifest": {

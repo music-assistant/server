@@ -69,11 +69,11 @@ def _make_v1_ctx(payload: Any, status: int = 200, etag: str | None = None) -> Ma
     return ctx
 
 
-def _make_bad_json_ctx(status: int = 200) -> MagicMock:
+def _make_bad_json_ctx(status: int = 200, exc: Exception | None = None) -> MagicMock:
     """Async-context-manager mock whose body is not JSON (``.json()`` raises)."""
     response = MagicMock()
     response.status = status
-    response.json = AsyncMock(side_effect=ValueError("not json"))
+    response.json = AsyncMock(side_effect=exc or ValueError("not json"))
     response.headers = CIMultiDict()
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(return_value=response)
@@ -193,6 +193,7 @@ async def test_handle_async_init_v1_contract(
     await provider.handle_async_init()
     assert provider._use_v1 is True
     assert provider._audio_format_dict == _V1_AUDIO_FORMAT
+    assert provider._stream_path == "/stream"
     called_url = mass_mock.http_session.get.call_args.args[0]
     assert called_url == "http://localhost:8000/api/integrations/v1/now-playing"
 
@@ -300,6 +301,74 @@ async def test_handle_async_init_v1_non_json_falls_back_to_healthz(
     )
     await provider.handle_async_init()  # must not raise
     assert provider._use_v1 is False
+
+
+async def test_handle_async_init_v1_array_payload_falls_back_to_healthz(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A 200 whose JSON body is an array (not an object) demotes to legacy mode."""
+    mass_mock.http_session.get = MagicMock(
+        side_effect=_route_get(
+            {
+                "/api/integrations/v1/now-playing": _make_v1_ctx(["not", "an", "object"]),
+                "/healthz": _make_response_ctx(200),
+            }
+        )
+    )
+    await provider.handle_async_init()  # must not raise
+    assert provider._use_v1 is False
+
+
+async def test_handle_async_init_v1_content_type_error_falls_back_to_healthz(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """
+    A non-JSON content-type on the v1 probe demotes to legacy mode.
+
+    Regression guard: ``aiohttp.ContentTypeError`` subclasses ``ClientError``, so
+    a 200 HTML page (e.g. from an ingress splash) used to raise
+    ProviderUnavailableError instead of falling back to /healthz.
+    """
+    content_type_error = aiohttp.ContentTypeError(request_info=MagicMock(), history=())
+    mass_mock.http_session.get = MagicMock(
+        side_effect=_route_get(
+            {
+                "/api/integrations/v1/now-playing": _make_bad_json_ctx(exc=content_type_error),
+                "/healthz": _make_response_ctx(200),
+            }
+        )
+    )
+    await provider.handle_async_init()  # must not raise
+    assert provider._use_v1 is False
+
+
+async def test_handle_async_init_generic_client_error_still_raises(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A plain aiohttp.ClientError (true connection failure) must still fail init."""
+    mass_mock.http_session.get = MagicMock(
+        return_value=_make_failing_ctx(aiohttp.ClientError("boom"))
+    )
+    with pytest.raises(ProviderUnavailableError):
+        await provider.handle_async_init()
+
+
+async def test_handle_async_init_unsupported_v1_schema_falls_back_to_healthz(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A reachable but incompatible now-playing schema demotes to legacy mode."""
+    unsupported = {**_V1_MUSIC, "schema_version": "2"}
+    mass_mock.http_session.get = MagicMock(
+        side_effect=_route_get(
+            {
+                "/api/integrations/v1/now-playing": _make_v1_ctx(unsupported),
+                "/healthz": _make_response_ctx(200),
+            }
+        )
+    )
+    await provider.handle_async_init()
+    assert provider._use_v1 is False
+    assert provider._stream_path == "/stream"
 
 
 # ---------------------------------------------------------------------------
@@ -424,12 +493,40 @@ async def test_get_stream_details_returns_mp3_format(
 async def test_get_stream_details_uses_configured_url_with_stream_suffix(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """Path 10 — stream path is hard-coded as ``${url}/stream``."""
+    """Path 10 — stream path defaults to ``${url}/stream``."""
     mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
     details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
     assert details.path == "http://localhost:8000/stream"
     assert details.allow_seek is False
     assert details.can_seek is False
+
+
+async def test_get_stream_details_uses_contract_relative_stream_path(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """The v1 consumer contract may publish the relative stream URL to expose."""
+    contract = {
+        **_V1_MUSIC,
+        "stream": {"relative_url": "/radio/live.mp3", "audio_format": _V1_AUDIO_FORMAT},
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(contract))
+    await provider.handle_async_init()
+    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/radio/live.mp3"
+
+
+async def test_get_stream_details_ignores_unsafe_contract_stream_path(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """An absolute contract URL must not turn the provider into a redirector."""
+    contract = {
+        **_V1_MUSIC,
+        "stream": {"relative_url": "https://example.invalid/stream", "audio_format": {}},
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(contract))
+    await provider.handle_async_init()
+    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
 
 
 async def test_get_stream_details_does_not_probe_at_stream_time(
@@ -512,6 +609,17 @@ async def test_query_string_in_configured_url_is_stripped(
     """A configured URL with a query string must not corrupt the stream URL."""
     prov = _build_provider_with_url(mass_mock, "http://localhost:8000?foo=bar")
     mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
+    details = await prov.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
+
+
+async def test_credentials_in_configured_url_are_stripped(
+    mass_mock: MagicMock,
+) -> None:
+    """A pasted token in URL userinfo must not reach stream/probe URLs."""
+    prov = _build_provider_with_url(
+        mass_mock, "http://admin:secret-token@localhost:8000?admin_token=also-secret"
+    )
     details = await prov.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
     assert details.path == "http://localhost:8000/stream"
 
@@ -1433,6 +1541,21 @@ async def test_v1_callback_without_etag_polls_unconditionally(
     await provider._update_stream_metadata(details, 0)
     second = mass_mock.http_session.get.call_args_list[1]
     assert "If-None-Match" not in second.kwargs.get("headers", {})
+
+
+async def test_v1_callback_unsupported_schema_keeps_prior(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A drifted now-playing schema is ignored mid-stream instead of mapped loosely."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC))
+    await provider._update_stream_metadata(details, 0)
+    prior = details.stream_metadata
+    unsupported = {**_V1_MUSIC, "schema_version": "2"}
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(unsupported))
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata is prior
 
 
 def test_legacy_banter_dict_hosts_use_display_name() -> None:

@@ -56,6 +56,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
 }
+SUPPORTED_SCHEMA_VERSIONS = {"1"}
 
 CONF_MAMMAMIRADIO_URL = "mammamiradio_url"
 DEFAULT_URL = "http://localhost:8000"
@@ -117,6 +118,27 @@ def _pos_int(value: Any, default: int) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return default
+
+
+def _supports_v1_schema(value: Any) -> bool:
+    """Return True when ``value`` identifies a now-playing v1 payload."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        value = str(value)
+    return isinstance(value, str) and value.strip() in SUPPORTED_SCHEMA_VERSIONS
+
+
+def _stream_path_from_contract(value: Any) -> str:
+    """Return a safe relative stream path from the v1 contract, else the default."""
+    raw = _clean_str(value)
+    if raw is None:
+        return STREAM_PATH
+    parts = urlsplit(raw)
+    path = parts.path.rstrip("/")
+    if parts.scheme or parts.netloc or not path.startswith("/") or not path:
+        return STREAM_PATH
+    return path
 
 
 def _host_display_names(hosts: Any) -> str | None:
@@ -357,6 +379,7 @@ class MammamiradioProvider(MusicProvider):
     # if a method is somehow reached before init runs.
     _use_v1: bool = False
     _audio_format_dict: dict[str, Any] | None = None
+    _stream_path: str = STREAM_PATH
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -387,9 +410,11 @@ class MammamiradioProvider(MusicProvider):
             stream = stream if isinstance(stream, dict) else {}
             audio_format = stream.get("audio_format")
             self._audio_format_dict = audio_format if isinstance(audio_format, dict) else None
+            self._stream_path = _stream_path_from_contract(stream.get("relative_url"))
             self.logger.info("mammamiradio v1 now-playing contract reachable at %s", url)
             return
         self._use_v1 = False
+        self._stream_path = STREAM_PATH
         await self._probe_healthz(url)
         self.logger.info("mammamiradio addon reachable at %s (legacy /public-status mode)", url)
 
@@ -462,7 +487,7 @@ class MammamiradioProvider(MusicProvider):
             audio_format=self._audio_format(),
             media_type=MediaType.RADIO,
             stream_type=StreamType.HTTP,
-            path=f"{url_root}{STREAM_PATH}",
+            path=f"{url_root}{self._stream_path}",
             allow_seek=False,
             can_seek=False,
             stream_metadata_update_callback=self._update_stream_metadata,
@@ -596,14 +621,25 @@ class MammamiradioProvider(MusicProvider):
                     )
                     return None
                 payload = await response.json()
-                return payload if isinstance(payload, dict) else {}
+                if not isinstance(payload, dict):
+                    return None
+                if not _supports_v1_schema(payload.get("schema_version")):
+                    self.logger.debug(
+                        "mammamiradio v1 now-playing probe returned unsupported "
+                        "schema_version %r; falling back to /healthz",
+                        payload.get("schema_version"),
+                    )
+                    return None
+                return payload
+        # ContentTypeError subclasses ClientError but means the endpoint answered
+        # with a non-JSON content-type, so it must be caught first: it demotes to
+        # the /healthz fallback rather than raising ProviderUnavailableError.
+        except (aiohttp.ContentTypeError, ValueError, TypeError) as err:
+            self.logger.debug("mammamiradio v1 now-playing probe returned non-JSON: %s", err)
+            return None
         except (aiohttp.ClientError, TimeoutError) as err:
             msg = f"mammamiradio addon unreachable at {url}: {err}"
             raise ProviderUnavailableError(msg) from err
-        except (ValueError, TypeError) as err:
-            # Endpoint answered but the body is not JSON — treat as no-v1, fall back.
-            self.logger.debug("mammamiradio v1 now-playing probe returned non-JSON: %s", err)
-            return None
 
     async def _probe_healthz(self, url: str) -> None:
         """
@@ -655,6 +691,12 @@ class MammamiradioProvider(MusicProvider):
                 payload = await response.json()
                 if not isinstance(payload, dict):
                     return None
+                if not _supports_v1_schema(payload.get("schema_version")):
+                    self.logger.debug(
+                        "mammamiradio v1 now-playing returned unsupported schema_version %r",
+                        payload.get("schema_version"),
+                    )
+                    return None
                 new_etag = response.headers.get("ETag")
                 if isinstance(new_etag, str):
                     data["v1_etag"] = new_etag
@@ -698,10 +740,17 @@ class MammamiradioProvider(MusicProvider):
         return _audio_format_from_contract(self._audio_format_dict)
 
     def _stream_url_root(self) -> str:
-        """Return the configured mammamiradio URL stripped of query, fragment, and trailing slash."""
+        """
+        Return the configured mammamiradio URL stripped to a public base URL.
+
+        Query strings, fragments, and userinfo are intentionally discarded so an
+        admin token pasted into the setup field never reaches MA stream URLs,
+        probe URLs, logs, or provider-unavailable errors.
+        """
         raw = str(self.config.get_value(CONF_MAMMAMIRADIO_URL) or DEFAULT_URL).strip()
         parts = urlsplit(raw)
-        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
+        netloc = parts.netloc.rsplit("@", 1)[-1]
+        return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
 
     def _build_radio(self) -> Radio:
         """Construct the single Radio object for mammamiradio."""
