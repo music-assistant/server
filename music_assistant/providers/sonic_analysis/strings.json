@@ -1,0 +1,24 @@
+{
+  "config_entries": {
+    "resource_warning": {
+      "label": "Sonic Analysis is powerful but resource-intensive: it loads a machine-learning model (CLAP) into memory to analyze how your music sounds. The minimum requirements are 4 GB of RAM, 2 CPU cores and SIMD acceleration (AVX2 on Intel/AMD CPUs, NEON on ARM). For the best experience we recommend 6 GB or more of RAM and 4 CPU cores. On systems near the minimum, or under heavy load, you may still run into out-of-memory situations."
+    },
+    "clap_sampling": {
+      "label": "CLAP quality (windows per track)",
+      "description": "Number of 7-second windows CLAP analyzes per track. More windows produce more representative scalars at linear CPU cost. Thorough is most useful for instrumentalness, where vocals can be missed by a single window.",
+      "options": {
+        "fast": "Fast (1 window)",
+        "balanced": "Balanced (3 windows, 2.4x CPU)",
+        "thorough": "Thorough (8 windows, 6.6x CPU)"
+      },
+      "option_descriptions": {
+        "fast": "One window per track — lowest CPU. Fine for a quick first pass over a large library.",
+        "balanced": "Three windows — the recommended default; good accuracy at moderate CPU cost.",
+        "thorough": "Eight windows — highest accuracy at the highest CPU cost."
+      }
+    }
+  },
+  "manifest": {
+    "description": "Analyses how each track sounds to power similarity, mood-based playlists, and other audio-aware features."
+  }
+}

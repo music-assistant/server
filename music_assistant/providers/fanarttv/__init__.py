@@ -11,7 +11,7 @@ from music_assistant_models.enums import ConfigEntryType, ExternalID, ImageType,
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -32,11 +32,16 @@ CONF_ENABLE_ARTIST_IMAGES = "enable_artist_images"
 CONF_ENABLE_ALBUM_IMAGES = "enable_album_images"
 CONF_CLIENT_KEY = "client_key"
 
-IMG_MAPPING = {
+ARTIST_IMG_MAPPING = {
     "artistthumb": ImageType.THUMB,
     "hdmusiclogo": ImageType.LOGO,
     "musicbanner": ImageType.BANNER,
     "artistbackground": ImageType.FANART,
+}
+
+ALBUM_IMG_MAPPING = {
+    "albumcover": ImageType.THUMB,
+    "cdart": ImageType.DISCART,
 }
 
 
@@ -65,22 +70,16 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_ARTIST_IMAGES,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist images.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_ALBUM_IMAGES,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of album image(s).",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_CLIENT_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="VIP Member Personal API Key (optional)",
-            description="Support this metadata provider by becoming a VIP Member, "
-            "resulting in higher rate limits and faster response times among other benefits. "
-            "See https://wiki.fanart.tv/General/personal%20api/ for more information.",
             required=False,
         ),
     )
@@ -90,6 +89,11 @@ class FanartTvMetadataProvider(MetadataProvider):
     """Fanart.tv Metadata provider."""
 
     throttler: Throttler
+
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 10
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -109,7 +113,7 @@ class FanartTvMetadataProvider(MetadataProvider):
         self.logger.debug("Fetching metadata for Artist %s on Fanart.tv", artist.name)
         if data := await self._get_data(f"music/{artist.mbid}"):
             metadata = MediaItemMetadata()
-            for key, img_type in IMG_MAPPING.items():
+            for key, img_type in ARTIST_IMG_MAPPING.items():
                 items = data.get(key)
                 if not items:
                     continue
@@ -122,6 +126,18 @@ class FanartTvMetadataProvider(MetadataProvider):
                             remotely_accessible=True,
                         )
                     )
+            if metadata.images:
+                self.logger.debug(
+                    "Found %d image(s) for Artist %s on Fanart.tv",
+                    len(metadata.images),
+                    artist.name,
+                )
+            else:
+                self.logger.debug(
+                    "No images found for Artist %s on Fanart.tv (available keys: %s)",
+                    artist.name,
+                    list(data.keys()),
+                )
             return metadata
         return None
 
@@ -134,11 +150,11 @@ class FanartTvMetadataProvider(MetadataProvider):
         self.logger.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
         if data := await self._get_data(f"music/albums/{mbid}"):
             if data and data.get("albums"):
-                if album := data["albums"][mbid]:
+                if album_data := data["albums"].get(mbid):
                     metadata = MediaItemMetadata()
                     metadata.images = UniqueList()
-                    for key, img_type in IMG_MAPPING.items():
-                        items = album.get(key)
+                    for key, img_type in ALBUM_IMG_MAPPING.items():
+                        items = album_data.get(key)
                         if not items:
                             continue
                         for item in items:
@@ -150,18 +166,31 @@ class FanartTvMetadataProvider(MetadataProvider):
                                     remotely_accessible=True,
                                 )
                             )
+                    if metadata.images:
+                        self.logger.debug(
+                            "Found %d image(s) for Album %s on Fanart.tv",
+                            len(metadata.images),
+                            album.name,
+                        )
+                    else:
+                        self.logger.debug(
+                            "No images found for Album %s on Fanart.tv (available keys: %s)",
+                            album.name,
+                            list(album_data.keys()),
+                        )
                     return metadata
         return None
 
-    @use_cache(86400 * 60)  # Cache for 60 days
+    # None here only signals a failed or rate-limited request, so don't cache it
+    @use_cache(86400 * 60, cache_none=False)  # Cache for 60 days
     async def _get_data(self, endpoint: str, **kwargs: str) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
         headers = {
-            "api-key": app_var(4),
+            "api-key": app_var("fanarttv_api_key"),
         }
         if client_key := self.config.get_value(CONF_CLIENT_KEY):
-            headers["client_key"] = client_key
+            headers["client_key"] = str(client_key)
         async with (
             self.throttler,
             self.mass.http_session_no_ssl.get(

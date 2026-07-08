@@ -1,15 +1,9 @@
 """Converters for Bandcamp API models to Music Assistant models."""
 
-from datetime import datetime
+from contextlib import suppress
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, TypedDict
 
-from bandcamp_async_api.models import BCAlbum as APIAlbum
-from bandcamp_async_api.models import BCArtist as APIArtist
-from bandcamp_async_api.models import BCTrack as APITrack
-from bandcamp_async_api.models import (
-    SearchResultAlbum,
-    SearchResultArtist,
-    SearchResultTrack,
-)
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import Album as MAAlbum
 from music_assistant_models.media_items import Artist as MAArtist
@@ -21,6 +15,31 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.media_items import Track as MATrack
+
+if TYPE_CHECKING:
+    from bandcamp_async_api.models import BCAlbum as APIAlbum
+    from bandcamp_async_api.models import BCArtist as APIArtist
+    from bandcamp_async_api.models import BCTrack as APITrack
+    from bandcamp_async_api.models import (
+        FeedTrack,
+        SearchResultAlbum,
+        SearchResultArtist,
+        SearchResultTrack,
+    )
+
+
+class DiscographyItem(TypedDict, total=False):
+    """Raw discography item dict from the band_details API."""
+
+    item_id: int
+    item_type: str
+    band_id: int
+    title: str
+    artist_name: str | None
+    band_name: str | None
+    art_id: int | None
+    release_date: str | None
+    is_purchasable: bool
 
 
 class BandcampConverters:
@@ -35,7 +54,8 @@ class BandcampConverters:
     def streaming_url_from_api(
         streaming_info: dict[str, str],
     ) -> tuple[str | None, int | None, ContentType]:
-        """Parse streaming URL info.
+        """
+        Parse streaming URL info.
 
         :param streaming_info: Dict of format keys to URLs from the Bandcamp API.
         """
@@ -229,6 +249,56 @@ class BandcampConverters:
             )
         return output
 
+    def track_from_feed(self, track: FeedTrack) -> MATrack:
+        """Convert a feed track_list entry to MA Track format."""
+        album_id = track.album_id or 0
+        item_id = f"{track.band_id}-{album_id}-{track.track_id}"
+        _, bitrate, content_type = self.streaming_url_from_api(track.streaming_url or {})
+        output = MATrack(
+            item_id=item_id,
+            provider=self.instance_id,
+            name=track.title,
+            duration=int(track.duration) if track.duration else 0,
+            artists=UniqueList(
+                [
+                    ItemMapping(
+                        media_type=MediaType.ARTIST,
+                        item_id=str(track.band_id),
+                        provider=self.instance_id,
+                        name=track.band_name,
+                    )
+                ]
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=track.track_url,
+                    audio_format=AudioFormat(content_type=content_type, bit_rate=bitrate),
+                )
+            },
+        )
+        if track.track_num is not None:
+            output.track_number = track.track_num
+        if album_id:
+            output.album = ItemMapping(
+                media_type=MediaType.ALBUM,
+                item_id=f"{track.band_id}-{album_id}",
+                provider=self.instance_id,
+                name=track.album_title or "",
+            )
+        if track.art_id:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=f"https://f4.bcbits.com/img/a{track.art_id}_0.jpg",
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            )
+        return output
+
     def artist_from_api(self, artist: APIArtist) -> MAArtist:
         """Convert an API Artist object to MA Artist format."""
         output = MAArtist(
@@ -254,6 +324,66 @@ class BandcampConverters:
                 remotely_accessible=True,
             )
         )
+        return output
+
+    def album_from_discography_item(self, item: DiscographyItem) -> MAAlbum:
+        """
+        Convert a raw discography dict to MA Album format.
+
+        Discography items come from the band_details API and contain summary
+        data (title, art_id, release_date string) without full album details.
+        Fields not available from the discography endpoint (url, description)
+        are omitted and populated later when get_album fetches full details.
+        """
+        band_id = item.get("band_id", 0)
+        item_id = item.get("item_id", 0)
+        album_id = f"{band_id}-{item_id}"
+        artist_name = item.get("artist_name") or item.get("band_name") or ""
+
+        # Build art URL from art_id (matches _build_art_url in parsers.py)
+        art_id = item.get("art_id")
+        art_url = f"https://f4.bcbits.com/img/a{art_id}_0.jpg" if art_id else ""
+
+        # Parse year from release_date string like "21 Feb 2020 00:00:00 GMT"
+        year = None
+        release_date = item.get("release_date")
+        if release_date:
+            with suppress(ValueError, TypeError, IndexError):
+                # Format: "21 Feb 2020 00:00:00 GMT" — extract year directly
+                year = int(release_date.split()[2])
+
+        output = MAAlbum(
+            item_id=album_id,
+            provider=self.instance_id,
+            name=item.get("title") or "",
+            artists=UniqueList(
+                [
+                    ItemMapping(
+                        media_type=MediaType.ARTIST,
+                        item_id=str(band_id),
+                        provider=self.instance_id,
+                        name=artist_name,
+                    )
+                ]
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=album_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            year=year,
+        )
+        if art_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=art_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            )
         return output
 
     def album_from_api(self, album: APIAlbum) -> MAAlbum:
@@ -287,7 +417,9 @@ class BandcampConverters:
                     url=album.url,
                 )
             },
-            year=datetime.fromtimestamp(album.release_date).year if album.release_date else None,
+            year=datetime.fromtimestamp(album.release_date, tz=UTC).year
+            if album.release_date
+            else None,
         )
         output.metadata.add_image(
             MediaItemImage(

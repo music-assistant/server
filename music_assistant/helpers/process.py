@@ -56,7 +56,8 @@ class AsyncProcess:
         name: str | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
-        """Initialize AsyncProcess.
+        """
+        Initialize AsyncProcess.
 
         :param args: Command and arguments to execute.
         :param stdin: Stdin configuration (True for PIPE, False for None, or custom).
@@ -128,7 +129,7 @@ class AsyncProcess:
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
         )
 
-    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes]:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
@@ -136,7 +137,7 @@ class AsyncProcess:
                 break
             yield chunk
 
-    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes]:
         """Yield chunks as they come in from process stdout."""
         while True:
             chunk = await self.read(n)
@@ -157,7 +158,8 @@ class AsyncProcess:
                 return err.partial
 
     async def read(self, n: int) -> bytes:
-        """Read up to n bytes from the stdout stream.
+        """
+        Read up to n bytes from the stdout stream.
 
         If n is positive, this function try to read n bytes,
         and may return less or equal bytes than requested, but at least one byte.
@@ -178,8 +180,7 @@ class AsyncProcess:
             return
         async with self._stdin_lock:
             self.proc.stdin.write(data)
-            with suppress(BrokenPipeError, ConnectionResetError):
-                await self.proc.stdin.drain()
+            await self.proc.stdin.drain()
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
@@ -222,7 +223,7 @@ class AsyncProcess:
                 # raise for all other (value) errors
                 raise
 
-    async def iter_stderr(self) -> AsyncGenerator[str, None]:
+    async def iter_stderr(self) -> AsyncGenerator[str]:
         """Iterate lines from the stderr stream as string."""
         line: str | bytes
         while True:

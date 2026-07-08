@@ -28,7 +28,7 @@ class LibrespotStreamer:
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item."""
         # Regular track/episode streaming - audiobooks are handled in the provider
         media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
@@ -38,7 +38,7 @@ class LibrespotStreamer:
 
     async def stream_spotify_uri(
         self, spotify_uri: str, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the Spotify URI."""
         self.provider.logger.log(
             VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"
@@ -81,9 +81,16 @@ class LibrespotStreamer:
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:
                         logger.warning("[librespot] %s", line)
-                        if "Unable to read audio file" in line:
-                            # if this happens, we should stop the process to avoid hanging
-                            await librespot_proc.close()
+                        if "unable to" in line.lower() or "skipping" in line.lower():
+                            # if librespot reports a fatal error (e.g. unable to load
+                            # or read audio), terminate the process to avoid hanging
+                            # indefinitely as it won't produce any audio output.
+                            # NOTE: we terminate the underlying process directly instead
+                            # of calling close() because this task IS the stderr reader
+                            # and close() would try to await itself.
+                            if librespot_proc.proc and librespot_proc.proc.returncode is None:
+                                librespot_proc.proc.terminate()
+                            return
                     else:
                         logger.log(VERBOSE_LOG_LEVEL, "[librespot] %s", line)
 

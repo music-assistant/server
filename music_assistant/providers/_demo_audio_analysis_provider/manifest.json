@@ -1,0 +1,9 @@
+{
+  "type": "audio_analysis",
+  "domain": "_demo_audio_analysis_provider",
+  "name": "Demo Audio Analysis Provider",
+  "description": "Test/Example Audio Analysis Provider for Music Assistant.",
+  "codeowners": ["@yourgithubusername"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/audio-analysis/demo/"
+}

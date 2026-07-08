@@ -1,7 +1,7 @@
 {
   "type": "plugin",
   "domain": "subsonic_scrobble",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Subsonic Scrobbler",
   "description": "Scrobbles tracks played in Music Assistant to your local Subsonic server for history and stats.",
   "codeowners": ["@clusters"],

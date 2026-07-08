@@ -3,7 +3,7 @@ Developer docs
 
 ## 📝 Prerequisites
 * ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
-* Python 3.12 is minimal required, 3.12 recommended (or check the pyproject for current required version)
+* Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
 
 We recommend developing on a (recent) macOS or Linux machine.
@@ -30,6 +30,31 @@ NOTE: Always re-run the setup script after you fetch the latest code because req
 We removed support for devcontainers because we do not have anyone willing to maintain it.
 It also is not very convenient due to all the port requirements, binaries etc.
 If somebody is willing to create and maintain a devcontainer with host networking and based on our base alpine image, we will add the support back. Until then: Develop with Python venv on a Linux or macOS machine (see above).
+
+### Using devenv (Nix-based)
+If you prefer a reproducible, Nix-based development environment, this repository includes support for devenv 2 (latest). Devenv builds a per-project development environment (using Nix) that provides the exact tools and packages you need without changing your global system.
+
+- What it is: devenv uses Nix to create isolated, reproducible dev shells that contain system packages (ffmpeg, git, build tools) and language runtimes (Python, Node, etc.). It helps avoid "it works on my machine" problems.
+- Install: follow the official guide for installing Nix and devenv for your OS: https://devenv.sh/getting-started/
+- Quick start (from the repository root):
+
+  ```sh
+  # build the environment and enter an interactive shell
+  devenv up
+
+  # alternatively: enter an environment shell if already built
+  devenv shell
+
+  # run a single command inside the environment without opening a shell
+  devenv run -- scripts/setup.sh
+  ```
+
+- Inside the devenv shell you can run the usual project commands (for example `scripts/setup.sh`, `python -m music_assistant --log-level debug` or the test runner). When finished, exit the shell with `exit`.
+- Files: This repo contains `devenv.nix` and `devenv.yaml` at the repository root which declare the packages and dev actions used by the environment — inspect them if you need to add or change tools.
+
+Notes:
+- If you are new to Nix, the getting-started link above includes details about single-user vs multi-user installs and common troubleshooting steps.
+- Using devenv does not prevent using the provided `scripts/setup.sh` (the script creates a Python venv inside the environment if you prefer that workflow).
 
 ### Developing on the Music Assistant Server Models
 
@@ -112,5 +137,7 @@ The manifest file contains metadata and configuration about a provider. The supp
 | requirements | List of requirements for the provider in pip string format. Supported values are `package==version` and `git+https://gitrepoforpackage` | array[string]
 | documentation | URL to the Github discussion containing the documentation for the provider. | string |
 | multi_instances | Whether multiple instances of the configuration are supported, e.g. multiple user accounts for Spotify | boolean |
+| mdns_discovery | List of Zeroconf service types the provider wants to subscribe to. | array[string] |
+| upnp_discovery | List of SSDP search targets the provider wants to subscribe to. | array[string] |
 
 \* These `config_entries` are used to automatically generate the settings page for the provider in the front-end. The values can be obtained via `self.config.get_value(key)`.

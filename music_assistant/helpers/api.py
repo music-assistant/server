@@ -5,17 +5,22 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
+import pkgutil
 from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
+from functools import cache
 from types import NoneType, UnionType
-from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from mashumaro.exceptions import MissingField
 from music_assistant_models.media_items.media_item import MediaItem
 
 from music_assistant.helpers.util import try_parse_bool
+
+if TYPE_CHECKING:
+    from music_assistant_models.auth import Scope
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,6 +28,8 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 # Cache for resolved type alias strings to avoid repeated imports
 _TYPE_ALIAS_CACHE: dict[str, Any] = {}
+_MODEL_TYPE_CACHE: dict[str, Any] = {}
+_MAX_TYPE_HINT_RESOLVE_ATTEMPTS = 32
 
 
 def _resolve_string_type(type_str: str) -> Any:
@@ -65,13 +72,101 @@ def _resolve_string_type(type_str: str) -> Any:
         return type_str
 
 
+@cache
+def _get_model_module_names() -> tuple[str, ...]:
+    """Return all module names from the music_assistant_models package."""
+    try:
+        music_assistant_models = importlib.import_module("music_assistant_models")
+    except ImportError:
+        return ()
+    try:
+        return tuple(
+            mod.name
+            for mod in pkgutil.walk_packages(
+                music_assistant_models.__path__, prefix="music_assistant_models."
+            )
+        )
+    except Exception:
+        return ()
+
+
+def _resolve_model_type(name: str) -> Any | None:
+    """Resolve a type from the music_assistant_models package by name."""
+    if name in _MODEL_TYPE_CACHE:
+        return _MODEL_TYPE_CACHE[name]
+
+    try:
+        music_assistant_models = importlib.import_module("music_assistant_models")
+    except ImportError:
+        _MODEL_TYPE_CACHE[name] = None
+        return None
+
+    if hasattr(music_assistant_models, name):
+        resolved = getattr(music_assistant_models, name)
+        _MODEL_TYPE_CACHE[name] = resolved
+        return resolved
+
+    for module_name in _get_model_module_names():
+        try:
+            module = importlib.import_module(module_name)
+            if hasattr(module, name):
+                resolved = getattr(module, name)
+                _MODEL_TYPE_CACHE[name] = resolved
+                return resolved
+        except ImportError:
+            continue
+
+    _MODEL_TYPE_CACHE[name] = None
+    return None
+
+
+def _extract_name_error_symbol(error: NameError) -> str | None:
+    """Extract the missing symbol name from NameError messages."""
+    msg = str(error)
+    if "name '" in msg and "' is not defined" in msg:
+        return msg.split("name '", 1)[1].split("'", 1)[0]
+    return None
+
+
+def _get_type_hints_for_api_command(func: Callable[..., Any]) -> dict[str, Any]:
+    """
+    Get type hints for API command handlers with fallback for model types.
+
+    We need this because API command handlers are often declared in controllers with
+    type-only imports under TYPE_CHECKING (to avoid runtime cycles), e.g.:
+      from typing import TYPE_CHECKING
+      if TYPE_CHECKING:
+          from music_assistant_models.background_task import BackgroundTask
+
+    Without this fallback, get_type_hints() raises NameError when evaluating
+    forward refs like "BackgroundTask" at runtime during API registration.
+    """
+    globalns = dict(getattr(func, "__globals__", {}))
+    localns: dict[str, Any] = {}
+    for _attempt in range(_MAX_TYPE_HINT_RESOLVE_ATTEMPTS):
+        try:
+            return get_type_hints(func, globalns=globalns, localns=localns)
+        except NameError as err:
+            missing_name = _extract_name_error_symbol(err)
+            if not missing_name:
+                raise
+            resolved = _resolve_model_type(missing_name)
+            if resolved is None:
+                raise
+            globalns[missing_name] = resolved
+            continue
+    msg = f"Exceeded type hint resolution attempts for API command {func.__qualname__}"
+    raise RuntimeError(msg)
+
+
 def _resolve_generic_type_args(
     args: tuple[Any, ...],
     func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
     config_value_type: Any,
     media_item_type: Any,
 ) -> tuple[list[Any], bool]:
-    """Resolve TypeVars and type aliases in generic type arguments.
+    """
+    Resolve TypeVars and type aliases in generic type arguments.
 
     :param args: Type arguments from a generic type (e.g., from list[T] or dict[K, V])
     :param func: The function being analyzed
@@ -135,7 +230,8 @@ def _resolve_typevar_in_union(
     args: tuple[Any, ...],
     i: int,
 ) -> Any:
-    """Resolve a TypeVar found in a Union to its concrete type.
+    """
+    Resolve a TypeVar found in a Union to its concrete type.
 
     :param arg: The TypeVar to resolve.
     :param func: The function being analyzed.
@@ -186,7 +282,8 @@ class APICommandHandler:
     type_hints: dict[str, Any]
     target: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
     authenticated: bool = True
-    required_role: str | None = None  # "admin" or "user" or None
+    required_scope: Scope | None = None  # None means any authenticated user
+    allow_impersonation: bool = False  # If True, the command accepts a 'user' argument
     alias: bool = False  # If True, this is an alias for backward compatibility
 
     @classmethod
@@ -195,19 +292,23 @@ class APICommandHandler:
         command: str,
         func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
-        required_role: str | None = None,
+        required_scope: Scope | None = None,
+        allow_impersonation: bool = False,
         alias: bool = False,
     ) -> APICommandHandler:
-        """Parse APICommandHandler by providing a function.
+        """
+        Parse APICommandHandler by providing a function.
 
         :param command: The command name/path.
         :param func: The function to handle the command.
         :param authenticated: Whether authentication is required (default: True).
-        :param required_role: Required user role ("admin" or "user")
+        :param required_scope: Scope required to execute the command,
             None for any authenticated user.
+        :param allow_impersonation: Whether the command accepts a 'user' argument
+            to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).
         """
-        type_hints = get_type_hints(func)
+        type_hints = _get_type_hints_for_api_command(func)
         # workaround for generic typevar ItemCls that needs to be resolved
         # to the real media item type. TODO: find a better way to do this
         # without this hack
@@ -260,38 +361,58 @@ class APICommandHandler:
             elif isinstance(value, TypeVar):
                 if value.__bound__ is not None:
                     type_hints[key] = value.__bound__
+        signature = inspect.signature(func)
+        # the 'user' argument of impersonation-enabled commands is injected by the
+        # command dispatch, so it may not clash with the handler's own arguments
+        if allow_impersonation and not signature.parameters.keys().isdisjoint(("user", "username")):
+            msg = f"Command {command} allows impersonation but accepts a user(name) argument"
+            raise RuntimeError(msg)
         return APICommandHandler(
             command=command,
-            signature=inspect.signature(func),
+            signature=signature,
             type_hints=type_hints,
             target=func,
             authenticated=authenticated,
-            required_role=required_role,
+            required_scope=required_scope,
+            allow_impersonation=allow_impersonation,
             alias=alias,
         )
 
 
 def api_command(
-    command: str, authenticated: bool = True, required_role: str | None = None
+    command: str,
+    authenticated: bool = True,
+    required_scope: Scope | None = None,
+    allow_impersonation: bool = False,
+    alias: bool = False,
 ) -> Callable[[_F], _F]:
-    """Decorate a function as API route/command.
+    """
+    Decorate a function as API route/command.
 
     :param command: The command name/path.
     :param authenticated: Whether authentication is required (default: True).
-    :param required_role: Required user role ("admin" or "user"), None means any authenticated user.
+    :param required_scope: Scope required to execute the command,
+        None means any authenticated user.
+    :param allow_impersonation: Whether the command accepts a 'user' argument
+        to execute the command on behalf of another user (default: False).
+    :param alias: Whether this is a backward-compatible alias (default: False).
+        Aliases remain functional but are hidden from the API documentation.
     """
 
     def decorate(func: _F) -> _F:
         func.api_cmd = command  # type: ignore[attr-defined]
         func.api_authenticated = authenticated  # type: ignore[attr-defined]
-        func.api_required_role = required_role  # type: ignore[attr-defined]
+        func.api_required_scope = required_scope  # type: ignore[attr-defined]
+        func.api_allow_impersonation = allow_impersonation  # type: ignore[attr-defined]
+        func.api_alias = alias  # type: ignore[attr-defined]
         return func
 
     return decorate
 
 
 def _is_type_hint(value_type: Any) -> bool:
-    """Check if a type annotation is or contains type[X].
+    """
+    Check if a type annotation is or contains type[X].
 
     Handles both ``type[X]`` and ``type[X] | None``.
     """
@@ -406,7 +527,7 @@ def parse_value(  # noqa: PLR0911
                 return parse_value(
                     name, value, sub_arg_type, allow_value_convert=allow_value_convert
                 )
-            except (KeyError, TypeError, ValueError, MissingField):
+            except KeyError, TypeError, ValueError, MissingField:
                 pass
         # if we get to this point, all possibilities failed
         # find out if we should raise or log this

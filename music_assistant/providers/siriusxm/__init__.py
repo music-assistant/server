@@ -25,11 +25,13 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
+    SearchResults,
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from tenacity import RetryError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import select_free_port
 from music_assistant.helpers.webserver import Webserver
@@ -53,6 +55,7 @@ CONF_SXM_REGION = "sxm_region"
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.SEARCH,
 }
 
 
@@ -78,16 +81,15 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_SXM_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
         ConfigEntry(
             key=CONF_SXM_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
         ),
         ConfigEntry(
@@ -95,10 +97,9 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value="US",
             options=[
-                ConfigValueOption(title="United States", value="US"),
-                ConfigValueOption(title="Canada", value="CA"),
+                ConfigValueOption("US"),
+                ConfigValueOption("CA"),
             ],
-            label="Region",
             required=True,
         ),
     )
@@ -200,11 +201,33 @@ class SiriusXMProvider(MusicProvider):
         """
         return True
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         for channel in self._channels_by_id.values():
             if channel.is_favorite:
                 yield self._parse_radio(channel)
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Perform search on SiriusXM channels."""
+        results = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return results
+        search_query_lower = search_query.lower().strip()
+        if not search_query_lower:
+            return results
+        radios: list[Radio] = []
+        for channel in self._channels:
+            if search_query_lower in channel.name.lower():
+                radios.append(self._parse_radio(channel))
+                if len(radios) >= limit:
+                    break
+        results.radio = radios
+        return results
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_radio(self, prov_radio_id: str) -> Radio:
@@ -248,7 +271,8 @@ class SiriusXMProvider(MusicProvider):
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """

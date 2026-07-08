@@ -9,6 +9,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.constants import CONF_IP_ADDRESS
 
+from .constants import CONF_TIMEOUT, DEFAULT_TIMEOUT
 from .provider import HeosPlayerProvider
 
 if TYPE_CHECKING:
@@ -48,11 +49,17 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_IP_ADDRESS,
             type=ConfigEntryType.STRING,
-            label="Main controller hostname or IP address.",
             required=False,
-            description="Hostname or IP address of the HEOS device "
-            "to be used as the main controller. It is recommended to use a "
-            "wired device as the main controller.",
-            category="advanced",
+            advanced=True,
+            requires_reload=True,
+        ),
+        ConfigEntry(
+            key=CONF_TIMEOUT,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_TIMEOUT,
+            required=False,
+            range=(10, 60),
+            requires_reload=True,
+            advanced=True,
         ),
     )

@@ -1,0 +1,10 @@
+{
+  "config_entries": {
+    "resource_warning": {
+      "label": "Smart Fades is powerful but resource-intensive: it loads a machine-learning model into memory to analyze your music. The minimum requirements are 4 GB of RAM, 2 CPU cores and SIMD acceleration (AVX2 on Intel/AMD CPUs, NEON on ARM). For the best experience we recommend 6 GB or more of RAM and 4 CPU cores. On systems near the minimum, or under heavy load, you may still run into out-of-memory situations."
+    }
+  },
+  "manifest": {
+    "description": "Smart fades analyzes beat and downbeat detection, energy and musical key for smart crossfades."
+  }
+}

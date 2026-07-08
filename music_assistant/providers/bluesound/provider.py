@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
 
 from zeroconf import ServiceStateChange
 
@@ -28,13 +28,12 @@ class BluesoundDiscoveryInfo(TypedDict):
     port: str
     mac: str
     model: str
-    zs: bool
 
 
 class BluesoundPlayerProvider(PlayerProvider):
     """Bluos compatible player provider, providing support for bluesound speakers."""
 
-    player_map: dict[(str, str), str] = {}
+    player_map: ClassVar[dict[tuple[str, int], str]] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -56,6 +55,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             self.logger.debug("Ignoring incomplete mdns discovery for Bluesound player: %s", name)
             return
 
+        player_id: str | None
         if info.type == MUSP_MDNS_TYPE:
             # this is a multi-zone device, we need to fetch the mac address of the main device
             mac_address = await get_mac_address(ip_address)
@@ -91,12 +91,11 @@ class BluesoundPlayerProvider(PlayerProvider):
         self.logger.debug("Discovered player: %s", name)
 
         discovery_info = BluesoundDiscoveryInfo(
-            _objectType=info.decoded_properties.get("_objectType", ""),
+            _objectType=info.decoded_properties.get("_objectType") or "",
             ip_address=ip_address,
             port=str(port),
             mac=mac_address,
-            model=info.decoded_properties.get("model", ""),
-            zs=info.decoded_properties.get("zs", False),
+            model=info.decoded_properties.get("model") or "",
         )
 
         # Create BluOS player

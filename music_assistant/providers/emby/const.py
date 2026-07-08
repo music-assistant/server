@@ -23,11 +23,20 @@ ITEM_KEY_ARTISTS = "Artists"
 ITEM_KEY_PLAYLIST_ITEMS = "PlaylistItems"
 ITEM_KEY_TYPE = "Type"
 ITEM_KEY_CONTAINER = "Container"
+ITEM_KEY_INDEX_NUMBER = "IndexNumber"
+ITEM_KEY_PARENT_INDEX_NUMBER = "ParentIndexNumber"
+ITEM_KEY_USER_DATA = "UserData"
+ITEM_KEY_PRIMARY_IMAGE_ITEM_ID = "PrimaryImageItemId"
+ITEM_KEY_GENRES = "Genres"
+
+USER_DATA_KEY_IS_FAVORITE = "IsFavorite"
+USER_DATA_KEY_LAST_PLAYED_DATE = "LastPlayedDate"
 
 AUDIO_STREAM_CODEC = "Codec"
 AUDIO_STREAM_SAMPLE_RATE = "SampleRate"
 AUDIO_STREAM_BIT_DEPTH = "BitDepth"
 AUDIO_STREAM_CHANNELS = "Channels"
+AUDIO_STREAM_BIT_RATE = "BitRate"
 
 # Field lists for API requests
 TRACK_FIELDS = [
@@ -40,6 +49,8 @@ TRACK_FIELDS = [
     "MediaStreams",
     "ImageTags",
     "DateCreated",
+    "Genres",
+    "UserDataLastPlayedDate",
 ]
 
 ALBUM_FIELDS = [
@@ -50,6 +61,7 @@ ALBUM_FIELDS = [
     "ImageTags",
     "DateCreated",
     "ProductionYear",
+    "Genres",
 ]
 
 ARTIST_FIELDS = [
@@ -57,7 +69,5 @@ ARTIST_FIELDS = [
     "Overview",
     "ImageTags",
     "DateCreated",
+    "Genres",
 ]
-
-# Supported audio containers for streaming
-SUPPORTED_CONTAINER_FORMATS = ["mp3", "flac", "aac", "opus", "wav", "m4a"]

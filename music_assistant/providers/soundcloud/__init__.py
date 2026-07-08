@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -48,6 +49,11 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.RECOMMENDATIONS,
 }
+
+# When searching, the duration is compared with the full duration to check if it's a preview track etc.
+# Sometimes, for non preview tracks, the duration is off by a bit compared to the full duration so any differences below
+# this tolerance are acceptable
+SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 
 
 if TYPE_CHECKING:
@@ -85,16 +91,15 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label="Client ID",
             required=True,
         ),
         ConfigEntry(
             key=CONF_AUTHORIZATION,
             type=ConfigEntryType.SECURE_STRING,
-            label="Authorization",
             required=True,
         ),
     )
@@ -105,7 +110,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
-    _me: dict[str, Any] = {}
+    _me: dict[str, Any]
 
     async def handle_async_init(self) -> None:
         """Set up the Soundcloud provider."""
@@ -120,20 +125,14 @@ class SoundcloudMusicProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
-        searchtypes = []
-        if MediaType.ARTIST in media_types:
-            searchtypes.append("artist")
-        if MediaType.TRACK in media_types:
-            searchtypes.append("track")
-        if MediaType.PLAYLIST in media_types:
-            searchtypes.append("playlist")
 
         media_types = [
             x for x in media_types if x in (MediaType.ARTIST, MediaType.TRACK, MediaType.PLAYLIST)
@@ -141,22 +140,25 @@ class SoundcloudMusicProvider(MusicProvider):
         if not media_types:
             return result
 
-        searchresult = await self._soundcloud.search(search_query, limit)
+        searchresult = await self._soundcloud.search(quote(search_query), limit)
 
         for item in searchresult["collection"]:
             media_type = item["kind"]
             if media_type == "user" and MediaType.ARTIST in media_types:
                 result.artists = [*result.artists, await self._parse_artist(item)]
             elif media_type == "track" and MediaType.TRACK in media_types:
-                if item.get("duration") == item.get("full_duration"):
-                    # skip if it's a preview track (e.g. in case of free accounts)
+                duration = item.get("duration", 0)
+                full_duration = item.get("full_duration", 0)
+                if abs(duration - full_duration) < SEARCH_DURATION_COMPARISON_TOLERANCE:
+                    # skip preview/snippet tracks (e.g. in case of free accounts)
+                    # where duration is significantly shorter than full_duration
                     result.tracks = [*result.tracks, await self._parse_track(item)]
             elif media_type == "playlist" and MediaType.PLAYLIST in media_types:
                 result.playlists = [*result.playlists, await self._parse_playlist(item)]
 
         return result
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Soundcloud."""
         time_start = time.time()
 
@@ -172,7 +174,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
                 continue
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Soundcloud."""
         time_start = time.time()
         async for item in self._soundcloud.get_account_playlists():
@@ -204,7 +206,7 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Soundcloud."""
         time_start = time.time()
         async for track in self._soundcloud.get_track_details_liked(self._user_id):
@@ -253,6 +255,7 @@ class SoundcloudMusicProvider(MusicProvider):
         if feed and "collection" in feed:
             folder = RecommendationFolder(
                 name="SoundCloud Feed",
+                translation_key="soundcloud_feed",
                 item_id=f"{self.instance_id}_sc_subscribed_feed",
                 provider=self.instance_id,
                 icon="mdi-rss",
@@ -311,7 +314,7 @@ class SoundcloudMusicProvider(MusicProvider):
         result = await self._soundcloud.get_playlist_details(prov_playlist_id)
         return cast("dict[str, Any]", result)
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -338,7 +341,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
         return result
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of (max 100, API doesn't allow a higher limit) tracks for the given artist."""
         tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 100)
@@ -384,7 +387,7 @@ class SoundcloudMusicProvider(MusicProvider):
             return None
         return api_response.get("collection") or api_response.get("items")
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         tracks_obj = await self._soundcloud.get_recommended(prov_track_id, limit)
@@ -409,7 +412,8 @@ class SoundcloudMusicProvider(MusicProvider):
         return tracks
 
     async def _get_stream_url(self, item_id: str) -> str | None:
-        """Get stream URL, preferring progressive (HTTP) over HLS.
+        """
+        Get stream URL, preferring progressive (HTTP) over HLS.
 
         SoundCloud HLS playlists can have limited content windows (~10 min) which
         cause seeking failures mid-track. Progressive HTTP URLs support full
@@ -498,8 +502,9 @@ class SoundcloudMusicProvider(MusicProvider):
         )
         if artist_obj.get("description"):
             artist.metadata.description = artist_obj["description"]
-        if artist_obj.get("avatar_url"):
-            img_url = self._transform_artwork_url(artist_obj["avatar_url"])
+        # skip default_avatar placeholder; it has no high-res variant and 404s after transform
+        if (avatar_url := artist_obj.get("avatar_url")) and "default_avatar" not in avatar_url:
+            img_url = self._transform_artwork_url(avatar_url)
             artist.metadata.images = UniqueList(
                 [
                     MediaItemImage(
@@ -559,7 +564,7 @@ class SoundcloudMusicProvider(MusicProvider):
             provider=self.domain,
             name=name,
             version=version,
-            duration=track_obj["duration"] / 1000,
+            duration=int(track_obj["duration"] / 1000),
             provider_mappings={
                 ProviderMapping(
                     item_id=track_id,

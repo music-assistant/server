@@ -8,17 +8,24 @@ import platform
 import time
 from typing import TYPE_CHECKING
 
-from zeroconf import IPVersion
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
+from music_assistant.helpers.util import get_source_ip_for_target
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_2_DEFAULT_MODELS,
     BROKEN_AIRPLAY_MODELS,
+    CONF_ALAC_ENCODE,
     StreamingProtocol,
 )
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
+
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,14 +33,37 @@ _LOGGER = logging.getLogger(__name__)
 NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
 
 
+async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
+    """
+    Resolve best local interface IP for cliraop's -if argument.
+
+    :param mass: The MusicAssistant instance.
+    :param target_ip: The IP address of the target AirPlay device.
+    """
+    # 1. Prefer an explicitly configured zeroconf interface. The setting may be a
+    #    comma-separated list; pick the first non-empty, non-default/all entry.
+    zc_iface = str(mass.discovery.config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
+    for candidate in zc_iface.split(","):
+        iface = candidate.strip()
+        if iface and iface not in ("default", "all"):
+            return iface
+    # 2. Otherwise resolve a bindable, device-reachable source IP: an explicit
+    #    stream bind_ip, else a routing-table lookup to this specific device,
+    #    else publish_ip. Shared with the other providers that need this.
+    return await get_source_ip_for_target(
+        target_ip,
+        bind_ip=str(mass.streams.bind_ip),
+        publish_ip=str(mass.streams.publish_ip or ""),
+    )
+
+
 def convert_airplay_volume(value: float) -> int:
-    """Remap AirPlay Volume to 0..100 scale."""
-    airplay_min = -30
-    airplay_max = 0
-    normal_min = 0
-    normal_max = 100
-    portion = (value - airplay_min) * (normal_max - normal_min) / (airplay_max - airplay_min)
-    return int(portion + normal_min)
+    """Remap AirPlay dB volume (-30..0) to 0..100 scale."""
+    airplay_min = -30.0
+    airplay_max = 0.0
+    value = max(airplay_min, min(airplay_max, value))
+    portion = (value - airplay_min) * 100.0 / (airplay_max - airplay_min)
+    return max(0, min(100, round(portion)))
 
 
 def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
@@ -101,19 +131,6 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
     return (manufacturer or "AirPlay", model)
 
 
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
-    """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
-    return None
-
-
 def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
     """Check if a model is known to have broken AirPlay support."""
     for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
@@ -145,7 +162,8 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
 
 
 async def get_cli_binary(protocol: StreamingProtocol) -> str:
-    """Find the correct raop/airplay binary belonging to the platform.
+    """
+    Find the correct raop/airplay binary belonging to the platform.
 
     Args:
         protocol: The streaming protocol (RAOP or AIRPLAY2)
@@ -332,3 +350,25 @@ def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
     ntp_fraction = int(fraction * (1 << 32))
 
     return ntp_timestamp + ntp_seconds + ntp_fraction
+
+
+def get_final_output_format(
+    audio_format: AudioFormat,
+    airplay_player: AirPlayPlayer,
+) -> AudioFormat:
+    """
+    Determine final output format based on stream and player capabilities.
+
+    This is for the UI only, so it correctly displays ALAC/PCM support.
+    """
+    content_type = audio_format.content_type
+    if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
+        content_type = ContentType.ALAC
+    if airplay_player.config.get_value(CONF_ALAC_ENCODE, True):
+        content_type = ContentType.ALAC
+    return AudioFormat(
+        content_type=content_type,
+        sample_rate=audio_format.sample_rate,
+        bit_depth=audio_format.bit_depth,
+        channels=audio_format.channels,
+    )

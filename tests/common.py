@@ -4,16 +4,20 @@ import asyncio
 import contextlib
 import logging
 import pathlib
-from collections.abc import AsyncGenerator
-from unittest.mock import MagicMock
+from collections.abc import AsyncGenerator, Iterator
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock, patch
 
 import aiofiles.os
 from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
-from music_assistant_models.event import MassEvent
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
 
 
 def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:
@@ -25,7 +29,7 @@ def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:
 
 async def get_fixtures_dir(
     subdir: str, provider: str | None = None
-) -> AsyncGenerator[tuple[str, bytes], None]:
+) -> AsyncGenerator[tuple[str, bytes]]:
     """Yield the contents of every fixture in a fixtures folder."""
     dir_path = _get_fixture_folder(provider) / subdir
     for file in await aiofiles.os.listdir(dir_path):
@@ -34,21 +38,61 @@ async def get_fixtures_dir(
 
 
 @contextlib.asynccontextmanager
-async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None, None]:
+async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]:
     """Wait for a sync to finish."""
     flag = asyncio.Event()
 
-    def _event(event: MassEvent) -> None:
-        if not event.data:
-            flag.set()
+    def _event(_event: MassEvent) -> None:
+        flag.set()
 
-    release_cb = mass.subscribe(_event, EventType.SYNC_TASKS_UPDATED)
+    release_cb = mass.subscribe(_event, EventType.MUSIC_SYNC_COMPLETED)
 
     try:
         yield
     finally:
-        await flag.wait()
-        release_cb()
+        try:
+            if mass.music.active_sync_tasks:
+                await flag.wait()
+        finally:
+            release_cb()
+
+
+# builtin providers that must not be auto-set-up during a fixture boot: local_audio
+# bridges the host machine's sound devices (built-in speakers, bluetooth, ...) as
+# sendspin players, which would leak real hardware into the player registry
+SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
+
+_orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
+
+
+@contextlib.contextmanager
+def suppress_auto_loaded_providers() -> Iterator[None]:
+    """
+    Stop a fixture boot from auto-setting-up providers that reach into the host.
+
+    Keeps a booted test instance isolated from the developer's machine: the default
+    device providers (airplay/chromecast/dlna/...) are not auto-configured, and neither
+    is the builtin local_audio provider, which would otherwise bridge the host's sound
+    devices (built-in speakers, bluetooth, ...) into the player registry.
+    """
+    with (
+        patch("music_assistant.mass.DEFAULT_PROVIDERS", ()),
+        patch.object(
+            ProviderConfigMixin,
+            "create_builtin_provider_config",
+            _create_builtin_provider_config_hermetic,
+        ),
+    ):
+        yield
+
+
+async def _create_builtin_provider_config_hermetic(
+    self: ProviderConfigMixin, provider_domain: str
+) -> None:
+    """Create builtin provider configs, skipping providers that discover host hardware."""
+    if provider_domain in SUPPRESSED_BUILTIN_PROVIDERS:
+        return
+    await _orig_create_builtin_provider_config(self, provider_domain)
 
 
 # Mock classes for testing

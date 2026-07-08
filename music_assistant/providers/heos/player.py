@@ -2,26 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from copy import copy
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerSource
-from pyheos import Heos, const
+from pyheos import Heos, HeosError, const
+from pyheos import PlayState as HeosPlayState
 
-from music_assistant.constants import (
-    VERBOSE_LOG_LEVEL,
-    create_sample_rates_config_entry,
-)
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
-from .constants import HEOS_MEDIA_TYPE_TO_MEDIA_TYPE, HEOS_PLAY_STATE_TO_PLAYBACK_STATE
+from .constants import (
+    HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
+    HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
+    NON_HIRES_HEOS_MODELS,
+)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
     from pyheos import HeosPlayer as PyHeosPlayer
 
     from .provider import HeosPlayerProvider
@@ -42,6 +44,7 @@ class HeosPlayer(Player):
     """HeosPlayer in Music Assistant."""
 
     _heos: Heos
+    _heos_queue: Heos
     _device: PyHeosPlayer
 
     @property
@@ -54,12 +57,19 @@ class HeosPlayer(Player):
         super().__init__(provider, str(device.player_id))
 
         self._device: PyHeosPlayer = device
+        self._ma_controls_playback = False
+        self._queue_cleanup_lock = asyncio.Lock()
+        self._queue_cleanup_pending = False
 
         if self._device.heos is None:
             raise SetupFailedError("HEOS device has no controller assigned")
 
+        if provider._heos_queue is None:
+            raise SetupFailedError("HEOS queue controller is not set up")
+
         # Keep internal reference so we don't need to check None on each call
         self._heos = self._device.heos
+        self._heos_queue = provider._heos_queue
 
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES
@@ -95,6 +105,15 @@ class HeosPlayer(Player):
         self._attr_device_info = _device_info
         self._attr_available = self._device.available
         self._attr_name = self._device.name
+
+        # Gen 1 HEOS hardware is capped at 48kHz/16-bit; HS2 and newer models
+        # are hi-res capable up to 192kHz/24-bit
+        if model in NON_HIRES_HEOS_MODELS:
+            self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
+        else:
+            self._attr_supported_sample_rates = [
+                (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
+            ]
 
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
@@ -145,10 +164,16 @@ class HeosPlayer(Player):
         match event:
             case const.EVENT_PLAYER_STATE_CHANGED:
                 self._update_player_state()
+                self._update_player_current_media()
+                self._schedule_queue_cleanup()
 
             case const.EVENT_PLAYER_NOW_PLAYING_CHANGED:
                 self._update_player_current_media()
                 self._update_player_playing_progress()
+                self._schedule_queue_cleanup()
+
+            case const.EVENT_PLAYER_QUEUE_CHANGED:
+                self._schedule_queue_cleanup()
 
             case const.EVENT_PLAYER_NOW_PLAYING_PROGRESS:
                 self._update_player_playing_progress()
@@ -160,6 +185,7 @@ class HeosPlayer(Player):
                 self.logger.error(
                     "[%s] Playback error: %s", self._device.name, self._device.playback_error
                 )
+                self._queue_cleanup_pending = False
                 self.set_dynamic_attributes()
 
             case _:
@@ -182,6 +208,13 @@ class HeosPlayer(Player):
     def _update_player_current_media(self) -> None:
         """Update current media properties."""
         now_playing = self._device.now_playing_media
+        if self._device.state == HeosPlayState.STOP:
+            self.logger.debug(
+                "[%s] Ignoring now playing change while stopped: %s",
+                self._device.name,
+                now_playing,
+            )
+            return
 
         # Only update if we're not playing from our queue
         # HEOS does not make a distinction on source ID when playing from a DLNA server, USB stick,
@@ -190,6 +223,8 @@ class HeosPlayer(Player):
         if (now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC) or (
             self._attr_active_source != self.player_id
         ):
+            self._ma_controls_playback = False
+            self._queue_cleanup_pending = False
             self.logger.debug(
                 "[%s] Now playing changed externally: %s", self._device.name, now_playing
             )
@@ -276,17 +311,105 @@ class HeosPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on given player."""
-        queue_items = await self._device.get_queue(range_start=0, range_end=1)
-        if queue_items:
-            await self._device.clear_queue()
+        self.logger.debug(
+            "[%s] Received PLAY_MEDIA command with media_type=%s uri=%s",
+            self._device.name,
+            media.media_type,
+            media.uri,
+        )
 
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        await self._device.play_url(url)
+        self._ma_controls_playback = True
+        try:
+            await self._device.play_url(url)
+        except HeosError as err:
+            self._ma_controls_playback = False
+            self._queue_cleanup_pending = False
+            raise PlayerCommandFailed("Failed to start playback.") from err
 
         self._attr_current_media = media
         self._attr_active_source = self.player_id
+        self._queue_cleanup_pending = True
 
         self.update_state()
+
+    def _schedule_queue_cleanup(self) -> None:
+        """Debounce queue cleanup so rapid queue changes only trigger one follow-up."""
+        if (
+            not self._ma_controls_playback
+            or not self._queue_cleanup_pending
+            or self._attr_playback_state != PlaybackState.PLAYING
+        ):
+            return
+
+        self.mass.call_later(
+            1,
+            self._start_queue_cleanup_task,
+            task_id=f"heos_queue_cleanup_timer_{self.player_id}",
+        )
+
+    def _start_queue_cleanup_task(self) -> None:
+        """Start the queue cleanup task if not already running."""
+        if (
+            not self._ma_controls_playback
+            or not self._queue_cleanup_pending
+            or self._queue_cleanup_lock.locked()
+        ):
+            return
+
+        self.mass.create_task(
+            self._cleanup_heos_queue(),
+            task_id=f"heos_queue_cleanup_task_{self.player_id}",
+        )
+
+    async def _cleanup_heos_queue(self) -> None:
+        async with self._queue_cleanup_lock:
+            if not self._ma_controls_playback:
+                self._queue_cleanup_pending = False
+                return
+            if not self._queue_cleanup_pending:
+                return
+            if self._attr_playback_state != PlaybackState.PLAYING:
+                self.logger.debug(
+                    "[%s] Queue cleanup postponed (state=%s)",
+                    self._device.name,
+                    self._attr_playback_state,
+                )
+                return
+            try:
+                self.logger.debug("[%s] Queue cleanup started", self._device.name)
+                queue_items = await self._heos_queue.player_get_queue(self._device.player_id)
+                now_playing = await self._heos_queue.get_now_playing_media(self._device.player_id)
+                current_queue_id = now_playing.queue_id
+                if current_queue_id is None:
+                    self.logger.debug(
+                        "[%s] Queue cleanup postponed (no current qid yet)",
+                        self._device.name,
+                    )
+                    self._schedule_queue_cleanup()
+                    return
+
+                queue_ids_to_remove = [
+                    item.queue_id for item in queue_items if item.queue_id != current_queue_id
+                ]
+                self.logger.debug(
+                    "[%s] Queue cleanup removing %s (current qid=%s)",
+                    self._device.name,
+                    queue_ids_to_remove,
+                    current_queue_id,
+                )
+                if queue_ids_to_remove:
+                    await self._heos_queue.player_remove_from_queue(
+                        self._device.player_id, queue_ids_to_remove
+                    )
+                self._queue_cleanup_pending = False
+
+            except HeosError as err:
+                self.logger.warning(
+                    "[%s] Failed to handle HEOS queue after queue change: %s",
+                    self._device.name,
+                    err,
+                )
 
     async def set_members(
         self,
@@ -318,20 +441,6 @@ class HeosPlayer(Player):
     async def select_source(self, source: str) -> None:
         """Handle SELECT SOURCE command on the player."""
         self.logger.debug("[%s] Selecting source %s", self._device.name, source)
+        self._ma_controls_playback = False
+        self._queue_cleanup_pending = False
         await self._device.play_input_source(source)
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        return [
-            # Gen 1 devices, like HEOS Link, only support up to 48kHz/16bit
-            create_sample_rates_config_entry(
-                max_sample_rate=192000,
-                safe_max_sample_rate=48000,
-                max_bit_depth=24,
-                safe_max_bit_depth=16,
-            ),
-        ]

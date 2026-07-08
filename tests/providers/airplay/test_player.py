@@ -1,10 +1,33 @@
 """Unit tests for AirPlay player."""
 
-from unittest.mock import MagicMock
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 
+from music_assistant.providers.airplay.constants import (
+    CONF_AIRPLAY_PROTOCOL,
+    CONF_IGNORE_VOLUME,
+    CONF_STORED_VOLUME,
+    StreamingProtocol,
+)
 from music_assistant.providers.airplay.player import AirPlayPlayer
+
+
+@pytest.fixture
+def airplay_player() -> AirPlayPlayer:
+    """Create a basic AirPlayPlayer with mock defaults."""
+    return AirPlayPlayer(
+        provider=MagicMock(),
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -20,10 +43,15 @@ from music_assistant.providers.airplay.player import AirPlayPlayer
         (None, {b"flags": b"0x4"}, False),
         (None, {b"sf": b"0x8"}, True),
         (None, {b"flags": b"0x9"}, True),
+        # Combined flags across discovery records should be OR-ed.
+        ({b"sf": b"0x8"}, {b"sf": b"0x200"}, True),
+        ({b"sf": b"0x200"}, {b"sf": b"0x8"}, True),
+        ({b"flags": b"0x4"}, {b"flags": b"0x0"}, False),
         ({}, {}, False),
     ],
 )
-def test_requires_pairing(
+def test_requires_pin_pairing(
+    airplay_player: AirPlayPlayer,
     aiplay_properties: dict[bytes, bytes] | None,
     raop_properties: dict[bytes, bytes] | None,
     expected: bool,
@@ -32,21 +60,262 @@ def test_requires_pairing(
     if aiplay_properties is not None:
         aiplay_discovery_info = MagicMock()
         aiplay_discovery_info.properties = aiplay_properties
-    else:
-        aiplay_discovery_info = None
+        airplay_player.airplay_discovery_info = aiplay_discovery_info
     if raop_properties is not None:
         raop_discovery_info = MagicMock()
         raop_discovery_info.properties = raop_properties
-    else:
-        raop_discovery_info = None
+        airplay_player.raop_discovery_info = raop_discovery_info
+    assert airplay_player._requires_pin_pairing() == expected
+
+
+@pytest.mark.parametrize(
+    ("aiplay_properties", "raop_properties", "expected"),
+    [
+        ({b"flags": b"0x80"}, None, True),
+        ({b"sf": b"0x81"}, None, True),
+        ({b"flags": b"0x4"}, None, False),
+        ({b"sf": b"0x80"}, None, True),
+        ({b"flags": b"0x90"}, None, True),
+        (None, {b"flags": "0x80"}, True),
+        (None, {b"sf": b"0x81"}, True),
+        (None, {b"flags": b"0x4"}, False),
+        (None, {b"sf": b"0x80"}, True),
+        (None, {b"flags": b"0x90"}, True),
+        ({}, {}, False),
+    ],
+)
+def test_requires_password_pairing(
+    airplay_player: AirPlayPlayer,
+    aiplay_properties: dict[bytes, bytes] | None,
+    raop_properties: dict[bytes, bytes] | None,
+    expected: bool,
+) -> None:
+    """Test the _requires_pairing method of AirPlayPlayer."""
+    if aiplay_properties is not None:
+        aiplay_discovery_info = MagicMock()
+        aiplay_discovery_info.properties = aiplay_properties
+        airplay_player.airplay_discovery_info = aiplay_discovery_info
+    if raop_properties is not None:
+        raop_discovery_info = MagicMock()
+        raop_discovery_info.properties = raop_properties
+        airplay_player.raop_discovery_info = raop_discovery_info
+    assert airplay_player._requires_password_pairing() == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flags", "pin_call_expected"),
+    [
+        (b"0x8", True),
+        (b"0x80", False),
+    ],
+)
+async def test_start_pairing__pin_decision(flags: bytes, pin_call_expected: bool) -> None:
+    """Ensure _start_pairing skips the PIN request when only password pairing is required."""
+    provider = MagicMock()
+    provider.dacp_id = "test_dacp"
+
+    aiplay_info = MagicMock()
+    aiplay_info.properties = {b"flags": flags}
+    aiplay_info.port = 7000
+
     player = AirPlayPlayer(
-        provider=MagicMock(),
+        provider=provider,
         player_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
         manufacturer="Test Manufacturer",
         model="Test Model",
-        raop_discovery_info=raop_discovery_info,
-        airplay_discovery_info=aiplay_discovery_info,
+        raop_discovery_info=None,
+        airplay_discovery_info=aiplay_info,
     )
-    assert player._requires_pairing() == expected
+
+    pairing_instance = AsyncMock()
+    pairing_instance.start_pairing_session = AsyncMock()
+    pairing_instance.start_pin_pairing = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.airplay.pairing.AirPlayPairing",
+        return_value=pairing_instance,
+    ):
+        await player._start_pairing(StreamingProtocol.AIRPLAY2, "AirPlay2")
+
+    pairing_instance.start_pairing_session.assert_called_once()
+    if pin_call_expected:
+        pairing_instance.start_pin_pairing.assert_called_once()
+    else:
+        pairing_instance.start_pin_pairing.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlayer) -> None:
+    """The ignore_volume setting must be offered in the player config entries."""
+    entries = await airplay_player.get_config_entries()
+    assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
+
+
+def _set_discovery_info(player: AirPlayPlayer, *, raop: bool, airplay: bool) -> None:
+    """Attach (empty-property) discovery mocks so the device advertises the given protocols."""
+    for enabled, attr in ((raop, "raop_discovery_info"), (airplay, "airplay_discovery_info")):
+        if enabled:
+            info = MagicMock()
+            info.properties = {}
+            setattr(player, attr, info)
+        else:
+            setattr(player, attr, None)
+
+
+@pytest.mark.asyncio
+async def test_airplay_protocol_options_disabled_when_not_advertised(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol the device does not advertise is offered but disabled, never omitted."""
+    _set_discovery_info(airplay_player, raop=False, airplay=False)
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_AIRPLAY_PROTOCOL)
+    options = {option.value: option for option in entry.options}
+    assert options[StreamingProtocol.RAOP.value].disabled is True
+    assert options[StreamingProtocol.AIRPLAY2.value].disabled is True
+    # the automatic option stays enabled and remains the (safe) default
+    assert options[0].disabled is False
+    assert entry.default_value == 0
+
+
+@pytest.mark.asyncio
+async def test_airplay_protocol_option_enabled_when_advertised(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An advertised protocol is offered as a selectable (enabled) option."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True)
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_AIRPLAY_PROTOCOL)
+    options = {option.value: option for option in entry.options}
+    assert options[StreamingProtocol.RAOP.value].disabled is False
+    assert options[StreamingProtocol.AIRPLAY2.value].disabled is False
+
+
+# --- Volume and Mute tests ---
+
+
+def _setup_running_stream(player: AirPlayPlayer) -> AsyncMock:
+    """Attach a mock running stream to the player and return the send_cli_command mock."""
+    stream = MagicMock()
+    stream.running = True
+    send_cmd = AsyncMock()
+    stream.send_cli_command = send_cmd
+    player.stream = stream
+    return send_cmd
+
+
+@pytest.mark.asyncio
+async def test_volume_mute_sends_zero(airplay_player: AirPlayPlayer) -> None:
+    """Muting with a running stream should send VOLUME=0."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_level = 75
+
+    await airplay_player.volume_mute(True)
+
+    send_cmd.assert_called_once_with("VOLUME=0")
+    assert airplay_player._attr_volume_muted is True
+
+
+@pytest.mark.asyncio
+async def test_volume_set_skipped_while_muted(airplay_player: AirPlayPlayer) -> None:
+    """Volume changes while muted should NOT send a CLI command."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_muted = True
+
+    await airplay_player.volume_set(60)
+
+    send_cmd.assert_not_called()
+    assert airplay_player._attr_volume_level == 60
+
+
+@pytest.mark.asyncio
+async def test_volume_unmute_restores_volume(airplay_player: AirPlayPlayer) -> None:
+    """Unmuting with a running stream should send VOLUME={current_volume}."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_level = 42
+    airplay_player._attr_volume_muted = True
+
+    await airplay_player.volume_mute(False)
+
+    send_cmd.assert_called_once_with("VOLUME=42")
+    assert airplay_player._attr_volume_muted is False
+
+
+@pytest.mark.asyncio
+async def test_volume_mute_no_stream(airplay_player: AirPlayPlayer) -> None:
+    """Muting without a running stream should update state without CLI commands."""
+    airplay_player.stream = None
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        await airplay_player.volume_mute(True)
+
+        assert airplay_player._attr_volume_muted is True
+        mock_update.assert_called_once()
+
+
+def test_sync_volume_level_keeps_stored_volume_for_native_parent(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Keep the child AirPlay volume when the parent uses native volume control."""
+    parent = MagicMock()
+    parent.state.volume_level = 36
+    parent.volume_control = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 48
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_not_called()
+
+
+def test_update_volume_from_device_keeps_native_parent_feedback(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Use DACP feedback to keep the child AirPlay volume current."""
+    parent = MagicMock()
+    parent.state.volume_level = 42
+    parent.volume_control = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 57
+    airplay_player.last_command_sent = time.time()
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.update_volume_from_device(57)
+
+    assert airplay_player._attr_volume_level == 57
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.player_id, CONF_STORED_VOLUME, 57
+    )
+    mock_update.assert_called_once()
+
+
+def test_sync_volume_level_uses_parent_volume_without_native_parent(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Keep existing behavior for protocol parents without native volume control."""
+    parent = MagicMock()
+    parent.state.volume_level = 42
+    parent.volume_control = None
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 42
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.player_id,
+        CONF_STORED_VOLUME,
+        42,
+    )
+    mock_update.assert_called_once()

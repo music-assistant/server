@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "digitally_incorporated",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Digitally Incorporated Streaming Network",
   "description": "Stream curated internet radio from DI.FM, RadioTunes, RockRadio, JazzRadio, ClassicalRadio, and ZenRadio.",
   "codeowners": ["@benklop"],

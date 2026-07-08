@@ -14,9 +14,16 @@ from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, overload
 
 from music_assistant_models.errors import InsufficientPermissions, PlayerCommandFailed
 
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 
 if TYPE_CHECKING:
+    import logging
+
+    from music_assistant_models.player_control import PlayerControl
+
+    from music_assistant.models.player import Player
+
     from .controller import PlayerController
 
 
@@ -38,7 +45,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: None = None,
     *,
-    lock: bool = False,
+    lock: PlayerLockPurpose | None = None,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -48,7 +55,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
     *,
-    lock: bool = False,
+    lock: PlayerLockPurpose | None = None,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -63,7 +70,9 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     Also checks user permissions and optionally acquires a per-player lock.
 
     :param func: The function to wrap (when used without parentheses).
-    :param lock: If True, acquire a lock per player_id and function name before executing.
+    :param lock: PlayerLockPurpose to serialize commands in the same category per
+        player. Commands with the same lock purpose on the same player will not run
+        concurrently. None (default) means no locking.
     """  # noqa: D401
 
     def decorator(
@@ -117,26 +126,48 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
-            async def execute() -> None:
-                async with self._player_throttlers[player.player_id]:
-                    try:
+            try:
+                if lock:
+                    async with self.get_player_lock(player.player_id, lock):
                         await fn(self, *args, **kwargs)
-                    except Exception as err:
-                        raise PlayerCommandFailed(str(err)) from err
-
-            if lock:
-                # Acquire a lock specific to player_id and function name
-                lock_key = f"{fn.__name__}_{player_id}"
-                if lock_key not in self._player_command_locks:
-                    self._player_command_locks[lock_key] = asyncio.Lock()
-                async with self._player_command_locks[lock_key]:
-                    await execute()
-            else:
-                await execute()
+                else:
+                    await fn(self, *args, **kwargs)
+            except Exception as err:
+                raise PlayerCommandFailed(str(err)) from err
 
         return wrapper
 
-    # Support both @handle_player_command and @handle_player_command(lock=True)
+    # Support both @handle_player_command and @handle_player_command(lock=...)
     if func is not None:
         return decorator(func)
     return decorator
+
+
+async def wait_for_power_on(
+    logger: logging.Logger,
+    player: Player,
+    player_control: PlayerControl | None = None,
+    timeout: float = 5.0,
+) -> None:
+    """
+    Wait for a player (or player control) to report powered on after a power on command.
+
+    :param logger: Logger instance for debug logging.
+    :param player: The player to wait for (checked when player_control is None).
+    :param player_control: Optional PlayerControl to check instead of the player.
+    :param timeout: Maximum time to wait in seconds.
+    """
+    try:
+        async with asyncio.timeout(timeout):
+            if player_control is not None:
+                while not player_control.power_state:
+                    await asyncio.sleep(0.1)
+            else:
+                while not player.powered:
+                    await asyncio.sleep(0.1)
+    except TimeoutError:
+        logger.debug(
+            "Player %s did not report powered on within %s seconds",
+            player.state.name,
+            timeout,
+        )

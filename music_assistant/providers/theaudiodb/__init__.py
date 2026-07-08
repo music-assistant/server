@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
@@ -83,6 +83,25 @@ CONF_ENABLE_ARTIST_METADATA = "enable_artist_metadata"
 CONF_ENABLE_ALBUM_METADATA = "enable_album_metadata"
 CONF_ENABLE_TRACK_METADATA = "enable_track_metadata"
 
+# TheAudioDB field suffix -> ISO 639-1 language code. CN/JP/SE/NO/IL use country-style
+# codes that don't match the ISO language code, so the mapping is explicit.
+TADB_SUFFIX_TO_ISO: dict[str, str] = {
+    "DE": "de",
+    "FR": "fr",
+    "IT": "it",
+    "ES": "es",
+    "PT": "pt",
+    "NL": "nl",
+    "RU": "ru",
+    "PL": "pl",
+    "HU": "hu",
+    "CN": "zh",
+    "JP": "ja",
+    "SE": "sv",
+    "NO": "nb",
+    "IL": "he",
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -109,25 +128,21 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_ARTIST_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist metadata.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_ALBUM_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of album metadata.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_TRACK_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of track metadata.",
             default_value=False,
         ),
         ConfigEntry(
             key=CONF_ENABLE_IMAGES,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist/album/track images",
             default_value=True,
         ),
     )
@@ -137,6 +152,11 @@ class AudioDbMetadataProvider(MetadataProvider):
     """The AudioDB Metadata provider."""
 
     throttler: Throttler
+
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 20
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -150,15 +170,24 @@ class AudioDbMetadataProvider(MetadataProvider):
         if not artist.mbid:
             # for 100% accuracy we require the musicbrainz id for all lookups
             return None
+        self.logger.debug("Fetching metadata for Artist %s on The Audio DB", artist.name)
         if data := await self._get_data("artist-mb.php", i=artist.mbid):
             if data.get("artists"):
-                return self.__parse_artist(data["artists"][0])
+                metadata = self.__parse_artist(data["artists"][0])
+                if metadata.description:
+                    self.logger.debug(
+                        "Found bio for %s on TheAudioDB in %s",
+                        artist.name,
+                        metadata.description_language or "unknown",
+                    )
+                return metadata
         return None
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on theaudiodb."""
         if not self.config.get_value(CONF_ENABLE_ALBUM_METADATA):
             return None
+        self.logger.debug("Fetching metadata for Album %s on The Audio DB", album.name)
         if mbid := album.get_external_id(ExternalID.MB_RELEASEGROUP):
             result = await self._get_data("album-mb.php", i=mbid)
             if result and result.get("album"):
@@ -238,13 +267,9 @@ class AudioDbMetadataProvider(MetadataProvider):
             if link := artist_obj.get(key):
                 metadata.links.add(MediaItemLink(type=link_type, url=link))
         # description/biography
-        lang_code, lang_country = self.mass.metadata.locale.split("_")
-        if desc := artist_obj.get(f"strBiography{lang_country}") or (
-            desc := artist_obj.get(f"strBiography{lang_code.upper()}")
-        ):
-            metadata.description = desc
-        else:
-            metadata.description = artist_obj.get("strBiographyEN")
+        metadata.description, metadata.description_language = self._localized_field(
+            artist_obj, "strBiography"
+        )
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
             return metadata
@@ -285,13 +310,9 @@ class AudioDbMetadataProvider(MetadataProvider):
             )
 
         # description
-        lang_code, lang_country = self.mass.metadata.locale.split("_")
-        if desc := adb_album.get(f"strDescription{lang_country}") or (
-            desc := adb_album.get(f"strDescription{lang_code.upper()}")
-        ):
-            metadata.description = desc
-        else:
-            metadata.description = adb_album.get("strDescriptionEN")
+        metadata.description, metadata.description_language = self._localized_field(
+            adb_album, "strDescription"
+        )
         metadata.review = adb_album.get("strReview")
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
@@ -340,13 +361,9 @@ class AudioDbMetadataProvider(MetadataProvider):
             metadata.genres = {genre}
         metadata.mood = adb_track.get("strMood")
         # description
-        lang_code, lang_country = self.mass.metadata.locale.split("_")
-        if desc := adb_track.get(f"strDescription{lang_country}") or (
-            desc := adb_track.get(f"strDescription{lang_code.upper()}")
-        ):
-            metadata.description = desc
-        else:
-            metadata.description = adb_track.get("strDescriptionEN")
+        metadata.description, metadata.description_language = self._localized_field(
+            adb_track, "strDescription"
+        )
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
             return metadata
@@ -389,10 +406,33 @@ class AudioDbMetadataProvider(MetadataProvider):
             await self.mass.music.albums.update_item_in_library(track.album.item_id, track.album)
         return metadata
 
-    @use_cache(86400 * 90, persistent=True)  # Cache for 90 days
+    def _localized_field(self, obj: dict[str, Any], prefix: str) -> tuple[str | None, str | None]:
+        """
+        Return the best-matching localized text for ``prefix`` and its ISO 639-1 language.
+
+        :param obj: TheAudioDB response object to read fields from.
+        :param prefix: Field name prefix (e.g. ``"strBiography"`` or ``"strDescription"``).
+        """
+        # region-first covers TheAudioDB's CN/JP/SE/NO/IL country-style suffixes, then the
+        # language code, and finally the suffix-less field (TheAudioDB's English default)
+        parts = self.mass.metadata.locale.split("_", 1)
+        lang_code = parts[0].upper()
+        region_code = parts[1].upper() if len(parts) > 1 else ""
+        for suffix in (region_code, lang_code):
+            if not suffix:
+                continue
+            if value := obj.get(f"{prefix}{suffix}"):
+                return value, TADB_SUFFIX_TO_ISO.get(suffix)
+        # bare field is the English default
+        if value := obj.get(prefix):
+            return value, "en"
+        return None, None
+
+    # None here only signals a failed request (a miss still returns a body), so don't cache it
+    @use_cache(86400 * 90, persistent=True, cache_none=False)  # Cache for 90 days
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
-        url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
+        url = f"https://theaudiodb.com/api/v1/json/{app_var('theaudiodb_api_key')}/{endpoint}"
         async with (
             self.throttler,
             self.mass.http_session.get(url, params=kwargs, ssl=False) as response,

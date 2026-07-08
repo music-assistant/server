@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
+import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
@@ -16,7 +18,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
 )
-from music_assistant.providers.airplay.helpers import get_cli_binary
+from music_assistant.providers.airplay.helpers import get_cli_binary, resolve_if_ip
 
 from ._protocol import AirPlayProtocol
 
@@ -39,7 +41,17 @@ class RaopStream(AirPlayProtocol):
         assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
-        extra_args += ["-if", self.mass.streams.bind_ip]
+        if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
+        # Only pass -if when source and target use the same address family.
+        # cliraop cannot use IPv6 source for IPv4 target (or vice versa).
+        if if_ip not in ("0.0.0.0", "::", ""):
+            try:
+                source_is_ipv6 = isinstance(ipaddress.ip_address(if_ip), ipaddress.IPv6Address)
+                target_is_ipv6 = ":" in self.player.address
+                if source_is_ipv6 == target_is_ipv6:
+                    extra_args += ["-if", if_ip]
+            except ValueError:
+                self.player.logger.debug("Skipping invalid interface value for -if: %s", if_ip)
         if self.player.config.get_value(CONF_ENCRYPTION, True):
             extra_args += ["-encrypt"]
         if self.player.config.get_value(CONF_ALAC_ENCODE, True):
@@ -97,6 +109,7 @@ class RaopStream(AirPlayProtocol):
         player = self.player
         logger = player.logger
         lost_packets = 0
+        expected_eof = False
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
@@ -117,9 +130,18 @@ class RaopStream(AirPlayProtocol):
             elif "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
                 millis = int(line.split("elapsed milliseconds: ")[1])
-                # note that this represents the total elapsed time of the streaming session
                 elapsed_time = millis / 1000
-                player.set_state_from_stream(elapsed_time=elapsed_time)
+                # on the first elapsed time report, compute a fixed offset between
+                # the session start_time and this cliraop process start.
+                # this handles dynamic leader switching where a new cliraop process
+                # reports from 0 while the flow stream started much earlier.
+                if self._elapsed_time_offset is None and self.session:
+                    self._elapsed_time_offset = max(
+                        0, time.time() - self.session.start_time - elapsed_time
+                    )
+                if self._elapsed_time_offset:
+                    elapsed_time += self._elapsed_time_offset
+                player.set_state_from_stream(elapsed_time=elapsed_time, stream=self)
             elif "Password required, but none supplied." in line:
                 logger.error(
                     f"Player {self.player.name} requires a password. "
@@ -135,6 +157,7 @@ class RaopStream(AirPlayProtocol):
                     logger.warning("Packet loss detected!")
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
+                expected_eof = True
                 break
             logger.log(VERBOSE_LOG_LEVEL, line)
             await asyncio.sleep(0)  # Yield to event loop
@@ -142,4 +165,15 @@ class RaopStream(AirPlayProtocol):
         logger.debug("CLIRaop stderr reader ended")
         if not self._stopped:
             self._stopped = True
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+            if not expected_eof:
+                logger.warning("CLIRaop process stopped unexpectedly for %s", player.display_name)
+                # Hand off to the player controller so it drops just this member, or
+                # transfers leadership to a healthy member, instead of dissolving the
+                # whole group over a single dead transport. A sync leader is left in
+                # its current state here on purpose: the controller only transfers
+                # leadership while the queue still looks active, and transfer_queue or
+                # dissolve sets the final state.
+                self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
+                if player.group_members:
+                    return
+            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)

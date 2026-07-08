@@ -12,7 +12,7 @@ inputs:
     description: 'The branch being released from'
     required: true
   channel:
-    description: 'The release channel (stable, beta, nightly)'
+    description: 'The release channel (stable, rc, beta, nightly)'
     required: true
   github-token:
     description: 'GitHub token for API access'
@@ -29,9 +29,10 @@ runs:
   using: 'composite'
   steps:
     - name: Set up Python
-      uses: actions/setup-python@v6.0.0
+      uses: actions/setup-python@v6.2.0
       with:
-        python-version: '3.12'
+        python-version-file: '.python-version'
+        check-latest: true
 
     - name: Install dependencies
       shell: bash
