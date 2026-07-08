@@ -1177,6 +1177,32 @@ class TestFormWaitsForLeaderUnsynced:
         # won't be issued against a stuck player (the original Poolhouse race).
         assert sgp.sync_leader is None
 
+    @pytest.mark.asyncio
+    async def test_form_aborts_when_leader_cleared_during_wait(self) -> None:
+        """If a concurrent dissolve clears sync_leader during the wait, abort the stale form."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.synced_to = "old_leader"
+        member = _make_mock_player("m2", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader, "m2": member})
+        sgp._attr_group_members = ["leader", "m2"]
+
+        async def fake_wait(_member_id: str, _timeout: float = 5.0) -> bool:
+            leader.state.synced_to = None
+            sgp.sync_leader = None  # simulate a concurrent dissolve while waiting
+            return True
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_wait_member_unsynced", side_effect=fake_wait),
+        ):
+            await sgp._form_syncgroup()
+
+        # the stale form attempt must not (re)sync any members
+        mass.players._handle_set_members.assert_not_awaited()
+        assert sgp.sync_leader is None
+
 
 class TestWaitMemberUnsynced:
     """The helper that waits for a member's synced_to to clear (with recovery)."""
@@ -1198,24 +1224,30 @@ class TestWaitMemberUnsynced:
 
     @pytest.mark.asyncio
     async def test_attempts_recovery_when_stuck(self) -> None:
-        """If the first wait doesn't clear it, issue a recovery ungroup and wait again."""
+        """If the first wait doesn't clear it, kick the member from its stale parent directly."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
         member.synced_to = "old_leader"  # still stale after first wait
-        mass.players.get_player = _player_lookup({"m1": member})
+        old_leader = _make_mock_player("old_leader")
+        mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
 
-        # cmd_ungroup is what should be called as the recovery action.
+        # _handle_set_members on the stale parent is the expected recovery action.
         # We make it succeed by side-effect-clearing synced_to.
-        async def _ungroup(_player_id: str) -> None:
+        async def _kick(_parent: Any, player_ids_to_remove: list[str]) -> None:
+            assert player_ids_to_remove == ["m1"]
             member.synced_to = None
 
-        mass.players.cmd_ungroup = AsyncMock(side_effect=_ungroup)
+        mass.players._handle_set_members = AsyncMock(side_effect=_kick)
+        mass.players.cmd_ungroup = AsyncMock()
 
         ok = await sgp._wait_member_unsynced("m1")
 
         assert ok is True
-        mass.players.cmd_ungroup.assert_awaited_once_with("m1")
+        mass.players._handle_set_members.assert_awaited_once_with(
+            old_leader, player_ids_to_remove=["m1"]
+        )
+        mass.players.cmd_ungroup.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_false_when_genuinely_stuck(self) -> None:
@@ -1224,13 +1256,30 @@ class TestWaitMemberUnsynced:
         sgp = _make_sync_group(mass)
         member = _make_mock_player("m1")
         member.synced_to = "old_leader"  # stays stuck even after recovery
-        mass.players.get_player = _player_lookup({"m1": member})
-        mass.players.cmd_ungroup = AsyncMock()  # no-op: state stays stale
+        old_leader = _make_mock_player("old_leader")
+        mass.players.get_player = _player_lookup({"m1": member, "old_leader": old_leader})
+        mass.players._handle_set_members = AsyncMock()  # no-op: state stays stale
 
         ok = await sgp._wait_member_unsynced("m1")
 
         assert ok is False
-        mass.players.cmd_ungroup.assert_awaited_once_with("m1")
+        mass.players._handle_set_members.assert_awaited_once_with(
+            old_leader, player_ids_to_remove=["m1"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_stale_parent_gone(self) -> None:
+        """If the stale parent no longer exists, skip the kick and report stuck."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_mock_player("m1")
+        member.synced_to = "old_leader"  # parent is no longer registered
+        mass.players.get_player = _player_lookup({"m1": member})
+
+        ok = await sgp._wait_member_unsynced("m1")
+
+        assert ok is False
+        mass.players._handle_set_members.assert_not_awaited()
 
 
 class TestSupportedFeaturesPower:
