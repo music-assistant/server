@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("ffmpeg")
 MINIMAL_FFMPEG_VERSION = 6
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
+CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
@@ -599,7 +600,9 @@ async def check_ffmpeg_version() -> None:
         )
     libsoxr_support = "enable-libsoxr" in output.decode()
     # use globals as in-memory cache
-    await set_global_cache_values({CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support})
+    await set_global_cache_values(
+        {CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support, CACHE_ATTR_FFMPEG_VERSION: version}
+    )
 
     major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
     if major_version < MINIMAL_FFMPEG_VERSION:

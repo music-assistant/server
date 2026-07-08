@@ -60,6 +60,7 @@ from music_assistant.controllers.music.constants import (
     CONF_DELETED_PROVIDERS,
     CONF_RESET_DB,
     DATABASE_CLEANUP_TASK_ID,
+    DB_SCHEMA_VERSION,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RECOMMENDATIONS_PROVIDER_TIMEOUT,
@@ -101,6 +102,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
@@ -192,6 +194,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Cleanup on exit."""
         if self._database:
             await self._database.close()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        return {
+            "db_schema_version": DB_SCHEMA_VERSION,
+            "sync_tasks_active": len(self.active_sync_tasks),
+        }
 
     async def on_provider_loaded(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is loaded."""

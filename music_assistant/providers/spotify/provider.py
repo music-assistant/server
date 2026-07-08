@@ -48,7 +48,7 @@ from orjson import JSONDecodeError
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
@@ -162,6 +162,20 @@ class SpotifyProvider(MusicProvider):
         if self._sp_user:
             return str(self._sp_user["display_name"])
         return None
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "logged_in": self._sp_user is not None,
+            "token_expires_in_sec": (
+                round(self._auth_info_global["expires_at"] - time.time())
+                if self._auth_info_global
+                else None
+            ),
+            "dev_session_active": self.dev_session_active,
+            "librespot_available": self._librespot_bin is not None,
+            "audiobooks_supported": self._audiobooks_supported,
+        }
 
     ## Library retrieval methods (generators)
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
