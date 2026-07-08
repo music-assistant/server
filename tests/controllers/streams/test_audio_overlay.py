@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 _PCM_FORMAT = AudioFormat(sample_rate=44100, bit_depth=16, channels=2)
 _MUSIC_CHUNKS = [b"chunk1", b"chunk2"]
-_OVERLAY_PATH = "/media/sounds/rain.wav"
+_OVERLAY_URL = "http://ambient.example/rain.mp3"
 
 
 def _make_streams_audio(provider: MagicMock | None = None) -> StreamsAudio:
@@ -100,11 +100,25 @@ async def test_passthrough_when_stream_type_unsupported() -> None:
     assert result == _MUSIC_CHUNKS
 
 
+async def test_passthrough_when_local_file_missing() -> None:
+    """An overlay source pointing at a non-existing file degrades to unmodified playback."""
+    provider = MagicMock()
+    provider.get_stream_details = AsyncMock(
+        return_value=MagicMock(stream_type=StreamType.LOCAL_FILE, path="/does/not/exist.wav")
+    )
+    audio = _make_streams_audio(provider=provider)
+    queue = _make_queue(source=_make_source_mapping())
+    result = [
+        chunk async for chunk in audio.get_overlay_mixed_stream(queue, _music_stream(), _PCM_FORMAT)
+    ]
+    assert result == _MUSIC_CHUNKS
+
+
 async def test_mixes_when_source_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     """A resolvable overlay source is handed to the ffmpeg mixer with the queue's volume."""
     provider = MagicMock()
     provider.get_stream_details = AsyncMock(
-        return_value=MagicMock(stream_type=StreamType.LOCAL_FILE, path=_OVERLAY_PATH)
+        return_value=MagicMock(stream_type=StreamType.HTTP, path=_OVERLAY_URL)
     )
     audio = _make_streams_audio(provider=provider)
     queue = _make_queue(source=_make_source_mapping(), volume=55)
@@ -123,6 +137,6 @@ async def test_mixes_when_source_resolves(monkeypatch: pytest.MonkeyPatch) -> No
         chunk async for chunk in audio.get_overlay_mixed_stream(queue, _music_stream(), _PCM_FORMAT)
     ]
     assert result == [b"mixed:" + chunk for chunk in _MUSIC_CHUNKS]
-    assert mixer_kwargs["overlay_input"] == _OVERLAY_PATH
+    assert mixer_kwargs["overlay_input"] == _OVERLAY_URL
     assert mixer_kwargs["overlay_volume"] == 55
     assert mixer_kwargs["pcm_format"] is _PCM_FORMAT

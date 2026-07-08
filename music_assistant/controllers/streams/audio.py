@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import aiofiles
+import aiofiles.os
 import aiohttp
 import shortuuid
 from aiohttp import ClientConnectorSSLError, ClientResponseError, ClientTimeout
@@ -3268,6 +3269,16 @@ class StreamsAudio:
                 "- continuing without overlay",
                 mapping.uri,
                 streamdetails.stream_type,
+            )
+            return None
+        if streamdetails.stream_type == StreamType.LOCAL_FILE and not await aiofiles.os.path.isfile(
+            streamdetails.path
+        ):
+            # guard against stale sources: feeding a missing file to the mixer would
+            # kill the whole (music) stream instead of just the overlay
+            self.logger.warning(
+                "Audio overlay source %s does not exist - continuing without overlay",
+                streamdetails.path,
             )
             return None
         return streamdetails.path
