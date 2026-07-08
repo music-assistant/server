@@ -305,6 +305,7 @@ class SendspinProvider(PlayerProvider):
             is generated when omitted. The id is always prefixed with
             ``VIRTUAL_PLAYER_ID_PREFIX``.
         :return: The player_id of the registered virtual player.
+        :raises SetupFailedError: If the virtual player can not be created.
         """
         if self.mass.get_provider(owner_instance_id) is None:
             raise SetupFailedError(f"Owner provider {owner_instance_id} is not loaded")
@@ -313,16 +314,18 @@ class SendspinProvider(PlayerProvider):
         if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX):
             player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}{player_id}"
         if player_id in self._virtual_players or self.server_api.get_client(player_id) is not None:
-            raise AlreadyRegisteredError(f"Virtual player {player_id} already exists")
+            raise SetupFailedError(f"Virtual player {player_id} already exists")
         self._virtual_players[player_id] = owner_instance_id
         try:
             self._register_virtual_player_client(player_id, display_name)
             await self._wait_for_virtual_player(player_id)
-        except Exception:
+        except Exception as err:
             self._virtual_players.pop(player_id, None)
             if self.server_api.get_client(player_id) is not None:
                 await self.server_api.remove_client(player_id)
-            raise
+            if isinstance(err, SetupFailedError):
+                raise
+            raise SetupFailedError(f"Failed to create virtual player {player_id}") from err
         # persist the owner so orphaned configs can be swept after a restart
         self.mass.config.set_raw_player_config_value(
             player_id, CONF_VIRTUAL_PLAYER_OWNER, owner_instance_id

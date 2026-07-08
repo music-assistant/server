@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from music_assistant_models.enums import PlayerFeature, PlayerType
-from music_assistant_models.errors import AlreadyRegisteredError, SetupFailedError
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PLAYERS
 from music_assistant.providers.sendspin.constants import (
@@ -86,7 +86,7 @@ async def test_create_virtual_player_duplicate(mass: MusicAssistant) -> None:
         display_name="Test Session",
         player_id="my_session",
     )
-    with pytest.raises(AlreadyRegisteredError):
+    with pytest.raises(SetupFailedError):
         await sendspin.create_virtual_player(
             owner_instance_id=sendspin.instance_id,
             display_name="Test Session",
