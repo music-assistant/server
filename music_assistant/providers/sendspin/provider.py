@@ -700,7 +700,9 @@ class SendspinProvider(PlayerProvider):
 
     async def _on_providers_updated(self, event: MassEvent) -> None:
         """Remove virtual players whose owning provider is no longer loaded."""
-        if self._unloading:
+        # during (server) shutdown all providers unload; the startup sweep
+        # takes care of configs whose owner is really gone
+        if self._unloading or self.mass.closing:
             return
         for player_id, owner_instance_id in list(self._virtual_players.items()):
             if self.mass.get_provider(owner_instance_id) is not None:
@@ -714,9 +716,11 @@ class SendspinProvider(PlayerProvider):
         """Delete stored configs of virtual players whose owner provider is gone."""
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         for player_id, raw_conf in list(all_player_configs.items()):
-            if not isinstance(raw_conf, dict):
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
                 continue
-            values = raw_conf.get("values") or {}
+            values = raw_conf.get("values")
+            if not isinstance(values, dict):
+                values = {}
             owner_instance_id = values.get(CONF_VIRTUAL_PLAYER_OWNER)
             if owner_instance_id is None:
                 if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX):

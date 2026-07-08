@@ -161,9 +161,16 @@ async def test_orphan_virtual_player_config_sweep(mass: MusicAssistant) -> None:
         f"{CONF_PLAYERS}/{leftover_id}",
         {"player_id": leftover_id, "provider": sendspin.instance_id, "values": {}},
     )
+    # a config of another provider must never be touched by the sweep
+    foreign_id = f"{VIRTUAL_PLAYER_ID_PREFIX}foreign"
+    mass.config.set(
+        f"{CONF_PLAYERS}/{foreign_id}",
+        {"player_id": foreign_id, "provider": "other_provider", "values": {}},
+    )
 
     sendspin._remove_orphan_virtual_player_configs()
 
     assert mass.config.get(f"{CONF_PLAYERS}/{orphan_id}") is None
     assert mass.config.get(f"{CONF_PLAYERS}/{leftover_id}") is None
     assert mass.config.get(f"{CONF_PLAYERS}/{kept_id}") is not None
+    assert mass.config.get(f"{CONF_PLAYERS}/{foreign_id}") is not None
