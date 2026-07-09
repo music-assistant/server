@@ -8,7 +8,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature, ProviderType
+from music_assistant_models.enums import (
+    ExternalID,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
@@ -18,8 +24,11 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     ItemMapping,
+    ItemMappingSummary,
+    MediaItemImage,
     ProviderMapping,
     Track,
+    TrackSummary,
     UniqueList,
 )
 
@@ -37,7 +46,7 @@ from music_assistant.helpers.compare import (
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
-from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase, TrackSyncDetails
@@ -56,6 +65,7 @@ class TracksController(MediaControllerBase[Track]):
     db_table = DB_TABLE_TRACKS
     media_type = MediaType.TRACK
     item_cls = Track
+    summary_item_cls = TrackSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -89,18 +99,7 @@ class TracksController(MediaControllerBase[Track]):
         SELECT
             tracks.*,
             {self._external_ids_query()} AS external_ids,
-            (SELECT JSON_GROUP_ARRAY(
-                json_object(
-                'item_id', track_pm.provider_item_id,
-                    'provider_domain', track_pm.provider_domain,
-                        'provider_instance', track_pm.provider_instance,
-                        'available', track_pm.available,
-                        'audio_format', json(track_pm.audio_format),
-                        'url', track_pm.url,
-                        'details', track_pm.details,
-                        'in_library', track_pm.in_library,
-                        'is_unique', track_pm.is_unique
-                )) FROM provider_mappings track_pm WHERE track_pm.item_id = tracks.item_id AND track_pm.media_type = 'track') AS provider_mappings,
+            {self._provider_mappings_query()} AS provider_mappings,
 
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
@@ -118,6 +117,37 @@ class TracksController(MediaControllerBase[Track]):
                     'name', albums.name,
                     'sort_name', albums.sort_name,
                     'media_type', 'album',
+                    'year', albums.year,
+                    'disc_number', album_tracks.disc_number,
+                    'track_number', album_tracks.track_number,
+                    'images', json_extract(albums.metadata, '$.images')
+                ) FROM album_tracks
+                JOIN albums ON albums.item_id = album_tracks.album_id
+                WHERE album_tracks.track_id = tracks.item_id
+                ORDER BY (album_tracks.album_id IS :preferred_album_id) DESC, album_tracks.album_id
+                LIMIT 1) AS track_album
+            FROM tracks
+            """
+        return query, {"preferred_album_id": None}
+
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for track summary listings."""
+        # the track_album subquery follows the same correlated pattern as in base_query
+        # (see the NOTE there), just with the few fields a list row needs
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            tracks.version,
+            tracks.duration,
+            json_extract(tracks.metadata, '$.explicit') AS explicit,
+            {self._provider_mappings_summary_query()} AS provider_mappings,
+            {self._artist_mappings_summary_query(DB_TABLE_TRACK_ARTISTS, "track_id")} AS artists,
+            (SELECT
+                json_object(
+                'item_id', albums.item_id,
+                    'name', albums.name,
+                    'sort_name', albums.sort_name,
                     'year', albums.year,
                     'disc_number', album_tracks.disc_number,
                     'track_number', album_tracks.track_number,
@@ -211,6 +241,8 @@ class TracksController(MediaControllerBase[Track]):
         genre: int | list[int] | None = None,
         played_only: bool = False,
         explicit: bool | None = None,
+        *,
+        summary: bool = False,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -225,6 +257,8 @@ class TracksController(MediaControllerBase[Track]):
         :param genre: Filter by genre id(s).
         :param played_only: Filter to only played tracks.
         :param explicit: Filter by explicit content (True=only explicit, False=no explicit, None=all).
+        :param summary: Return slim summary items (only the fields needed for a list view)
+            instead of full items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
@@ -269,6 +303,7 @@ class TracksController(MediaControllerBase[Track]):
             extra_join_parts=extra_join_parts,
             played_only=played_only,
             in_library_only=True,
+            summary=summary,
         )
         if search and len(result) < 25 and not offset:
             # append artist items to result
@@ -291,6 +326,7 @@ class TracksController(MediaControllerBase[Track]):
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
                 in_library_only=True,
+                summary=summary,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if _track.uri not in existing_uris:
@@ -839,3 +875,40 @@ class TracksController(MediaControllerBase[Track]):
             provider_mappings=self._parse_sync_details_mappings(db_row),
             has_album=bool(db_row["has_album"]),
         )
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> TrackSummary:
+        """Parse a raw summary db row into a TrackSummary object."""
+        item = cast("TrackSummary", super()._parse_summary_row(db_row))
+        item.version = db_row["version"] or ""
+        item.duration = db_row["duration"] or 0
+        item.metadata.explicit = None if db_row["explicit"] is None else bool(db_row["explicit"])
+        item.artists = self._parse_summary_artist_mappings(db_row)
+        if raw_album := db_row["track_album"]:
+            album: dict[str, Any] = json_loads(raw_album)
+            album_thumb: MediaItemImage | None = None
+            if album_images := album.get("images"):
+                for image in album_images:
+                    if image["type"] != ImageType.THUMB.value:
+                        continue
+                    album_thumb = MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image["path"],
+                        provider=image["provider"],
+                        remotely_accessible=image.get("remotely_accessible", False),
+                    )
+                    break
+            item.album = ItemMappingSummary(
+                media_type=MediaType.ALBUM,
+                item_id=str(album["item_id"]),
+                provider="library",
+                name=album["name"],
+                sort_name=album["sort_name"],
+                year=album["year"],
+                image=album_thumb,
+            )
+            item.disc_number = album["disc_number"] or 0
+            item.track_number = album["track_number"] or 0
+            if album_thumb:
+                # always prefer album image over track image
+                item.metadata.images = UniqueList([album_thumb])
+        return item

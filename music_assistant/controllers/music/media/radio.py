@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import ProviderMapping, Radio
+from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary
 
 from music_assistant.constants import DB_TABLE_RADIOS
 from music_assistant.helpers.compare import (
@@ -35,6 +35,7 @@ class RadioController(MediaControllerBase[Radio]):
     db_table = DB_TABLE_RADIOS
     media_type = MediaType.RADIO
     item_cls = Radio
+    summary_item_cls = RadioSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
