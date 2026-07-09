@@ -91,7 +91,7 @@ class AlbumsController(MediaControllerBase[Album]):
             albums.version,
             albums.year,
             albums.album_type,
-            {self._provider_mappings_summary_query()} AS provider_mappings,
+            {self._provider_mappings_query()} AS provider_mappings,
             {artists_query} AS artists
             FROM albums"""
         return query, {}

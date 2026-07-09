@@ -135,7 +135,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             audiobooks.duration,
             audiobooks.authors,
             audiobooks.narrators,
-            {self._provider_mappings_summary_query()} AS provider_mappings,
+            {self._provider_mappings_query()} AS provider_mappings,
             {artists_query} AS audiobook_artists,
             playlog.fully_played AS fully_played,
             playlog.seconds_played * 1000 as resume_position_ms

@@ -118,7 +118,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             playlists.supported_mediatypes,
             playlists.translation_key,
             playlists.translation_params,
-            {self._provider_mappings_summary_query()} AS provider_mappings
+            json_extract(playlists.metadata, '$.description') AS description,
+            {self._provider_mappings_query()} AS provider_mappings
             FROM playlists"""
         return query, {}
 
@@ -777,6 +778,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item.owner = db_row["owner"]
         item.is_editable = bool(db_row["is_editable"])
         item.is_dynamic = bool(db_row["is_dynamic"])
+        item.metadata.description = db_row["description"]
         item.supported_mediatypes = {
             MediaType(x) for x in json_loads(db_row["supported_mediatypes"])
         }

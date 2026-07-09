@@ -102,7 +102,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         SELECT
             {self._summary_base_columns()},
             artists.artist_type,
-            {self._provider_mappings_summary_query()} AS provider_mappings
+            {self._provider_mappings_query()} AS provider_mappings
             FROM artists"""
         return query, {}
 

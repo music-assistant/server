@@ -3,9 +3,10 @@ Parity test for the summary fast path of the library list endpoints.
 
 ``library_items(summary=True)`` returns slim summary variants of the media item
 models, built directly from a slim SQL query instead of hydrating the full stored
-item JSON. Every field a summary item carries must match the full item, and the
-serialized (wire) form must be sparse: no null values and none of the heavy
-metadata fields.
+item JSON. Every field a summary item carries must match the full item. Provider
+mappings are carried in full (so clients keep the quality badge, availability,
+provider icon and in-library state); the rest of the serialized (wire) form stays
+sparse: no null values and none of the heavy metadata fields.
 """
 
 from __future__ import annotations
@@ -103,6 +104,12 @@ def _first_thumb(item: Any) -> MediaItemImage | None:
     return None
 
 
+def _sorted_provider_mappings(item_dict: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return a serialized item's provider mappings, sorted for stable comparison."""
+    mappings = item_dict.get("provider_mappings") or []
+    return sorted(mappings, key=lambda m: (m["provider_instance"], m["item_id"]))
+
+
 async def _seed_playlist_and_radio(mass: MusicAssistant) -> None:
     """Add a playlist and radio station to the library (the test provider syncs neither)."""
     test_prov = mass.get_provider("test")
@@ -129,6 +136,7 @@ async def _seed_playlist_and_radio(mass: MusicAssistant) -> None:
         },
     )
     playlist.metadata.images = UniqueList([image])
+    playlist.metadata.description = "A hand-curated test playlist."
     await mass.music.playlists.add_item_to_library(playlist)
     radio = Radio(
         item_id="radio_1",
@@ -144,6 +152,7 @@ async def _seed_playlist_and_radio(mass: MusicAssistant) -> None:
         },
     )
     radio.metadata.images = UniqueList([image])
+    radio.metadata.description = "A test radio station."
     await mass.music.radio.add_item_to_library(radio)
 
 
@@ -205,22 +214,33 @@ async def test_library_summary_items_parity(e2e_mass: MusicAssistant) -> None:
                 assert summary_thumb.path == full_thumb.path
                 assert summary_thumb.provider == full_thumb.provider
 
-            # wire format: sparse (no nulls), heavy metadata never present and the
-            # image dicts carry the same resolved proxy_id / localized names; bind
+            # wire format: provider mappings are carried in full and must match the
+            # full item exactly (the frontend reads audio_format for the quality badge,
+            # availability, the provider icon and in-library state from here); the rest
+            # of the wire form stays sparse (no nulls) and free of heavy metadata, and
+            # the image dicts carry the same resolved proxy_id / localized names; bind
             # the same resolvers the API layer sets while serializing a response
             with _api_serialization_context(mass):
                 full_dict = full.to_dict()
                 summary_dict = item.to_dict()
-            _assert_no_none_values(summary_dict, ctrl.media_type.value)
+            assert _sorted_provider_mappings(summary_dict) == _sorted_provider_mappings(full_dict)
+            wire = {k: v for k, v in summary_dict.items() if k != "provider_mappings"}
+            _assert_no_none_values(wire, ctrl.media_type.value)
             assert summary_dict["name"] == full_dict["name"]
-            # summary metadata only carries the thumb image and the explicit flag;
-            # a description may be injected on top by the translation resolver
-            # (localizable items), in which case both modes carry the same value
-            assert set(summary_dict["metadata"]) <= {"images", "explicit", "description"}
-            if "description" in summary_dict["metadata"]:
-                assert (
-                    summary_dict["metadata"]["description"] == full_dict["metadata"]["description"]
-                )
+            # summary metadata carries only the thumb image plus the few descriptive
+            # fields the list rows render: the explicit flag and release date (tracks) and
+            # the description (radio/playlist). A description may also be injected by the
+            # translation resolver for localizable items; either way both modes must carry
+            # the same value.
+            assert set(summary_dict["metadata"]) <= {
+                "images",
+                "explicit",
+                "release_date",
+                "description",
+            }
+            for meta_field in ("description", "release_date"):
+                if meta_field in summary_dict["metadata"]:
+                    assert summary_dict["metadata"][meta_field] == full_dict["metadata"][meta_field]
             if full_thumb:
                 assert summary_dict["metadata"]["images"][0] == full_dict["metadata"]["images"][0]
                 assert summary_dict["metadata"]["images"][0]["proxy_id"]

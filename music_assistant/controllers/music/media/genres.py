@@ -277,7 +277,7 @@ class GenreController(MediaControllerBase[Genre]):
             {self._summary_base_columns()},
             {DB_TABLE_GENRES}.translation_key,
             {DB_TABLE_GENRES}.content_type,
-            {self._provider_mappings_summary_query()} AS provider_mappings
+            {self._provider_mappings_query()} AS provider_mappings
         FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
         return query, {}
 

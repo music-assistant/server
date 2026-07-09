@@ -142,7 +142,8 @@ class TracksController(MediaControllerBase[Track]):
             tracks.version,
             tracks.duration,
             json_extract(tracks.metadata, '$.explicit') AS explicit,
-            {self._provider_mappings_summary_query()} AS provider_mappings,
+            json_extract(tracks.metadata, '$.release_date') AS release_date,
+            {self._provider_mappings_query()} AS provider_mappings,
             {self._artist_mappings_summary_query(DB_TABLE_TRACK_ARTISTS, "track_id")} AS artists,
             (SELECT
                 json_object(
@@ -888,6 +889,8 @@ class TracksController(MediaControllerBase[Track]):
         item.version = db_row["version"] or ""
         item.duration = db_row["duration"] or 0
         item.metadata.explicit = None if db_row["explicit"] is None else bool(db_row["explicit"])
+        if raw_release_date := db_row["release_date"]:
+            item.metadata.release_date = datetime.fromisoformat(raw_release_date)
         item.artists = self._parse_summary_artist_mappings(db_row)
         if raw_album := db_row["track_album"]:
             album: dict[str, Any] = json_loads(raw_album)

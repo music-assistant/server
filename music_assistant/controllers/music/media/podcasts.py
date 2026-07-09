@@ -70,7 +70,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             podcasts.version,
             podcasts.publisher,
             podcasts.total_episodes,
-            {self._provider_mappings_summary_query()} AS provider_mappings
+            {self._provider_mappings_query()} AS provider_mappings
             FROM podcasts"""
         return query, {}
 
