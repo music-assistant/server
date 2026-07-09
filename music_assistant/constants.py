@@ -973,6 +973,9 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("smart_fades", False),
     ("lastfm_recommendations", False),
     ("playlist_metadata", False),
+    # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
+    # audio overlay feature) at zero resource cost until actually used
+    ("ambient_sounds", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {
