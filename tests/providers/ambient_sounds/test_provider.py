@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 
 from music_assistant.providers import ambient_sounds
 from music_assistant.providers.ambient_sounds import PRESETS, AmbientSoundsProvider
@@ -96,3 +96,21 @@ async def test_stream_details_unknown_preset(tmp_path: pathlib.Path) -> None:
     await provider.handle_async_init()
     with pytest.raises(MediaNotFoundError):
         await provider.get_stream_details("unknown_preset")
+
+
+async def test_failed_render_leaves_no_temp_file(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed render raises AudioError and cleans up its partial temp file."""
+
+    async def fake_check_output(*args: str) -> tuple[int, bytes]:
+        # simulate ffmpeg dying halfway: partial output written, non-zero exit
+        pathlib.Path(args[-1]).write_bytes(b"partial")
+        return 1, b"boom"
+
+    monkeypatch.setattr(ambient_sounds, "check_output", fake_check_output)
+    provider = _create_provider(str(tmp_path))
+    await provider.handle_async_init()
+    with pytest.raises(AudioError):
+        await provider.get_stream_details("white_noise")
+    assert not list(tmp_path.rglob("*.tmp"))

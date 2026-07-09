@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from aiofiles.os import makedirs, replace
+from aiofiles.os import makedirs, remove, replace
 from aiofiles.os import path as aiopath
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import AudioError, MediaNotFoundError
@@ -203,6 +204,8 @@ class AmbientSoundsProvider(MusicProvider):
                 tmp_path,
             )
             if returncode != 0:
+                with suppress(OSError):
+                    await remove(tmp_path)
                 raise AudioError(
                     f"Failed to render ambient sound {preset_id}: {output.decode(errors='replace')}"
                 )
