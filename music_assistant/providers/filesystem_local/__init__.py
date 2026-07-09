@@ -73,7 +73,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
 from music_assistant.helpers.util import (
@@ -139,6 +139,7 @@ if TYPE_CHECKING:
 
 isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
+ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
 scandir = wrap(os.scandir)
@@ -259,6 +260,14 @@ class LocalFileSystemProvider(MusicProvider):
                 translation_args=[self.base_path],
             )
         await self.check_write_access()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "sync_running": self.sync_running,
+            "write_access": self.write_access,
+            "content_type": self.media_content_type,
+        }
 
     async def search(
         self,

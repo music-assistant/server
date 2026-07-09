@@ -257,6 +257,13 @@ async def test_get_report(mass: MusicAssistant) -> None:
     )
     # streams controller contributes its section through the get_diagnostics hook
     assert "active_output_streams" in report["sections"]["core.streams"]
+    assert "ffmpeg_version" in report["sections"]["core.streams"]
+    # core controllers each contribute their own section
+    assert "db_schema_version" in report["sections"]["core.music"]
+    assert "by_state" in report["sections"]["core.player_queues"]
+    assert "players_synced" in report["sections"]["core.players"]
+    assert "by_status" in report["sections"]["core.tasks"]
+    assert "db_size_mb" in report["sections"]["core.cache"]
     # log tail is opt-in
     assert "log_tail" not in report
     report_with_tail = await mass.diagnostics.get_report(include_log_tail=True)

@@ -94,6 +94,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.constants import PlaylistPlayableItem
     from music_assistant.controllers.music.recency import RecencyWindows
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.models.player import Player
 
 
@@ -146,6 +147,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         for queue in self.all():
             self.mass.cancel_timer(f"save_queue_cache_{queue.queue_id}")
             await self._save_queue_to_cache(queue.queue_id)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        queues = [queue_data.queue for queue_data in self._queue_data.values()]
+        by_state: dict[str, int] = {}
+        for queue in queues:
+            by_state[queue.state.value] = by_state.get(queue.state.value, 0) + 1
+        return {
+            "total": len(queues),
+            "active": sum(queue.active for queue in queues),
+            "by_state": by_state,
+            "flow_mode_active": sum(queue.flow_mode for queue in queues),
+            "dynamic_mode_active": sum(queue.is_dynamic for queue in queues),
+            "total_items": sum(queue.items for queue in queues),
+        }
 
     async def get_config_entries(
         self,

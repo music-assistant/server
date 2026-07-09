@@ -35,6 +35,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -83,8 +84,13 @@ from music_assistant.helpers.audio import (
     store_content_length_in_cache,
 )
 from music_assistant.helpers.buffered_generator import buffered
+from music_assistant.helpers.ffmpeg import (
+    CACHE_ATTR_FFMPEG_VERSION,
+    CACHE_ATTR_LIBSOXR_PRESENT,
+    check_ffmpeg_version,
+    get_ffmpeg_stream,
+)
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
-from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
@@ -180,6 +186,8 @@ class StreamsController(CoreController):
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this controller to include in diagnostics reports."""
         return {
+            "ffmpeg_version": get_global_cache_value(CACHE_ATTR_FFMPEG_VERSION),
+            "libsoxr_support": get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT),
             "active_output_streams": self._active_output_streams,
             "active_announcements": len(self.announcements),
         }

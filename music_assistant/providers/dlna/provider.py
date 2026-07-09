@@ -1,6 +1,7 @@
 """DLNA Player Provider."""
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
@@ -8,6 +9,7 @@ from async_upnp_client.client_factory import UpnpFactory
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_PLAYERS
+from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer
@@ -44,6 +46,25 @@ class DLNAPlayerProvider(PlayerProvider):
         """
         self.mass.streams.unregister_dynamic_route("/notify", "NOTIFY")
         self._ignored_udns = set()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        now = time.time()
+        devices: list[SerializableType] = [
+            {
+                "model": player.device_info.model,
+                "manufacturer": player.device_info.manufacturer,
+                "available": player.available,
+                "eventing": not player.force_poll,
+                "last_seen_age_sec": round(now - player.last_seen),
+            }
+            for player in self.players
+            if isinstance(player, DLNAPlayer)
+        ]
+        return {
+            "ignored_devices": len(self._ignored_udns),
+            "devices": devices,
+        }
 
     async def on_upnp_service_discovered(
         self, search_target: str, discovery_info: CaseInsensitiveDict

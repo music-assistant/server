@@ -45,6 +45,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.plugin import PluginProvider
 
@@ -375,6 +376,15 @@ class HomeAssistantProvider(PluginProvider):
         if self._listen_task and not self._listen_task.done():
             self._listen_task.cancel()
         await self.hass.disconnect()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "connected": self.hass.connected,
+            "ha_version": self.hass.version,
+            "listener_active": self._listen_task is not None and not self._listen_task.done(),
+            "player_controls": len(self._player_controls) if self._player_controls else 0,
+        }
 
     async def get_device_by_connection(
         self,

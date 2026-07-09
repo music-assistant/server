@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import MULTICHANNEL_RECHECK_INTERVAL
@@ -106,6 +107,25 @@ class ChromecastProvider(PlayerProvider):
                 self._discovery_running = False
 
             await self.mass.loop.run_in_executor(None, stop_discovery)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        cast_players = [player for player in self.players if isinstance(player, ChromecastPlayer)]
+        models: dict[str, int] = {}
+        for cast_player in cast_players:
+            model_name = cast_player.cast_info.model_name
+            models[model_name] = models.get(model_name, 0) + 1
+        return {
+            "discovery_running": self._discovery_running,
+            "pending_discoveries": len(self._pending_discoveries),
+            "cast_groups": sum(
+                cast_player.cast_info.is_audio_group for cast_player in cast_players
+            ),
+            "cast_speakers": sum(
+                not cast_player.cast_info.is_audio_group for cast_player in cast_players
+            ),
+            "models": models,
+        }
 
     ### Discovery callbacks
 

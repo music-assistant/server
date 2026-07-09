@@ -21,6 +21,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import CONF_ENABLED
 from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.player_provider import PlayerProvider
@@ -185,6 +186,20 @@ class SnapCastProvider(PlayerProvider):
 
         self._snapserver.stop()
         await self._stop_builtin_server()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "builtin_server": self._use_builtin_server,
+            "builtin_server_started": (
+                self._snapserver_started.is_set() if self._snapserver_started else None
+            ),
+            "clients_total": len(self._snapserver.clients),
+            "clients_connected": sum(client.connected for client in self._snapserver.clients),
+            "groups": len(self._snapserver.groups),
+            "streams": len(self._snapserver.streams),
+            "ma_streams": len(self._snapcast_ma_streams),
+        }
 
     async def refresh_server_status(self) -> None:
         """
