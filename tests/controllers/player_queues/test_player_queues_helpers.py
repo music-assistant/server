@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    MediaItemImage,
+    MediaItemMetadata,
+    Playlist,
+    Radio,
+    Track,
+)
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -13,6 +24,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.helpers import (
+    build_queue_item,
     get_current_playback_speed,
     handle_play_action,
     has_dynamic_source,
@@ -262,3 +274,108 @@ class TestSpaceByArtist:
     def test_empty_input(self) -> None:
         """An empty input yields an empty order."""
         assert space_by_artist([]) == []
+
+
+def _thumb(path: str = "http://img/t.jpg") -> MediaItemImage:
+    return MediaItemImage(
+        type=ImageType.THUMB, path=path, provider="test", remotely_accessible=True
+    )
+
+
+def _heavy_metadata() -> MediaItemMetadata:
+    """Build metadata resembling a fully enriched item (the bulk of a queue item's size)."""
+    return MediaItemMetadata(
+        description="A long track description. " * 20,
+        review="An even longer critical review. " * 20,
+        lyrics="\n".join(f"Lyrics line {index}" for index in range(60)),
+        lrc_lyrics="\n".join(f"[00:{index:02d}.00] line {index}" for index in range(60)),
+        images=UniqueList([_thumb()]),
+        genres={"rock", "indie"},
+    )
+
+
+def _heavy_track() -> Track:
+    return Track(
+        item_id="t1",
+        provider="test",
+        name="Song",
+        duration=210,
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="a1",
+                    provider="test",
+                    name="Artist",
+                    metadata=_heavy_metadata(),
+                    provider_mappings=_PROVIDER_MAPPINGS,
+                )
+            ]
+        ),
+        album=Album(
+            item_id="al1",
+            provider="test",
+            name="Album",
+            metadata=_heavy_metadata(),
+            provider_mappings=_PROVIDER_MAPPINGS,
+        ),
+        metadata=_heavy_metadata(),
+        provider_mappings=_PROVIDER_MAPPINGS,
+    )
+
+
+def _heavy_radio() -> Radio:
+    return Radio(
+        item_id="r1",
+        provider="test",
+        name="Radio One",
+        metadata=_heavy_metadata(),
+        provider_mappings=_PROVIDER_MAPPINGS,
+    )
+
+
+class TestBuildQueueItem:
+    """Tests for build_queue_item."""
+
+    def test_slims_track_metadata(self) -> None:
+        """A track's heavy metadata is dropped while playback-relevant fields are kept."""
+        item = build_queue_item("q1", _heavy_track())
+        assert isinstance(item.media_item, Track)
+        # heavy metadata is dropped
+        assert item.media_item.metadata == MediaItemMetadata()
+        # provider mappings are kept (needed for stream resolution / failover)
+        assert item.media_item.provider_mappings == _PROVIDER_MAPPINGS
+        # the identifiers used to re-hydrate on promotion are kept
+        assert item.media_item.item_id == "t1"
+        assert item.media_item.provider == "test"
+        assert item.media_item.media_type is MediaType.TRACK
+        # artwork survives on the top-level image and artists/album stay slimmed to mappings
+        assert item.image is not None
+        assert item.image.type is ImageType.THUMB
+        assert all(isinstance(artist, ItemMapping) for artist in item.media_item.artists)
+        assert isinstance(item.media_item.album, ItemMapping)
+        # name/duration for compact list rows are kept
+        assert item.name == "Artist - Song"
+        assert item.duration == 210
+
+    def test_reduces_serialized_size(self) -> None:
+        """Slimming a track queue item substantially reduces its serialized size."""
+        fat = len(json.dumps(QueueItem.from_media_item("q1", _heavy_track()).to_dict()))
+        slim = len(json.dumps(build_queue_item("q1", _heavy_track()).to_dict()))
+        assert slim < fat * 0.6
+
+    def test_leaves_non_track_untouched(self) -> None:
+        """Non-track items (e.g. radio) keep their metadata as they are not re-hydrated."""
+        item = build_queue_item("q1", _heavy_radio())
+        assert isinstance(item.media_item, Radio)
+        assert item.media_item.metadata.description
+        assert item.media_item.metadata.images
+
+    def test_cache_roundtrip_preserves_slim_shape(self) -> None:
+        """A slim track queue item round-trips through the persisted cache unchanged."""
+        restored = QueueItem.from_cache(build_queue_item("q1", _heavy_track()).to_cache())
+        assert isinstance(restored.media_item, Track)
+        assert restored.media_item.metadata == MediaItemMetadata()
+        assert restored.media_item.provider_mappings == _PROVIDER_MAPPINGS
+        assert restored.media_item.item_id == "t1"
+        assert restored.image is not None
+        assert restored.image.type is ImageType.THUMB

@@ -22,8 +22,8 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
-from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
@@ -31,6 +31,7 @@ from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -651,7 +652,7 @@ class PartyPlugin(PluginProvider):
                     MediaType.RADIO,
                 ):
                     raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-                queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+                queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
                 queue_item.extra_attributes[ATTR_PARTY_GUEST] = True
                 if boost:
                     queue_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
@@ -806,7 +807,7 @@ class PartyPlugin(PluginProvider):
             raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
 
         # Create a QueueItem from the media item
-        queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+        queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
         queue_item.extra_attributes.update(extra_attributes)
 
         # Determine the attribute to scan for when finding the section boundary.
