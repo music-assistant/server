@@ -3112,13 +3112,8 @@ class StreamsAudio:
         """
         Resolve the flow mode config and supported sample rates for restart decisions.
 
-        Prefers the (protocol) player actually consuming the flow stream — the same
-        player the flow's PCM format was anchored on — over the queue's (wrapper)
-        player, whose config may lack the audio/protocol specific entries.
-
-        :param queue_id: The queue ID, used as fallback when no protocol player is given.
-        :param protocol_player: The protocol player consuming the flow stream, if known.
-        :return: Tuple of (flow mode sample rate config value, sorted supported rates).
+        Prefers the protocol player actually consuming the flow stream over the
+        queue's (wrapper) player, whose config may lack the audio specific entries.
         """
         if protocol_player is None:
             protocol_player = self.mass.players.get_player(queue_id)
