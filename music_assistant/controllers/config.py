@@ -1654,8 +1654,6 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         raw_conf = config.to_raw()
         self.set(conf_key, raw_conf)
-        if config.enabled and prov_instance is None:
-            await self.mass.load_provider_config(config)
         if config.enabled and prov_instance and available:
             # update config for existing/loaded provider instance
             await prov_instance.update_config(config, changed_keys)
