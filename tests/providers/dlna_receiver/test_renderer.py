@@ -27,7 +27,7 @@ def renderer() -> UPnPRenderer:
 @pytest.fixture
 async def client(
     renderer: UPnPRenderer,
-) -> AsyncGenerator[TestClient[Request, Application], None]:
+) -> AsyncGenerator[TestClient[Request, Application]]:
     """Create an aiohttp test client for the renderer."""
     server = TestServer(renderer._app)
     _client = TestClient(server)
@@ -250,7 +250,8 @@ async def test_set_av_transport_uri_rejected(
     client: TestClient[Request, Application],
     renderer: UPnPRenderer,
 ) -> None:
-    """A callback that raises ValueError causes a 716 SOAP fault and no state change.
+    """
+    A callback that raises ValueError causes a 716 SOAP fault and no state change.
 
     Previously the renderer eagerly wrote ``current_uri`` and returned 200 OK
     before invoking the callback, so a silent SSRF-guard rejection in the
@@ -290,7 +291,8 @@ def test_description_url_ipv4_no_brackets() -> None:
 
 
 async def test_start_learns_ephemeral_port() -> None:
-    """Binding on http_port=0 must update self.http_port from the bound socket.
+    """
+    Binding on http_port=0 must update self.http_port from the bound socket.
 
     Without this, description_url and the SSDP LOCATION header advertise
     ``:0`` and nothing can reach the renderer.

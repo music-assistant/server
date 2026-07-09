@@ -1,4 +1,5 @@
-"""Tests for the multi-player provider logic.
+"""
+Tests for the multi-player provider logic.
 
 Provider module imports music_assistant.models which is only available
 when running inside MA.  We test the pure utility functions directly
@@ -7,9 +8,13 @@ and guard the full-provider import with pytest.importorskip.
 
 from __future__ import annotations
 
+import asyncio
+import types
 import uuid
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from music_assistant_models.enums import ContentType, MediaType, QueueOption, StreamType
 
 from music_assistant.providers.dlna_receiver.constants import (
     CONF_TARGET_PLAYER,
@@ -17,6 +22,12 @@ from music_assistant.providers.dlna_receiver.constants import (
     UDN_NAMESPACE,
 )
 from music_assistant.providers.dlna_receiver.renderer import UPnPRenderer
+
+if TYPE_CHECKING:
+    from music_assistant.providers.dlna_receiver.provider import (
+        DLNAReceiverProvider,
+        RendererInstance,
+    )
 
 
 def _deterministic_udn(player_id: str) -> str:
@@ -92,7 +103,7 @@ class _StubConfig:
         instance_id: str = "dlna_receiver_test",
         name: str = "DLNA Receiver",
     ) -> None:
-        self._values = values
+        self._values = {"log_level": "GLOBAL", **values}
         self.instance_id = instance_id
         self.name = name
 
@@ -127,22 +138,355 @@ def test_raw_target_empty_when_neither_set(provider_cls) -> None:  # type: ignor
     assert inst._raw_target() == ""
 
 
-def test_get_source_uses_unknown_content_type(provider_cls) -> None:  # type: ignore[no-untyped-def]
-    """PluginSource.audio_format must let ffmpeg probe incoming codec.
+# ---------------------------------------------------------------------
+# New plugin-sources contract (AudioSource MediaItems)
+# ---------------------------------------------------------------------
+
+
+def _make_instance(player_id: str, player_name: str, url: str | None = None) -> RendererInstance:
+    """Build a RendererInstance with stubbed renderer/ssdp for contract tests."""
+    from music_assistant.providers.dlna_receiver.provider import RendererInstance  # noqa: PLC0415
+    from music_assistant.providers.dlna_receiver.ssdp import SSDPAdvertiser  # noqa: PLC0415
+
+    friendly = f"Music Assistant — {player_name}" if player_name else "Music Assistant"
+    return RendererInstance(
+        player_id=player_id,
+        player_name=player_name,
+        renderer=cast("UPnPRenderer", types.SimpleNamespace(friendly_name=friendly)),
+        ssdp=cast("SSDPAdvertiser", types.SimpleNamespace()),
+        current_stream_url=url,
+    )
+
+
+def _make_contract_provider(
+    cls: type[DLNAReceiverProvider], instances: dict[str, RendererInstance]
+) -> DLNAReceiverProvider:
+    """
+    Build a provider carrying renderer instances for contract tests.
+
+    Uses the real ``__init__`` with stub mass/manifest/config so the tests
+    never drift from the constructor's state initialization.
+    """
+    prov = cls(
+        cast("Any", types.SimpleNamespace(cache=None)),
+        cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
+        cast("Any", _StubConfig({})),
+    )
+    prov._instances = instances
+    return prov
+
+
+def test_get_audio_sources_one_per_instance(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Each renderer instance is exposed as its own AudioSource item."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance("player_kitchen", "Kitchen"),
+            "player_bedroom": _make_instance("player_bedroom", "Bedroom"),
+        },
+    )
+
+    sources = asyncio.run(prov.get_audio_sources())
+
+    assert {s.item_id for s in sources} == {"player_kitchen", "player_bedroom"}
+    for source in sources:
+        assert source.provider == prov.instance_id
+        assert source.exclusive is True
+        assert source.can_initiate is False
+        assert source.allow_external_trigger is True
+
+
+def test_get_audio_sources_use_unknown_content_type(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """
+    AudioSource mappings must let ffmpeg probe the incoming codec.
 
     Upstream DLNA senders push FLAC/MP3/AAC/PCM etc.; declaring a concrete
     PCM format would cause ffmpeg to misread compressed bytes as raw PCM.
     """
-    from music_assistant_models.enums import ContentType  # noqa: PLC0415
+    prov = _make_contract_provider(
+        provider_cls,
+        {"__default__": _make_instance("", "")},
+    )
 
-    inst = _make_provider(provider_cls, {})
-    inst._plugin_source = None
+    (source,) = asyncio.run(prov.get_audio_sources())
 
-    source = provider_cls.get_source(inst)
+    mapping = next(iter(source.provider_mappings))
+    assert mapping.audio_format.content_type == ContentType.UNKNOWN
+    assert mapping.audio_format.codec_type == ContentType.UNKNOWN
 
-    assert source.audio_format is not None
-    assert source.audio_format.content_type == ContentType.UNKNOWN
-    assert source.audio_format.codec_type == ContentType.UNKNOWN
+
+def test_get_stream_details_returns_custom_stream(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """StreamDetails for an active DLNA stream use a CUSTOM probe-able stream."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance(
+                "player_kitchen", "Kitchen", "http://cp.local/track.flac"
+            )
+        },
+    )
+
+    sd = asyncio.run(prov.get_stream_details("player_kitchen", "queue1"))
+
+    assert sd.provider == prov.instance_id
+    assert sd.item_id == "player_kitchen"
+    assert sd.media_type == MediaType.AUDIO_SOURCE
+    assert sd.stream_type == StreamType.CUSTOM
+    assert sd.audio_format.content_type == ContentType.UNKNOWN
+    assert sd.audio_format.codec_type == ContentType.UNKNOWN
+    assert sd.decoded_audio_format is None
+
+
+def test_get_stream_details_unknown_source_raises(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Requesting an unknown source id raises MediaNotFoundError."""
+    from music_assistant_models.errors import MediaNotFoundError  # noqa: PLC0415
+
+    prov = _make_contract_provider(provider_cls, {})
+
+    with pytest.raises(MediaNotFoundError):
+        asyncio.run(prov.get_stream_details("nope", "queue1"))
+
+
+def test_get_stream_details_without_active_stream_raises(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """No DLNA sender pushed a URL yet — streaming must be refused."""
+    from music_assistant_models.errors import AudioError  # noqa: PLC0415
+
+    prov = _make_contract_provider(
+        provider_cls,
+        {"player_kitchen": _make_instance("player_kitchen", "Kitchen")},
+    )
+
+    with pytest.raises(AudioError):
+        asyncio.run(prov.get_stream_details("player_kitchen", "queue1"))
+
+
+def test_get_stream_details_is_side_effect_free(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Preload may fetch streamdetails without claiming the source."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance(
+                "player_kitchen", "Kitchen", "http://cp.local/track.flac"
+            )
+        },
+    )
+
+    asyncio.run(prov.get_stream_details("player_kitchen", "queue1"))
+
+    assert prov._claims == {}
+
+
+def test_on_source_selected_claims_source(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Selecting a source records the owning queue and session token."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance(
+                "player_kitchen", "Kitchen", "http://cp.local/track.flac"
+            )
+        },
+    )
+
+    asyncio.run(prov.on_source_selected("player_kitchen", "player_kitchen", "queue1", "sess-a"))
+
+    assert prov._claims["player_kitchen"] == ("queue1", "sess-a")
+
+
+def test_on_source_unselected_releases_claim(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Matching session teardown releases the claim."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance(
+                "player_kitchen", "Kitchen", "http://cp.local/track.flac"
+            )
+        },
+    )
+
+    asyncio.run(prov.on_source_selected("player_kitchen", "player_kitchen", "queue1", "sess-a"))
+    asyncio.run(prov.on_source_unselected("player_kitchen", "queue1", "sess-a"))
+
+    assert "player_kitchen" not in prov._claims
+
+
+def test_on_source_unselected_ignores_stale_session(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """A superseded request's late teardown must not clear the live claim."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "player_kitchen": _make_instance(
+                "player_kitchen", "Kitchen", "http://cp.local/track.flac"
+            )
+        },
+    )
+
+    asyncio.run(prov.on_source_selected("player_kitchen", "player_kitchen", "queue1", "sess-a"))
+    asyncio.run(prov.on_source_selected("player_kitchen", "player_kitchen", "queue1", "sess-b"))
+    asyncio.run(prov.on_source_unselected("player_kitchen", "queue1", "sess-a"))
+
+    assert prov._claims["player_kitchen"] == ("queue1", "sess-b")
+
+
+def test_on_play_routes_through_play_media(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """DLNA Play triggers the standard play_media flow with the source uri."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    inst.current_metadata = {
+        "title": "Song",
+        "artist": None,
+        "album": None,
+        "image_url": None,
+        "duration": None,
+    }
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    calls: list[tuple[str, str, object]] = []
+
+    async def _record_play_media(player_id: str, media: str, option: object = None) -> None:
+        calls.append((player_id, media, option))
+
+    prov.mass = cast(
+        "Any",
+        types.SimpleNamespace(
+            player_queues=types.SimpleNamespace(play_media=_record_play_media),
+        ),
+    )
+
+    asyncio.run(prov._on_play(inst))
+
+    assert len(calls) == 1
+    player_id, media_uri, option = calls[0]
+    assert player_id == "player_kitchen"
+    assert media_uri == f"{prov.instance_id}://audio_source/player_kitchen"
+    assert option == QueueOption.PLAY
+
+
+def test_on_stop_clears_only_that_instance(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Stopping one renderer must not wipe another renderer's playback state."""
+    inst_a = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    inst_b = _make_instance("player_bedroom", "Bedroom", "http://cp.local/b.flac")
+    prov = _make_contract_provider(
+        provider_cls, {"player_kitchen": inst_a, "player_bedroom": inst_b}
+    )
+
+    async def _noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    prov.mass = cast(
+        "Any",
+        types.SimpleNamespace(
+            player_queues=types.SimpleNamespace(play_media=_noop),
+            players=types.SimpleNamespace(cmd_stop=_noop),
+        ),
+    )
+
+    async def _scenario() -> None:
+        await prov._on_play(inst_a)
+        await prov._on_play(inst_b)
+        await prov._on_stop(inst_a)
+
+    asyncio.run(_scenario())
+
+    assert inst_a.stream_metadata is None
+    assert inst_b.stream_metadata is not None
+
+
+def test_on_source_unselected_stops_elapsed_tracking(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """MA-side stream teardown must clear the instance's playback state."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    async def _noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    prov.mass = cast(
+        "Any",
+        types.SimpleNamespace(
+            player_queues=types.SimpleNamespace(play_media=_noop),
+            players=types.SimpleNamespace(cmd_stop=_noop),
+        ),
+    )
+
+    async def _scenario() -> None:
+        await prov._on_play(inst)
+        await prov.on_source_selected("player_kitchen", "player_kitchen", "queue1", "sess-a")
+        await prov.on_source_unselected("player_kitchen", "queue1", "sess-a")
+
+    asyncio.run(_scenario())
+
+    assert inst.stream_metadata is None
+
+
+def test_default_source_can_initiate(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """The unbound fallback renderer must stay startable from the MA UI."""
+    prov = _make_contract_provider(
+        provider_cls,
+        {
+            "__default__": _make_instance("", ""),
+            "player_kitchen": _make_instance("player_kitchen", "Kitchen"),
+        },
+    )
+
+    sources = {s.item_id: s for s in asyncio.run(prov.get_audio_sources())}
+
+    assert sources["__default__"].can_initiate is True
+    assert sources["player_kitchen"].can_initiate is False
+
+
+def test_get_audio_stream_raises_without_url(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """A cached StreamDetails replay after Stop must fail loudly, not stream nothing."""
+    from music_assistant_models.errors import AudioError  # noqa: PLC0415
+
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    sd = asyncio.run(prov.get_stream_details("player_kitchen", "queue1"))
+    inst.current_stream_url = None
+
+    async def _consume() -> None:
+        async for _chunk in prov.get_audio_stream(sd):
+            pass
+
+    with pytest.raises(AudioError):
+        asyncio.run(_consume())
+
+
+def test_on_source_selected_stops_previous_queue_on_handoff(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Cross-queue takeover of the exclusive source stops the previous consumer."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    stopped: list[str] = []
+
+    async def _record_stop(player_id: str) -> None:
+        stopped.append(player_id)
+
+    prov.mass = cast(
+        "Any",
+        types.SimpleNamespace(players=types.SimpleNamespace(cmd_stop=_record_stop)),
+    )
+
+    async def _scenario() -> None:
+        await prov.on_source_selected("player_kitchen", "player_kitchen", "queue1", "sess-a")
+        await prov.on_source_selected("player_kitchen", "player_other", "queue2", "sess-b")
+
+    asyncio.run(_scenario())
+
+    assert stopped == ["queue1"]
+    assert prov._claims["player_kitchen"] == ("queue2", "sess-b")
+
+
+def test_metadata_push_gating(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Elapsed-only ticks are not pushed; changes and periodic resync are."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    inst.metadata_dirty = True
+    assert prov._should_push_metadata(inst, now=100.0) is True
+
+    inst.metadata_dirty = False
+    inst.last_metadata_push = 100.0
+    assert prov._should_push_metadata(inst, now=102.0) is False
+    assert prov._should_push_metadata(inst, now=131.0) is True
 
 
 # ---------------------------------------------------------------------

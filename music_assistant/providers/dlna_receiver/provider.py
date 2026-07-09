@@ -1,4 +1,5 @@
-"""DLNA Receiver — Main provider implementation.
+"""
+DLNA Receiver — Main provider implementation.
 
 Registers as a PluginProvider with AUDIO_SOURCE feature so that audio
 received from external DLNA control points is routed through the MA
@@ -24,13 +25,21 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigValueType  # noqa: F401
-from music_assistant_models.enums import ContentType, ProviderFeature
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    QueueOption,
+    StreamType,
+)
+from music_assistant_models.errors import AudioError, MediaNotFoundError, SetupFailedError
+from music_assistant_models.helpers import create_uri
+from music_assistant_models.media_items import AudioSource, ProviderMapping
 from music_assistant_models.media_items.audio_format import AudioFormat
-from music_assistant_models.streamdetails import StreamMetadata
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.helpers.util import get_ip_addresses
-from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
     CONF_BIND_IP,
@@ -61,7 +70,8 @@ _MAX_DIDL_CHARS = 64 * 1024
 
 
 def _is_concrete_ipv4(value: str) -> bool:
-    """Return True iff ``value`` is a non-wildcard, non-loopback IPv4 literal.
+    """
+    Return True iff ``value`` is a non-wildcard, non-loopback IPv4 literal.
 
     SSDP uses ``socket.inet_aton`` + ``IP_ADD_MEMBERSHIP`` which require a
     concrete IPv4 interface; ``0.0.0.0`` joins the multicast group on the
@@ -91,11 +101,18 @@ class RendererInstance:
     ssdp: SSDPAdvertiser
     current_stream_url: str | None = None
     current_metadata: dict[str, str | None] | None = None
-    plugin_source: PluginSource | None = None
+    stream_metadata: StreamMetadata | None = None
+    play_start_time: float | None = None
+    elapsed_offset: int = 0
+    # metadata_dirty marks a real change (new track / pause / resume) that must
+    # be pushed to the queue item; elapsed-only ticks are resynced periodically.
+    metadata_dirty: bool = False
+    last_metadata_push: float = 0.0
 
 
 class DLNAReceiverProvider(PluginProvider):
-    """DLNA Receiver plugin provider for Music Assistant.
+    """
+    DLNA Receiver plugin provider for Music Assistant.
 
     Exposes MA as one or more UPnP MediaRenderers on the local network
     so that external apps can send audio streams which are then played
@@ -113,11 +130,11 @@ class DLNAReceiverProvider(PluginProvider):
         """Initialize provider state; renderer instances are created in loaded_in_mass."""
         super().__init__(mass, manifest, config, self.SUPPORTED_FEATURES)
         self._instances: dict[str, RendererInstance] = {}
-        self._plugin_source: PluginSource | None = None
-        # Playback state for elapsed time tracking
-        self._active_player_id: str | None = None
-        self._play_start_time: float | None = None
-        self._elapsed_offset: int = 0
+        # Exclusive stream claims: source_id -> (queue_id, stream_session_id).
+        # Claimed in on_source_selected (never in get_stream_details, which
+        # must stay side-effect-free for queue preload), released in
+        # on_source_unselected when the session token matches.
+        self._claims: dict[str, tuple[str, str]] = {}
         self._metadata_task: asyncio.Task[None] | None = None
         self._discovery_task: asyncio.Task[None] | None = None
         # Monotonically bumped per renderer; assigned lazily in loaded_in_mass.
@@ -204,8 +221,196 @@ class DLNAReceiverProvider(PluginProvider):
             self._base_port,
         )
 
+    async def unload(self, is_removed: bool = False) -> None:
+        """
+        Unload the provider — stop all renderer instances.
+
+        Cancels and *awaits* background tasks before touching ``_instances``:
+        otherwise ``_adopt_late_players`` could still be mid-``_create_instance``
+        and append a new entry to the dict while we're iterating it, which
+        raises ``RuntimeError`` and leaks sockets.
+        """
+        for task in (self._metadata_task, self._discovery_task):
+            if task is None or task.done():
+                continue
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._metadata_task = None
+        self._discovery_task = None
+        # Snapshot before iterating: no more background mutation possible now,
+        # but cheap defense against future concurrent shutdown paths.
+        for inst in list(self._instances.values()):
+            await inst.ssdp.stop()
+            await inst.renderer.stop()
+        self._instances.clear()
+        LOGGER.info("DLNA Receiver provider unloaded")
+
+    # ------------------------------------------------------------------
+    # PluginProvider audio source interface
+    # ------------------------------------------------------------------
+
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return one AudioSource per virtual DLNA renderer."""
+        return [
+            self._audio_source_for(source_id, inst) for source_id, inst in self._instances.items()
+        ]
+
+    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+        """
+        Return StreamDetails for streaming the received DLNA audio.
+
+        :param source_id: The AudioSource.item_id requested for playback.
+        :param queue_id: The queue that owns this playback session.
+        :raises MediaNotFoundError: If the source id matches no renderer.
+        :raises AudioError: If no DLNA sender has pushed a stream URL yet.
+        """
+        del queue_id  # ownership is claimed in on_source_selected
+        inst = self._instances.get(source_id)
+        if inst is None:
+            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if not inst.current_stream_url:
+            raise AudioError(
+                "DLNA renderer has no active stream — start casting from the sender app first"
+            )
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=source_id,
+            audio_format=self._probe_audio_format(),
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.CUSTOM,
+            stream_metadata=inst.stream_metadata,
+        )
+
+    async def get_audio_stream(
+        self,
+        streamdetails: StreamDetails,
+        seek_position: int = 0,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Yield the audio bytes for an active DLNA stream.
+
+        :param streamdetails: The StreamDetails previously returned by get_stream_details.
+        :param seek_position: Ignored — the incoming DLNA stream cannot be seeked.
+        :raises AudioError: If the source has no active stream or the upstream
+            URL cannot be fetched.
+        """
+        del seek_position  # live source — no seeking through the bytestream
+        source_id = streamdetails.item_id
+        inst = self._instances.get(source_id)
+        stream_url = inst.current_stream_url if inst else None
+
+        # Raise instead of yielding nothing: the server may reuse cached
+        # StreamDetails and skip get_stream_details' guard, so this is the
+        # last place a stale replay can be surfaced as a proper error.
+        if not stream_url:
+            raise AudioError(
+                f"DLNA source {source_id} has no active stream — "
+                "start casting from the sender app first"
+            )
+
+        LOGGER.debug("Proxying DLNA stream for %s: %s", source_id, _redact_url(stream_url))
+        # total=None: streams may be long-running; bound connect + per-chunk read only.
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
+        bytes_streamed = False
+        # Reuse MA's shared HTTP session (matches streams/audio.py) so we
+        # don't open a fresh TCP connector + DNS cache per activation.
+        try:
+            async with self.mass.http_session.get(stream_url, timeout=timeout) as resp:
+                # Re-validate after any redirects: the final URL still has to
+                # be an http(s) endpoint, otherwise refuse to stream. (aiohttp
+                # won't follow non-http schemes, but belt-and-suspenders.)
+                final_url = str(resp.url)
+                if _validate_stream_url(final_url) is None:
+                    raise AudioError(
+                        f"Upstream DLNA source redirected to disallowed URL: "
+                        f"{_redact_url(final_url)}"
+                    )
+                # Accept any 2xx (e.g. 206 Partial Content is common for audio).
+                if not 200 <= resp.status < 300:
+                    raise AudioError(
+                        f"Upstream DLNA source returned HTTP {resp.status} for "
+                        f"{_redact_url(stream_url)}"
+                    )
+                async for chunk in resp.content.iter_any():
+                    bytes_streamed = True
+                    yield chunk
+        except (aiohttp.ClientError, TimeoutError) as err:
+            # A drop mid-stream just ends the stream (the sender went away);
+            # a failure before the first byte is a real error to surface.
+            if not bytes_streamed:
+                raise AudioError(f"Could not fetch DLNA stream {_redact_url(stream_url)}") from err
+            LOGGER.warning(
+                "Error proxying DLNA stream %s",
+                _redact_url(stream_url),
+                exc_info=True,
+            )
+            return
+        LOGGER.debug("DLNA stream ended for %s", source_id)
+
+    async def on_source_selected(
+        self,
+        source_id: str,
+        player_id: str,
+        queue_id: str,
+        stream_session_id: str,
+    ) -> None:
+        """
+        Claim the renderer's stream for the queue that starts consuming it.
+
+        :param source_id: The AudioSource.item_id that was selected.
+        :param player_id: The player that will receive the stream.
+        :param queue_id: The queue that owns this playback session.
+        :param stream_session_id: Controller token paired with the matching
+            on_source_unselected call.
+        """
+        del player_id
+        if source_id not in self._instances:
+            return
+        # The source is exclusive: on a cross-queue takeover stop the previous
+        # consumer before replacing its claim (its late on_source_unselected
+        # is rejected by the session-id guard).
+        previous = self._claims.get(source_id)
+        if previous and previous[0] != queue_id:
+            try:
+                await self.mass.players.cmd_stop(previous[0])
+            except Exception as err:
+                LOGGER.debug("Could not stop previous consumer %s: %s", previous[0], err)
+        self._claims[source_id] = (queue_id, stream_session_id)
+        self._ensure_metadata_task()
+
+    async def on_source_unselected(
+        self,
+        source_id: str,
+        queue_id: str,
+        stream_session_id: str,
+    ) -> None:
+        """
+        Release the stream claim when MA tears down the queue's stream.
+
+        :param source_id: The AudioSource.item_id whose stream ended.
+        :param queue_id: The queue whose stream is being torn down.
+        :param stream_session_id: Token paired with on_source_selected; stale
+            tokens from a superseded request are ignored.
+        """
+        claim = self._claims.get(source_id)
+        if claim != (queue_id, stream_session_id):
+            return
+        del self._claims[source_id]
+        # MA stopped consuming: stop elapsed tracking so the metadata loop
+        # doesn't tick forever on state nobody reads. The next SOAP Play
+        # rebuilds the stream metadata from the sender's DIDL.
+        inst = self._instances.get(source_id)
+        if inst:
+            self._clear_instance_playback(inst)
+
+    # ------------------------------------------------------------------
+    # Instance management
+    # ------------------------------------------------------------------
+
     async def _adopt_late_players(self) -> None:
-        """Poll for newly-registered MA players and spin up renderers for them.
+        """
+        Poll for newly-registered MA players and spin up renderers for them.
 
         Runs only when ``target_players=*``. Caps the total wait at ~5 minutes
         so stale provider instances don't poll forever. The first time a real
@@ -238,7 +443,8 @@ class DLNAReceiverProvider(PluginProvider):
             LOGGER.debug("Late-player discovery loop error", exc_info=True)
 
     async def _retire_default_instance(self) -> None:
-        """Stop and drop the unbound ``__default__`` renderer, if any.
+        """
+        Stop and drop the unbound ``__default__`` renderer, if any.
 
         Called once from ``_adopt_late_players`` after the first real player
         renderer is created so control points no longer see a fallback
@@ -250,34 +456,6 @@ class DLNAReceiverProvider(PluginProvider):
         await default.ssdp.stop()
         await default.renderer.stop()
         LOGGER.info("Retired unbound fallback renderer — real players registered")
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Unload the provider — stop all renderer instances.
-
-        Cancels and *awaits* background tasks before touching ``_instances``:
-        otherwise ``_adopt_late_players`` could still be mid-``_create_instance``
-        and append a new entry to the dict while we're iterating it, which
-        raises ``RuntimeError`` and leaks sockets.
-        """
-        for task in (self._metadata_task, self._discovery_task):
-            if task is None or task.done():
-                continue
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        self._metadata_task = None
-        self._discovery_task = None
-        # Snapshot before iterating: no more background mutation possible now,
-        # but cheap defense against future concurrent shutdown paths.
-        for inst in list(self._instances.values()):
-            await inst.ssdp.stop()
-            await inst.renderer.stop()
-        self._instances.clear()
-        LOGGER.info("DLNA Receiver provider unloaded")
-
-    # ------------------------------------------------------------------
-    # Instance management
-    # ------------------------------------------------------------------
 
     async def _create_instance(
         self,
@@ -342,8 +520,7 @@ class DLNAReceiverProvider(PluginProvider):
                 await renderer.stop()
             raise
 
-        key = player_id or "__default__"
-        self._instances[key] = inst
+        self._instances[self._source_id_for(inst)] = inst
 
         LOGGER.info(
             "Renderer '%s' → player '%s' on port %d (UDN: %s)",
@@ -355,7 +532,8 @@ class DLNAReceiverProvider(PluginProvider):
         return inst
 
     def _raw_target(self) -> str:
-        """Return the configured target spec, honoring the legacy config key.
+        """
+        Return the configured target spec, honoring the legacy config key.
 
         Centralizes the CONF_TARGET_PLAYERS → CONF_TARGET_PLAYER fallback so
         every call site (late-player adoption check, spec resolution) sees
@@ -368,7 +546,8 @@ class DLNAReceiverProvider(PluginProvider):
         return raw
 
     def _resolve_player_specs(self) -> list[tuple[str, str]]:
-        """Resolve configured player targets to (player_id, display_name) pairs.
+        """
+        Resolve configured player targets to (player_id, display_name) pairs.
 
         Supports:
         - Empty / not set → empty list (single unbound renderer)
@@ -398,7 +577,8 @@ class DLNAReceiverProvider(PluginProvider):
         return specs
 
     def _get_all_players(self) -> list[tuple[str, str]]:
-        """Get all MA players as (player_id, display_name) pairs.
+        """
+        Get all MA players as (player_id, display_name) pairs.
 
         Includes unavailable players (they may come online later).
         Filters out protocol players and our own DLNA Receiver renderers
@@ -451,86 +631,48 @@ class DLNAReceiverProvider(PluginProvider):
             return player_id
 
     # ------------------------------------------------------------------
-    # PluginProvider audio source interface
+    # AudioSource helpers
     # ------------------------------------------------------------------
 
-    def get_source(self) -> PluginSource:
-        """Return the plugin source descriptor for this DLNA receiver.
+    @staticmethod
+    def _probe_audio_format() -> AudioFormat:
+        # Upstream DLNA senders push arbitrary compressed formats
+        # (FLAC/MP3/AAC/WAV/etc). Declare content_type/codec as UNKNOWN
+        # so MA's ffmpeg input pipeline probes the actual codec from
+        # stdin instead of misinterpreting compressed bytes as PCM.
+        return AudioFormat(
+            content_type=ContentType.UNKNOWN,
+            codec_type=ContentType.UNKNOWN,
+        )
 
-        Returns a persistent instance so metadata updates are visible
-        to the MA controller between calls.
-        """
-        if self._plugin_source is None:
-            # Upstream DLNA senders push arbitrary compressed formats
-            # (FLAC/MP3/AAC/WAV/etc). Declare content_type/codec as UNKNOWN
-            # so MA's ffmpeg input pipeline probes the actual codec from
-            # stdin instead of misinterpreting compressed bytes as PCM.
-            self._plugin_source = PluginSource(
-                id=self.instance_id,
-                name=self.name or "DLNA Receiver",
-                passive=True,
-                can_play_pause=True,
-                audio_format=AudioFormat(
-                    content_type=ContentType.UNKNOWN,
-                    codec_type=ContentType.UNKNOWN,
-                ),
-            )
-        return self._plugin_source
+    @staticmethod
+    def _source_id_for(inst: RendererInstance) -> str:
+        """Return the AudioSource item_id for a renderer instance."""
+        return inst.player_id or "__default__"
 
-    async def get_audio_stream(
-        self,
-        player_id: str,
-    ) -> AsyncGenerator[bytes, None]:
-        """Yield audio bytes from the received DLNA stream.
-
-        MA calls this when the plugin source is activated on a player.
-        We proxy the external URL through aiohttp and yield raw bytes.
-        """
-        inst = self._instances.get(player_id) or self._instances.get("__default__")
-        stream_url = inst.current_stream_url if inst else None
-
-        if not stream_url:
-            LOGGER.warning(
-                "get_audio_stream(%s) called but no stream URL set",
-                player_id,
-            )
-            return
-
-        LOGGER.debug("Proxying DLNA stream for %s: %s", player_id, _redact_url(stream_url))
-        # total=None: streams may be long-running; bound connect + per-chunk read only.
-        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
-        # Reuse MA's shared HTTP session (matches streams/audio.py) so we
-        # don't open a fresh TCP connector + DNS cache per activation.
-        try:
-            async with self.mass.http_session.get(stream_url, timeout=timeout) as resp:
-                # Re-validate after any redirects: the final URL still has to
-                # be an http(s) endpoint, otherwise refuse to stream. (aiohttp
-                # won't follow non-http schemes, but belt-and-suspenders.)
-                final_url = str(resp.url)
-                if _validate_stream_url(final_url) is None:
-                    LOGGER.warning(
-                        "Upstream DLNA source redirected to disallowed URL: %s",
-                        _redact_url(final_url),
-                    )
-                    return
-                # Accept any 2xx (e.g. 206 Partial Content is common for audio).
-                if not 200 <= resp.status < 300:
-                    LOGGER.warning(
-                        "Upstream DLNA source returned HTTP %s for %s",
-                        resp.status,
-                        _redact_url(stream_url),
-                    )
-                    return
-                async for chunk in resp.content.iter_any():
-                    yield chunk
-        except (aiohttp.ClientError, TimeoutError):
-            LOGGER.warning(
-                "Error proxying DLNA stream %s",
-                _redact_url(stream_url),
-                exc_info=True,
-            )
-            return
-        LOGGER.debug("DLNA stream ended for %s", player_id)
+    def _audio_source_for(self, source_id: str, inst: RendererInstance) -> AudioSource:
+        """Build the AudioSource media item exposed for a renderer instance."""
+        return AudioSource(
+            item_id=source_id,
+            provider=self.instance_id,
+            name=inst.renderer.friendly_name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=source_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=self._probe_audio_format(),
+                )
+            },
+            # For player-bound renderers playback is initiated by the external
+            # DLNA sender (we call play_media ourselves on the SOAP Play
+            # action). The unbound fallback renderer has no player to route
+            # its SOAP Play to, so it must stay startable from the MA UI —
+            # otherwise the target_players="" mode has no playback path.
+            can_initiate=not inst.player_id,
+            allow_external_trigger=True,
+            exclusive=True,
+        )
 
     # ------------------------------------------------------------------
     # DIDL-Lite metadata parsing
@@ -666,10 +808,9 @@ class DLNAReceiverProvider(PluginProvider):
         LOGGER.debug("DIDL metadata for %s: %s", target, meta)
         duration = self._parse_duration(meta.get("duration"))
 
-        # Update plugin source metadata for MA UI display
-        source = self.get_source()
-        source.in_use_by = target
-        source.metadata = StreamMetadata(
+        # Stream metadata for MA UI display; travels with the StreamDetails
+        # and is refreshed via update_stream_metadata by the metadata loop.
+        inst.stream_metadata = StreamMetadata(
             title=meta.get("title") or "DLNA Stream",
             artist=meta.get("artist"),
             album=meta.get("album"),
@@ -681,21 +822,26 @@ class DLNAReceiverProvider(PluginProvider):
         )
 
         # Track playback state for elapsed time
-        self._active_player_id = target
-        self._play_start_time = time.time()
-        self._elapsed_offset = 0
+        source_id = self._source_id_for(inst)
+        inst.play_start_time = time.time()
+        inst.elapsed_offset = 0
+        inst.metadata_dirty = True
         self._ensure_metadata_task()
 
-        # Route through the registered PluginSource so MA pulls bytes via
-        # our get_audio_stream() proxy instead of handing the raw upstream
+        # Route through the AudioSource item so MA pulls bytes via our
+        # get_audio_stream() proxy instead of handing the raw upstream
         # URI to the player (which would bypass the SSRF/redirect guards
         # and fail on players that require MA to serve the stream).
-        await self.mass.players.select_source(target, self.instance_id)
+        # QueueOption.PLAY overrides any user-configured default enqueue
+        # option — the sender expects immediate playback, not enqueueing.
+        source_uri = create_uri(MediaType.AUDIO_SOURCE, self.instance_id, source_id)
+        await self.mass.player_queues.play_media(target, source_uri, option=QueueOption.PLAY)
 
     async def _on_pause(self, inst: RendererInstance) -> None:
         """Handle Pause for this instance's player."""
         if inst.player_id:
-            self._freeze_elapsed()
+            self._freeze_elapsed(inst)
+            inst.metadata_dirty = True
             await self.mass.players.cmd_pause(inst.player_id)
 
     async def _on_stop(self, inst: RendererInstance) -> None:
@@ -703,7 +849,7 @@ class DLNAReceiverProvider(PluginProvider):
         if inst.player_id:
             await self.mass.players.cmd_stop(inst.player_id)
         inst.current_stream_url = None
-        self._clear_playback_state()
+        self._clear_instance_playback(inst)
 
     async def _on_seek(self, inst: RendererInstance, unit: str, target: str) -> None:
         """Handle Seek for this instance's player."""
@@ -730,28 +876,31 @@ class DLNAReceiverProvider(PluginProvider):
     # Playback state & metadata helpers
     # ------------------------------------------------------------------
 
-    def _freeze_elapsed(self) -> None:
-        """Freeze elapsed time at the current playback position."""
-        if self._play_start_time:
-            self._elapsed_offset += int(time.time() - self._play_start_time)
-            self._play_start_time = None
+    @staticmethod
+    def _freeze_elapsed(inst: RendererInstance) -> None:
+        """Freeze the instance's elapsed time at the current playback position."""
+        if inst.play_start_time:
+            inst.elapsed_offset += int(time.time() - inst.play_start_time)
+            inst.play_start_time = None
 
-    def _clear_playback_state(self) -> None:
-        """Clear all playback state and metadata."""
-        self._play_start_time = None
-        self._elapsed_offset = 0
-        self._active_player_id = None
-        if self._plugin_source:
-            self._plugin_source.metadata = None
-            self._plugin_source.in_use_by = None
-        # Drop the reference after cancel so the next playback cycle creates
-        # a fresh task. Without this, a canceled-but-not-yet-done task still
-        # reports done() == False to _ensure_metadata_task for a brief
-        # window, and a rapid stop→play would skip restarting the loop.
-        if self._metadata_task is not None:
-            if not self._metadata_task.done():
-                self._metadata_task.cancel()
-            self._metadata_task = None
+    @staticmethod
+    def _clear_instance_playback(inst: RendererInstance) -> None:
+        """Clear one renderer instance's playback state and metadata."""
+        inst.play_start_time = None
+        inst.elapsed_offset = 0
+        inst.stream_metadata = None
+        inst.metadata_dirty = False
+
+    @staticmethod
+    def _should_push_metadata(inst: RendererInstance, now: float) -> bool:
+        """
+        Return True when the instance's metadata warrants a queue push.
+
+        Real changes (new track, pause/resume) push immediately; elapsed-only
+        ticks are covered by a periodic resync since clients extrapolate the
+        position from elapsed_time_last_updated locally.
+        """
+        return inst.metadata_dirty or (now - inst.last_metadata_push) >= 30
 
     def _ensure_metadata_task(self) -> None:
         """Start the metadata update loop if not already running."""
@@ -760,36 +909,54 @@ class DLNAReceiverProvider(PluginProvider):
         self._metadata_task = asyncio.create_task(self._metadata_update_loop())
 
     async def _metadata_update_loop(self) -> None:
-        """Periodically update elapsed time and trigger UI refresh."""
+        """
+        Periodically update elapsed time and push it to the claiming queues.
+
+        Exits on its own when no renderer instance has active stream metadata
+        left; restarted on demand by _ensure_metadata_task.
+        """
         try:
             while True:
                 await asyncio.sleep(2)
-                source = self._plugin_source
-                if not source or not source.metadata:
+                active = [
+                    (source_id, inst)
+                    for source_id, inst in self._instances.items()
+                    if inst.stream_metadata is not None
+                ]
+                if not active:
                     break
 
                 now = time.time()
+                for source_id, inst in active:
+                    metadata = inst.stream_metadata
+                    if metadata is None:
+                        continue
+                    if inst.play_start_time:
+                        metadata.elapsed_time = inst.elapsed_offset + int(
+                            now - inst.play_start_time
+                        )
+                    else:
+                        # Paused — keep last_updated fresh to freeze UI display
+                        metadata.elapsed_time = inst.elapsed_offset
+                    metadata.elapsed_time_last_updated = now
 
-                if self._play_start_time:
-                    elapsed = self._elapsed_offset + int(now - self._play_start_time)
-                    source.metadata.elapsed_time = elapsed
-                    source.metadata.elapsed_time_last_updated = now
-                else:
-                    # Paused — keep last_updated fresh to freeze UI display
-                    source.metadata.elapsed_time = self._elapsed_offset
-                    source.metadata.elapsed_time_last_updated = now
+                    if inst.player_id and not self.mass.players.get_player(inst.player_id):
+                        LOGGER.debug("Metadata loop: player %s gone", inst.player_id)
+                        self._clear_instance_playback(inst)
+                        continue
 
-                # Check if player still exists and source is still active
-                if self._active_player_id:
-                    player = self.mass.players.get_player(self._active_player_id)
-                    if not player:
-                        LOGGER.debug("Metadata loop: player %s gone", self._active_player_id)
-                        self._clear_playback_state()
-                        break
-
-                # Trigger player update so UI reflects metadata changes
-                if self._active_player_id:
-                    self.mass.players.trigger_player_update(self._active_player_id)
+                    # Push through to the queue item's streamdetails so the UI
+                    # reflects title/elapsed changes without restarting the stream.
+                    claim = self._claims.get(source_id)
+                    if claim and self._should_push_metadata(inst, now):
+                        self.mass.streams.update_stream_metadata(
+                            claim[0],
+                            source_id,
+                            self.instance_id,
+                            metadata,
+                        )
+                        inst.metadata_dirty = False
+                        inst.last_metadata_push = now
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -813,12 +980,13 @@ class DLNAReceiverProvider(PluginProvider):
                 m, s = parts
                 return int(m) * 60 + int(float(s))
             return int(float(value))
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
     @staticmethod
     def _deterministic_udn(player_id: str) -> str:
-        """Generate a deterministic UDN from the player_id.
+        """
+        Generate a deterministic UDN from the player_id.
 
         Uses UUID5 so the same player always gets the same UDN,
         keeping DLNA control point bookmarks stable across restarts.

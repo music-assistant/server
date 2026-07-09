@@ -1,4 +1,5 @@
-"""URL helpers shared by provider and renderer.
+"""
+URL helpers shared by provider and renderer.
 
 Lives in its own module (no Music Assistant dependency) so its pure,
 security-sensitive helpers can be exercised by unit tests without
@@ -28,7 +29,8 @@ def validate_stream_url(uri: str) -> str | None:
 
 
 def redact_url(uri: str) -> str:
-    """Return a log-safe copy of a URL: strip userinfo and query/fragment.
+    """
+    Return a log-safe copy of a URL: strip userinfo and query/fragment.
 
     The query string on DLNA/streaming URLs commonly carries bearer tokens
     (``?token=...``), pre-signed GET parameters (``?sig=...&expires=...``),

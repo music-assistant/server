@@ -11,9 +11,9 @@ Architecture
 2. UPnP HTTP server     — serves device/service XML descriptions and
                           accepts SOAP control actions (AVTransport,
                           RenderingControl, ConnectionManager)
-3. PluginSource bridge  — received audio URL is fed into the MA streaming
-                          pipeline as a PluginSource, routed to the
-                          corresponding target player
+3. AudioSource bridge   — received audio URL is fed into the MA streaming
+                          pipeline as an AudioSource media item, routed to
+                          the corresponding target player
 
 Multi-player mode
 ~~~~~~~~~~~~~~~~~
@@ -55,47 +55,27 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
+    # Labels/descriptions are localized from strings.json (config_entries.<key>).
     return (
         ConfigEntry(
             key=CONF_FRIENDLY_NAME,
             type=ConfigEntryType.STRING,
-            label="Friendly name prefix",
-            description=(
-                "Prefix for DLNA renderer names shown on the network. "
-                "Player name is appended automatically in multi-player mode."
-            ),
             default_value=DEFAULT_FRIENDLY_NAME,
             required=True,
         ),
         ConfigEntry(
             key=CONF_TARGET_PLAYERS,
             type=ConfigEntryType.STRING,
-            label="Target players",
-            description=(
-                "Comma-separated MA player_ids to expose as DLNA renderers. "
-                'Use "*" to auto-create a renderer for every MA player. '
-                "Leave empty for a single renderer without a fixed target."
-            ),
             required=False,
         ),
         ConfigEntry(
             key=CONF_BIND_IP,
             type=ConfigEntryType.STRING,
-            label="Bind IP address",
-            description=(
-                "IP address to bind the UPnP HTTP server and SSDP listener. "
-                "Leave empty to auto-detect."
-            ),
             required=False,
         ),
         ConfigEntry(
             key=CONF_HTTP_PORT,
             type=ConfigEntryType.INTEGER,
-            label="HTTP base port",
-            description=(
-                "Base port for UPnP HTTP servers. In multi-player mode, "
-                "each renderer uses an incrementing port (8298, 8299, …)."
-            ),
             default_value=DEFAULT_HTTP_PORT,
             required=True,
         ),

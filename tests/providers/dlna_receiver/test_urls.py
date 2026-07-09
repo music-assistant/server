@@ -45,7 +45,8 @@ def test_validate_stream_url_rejects_missing_host() -> None:
 
 
 def test_redact_url_strips_query_without_userinfo() -> None:
-    """Query params are dropped even when there is no userinfo to mask.
+    """
+    Query params are dropped even when there is no userinfo to mask.
 
     Signed URLs / bearer tokens commonly live in the query string; keeping
     them in logs would defeat the purpose of redact_url.

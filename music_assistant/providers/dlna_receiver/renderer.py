@@ -1,4 +1,5 @@
-"""DLNA Receiver — UPnP MediaRenderer implementation.
+"""
+DLNA Receiver — UPnP MediaRenderer implementation.
 
 This module contains the HTTP server that serves UPnP device/service XML
 descriptions and processes incoming SOAP control actions from DLNA
@@ -60,7 +61,8 @@ class UPnPRenderer:
         udn: str | None = None,
         session: aiohttp.ClientSession | None = None,
     ) -> None:
-        """Create a renderer bound to the given IP/port with a stable UDN.
+        """
+        Create a renderer bound to the given IP/port with a stable UDN.
 
         ``session`` — optional shared aiohttp session. When supplied (the
         typical provider path passes ``mass.http_session``), all three
@@ -106,6 +108,55 @@ class UPnPRenderer:
         self.on_seek: SoapCallback | None = None
         self.on_set_volume: SoapCallback | None = None
         self.on_set_mute: SoapCallback | None = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start the UPnP HTTP server and eventing managers."""
+        self._runner = web.AppRunner(self._app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, self.bind_ip, self.http_port)
+        await site.start()
+        # If the caller requested an ephemeral port (http_port == 0), learn
+        # the actual bound port from the runner so description_url and the
+        # SSDP LOCATION header advertise a routable port instead of ":0".
+        if self.http_port == 0:
+            for address in self._runner.addresses:
+                if isinstance(address, tuple) and len(address) >= 2:
+                    self.http_port = int(address[1])
+                    break
+        await self._evt_av_transport.start()
+        await self._evt_rendering_control.start()
+        await self._evt_connection_manager.start()
+        LOGGER.info(
+            "UPnP renderer HTTP server listening on %s:%s",
+            self.bind_ip,
+            self.http_port,
+        )
+
+    async def stop(self) -> None:
+        """Stop the UPnP HTTP server and eventing managers."""
+        await self._evt_av_transport.stop()
+        await self._evt_rendering_control.stop()
+        await self._evt_connection_manager.stop()
+        if self._runner:
+            await self._runner.cleanup()
+            self._runner = None
+        LOGGER.info("UPnP renderer HTTP server stopped")
+
+    @property
+    def description_url(self) -> str:
+        """
+        Return the device description URL.
+
+        IPv6 literals need square brackets in URL host components
+        (RFC 3986 §3.2.2); without them the resulting URL would be
+        unparsable by strict control points consuming SSDP LOCATION.
+        """
+        host = f"[{self.bind_ip}]" if ":" in self.bind_ip else self.bind_ip
+        return f"http://{host}:{self.http_port}/description.xml"
 
     def _setup_routes(self) -> None:
         """Register HTTP routes for UPnP description, control, and eventing."""
@@ -164,54 +215,6 @@ class UPnPRenderer:
             "/ConnectionManager/event",
             self._handle_unsubscribe_connection_manager,
         )
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    async def start(self) -> None:
-        """Start the UPnP HTTP server and eventing managers."""
-        self._runner = web.AppRunner(self._app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self.bind_ip, self.http_port)
-        await site.start()
-        # If the caller requested an ephemeral port (http_port == 0), learn
-        # the actual bound port from the runner so description_url and the
-        # SSDP LOCATION header advertise a routable port instead of ":0".
-        if self.http_port == 0:
-            for address in self._runner.addresses:
-                if isinstance(address, tuple) and len(address) >= 2:
-                    self.http_port = int(address[1])
-                    break
-        await self._evt_av_transport.start()
-        await self._evt_rendering_control.start()
-        await self._evt_connection_manager.start()
-        LOGGER.info(
-            "UPnP renderer HTTP server listening on %s:%s",
-            self.bind_ip,
-            self.http_port,
-        )
-
-    async def stop(self) -> None:
-        """Stop the UPnP HTTP server and eventing managers."""
-        await self._evt_av_transport.stop()
-        await self._evt_rendering_control.stop()
-        await self._evt_connection_manager.stop()
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        LOGGER.info("UPnP renderer HTTP server stopped")
-
-    @property
-    def description_url(self) -> str:
-        """Return the device description URL.
-
-        IPv6 literals need square brackets in URL host components
-        (RFC 3986 §3.2.2); without them the resulting URL would be
-        unparsable by strict control points consuming SSDP LOCATION.
-        """
-        host = f"[{self.bind_ip}]" if ":" in self.bind_ip else self.bind_ip
-        return f"http://{host}:{self.http_port}/description.xml"
 
     # ------------------------------------------------------------------
     # UPnP Device Description
@@ -418,7 +421,7 @@ class UPnPRenderer:
             if vol_str is not None:
                 try:
                     vol = int(vol_str.strip())
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     LOGGER.warning("Invalid DesiredVolume value: %r", vol_str)
                     return self._soap_error(402, "Invalid Args")
                 self.volume = max(0, min(100, vol))
@@ -498,7 +501,8 @@ class UPnPRenderer:
 
     @staticmethod
     def _extract_xml_value(xml_str: str, tag: str) -> str | None:
-        """Extract a value from a SOAP XML body by tag name.
+        """
+        Extract a value from a SOAP XML body by tag name.
 
         Accepts fragments (tests) or full envelopes: strips a leading
         ``<?xml ... ?>`` declaration, wraps the remainder in a synthetic
@@ -746,7 +750,8 @@ class UPnPRenderer:
         variables: dict[str, str],
         channel: str | None = None,
     ) -> str:
-        """Build a LastChange XML value for GENA eventing.
+        """
+        Build a LastChange XML value for GENA eventing.
 
         The LastChange event wraps state variable changes in an
         <Event><InstanceID> structure as required by UPnP spec.

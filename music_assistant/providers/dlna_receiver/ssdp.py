@@ -74,7 +74,7 @@ class SSDPAdvertiser:
         try:
             recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
             reuse_port_enabled = True
-        except (AttributeError, OSError):
+        except AttributeError, OSError:
             reuse_port_enabled = False
         try:
             recv_sock.bind(("", SSDP_PORT))
@@ -131,6 +131,67 @@ class SSDPAdvertiser:
             self._transport.close()
             self._transport = None
         LOGGER.info("SSDP advertiser stopped")
+
+    def handle_search(self, data: bytes, addr: tuple[str, int]) -> None:
+        """
+        Respond to M-SEARCH requests matching our device/service types.
+
+        Per UPnP Device Architecture 1.1 §1.3.3, the responder must wait a
+        random interval in [0, MX] seconds before replying so a roomful of
+        devices doesn't flood the requester simultaneously. We cap MX at
+        ``_MX_MAX_SECONDS`` to keep discovery snappy.
+        """
+        text = data.decode("utf-8", errors="ignore")
+        if "M-SEARCH" not in text:
+            return
+
+        st = ""
+        mx_raw = ""
+        for line in text.splitlines():
+            upper = line.upper()
+            if upper.startswith("ST:"):
+                st = line.split(":", 1)[1].strip()
+            elif upper.startswith("MX:"):
+                mx_raw = line.split(":", 1)[1].strip()
+
+        # Check if the search target matches any of our types
+        match_targets = {
+            "ssdp:all",
+            "upnp:rootdevice",
+            UPNP_DEVICE_TYPE,
+            UPNP_SERVICE_AV_TRANSPORT,
+            UPNP_SERVICE_RENDERING_CONTROL,
+            UPNP_SERVICE_CONNECTION_MANAGER,
+            self.udn,
+        }
+        if st not in match_targets:
+            return
+
+        usn = f"{self.udn}::{st}" if st != self.udn else self.udn
+        response = (
+            "HTTP/1.1 200 OK\r\n"
+            f"CACHE-CONTROL: max-age={SSDP_MAX_AGE}\r\n"
+            f"LOCATION: {self.description_url}\r\n"
+            f"ST: {st}\r\n"
+            f"USN: {usn}\r\n"
+            f"SERVER: Music Assistant DLNA Receiver/1.0 UPnP/1.0\r\n"
+            "\r\n"
+        ).encode()
+
+        delay = _parse_mx_delay(mx_raw)
+        if delay <= 0:
+            self._send_response(response, addr, st)
+            return
+        try:
+            task: asyncio.Task[None] = asyncio.create_task(
+                self._delayed_response(response, addr, st, delay),
+            )
+        except RuntimeError:
+            # No running loop (e.g. invoked from a test) — send immediately.
+            self._send_response(response, addr, st)
+            return
+        self._pending_responses.add(task)
+        task.add_done_callback(self._pending_responses.discard)
 
     async def _periodic_alive(self) -> None:
         """Re-send alive notifications periodically."""
@@ -193,66 +254,6 @@ class SSDPAdvertiser:
                 (SSDP_MULTICAST_ADDR, SSDP_PORT),
             )
 
-    def handle_search(self, data: bytes, addr: tuple[str, int]) -> None:
-        """Respond to M-SEARCH requests matching our device/service types.
-
-        Per UPnP Device Architecture 1.1 §1.3.3, the responder must wait a
-        random interval in [0, MX] seconds before replying so a roomful of
-        devices doesn't flood the requester simultaneously. We cap MX at
-        ``_MX_MAX_SECONDS`` to keep discovery snappy.
-        """
-        text = data.decode("utf-8", errors="ignore")
-        if "M-SEARCH" not in text:
-            return
-
-        st = ""
-        mx_raw = ""
-        for line in text.splitlines():
-            upper = line.upper()
-            if upper.startswith("ST:"):
-                st = line.split(":", 1)[1].strip()
-            elif upper.startswith("MX:"):
-                mx_raw = line.split(":", 1)[1].strip()
-
-        # Check if the search target matches any of our types
-        match_targets = {
-            "ssdp:all",
-            "upnp:rootdevice",
-            UPNP_DEVICE_TYPE,
-            UPNP_SERVICE_AV_TRANSPORT,
-            UPNP_SERVICE_RENDERING_CONTROL,
-            UPNP_SERVICE_CONNECTION_MANAGER,
-            self.udn,
-        }
-        if st not in match_targets:
-            return
-
-        usn = f"{self.udn}::{st}" if st != self.udn else self.udn
-        response = (
-            "HTTP/1.1 200 OK\r\n"
-            f"CACHE-CONTROL: max-age={SSDP_MAX_AGE}\r\n"
-            f"LOCATION: {self.description_url}\r\n"
-            f"ST: {st}\r\n"
-            f"USN: {usn}\r\n"
-            f"SERVER: Music Assistant DLNA Receiver/1.0 UPnP/1.0\r\n"
-            "\r\n"
-        ).encode()
-
-        delay = _parse_mx_delay(mx_raw)
-        if delay <= 0:
-            self._send_response(response, addr, st)
-            return
-        try:
-            task: asyncio.Task[None] = asyncio.create_task(
-                self._delayed_response(response, addr, st, delay),
-            )
-        except RuntimeError:
-            # No running loop (e.g. invoked from a test) — send immediately.
-            self._send_response(response, addr, st)
-            return
-        self._pending_responses.add(task)
-        task.add_done_callback(self._pending_responses.discard)
-
     async def _delayed_response(
         self,
         response: bytes,
@@ -275,7 +276,8 @@ class SSDPAdvertiser:
 
 
 def _parse_mx_delay(header: str) -> float:
-    """Parse an SSDP ``MX:`` header into a jitter delay in seconds.
+    """
+    Parse an SSDP ``MX:`` header into a jitter delay in seconds.
 
     Returns 0.0 if the header is missing, malformed, or non-positive — in
     which case we respond immediately. A valid MX is clamped to

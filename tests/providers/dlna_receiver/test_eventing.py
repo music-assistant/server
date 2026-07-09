@@ -71,7 +71,8 @@ def test_renew_unknown_raises(manager: EventingManager) -> None:
 
 
 def test_renew_expired_raises_and_removes(manager: EventingManager) -> None:
-    """renew() on an expired SID raises KeyError AND evicts the stale entry.
+    """
+    renew() on an expired SID raises KeyError AND evicts the stale entry.
 
     Per UPnP spec, renewing an expired subscription must fail with 412
     Precondition Failed — the renderer surfaces the KeyError as 412, and
@@ -148,7 +149,8 @@ async def test_notify_no_subscribers(manager: EventingManager) -> None:
 
 
 async def test_injected_session_is_not_closed_on_stop() -> None:
-    """A caller-owned session must survive ``stop()`` unchanged.
+    """
+    A caller-owned session must survive ``stop()`` unchanged.
 
     Provider-level wiring injects ``mass.http_session`` and closing it
     would break the rest of MA. Only managers that created their own

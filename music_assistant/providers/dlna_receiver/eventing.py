@@ -1,4 +1,5 @@
-"""UPnP GENA Eventing — subscription management and NOTIFY dispatch.
+"""
+UPnP GENA Eventing — subscription management and NOTIFY dispatch.
 
 Implements the General Event Notification Architecture (GENA) protocol
 for UPnP service state variable change notifications.
@@ -38,14 +39,16 @@ class Subscription:
 
 
 class EventingManager:
-    """Manages GENA subscriptions and sends NOTIFY events.
+    """
+    Manages GENA subscriptions and sends NOTIFY events.
 
     Each UPnP service has its own EventingManager instance keyed by
     service name (e.g., "AVTransport", "RenderingControl").
     """
 
     def __init__(self, session: aiohttp.ClientSession | None = None) -> None:
-        """Initialize with no subscriptions and (optionally) a shared session.
+        """
+        Initialize with no subscriptions and (optionally) a shared session.
 
         If ``session`` is provided, NOTIFY traffic reuses it and the manager
         does not own its lifecycle; this lets a single renderer instance
@@ -259,7 +262,8 @@ class EventingManager:
 
     @staticmethod
     def _parse_callback_header(header: str) -> list[str]:
-        """Parse CALLBACK header: '<url1><url2>' -> ['url1', 'url2'].
+        """
+        Parse CALLBACK header: '<url1><url2>' -> ['url1', 'url2'].
 
         Per UDA §4.1.2 a GENA CALLBACK URL must use the http/https scheme;
         a bare ``startswith("http")`` check would also let ``httpx://`` or
@@ -285,7 +289,7 @@ class EventingManager:
         if header.lower().startswith("second-"):
             try:
                 return int(header.split("-", 1)[1])
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 pass
         return DEFAULT_SUBSCRIPTION_TIMEOUT
 
