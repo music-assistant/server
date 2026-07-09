@@ -38,6 +38,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
+from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.helpers.compare import (
     compare_artists,
     compare_media_item,
@@ -281,15 +282,18 @@ class TracksController(MediaControllerBase[Track]):
             search = None
             title_str = create_safe_string(title_str, True, True)
             artist_str = create_safe_string(artist_str, True, True)
-            extra_query_parts.append("tracks.search_name LIKE :search_title")
-            extra_query_params["search_title"] = f"%{title_str}%"
+            extra_query_parts.append(
+                search_name_match_clause("tracks", title_str, "search_title", extra_query_params)
+            )
             # use join with artists table to filter on artist name
             extra_join_parts.append(
                 "JOIN track_artists ON track_artists.track_id = tracks.item_id "
                 "JOIN artists ON artists.item_id = track_artists.artist_id "
-                "AND artists.search_name LIKE :search_artist"
+                "AND "
+                + search_name_match_clause(
+                    "artists", artist_str, "search_artist", extra_query_params
+                )
             )
-            extra_query_params["search_artist"] = f"%{artist_str}%"
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -311,9 +315,11 @@ class TracksController(MediaControllerBase[Track]):
             extra_join_parts.append(
                 "JOIN track_artists ON track_artists.track_id = tracks.item_id "
                 "JOIN artists ON artists.item_id = track_artists.artist_id "
-                "AND artists.search_name LIKE :search_artist"
+                "AND "
+                + search_name_match_clause(
+                    "artists", artist_search_str, "search_artist", extra_query_params
+                )
             )
-            extra_query_params["search_artist"] = f"%{artist_search_str}%"
             existing_uris = {item.uri for item in result}
             for _track in await self.get_library_items_by_query(
                 favorite=favorite,

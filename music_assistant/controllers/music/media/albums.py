@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
+from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_album,
@@ -176,18 +177,20 @@ class AlbumsController(MediaControllerBase[Album]):
             search = None
             title_str = create_safe_string(title_str, True, True)
             artist_str = create_safe_string(artist_str, True, True)
-            extra_query_parts.append("albums.search_name LIKE :search_title")
-            extra_query_params["search_title"] = f"%{title_str}%"
+            extra_query_parts.append(
+                search_name_match_clause("albums", title_str, "search_title", extra_query_params)
+            )
+            artist_clause = "AND " + search_name_match_clause(
+                "artists", artist_str, "search_artist", extra_query_params
+            )
             # use join with artists table to filter on artist name
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-                "AND artists.search_name LIKE :search_artist"
+                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
                 if not artist_table_joined
-                else "AND artists.search_name LIKE :search_artist"
+                else artist_clause
             )
             artist_table_joined = True
-            extra_query_params["search_artist"] = f"%{artist_str}%"
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -210,14 +213,15 @@ class AlbumsController(MediaControllerBase[Album]):
         if search and len(result) < 25 and not offset and remaining_limit > 0:
             # append artist items to result
             search = create_safe_string(search, True, True)
+            artist_clause = "AND " + search_name_match_clause(
+                "artists", search, "search_artist", extra_query_params
+            )
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-                "AND artists.search_name LIKE :search_artist"
+                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
                 if not artist_table_joined
-                else "AND artists.search_name LIKE :search_artist"
+                else artist_clause
             )
-            extra_query_params["search_artist"] = f"%{search}%"
             existing_uris = {item.uri for item in result}
 
             for album in await self.get_library_items_by_query(

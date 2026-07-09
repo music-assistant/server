@@ -341,6 +341,8 @@ FILTER_MATRIX: list[dict[str, Any]] = [
     {"in_library_only": True},
     {"in_library_only": True, "favorite": True},
     {"in_library_only": True, "search": "02"},
+    {"in_library_only": True, "search": "rack"},
+    {"in_library_only": True, "search": "Track 02"},
     {"in_library_only": True, "provider_filter": ["prov_b_inst"]},
     {"in_library_only": True, "provider_filter": ["prov_a_inst", "prov_b_inst"]},
     {"provider_filter": ["prov_b_inst"]},
@@ -597,3 +599,73 @@ async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistan
     finally:
         # restore the real statistics for any tests running after this one
         await database.execute("ANALYZE")
+
+
+async def test_search_uses_fts_index(seeded_mass: MusicAssistant) -> None:
+    """Search terms of >= 3 chars are matched through the FTS index."""
+    database = seeded_mass.music.database
+    captured: dict[str, Any] = {}
+    orig = database.get_rows_from_query
+
+    async def spy(
+        query: str,
+        params: dict[str, Any] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[Any]:
+        captured["query"], captured["params"] = query, params
+        return await orig(query, params, limit=limit, offset=offset)
+
+    with patch.object(database, "get_rows_from_query", spy):
+        items = await seeded_mass.music.tracks.get_library_items_by_query(
+            search="rack", in_library_only=True
+        )
+    assert "tracks_fts MATCH" in captured["query"]
+    # midword substring matching works the same as the LIKE scan did
+    assert len(items) == 20
+
+    # terms shorter than a trigram fall back to a LIKE scan
+    with patch.object(database, "get_rows_from_query", spy):
+        items = await seeded_mass.music.tracks.get_library_items_by_query(
+            search="02", in_library_only=True
+        )
+    assert "tracks_fts" not in captured["query"]
+    assert "search_name LIKE" in captured["query"]
+    assert {x.name for x in items} == {"Track 02"}
+
+
+async def test_fts_index_follows_item_changes(seeded_mass: MusicAssistant) -> None:
+    """The FTS index reflects added, renamed and deleted library items."""
+    database = seeded_mass.music.database
+    artists = await seeded_mass.music.artists.get_library_items_by_query(limit=1)
+    track = Track(
+        item_id="0",
+        provider="library",
+        name="Bohemian Rhapsody",
+        provider_mappings={_mapping()},
+        artists=UniqueList([artists[0]]),
+    )
+    db_track = await seeded_mass.music.tracks.add_item_to_library(track)
+
+    async def _search(term: str) -> set[str]:
+        items = await seeded_mass.music.tracks.get_library_items_by_query(search=term)
+        return {x.item_id for x in items}
+
+    assert db_track.item_id in await _search("rhapsody")
+
+    # a rename must be picked up by the index
+    await database.execute(
+        "UPDATE tracks SET name = 'Radio Ga Ga', search_name = 'radiogaga' "
+        "WHERE item_id = :item_id",
+        {"item_id": int(db_track.item_id)},
+    )
+    await database.commit()
+    assert db_track.item_id not in await _search("rhapsody")
+    assert db_track.item_id in await _search("gaga")
+
+    # a delete must remove the item from the index
+    await database.execute(
+        "DELETE FROM tracks WHERE item_id = :item_id", {"item_id": int(db_track.item_id)}
+    )
+    await database.commit()
+    assert db_track.item_id not in await _search("gaga")
