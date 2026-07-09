@@ -719,7 +719,7 @@ class SonosPlayer(Player):
 
         async def _force_reconnect() -> None:
             await self._disconnect()
-            await self._connect(int(delay))
+            await self._connect(delay)
 
         if self.mass.closing:
             return
@@ -751,7 +751,7 @@ class SonosPlayer(Player):
                     # this may happen at race conditions
                     raise
 
-    async def _connect(self, retry_on_fail: int = 0) -> None:
+    async def _connect(self, retry_on_fail: float = 0) -> None:
         """Connect to the Sonos player."""
         if self.mass.closing:
             return
