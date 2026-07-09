@@ -1739,6 +1739,8 @@
   "provider.radiobrowser.media.folder.radiobrowser_by_tag.name": "By tag",
   "provider.radiobrowser.media.folder.radiobrowser_by_votes.name": "By votes",
   "provider.radioparadise.manifest.description": "Stream an eclectic, human-curated radio mix (always ad-free) — listener supported and globally loved.",
+  "provider.rain_mood.media.sound_effect.rain.description": "Looping rain ambience from rainymood.com.",
+  "provider.rain_mood.media.sound_effect.rain.name": "Rain",
   "provider.roku_media_assistant.config_entries.auto_scan.description": "Enable automatic discovery of Roku players.",
   "provider.roku_media_assistant.config_entries.auto_scan.label": "Allow automatic Roku discovery",
   "provider.roku_media_assistant.config_entries.roku_app_id.description": "By default, Music Assistant will use the Roku Channel Store version of Media Assistant (ID: 782875). If you sideloaded the App on your Roku this will need to be set to (ID: dev).",
