@@ -25,7 +25,11 @@ async def test_set_dynamic_attributes_survives_malformed_device_metadata() -> No
     provider = MockProvider("dlna", instance_id="dlna_test")
     provider.mass.streams.base_url = "http://192.168.1.2:8097"
 
-    device = MagicMock()
+    # subclass so the PropertyMocks stay local and don't leak into MagicMock itself
+    class MockDevice(MagicMock):
+        pass
+
+    device = MockDevice()
     device.profile_device.available = True
     device.name = "Bose SoundTouch"
     device.volume_level = 0.5
@@ -36,7 +40,7 @@ async def test_set_dynamic_attributes_survives_malformed_device_metadata() -> No
     # malformed XML in CurrentTrackMetaData raises on property access
     for prop in ("media_title", "media_artist", "media_album_name", "media_image_url"):
         setattr(
-            type(device),
+            MockDevice,
             prop,
             PropertyMock(side_effect=ParseError("not well-formed (invalid token)")),
         )
