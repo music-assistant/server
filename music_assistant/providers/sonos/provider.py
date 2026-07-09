@@ -130,9 +130,8 @@ class SonosPlayerProvider(PlayerProvider):
                 # schedule reconnect
                 sonos_player.reconnect()
             elif player_rebooted:
-                # the player rebooted (e.g. firmware update) while we think we're still
-                # connected: the websocket may be dead without us noticing, so any
-                # playback events would silently no longer reach us - force a reconnect
+                # the websocket may have died without us noticing when the player
+                # rebooted (e.g. firmware update) - force a fresh connection
                 self.logger.info("Player %s rebooted, reconnecting", sonos_player.display_name)
                 if cur_address:
                     sonos_player.client.player_ip = cur_address
