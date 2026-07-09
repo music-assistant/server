@@ -75,6 +75,7 @@ def create_mock_album(
     album.media_type = MediaType.ALBUM
     album.favorite = favorite
     album.provider_mappings = UniqueList(provider_mappings or [])
+    album.metadata = Mock(images=None)
     return album
 
 
@@ -1066,6 +1067,7 @@ async def test_update_item_in_library_skips_non_music_providers() -> None:
                     item_id="abc",
                 )
             ],
+            metadata=Mock(images=None),
         )
     )
 
