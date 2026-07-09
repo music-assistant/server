@@ -6,25 +6,13 @@ on:
       - stable
       - dev
     paths: &benchmark_paths
-      # core code exercised by the benchmarks
-      - "music_assistant/*.py"
-      - "music_assistant/controllers/**"
+      # helper functions exercised by the benchmarks
       - "music_assistant/helpers/**"
-      - "music_assistant/models/**"
-      # providers loaded by the macro benchmarks
-      - "music_assistant/providers/test/**"
-      - "music_assistant/providers/builtin/**"
-      - "music_assistant/providers/loudness_analysis/**"
-      - "music_assistant/providers/playlist_metadata/**"
-      - "music_assistant/providers/radio_playlist/**"
-      - "music_assistant/providers/sync_group/**"
-      - "music_assistant/providers/universal_player/**"
       # the benchmarks and toolchain itself
       - "tests/benchmarks/**"
       - ".github/workflows/codspeed.yml"
       - "pyproject.toml"
       - "requirements_all.txt"
-      - ".python-version"
   pull_request:
     branches:
       - stable
@@ -77,11 +65,10 @@ jobs:
         uses: CodSpeedHQ/action@f99becdce5e5d51fd556489ebef684f4ecfd6286  # v4.18.5
         with:
           mode: simulation
-          # Run only the pure-function helper benchmarks: their instruction counts are
-          # deterministic. The async macro benchmarks (server boot / sync / library reads)
-          # execute a variable number of instructions per run (event-loop scheduling, poll
-          # loops, the aiosqlite worker thread), which simulation mode reports as false
-          # regressions; they still run as functional tests in the normal pytest job.
+          # tests/benchmarks/ holds only deterministic pure-function benchmarks, so their
+          # instruction counts are reproducible under simulation. Server-level / async
+          # scenarios are non-deterministic under instruction counting and are covered by
+          # the scripts/perf/ deep-dive suite instead.
           # -o addopts="" clears the default "--cov music_assistant" so coverage
           # instrumentation does not interfere with the CodSpeed measurements.
-          run: pytest tests/benchmarks/test_bench_helpers.py --codspeed -o addopts=""
+          run: pytest tests/benchmarks/ --codspeed -o addopts=""
