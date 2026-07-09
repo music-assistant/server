@@ -39,5 +39,6 @@ async def test_remove_player_prunes_manual_host_config() -> None:
         "manual_discovery_ip_addresses",
         ["kitchen.local:6600", "bedroom.local"],
         False,
+        False,
     )
     provider.mass.players.unregister.assert_awaited_once_with("mpd_office.local_6601", True)
