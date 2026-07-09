@@ -116,9 +116,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
 
-        # An explicit (user-initiated) refresh of a dynamic playlist regenerates its
-        # content, so the stored playlist metadata (genres etc.) must be recomputed
-        # from the new tracks afterwards.
+        # a user-initiated refresh of a dynamic playlist regenerates its content,
+        # so the stored metadata (genres etc.) must be recomputed afterwards
         refresh_dynamic_metadata = (
             force_refresh and library_item is not None and library_item.is_dynamic
         )
@@ -146,8 +145,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             page += 1
 
         if refresh_dynamic_metadata and library_item is not None:
-            # reads the freshly cached track sample, so the recomputed metadata
-            # matches the tracks just returned
+            # runs after the loop so it reads the freshly cached track sample
             self.mass.create_task(
                 self.mass.metadata.update_metadata(library_item, force_refresh=True)
             )
