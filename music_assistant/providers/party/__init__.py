@@ -133,6 +133,9 @@ class PartyConfig(DataClassDictMixin):
     hide_back_button: bool
     show_progress_bar: bool
     prevent_duplicate_tracks: bool
+    # Shared playback mode: "venue" (a real player plays out loud) or "remote"
+    # (silent disco; every guest device is its own receiver). Drives the listen-in default.
+    mode: str
 
 
 async def setup(
@@ -415,9 +418,11 @@ class PartyPlugin(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         # Register API commands and store unregister handles
+        # PROVIDERS_READ (held by guests) lets a guest fetch the join URL to display/share
+        # the QR; get_party_url returns None when guest access is disabled, so nothing leaks.
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "party/url", self.get_party_url, required_scope=Scope.USERS_INVITE
+                "party/url", self.get_party_url, required_scope=Scope.PROVIDERS_READ
             )
         )
         self._unregister_handles.append(
@@ -426,7 +431,9 @@ class PartyPlugin(PluginProvider):
             )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/config", self.get_party_config)
+            self.mass.register_api_command(
+                "party/config", self.get_party_config, required_scope=Scope.PROVIDERS_READ
+            )
         )
         # Guest action commands - these are called by the guest frontend
         self._unregister_handles.append(
@@ -588,6 +595,7 @@ class PartyPlugin(PluginProvider):
             prevent_duplicate_tracks=cast(
                 "bool", self.config.get_value(CONF_PREVENT_DUPLICATE_TRACKS)
             ),
+            mode=cast("str", self.config.get_value(CONF_PARTY_MODE)),
         )
 
     # ==================== Guest Action API Commands ====================
