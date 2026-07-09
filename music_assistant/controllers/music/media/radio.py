@@ -56,7 +56,7 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
-        radios = await self.library_items(limit=10000, offset=0)
+        radios = await self.library_items(limit=10000, offset=0, summary=False)
         items = [media_item_to_playlist_item(radio) for radio in radios]
         return generate_m3u("Radio Stations", items)
 

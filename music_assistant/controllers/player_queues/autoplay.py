@@ -97,6 +97,7 @@ class Autoplay:
                     genre=genre_ids,
                     limit=AUTOPLAY_BATCH_SIZE * 3,
                     order_by="random_play_count",
+                    summary=False,
                 )
         # top up with a whole-library random mix when the genre selection yields too few usable
         # tracks (gauge on the deduped result so unavailable/excluded matches don't mask a shortfall)
@@ -106,6 +107,7 @@ class Autoplay:
                 candidates += await self.mass.music.tracks.library_items(
                     limit=AUTOPLAY_BATCH_SIZE * 3,
                     order_by="random_play_count",
+                    summary=False,
                 )
             result = self._dedupe(candidates, exclude)
         return result

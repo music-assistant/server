@@ -676,6 +676,7 @@ class PlaylistMetadataProvider(MetadataProvider):
             results = await self.mass.music.artists.library_items(
                 search=artist.name,
                 limit=1,
+                summary=False,
             )
             if results and results[0].image:
                 return results[0].image

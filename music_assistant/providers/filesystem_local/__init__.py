@@ -325,9 +325,13 @@ class LocalFileSystemProvider(MusicProvider):
         """
         # for audiobooks and podcasts we just return all library items
         if self.media_content_type == "podcasts":
-            return await self.mass.music.podcasts.library_items(provider=self.instance_id)
+            return await self.mass.music.podcasts.library_items(
+                provider=self.instance_id, summary=False
+            )
         if self.media_content_type == "audiobooks":
-            return await self.mass.music.audiobooks.library_items(provider=self.instance_id)
+            return await self.mass.music.audiobooks.library_items(
+                provider=self.instance_id, summary=False
+            )
         items: list[MediaItemType | ItemMapping | BrowseFolder] = []
         item_path = path.split("://", 1)[1]
         if not item_path:

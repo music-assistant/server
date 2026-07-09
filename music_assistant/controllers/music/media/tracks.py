@@ -243,7 +243,7 @@ class TracksController(MediaControllerBase[Track]):
         played_only: bool = False,
         explicit: bool | None = None,
         *,
-        summary: bool = False,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -258,8 +258,8 @@ class TracksController(MediaControllerBase[Track]):
         :param genre: Filter by genre id(s).
         :param played_only: Filter to only played tracks.
         :param explicit: Filter by explicit content (True=only explicit, False=no explicit, None=all).
-        :param summary: Return slim summary items (only the fields needed for a list view)
-            instead of full items.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []

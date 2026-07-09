@@ -548,6 +548,7 @@ class MusicProvider(Provider):
         if subpath == "artists":
             if artists := await self.mass.music.artists.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return artists
             # library items not (yet) synced, fallback to direct retrieval
@@ -555,6 +556,7 @@ class MusicProvider(Provider):
         if subpath == "albums":
             if albums := await self.mass.music.albums.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return albums
             # library items not (yet) synced, fallback to direct retrieval
@@ -562,6 +564,7 @@ class MusicProvider(Provider):
         if subpath == "tracks":
             if tracks := await self.mass.music.tracks.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return tracks
             # library items not (yet) synced, fallback to direct retrieval
@@ -569,6 +572,7 @@ class MusicProvider(Provider):
         if subpath == "radios":
             if radios := await self.mass.music.radio.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return radios
             # library items not (yet) synced, fallback to direct retrieval
@@ -576,6 +580,7 @@ class MusicProvider(Provider):
         if subpath == "playlists":
             if playlists := await self.mass.music.playlists.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return playlists
             # library items not (yet) synced, fallback to direct retrieval
@@ -583,6 +588,7 @@ class MusicProvider(Provider):
         if subpath == "audiobooks":
             if audiobooks := await self.mass.music.audiobooks.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return audiobooks
             # library items not (yet) synced, fallback to direct retrieval
@@ -590,6 +596,7 @@ class MusicProvider(Provider):
         if subpath == "podcasts":
             if podcasts := await self.mass.music.podcasts.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return podcasts
             # library items not (yet) synced, fallback to direct retrieval

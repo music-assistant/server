@@ -160,7 +160,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         played_only: bool = False,
         without_collections: bool | None = None,
         *,
-        summary: bool = False,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Audiobook]:
         """
@@ -174,8 +174,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param without_collections: Do not return audiobooks which are part of a collection
-        :param summary: Return slim summary items (only the fields needed for a list view)
-            instead of full items.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []

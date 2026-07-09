@@ -934,6 +934,7 @@ class SmartPlaylistProvider(PluginProvider):
                 album_types=album_type_enums,
                 limit=chunk,
                 offset=offset,
+                summary=False,
             )
             for a in page:
                 if a.item_id and str(a.item_id).isdigit():
@@ -1250,6 +1251,7 @@ class SmartPlaylistProvider(PluginProvider):
             limit=limit,
             order_by="random",
             provider=user_provider_filter,
+            summary=False,
         )
 
     async def _tracks_from_seeds(self, seed_uris: list[str], target_size: int) -> list[Track]:
