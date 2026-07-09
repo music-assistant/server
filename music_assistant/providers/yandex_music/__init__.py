@@ -305,17 +305,24 @@ async def get_config_entries(
     # Check if user is authenticated
     is_authenticated = bool(values.get(CONF_TOKEN))
 
-    # Dynamic label text
+    # Dynamic status label: English fallback in code, localized via the
+    # per-state translation key authored in strings.json.
     if not is_authenticated:
         label_text = (
             "Open a verification URL on any device and enter the short code, "
             "or scan a QR code with the Yandex app on your phone.\n\n"
             "Alternatively, you can enter a music token manually in the advanced settings."
         )
+        label_translation_key = "auth_status_unauthenticated"
     elif action in (CONF_ACTION_AUTH_QR, CONF_ACTION_AUTH_DEVICE):
-        label_text = "Authenticated to Yandex Music. Don't forget to save to complete setup."
+        label_text = (
+            "⚠ Authenticated to Yandex Music — click Save now to finish, "
+            "otherwise the login will be lost."
+        )
+        label_translation_key = "auth_status_save_required"
     else:
         label_text = "Authenticated to Yandex Music."
+        label_translation_key = "auth_status_authenticated"
 
     return (
         CONF_ENTRY_UNOFFICIAL_PROVIDER,
@@ -324,6 +331,7 @@ async def get_config_entries(
             key="label_text",
             type=ConfigEntryType.LABEL,
             label=label_text,
+            translation_key=label_translation_key,
         ),
         # Device Flow authentication (primary)
         ConfigEntry(
