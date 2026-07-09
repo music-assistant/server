@@ -866,10 +866,15 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_global = auth_info
-        # persist immediately: Spotify revokes the previous refresh token on rotation, so the
-        # new one must survive a crash within the debounced-save window to avoid a forced re-auth
+        # Spotify revokes the previous refresh token only when it rotates one, so on rotation
+        # persist immediately to ensure the new token survives a crash within the debounced-save
+        # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
+        token_rotated = auth_info["refresh_token"] != refresh_token
         self._update_config_value(
-            CONF_REFRESH_TOKEN_GLOBAL, auth_info["refresh_token"], encrypted=True, immediate=True
+            CONF_REFRESH_TOKEN_GLOBAL,
+            auth_info["refresh_token"],
+            encrypted=True,
+            immediate=token_rotated,
         )
 
         # Setup librespot with global token only if dev token is not configured
@@ -932,10 +937,15 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_dev = auth_info
-        # persist immediately: Spotify revokes the previous refresh token on rotation, so the
-        # new one must survive a crash within the debounced-save window to avoid a forced re-auth
+        # Spotify revokes the previous refresh token only when it rotates one, so on rotation
+        # persist immediately to ensure the new token survives a crash within the debounced-save
+        # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
+        token_rotated = auth_info["refresh_token"] != refresh_token
         self._update_config_value(
-            CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True, immediate=True
+            CONF_REFRESH_TOKEN_DEV,
+            auth_info["refresh_token"],
+            encrypted=True,
+            immediate=token_rotated,
         )
 
         # Setup librespot with dev token (preferred over global token)

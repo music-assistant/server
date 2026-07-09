@@ -275,7 +275,7 @@ class Provider:
         """
         # the config controller also updates the cached copy within this provider instance
         self.mass.config.set_raw_provider_config_value(
-            self.instance_id, key, value, encrypted, immediate
+            self.instance_id, key, value, encrypted=encrypted, immediate=immediate
         )
 
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
