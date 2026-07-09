@@ -84,3 +84,39 @@ async def test_poll_survives_malformed_device_metadata() -> None:
     await player.poll()
 
     device.async_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_set_dynamic_attributes_propagates_valid_device_metadata() -> None:
+    """Valid device metadata must be propagated into the player's current media."""
+    provider = MockProvider("dlna", instance_id="dlna_test")
+    provider.mass.streams.base_url = "http://192.168.1.2:8097"
+
+    device = MagicMock()
+    device.profile_device.available = True
+    device.name = "Bose SoundTouch"
+    device.volume_level = 0.5
+    device.is_volume_muted = False
+    device.transport_state = TransportState.PLAYING
+    device.current_track_uri = "http://192.168.1.10/stream.mp3"
+    device.media_position = 42
+    device.media_title = "Test Title"
+    device.media_artist = "Test Artist"
+    device.media_album_name = "Test Album"
+    device.media_image_url = "http://192.168.1.10/cover.jpg"
+
+    player = DLNAPlayer(
+        provider,  # type: ignore[arg-type]
+        "uuid:bose-player",
+        "http://192.168.1.10/description.xml",
+        device=device,
+    )
+
+    await player.set_dynamic_attributes()
+
+    assert player.current_media is not None
+    assert player.current_media.uri == "http://192.168.1.10/stream.mp3"
+    assert player.current_media.title == "Test Title"
+    assert player.current_media.artist == "Test Artist"
+    assert player.current_media.album == "Test Album"
+    assert player.current_media.image_url == "http://192.168.1.10/cover.jpg"
