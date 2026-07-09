@@ -11,13 +11,18 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
 
-# Tests must exercise the working tree, not the provider snapshot baked into
-# the venv's music_assistant install. Alias the local ``provider`` package
-# onto the upstream import path before any test module imports it.
+# In the provider-repo layout, tests must exercise the working tree, not the
+# provider snapshot baked into the venv's music_assistant install — alias the
+# local ``provider`` package onto the upstream import path before any test
+# module imports it. In the upstream (inlined) layout there is no sibling
+# ``provider/`` directory and the package under test IS the checkout itself,
+# so the aliasing must no-op instead of failing collection.
 _PROVIDER_DIR = Path(__file__).resolve().parent.parent / "provider"
 _PROVIDER_PKG = "music_assistant.providers.yandex_music"
 _existing = sys.modules.get(_PROVIDER_PKG)
-if _existing is not None:
+if not _PROVIDER_DIR.is_dir():
+    pass  # upstream layout — nothing to alias
+elif _existing is not None:
     # Something imported the provider before this conftest ran — silently
     # testing the venv snapshot instead of the working tree must be fatal.
     _loaded_from = Path(getattr(_existing, "__file__", "") or "").resolve().parent
