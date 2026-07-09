@@ -1,9 +1,11 @@
 """Tests for the music controller."""
 
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.media_items import SoundEffect
 
 from music_assistant.constants import VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.music import MusicController
@@ -65,3 +67,46 @@ async def test_cleanup_database_runs_on_empty_library(music: MusicController) ->
     await music._setup_database()
     # should be a no-op on an empty database, but must run end-to-end against a real connection
     await music._cleanup_database()
+
+
+def _sound_effect() -> SoundEffect:
+    """Return a minimal SoundEffect item."""
+    return SoundEffect(
+        item_id="rain.mp3",
+        provider="filesystem_local--test",
+        name="rain",
+        provider_mappings=set(),
+    )
+
+
+async def test_add_to_favorites_rejects_sound_effect() -> None:
+    """add_item_to_favorites raises UnsupportedFeaturedException for SOUND_EFFECT."""
+    controller = MusicController.__new__(MusicController)
+    controller.mass = MagicMock()
+    with pytest.raises(UnsupportedFeaturedException, match="can not be favorites"):
+        await controller.add_item_to_favorites(_sound_effect())
+
+
+async def test_add_to_library_rejects_sound_effect() -> None:
+    """add_item_to_library raises UnsupportedFeaturedException for SOUND_EFFECT."""
+    controller = MusicController.__new__(MusicController)
+    controller.mass = MagicMock()
+    controller.get_item = AsyncMock(return_value=_sound_effect())  # type: ignore[method-assign]
+    with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
+        await controller.add_item_to_library(_sound_effect())
+
+
+async def test_add_to_favorites_rejects_stale_sound_effect_uri() -> None:
+    """A stale sound-effect URI (provider unloaded) raises the honest error."""
+    controller = MusicController.__new__(MusicController)
+    controller.mass = MagicMock()
+    with pytest.raises(UnsupportedFeaturedException, match="can not be favorites"):
+        await controller.add_item_to_favorites("stale_provider://sound_effect/rain.mp3")
+
+
+async def test_add_to_library_rejects_stale_sound_effect_uri() -> None:
+    """A stale sound-effect URI (provider unloaded) raises the honest error."""
+    controller = MusicController.__new__(MusicController)
+    controller.mass = MagicMock()
+    with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
+        await controller.add_item_to_library("stale_provider://sound_effect/rain.mp3")

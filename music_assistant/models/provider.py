@@ -8,6 +8,7 @@ import logging
 from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
 from music_assistant_models.config_entries import ConfigValueType
+from music_assistant_models.enums import EventType
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
@@ -210,6 +211,21 @@ class Provider:
             raise UnsupportedFeaturedException(
                 f"Provider {self.name} does not support feature {feature.name}"
             )
+
+    @final
+    def signal_provider_event(self, data: SerializableType, sub_scope: str | None = None) -> None:
+        """
+        Signal a custom provider event to all subscribers (e.g. connected clients).
+
+        Emits a PROVIDER_EVENT with this provider's instance_id as object_id,
+        optionally suffixed with /sub_scope to allow clients to distinguish
+        multiple event streams from the same provider.
+
+        :param data: The JSON serializable event payload, defined by the provider.
+        :param sub_scope: Optional sub scope to append to the object_id.
+        """
+        object_id = f"{self.instance_id}/{sub_scope}" if sub_scope else self.instance_id
+        self.mass.signal_event(EventType.PROVIDER_EVENT, object_id=object_id, data=data)
 
     @overload
     def get_config_value(

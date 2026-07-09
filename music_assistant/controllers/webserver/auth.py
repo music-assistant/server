@@ -1023,6 +1023,8 @@ class AuthenticationManager:
         Short-lived tokens (for regular user sessions) are only created during login
         and auto-renew on each use (sliding 30-day expiration window).
 
+        Long-lived tokens cannot be created for guest accounts.
+
         :param name: The name/description for the token (e.g., "Home Assistant", "Mobile App").
         :param user_id: Optional user ID to create token for (admin only).
         :return: The created token string.
@@ -1043,6 +1045,10 @@ class AuthenticationManager:
                 raise InvalidDataError("User not found")
         else:
             target_user = current_user
+
+        # Guest access is temporary by design, deny tokens that would outlive it
+        if target_user.role == UserRole.GUEST:
+            raise InsufficientPermissions("Long-lived tokens cannot be created for guest accounts")
 
         # Create a long-lived token (only long-lived tokens can be created via this command)
         token = await self.create_token(target_user, name, is_long_lived=True)
@@ -1444,6 +1450,28 @@ class AuthenticationManager:
         )
         row = await cursor.fetchone()
         return str(row["code"]) if row else None
+
+    async def get_join_code_expiry(self, code: str, user: User | None = None) -> datetime | None:
+        """
+        Get the expiry datetime for an active join code.
+
+        :param code: The join code to look up.
+        :param user: Optional user that must own the join code.
+        :return: The expiry datetime if the code is active, None otherwise.
+        """
+        query = """
+            SELECT expires_at FROM join_codes
+            WHERE code = :code
+            AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
+            """
+        params: dict[str, Any] = {"code": code.upper(), "now": utc().isoformat()}
+        if user is not None:
+            query += "AND user_id = :user_id "
+            params["user_id"] = user.user_id
+        cursor = await self.database.execute(query + "LIMIT 1", params)
+        row = await cursor.fetchone()
+        return datetime.fromisoformat(str(row["expires_at"])) if row else None
 
     @api_command("auth/join_code/exchange", authenticated=False)
     async def exchange_join_code(self, code: str) -> dict[str, Any]:

@@ -551,11 +551,17 @@ class SendspinPlayer(SendspinBasePlayer):
                     self._attr_volume_muted = muted
                 if volume is not None or muted is not None:
                     break
-        self._attr_expose_to_ha_by_default = not self.is_web_player
-        self._attr_hidden_by_default = self.is_web_player
+        # virtual players are server-owned anchors that follow the same
+        # hidden/standalone semantics as web players, without relying on the
+        # device-info heuristics above
+        is_standalone = self.is_web_player or cast(
+            "SendspinProvider", self.provider
+        ).is_virtual_player(self.player_id)
+        self._attr_expose_to_ha_by_default = not is_standalone
+        self._attr_hidden_by_default = is_standalone
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
-        self._attr_type = PlayerType.PLAYER if self.is_web_player else PlayerType.PROTOCOL
+        self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
 
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
