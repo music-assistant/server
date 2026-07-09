@@ -9,6 +9,7 @@ set_dynamic_attributes (it would otherwise kill the player update task).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 from xml.etree.ElementTree import ParseError
 
@@ -100,10 +101,12 @@ async def test_set_dynamic_attributes_propagates_valid_device_metadata() -> None
     device.transport_state = TransportState.PLAYING
     device.current_track_uri = "http://192.168.1.10/stream.mp3"
     device.media_position = 42
+    device.media_position_updated_at = datetime(2026, 7, 9, 12, 0, 0, tzinfo=UTC)
     device.media_title = "Test Title"
     device.media_artist = "Test Artist"
     device.media_album_name = "Test Album"
     device.media_image_url = "http://192.168.1.10/cover.jpg"
+    device.media_duration = 180
 
     player = DLNAPlayer(
         provider,  # type: ignore[arg-type]
@@ -120,3 +123,5 @@ async def test_set_dynamic_attributes_propagates_valid_device_metadata() -> None
     assert player.current_media.artist == "Test Artist"
     assert player.current_media.album == "Test Album"
     assert player.current_media.image_url == "http://192.168.1.10/cover.jpg"
+    assert player.current_media.duration == 180
+    assert player.elapsed_time == 42.0
