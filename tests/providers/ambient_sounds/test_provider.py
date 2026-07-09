@@ -40,6 +40,7 @@ async def test_sound_effects_enumeration(tmp_path: pathlib.Path) -> None:
     for item in items:
         assert item.media_type == MediaType.SOUND_EFFECT
         assert item.name
+        assert item.translation_key == item.item_id
         assert item.metadata.description
         assert item.duration == ambient_sounds.LOOP_DURATION
 

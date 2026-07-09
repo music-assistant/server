@@ -162,6 +162,7 @@ class AmbientSoundsProvider(MusicProvider):
             item_id=preset_id,
             provider=self.instance_id,
             name=preset.name,
+            translation_key=preset_id,
             duration=LOOP_DURATION,
             provider_mappings={
                 ProviderMapping(
