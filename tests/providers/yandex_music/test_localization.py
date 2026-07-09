@@ -77,7 +77,8 @@ async def test_config_entries_have_no_hardcoded_labels() -> None:
 
 
 async def test_quality_options_use_value_first_signature() -> None:
-    """Quality options store the QUALITY_* constants as their values.
+    """
+    Quality options store the QUALITY_* constants as their values.
 
     Guards against the legacy (title, value) positional order, which the
     current models interpret as value=title — silently corrupting the
@@ -96,7 +97,8 @@ async def test_quality_options_use_value_first_signature() -> None:
 
 
 async def test_auth_status_label_localized_via_translation_key() -> None:
-    """The dynamic auth status label carries a per-state translation key.
+    """
+    The dynamic auth status label carries a per-state translation key.
 
     The post-login "click Save" warning (spec 0002) must be authored in
     strings.json so Lokalise localizes it like everything else.
@@ -116,7 +118,8 @@ async def test_auth_status_label_localized_via_translation_key() -> None:
 
 
 async def test_strings_json_authors_device_page_keys() -> None:
-    """Every device-code page string is authored under page.device_code.
+    """
+    Every device-code page string is authored under page.device_code.
 
     The HTML ``lang`` attribute is presentation plumbing, not a
     translatable string, so it stays code-side.

@@ -949,7 +949,8 @@ def _real_yandex_track() -> Any:
 
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_with_real_parser(provider_mock: Mock) -> None:
-    """End-to-end: real ``_parse_my_wave_track`` against a real Yandex track fixture.
+    """
+    End-to-end: real ``_parse_my_wave_track`` against a real Yandex track fixture.
 
     Mocking ``_parse_my_wave_track`` directly (as the success/duplicate/error
     tests above do) cannot catch a regression where ``parse_track`` returns a

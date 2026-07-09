@@ -103,7 +103,8 @@ async def test_collection_hides_audiobooks_folder_when_feature_disabled() -> Non
 
 @pytest.mark.asyncio
 async def test_collection_folders_carry_authored_translation_keys() -> None:
-    """Collection folders localize via translation keys authored in strings.json.
+    """
+    Collection folders localize via translation keys authored in strings.json.
 
     Localization happens at API serialization (per connection locale), so
     the provider must emit an English fallback name plus a key that exists

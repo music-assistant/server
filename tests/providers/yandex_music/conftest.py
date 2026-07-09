@@ -50,7 +50,8 @@ else:
 
 
 def provider_dir() -> Path:
-    """Directory of the provider package under test, in either layout.
+    """
+    Directory of the provider package under test, in either layout.
 
     Resolves through the imported package: in the provider repo the aliasing
     above points it at the working tree's ``provider/``; upstream it is the
@@ -63,7 +64,8 @@ def provider_dir() -> Path:
 
 
 class ProviderStub:
-    """Minimal provider-like object for parser tests (no Mock).
+    """
+    Minimal provider-like object for parser tests (no Mock).
 
     Provides the minimal interface needed by parse_* functions.
     """
@@ -98,7 +100,8 @@ class ConfigStub:
 
 
 class StreamingProviderStub:
-    """Minimal provider stub for streaming tests (no Mock).
+    """
+    Minimal provider stub for streaming tests (no Mock).
 
     Provides the minimal interface needed by YandexMusicStreamingManager.
     """
@@ -147,7 +150,8 @@ class TrackingLogger:
 
 
 class StreamingProviderStubWithTracking:
-    """Provider stub with tracking logger for assertions.
+    """
+    Provider stub with tracking logger for assertions.
 
     Use this when you need to verify logging behavior.
     """
