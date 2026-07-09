@@ -1,0 +1,10 @@
+{
+  "media": {
+    "sound_effect": {
+      "rain": {
+        "name": "Rain",
+        "description": "Looping rain ambience from rainymood.com."
+      }
+    }
+  }
+}
