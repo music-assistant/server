@@ -322,7 +322,9 @@ class DLNAPlayer(Player):
         try:
             now = time.time()
             do_ping = self.force_poll or (now - self.last_seen) > 60
-            with suppress(ValueError):
+            # ParseError: some devices (e.g. Bose SoundTouch) send malformed
+            # DIDL-Lite metadata which the library parses eagerly on update
+            with suppress(ValueError, ParseError):
                 await self.device.async_update(do_ping=do_ping)
             self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:

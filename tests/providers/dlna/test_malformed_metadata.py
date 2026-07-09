@@ -9,7 +9,7 @@ set_dynamic_attributes (it would otherwise kill the player update task).
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 from xml.etree.ElementTree import ParseError
 
 import pytest
@@ -55,3 +55,28 @@ async def test_set_dynamic_attributes_survives_malformed_device_metadata() -> No
     assert player.current_media is not None
     assert player.current_media.uri == "http://192.168.1.10/stream.mp3"
     assert player.current_media.title is None
+
+
+@pytest.mark.asyncio
+async def test_poll_survives_malformed_device_metadata() -> None:
+    """A ParseError raised while polling the device must not crash the poll."""
+    provider = MockProvider("dlna", instance_id="dlna_test")
+    provider.mass.streams.base_url = "http://192.168.1.2:8097"
+
+    device = MagicMock()
+    device.profile_device.available = True
+    device.name = "Bose SoundTouch"
+    # async_update parses CurrentTrackMetaData eagerly and raises on bad XML
+    device.async_update = AsyncMock(side_effect=ParseError("not well-formed (invalid token)"))
+
+    player = DLNAPlayer(
+        provider,  # type: ignore[arg-type]
+        "uuid:bose-player",
+        "http://192.168.1.10/description.xml",
+        device=device,
+    )
+    player.force_poll = True
+
+    await player.poll()
+
+    device.async_update.assert_awaited_once()
