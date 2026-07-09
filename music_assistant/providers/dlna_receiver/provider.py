@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from html import unescape
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigValueType  # noqa: F401
@@ -119,7 +119,7 @@ class DLNAReceiverProvider(PluginProvider):
     on the corresponding MA player.
     """
 
-    SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
+    SUPPORTED_FEATURES: ClassVar[set[ProviderFeature]] = {ProviderFeature.AUDIO_SOURCE}
 
     def __init__(
         self,
