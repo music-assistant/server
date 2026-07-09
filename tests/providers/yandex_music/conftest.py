@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import logging
 import sys
@@ -48,9 +49,21 @@ else:
     setattr(_parent, "yandex_music", _module)  # noqa: B010
 
 
-class ProviderStub:
+def provider_dir() -> Path:
+    """Directory of the provider package under test, in either layout.
+
+    Resolves through the imported package: in the provider repo the aliasing
+    above points it at the working tree's ``provider/``; upstream it is the
+    inlined ``music_assistant/providers/yandex_music/`` checkout itself.
     """
-    Minimal provider-like object for parser tests (no Mock).
+    pkg = importlib.import_module(_PROVIDER_PKG)
+    pkg_file = pkg.__file__
+    assert pkg_file is not None  # a real package always has a file
+    return Path(pkg_file).resolve().parent
+
+
+class ProviderStub:
+    """Minimal provider-like object for parser tests (no Mock).
 
     Provides the minimal interface needed by parse_* functions.
     """
@@ -85,8 +98,7 @@ class ConfigStub:
 
 
 class StreamingProviderStub:
-    """
-    Minimal provider stub for streaming tests (no Mock).
+    """Minimal provider stub for streaming tests (no Mock).
 
     Provides the minimal interface needed by YandexMusicStreamingManager.
     """
@@ -135,8 +147,7 @@ class TrackingLogger:
 
 
 class StreamingProviderStubWithTracking:
-    """
-    Provider stub with tracking logger for assertions.
+    """Provider stub with tracking logger for assertions.
 
     Use this when you need to verify logging behavior.
     """

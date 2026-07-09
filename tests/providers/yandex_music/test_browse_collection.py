@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -12,11 +11,9 @@ from music_assistant_models.media_items import BrowseFolder
 
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
 
-_STRINGS = json.loads(
-    (Path(__file__).resolve().parent.parent / "provider" / "strings.json").read_text(
-        encoding="utf-8"
-    )
-)
+from .conftest import provider_dir
+
+_STRINGS = json.loads((provider_dir() / "strings.json").read_text(encoding="utf-8"))
 
 
 def _make_provider_mock(features: set[ProviderFeature]) -> Mock:
@@ -38,7 +35,7 @@ def _lookup_strings_key(key: str) -> str | None:
     """Resolve provider.yandex_music.media.<group>.<slug>.name against strings.json."""
     parts = key.split(".")
     node: object = _STRINGS
-    for part in parts[2:]:  # skip "music_assistant.providers.yandex_music.yandex_music"
+    for part in parts[2:]:  # skip "provider.yandex_music"
         if not isinstance(node, dict) or part not in node:
             return None
         node = node[part]
@@ -106,8 +103,7 @@ async def test_collection_hides_audiobooks_folder_when_feature_disabled() -> Non
 
 @pytest.mark.asyncio
 async def test_collection_folders_carry_authored_translation_keys() -> None:
-    """
-    Collection folders localize via translation keys authored in strings.json.
+    """Collection folders localize via translation keys authored in strings.json.
 
     Localization happens at API serialization (per connection locale), so
     the provider must emit an English fallback name plus a key that exists
