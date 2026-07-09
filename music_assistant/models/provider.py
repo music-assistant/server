@@ -264,10 +264,19 @@ class Provider:
         """
         return self.config.get_value(key, default)
 
-    def _update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
-        """Update a config value."""
+    def _update_config_value(
+        self, key: str, value: Any, encrypted: bool = False, immediate: bool = False
+    ) -> None:
+        """
+        Update a config value.
+
+        :param immediate: Persist to disk right away instead of on the debounced save timer;
+            use for critical values (e.g. a rotated auth token) that must survive a crash.
+        """
         # the config controller also updates the cached copy within this provider instance
-        self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, key, value, encrypted=encrypted, immediate=immediate
+        )
 
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
         """Set log level from config."""

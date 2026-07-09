@@ -65,7 +65,7 @@ class ProviderConfigMixin:
 
         def get(self, key: str, default: Any = None) -> Any: ...  # noqa: D102
 
-        def set(self, key: str, value: Any) -> None: ...  # noqa: D102
+        def set(self, key: str, value: Any, immediate: bool = False) -> None: ...  # noqa: D102
 
         def set_default(self, key: str, default_value: Any) -> None: ...  # noqa: D102
 
@@ -395,11 +395,15 @@ class ProviderConfigMixin:
         key: str,
         value: ConfigValueType,
         encrypted: bool = False,
+        immediate: bool = False,
     ) -> None:
         """
         Set (raw) single config(entry) value for a provider.
 
         Note that this only stores the (raw) value without any validation or default.
+        When immediate is set the value is flushed to disk right away instead of on the
+        debounced save timer, so a critical value (e.g. a rotated auth token) is not lost
+        if the process is killed within the debounce window.
         """
         if not self.get(f"{CONF_PROVIDERS}/{provider_instance}"):
             # only allow setting raw values if main entry exists
@@ -411,9 +415,9 @@ class ProviderConfigMixin:
                 raise ValueError(msg)
             value = self.encrypt_string(value)
         if key in BASE_KEYS:
-            self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+            self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value, immediate=immediate)
             return
-        self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value)
+        self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value, immediate=immediate)
         # also update the provider's in-place config copy (if loaded) so
         # object-local value reads stay in sync with raw writes
         if (provider := self.mass.get_provider(provider_instance)) and (
@@ -449,8 +453,6 @@ class ProviderConfigMixin:
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         raw_conf = config.to_raw()
         self.set(conf_key, raw_conf)
-        if config.enabled and prov_instance is None:
-            await self.mass.load_provider_config(config)
         if config.enabled and prov_instance and available:
             # update config for existing/loaded provider instance
             await prov_instance.update_config(config, changed_keys)
