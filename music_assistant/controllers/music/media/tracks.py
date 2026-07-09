@@ -341,7 +341,13 @@ class TracksController(MediaControllerBase[Track]):
         search_query = f"{full_track.artist_str} - {full_track.name}"
         # TODO: we could use musicbrainz info here to get a list of all releases known
         unique_ids: set[str] = set()
-        for prov_item in (await self.mass.music.search(search_query, [MediaType.TRACK])).tracks:
+        # explicitly search all providers as we want all album versions
+        # of this track, including those already mapped in the library
+        search_providers = ["library", *self.mass.music.get_unique_providers()]
+        search_results = await self.mass.music.search(
+            search_query, [MediaType.TRACK], providers=search_providers
+        )
+        for prov_item in search_results.tracks:
             if not isinstance(prov_item, Track):  # for type checking
                 continue
             if not loose_compare_strings(full_track.name, prov_item.name):
