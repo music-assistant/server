@@ -513,7 +513,7 @@ def test_needs_restart_returns_false_when_streamdetails_missing() -> None:
 # --- _flow_restart_context ---
 
 
-def test_flow_restart_context_prefers_flow_player() -> None:
+def test_flow_restart_context_prefers_protocol_player() -> None:
     """The given (protocol) player's config and rates win over the queue player's."""
     audio = _make_streams_audio()
     protocol_player = _make_player(
@@ -534,7 +534,7 @@ def test_flow_restart_context_prefers_flow_player() -> None:
 
 
 def test_flow_restart_context_falls_back_to_queue_player() -> None:
-    """Without a flow player, the queue's own player is used."""
+    """Without a protocol player, the queue's own player is used."""
     audio = _make_streams_audio()
     queue_player = _make_player(
         supported=[(48000, 16)], flow_mode=FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
