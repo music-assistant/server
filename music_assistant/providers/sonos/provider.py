@@ -122,7 +122,8 @@ class SonosPlayerProvider(PlayerProvider):
                 and sonos_player.last_bootseq is not None
                 and bootseq > sonos_player.last_bootseq
             )
-            sonos_player.last_bootseq = bootseq
+            if bootseq is not None:
+                sonos_player.last_bootseq = bootseq
             if not sonos_player.connected and cur_address:
                 self.logger.debug("Player back online: %s", sonos_player.display_name)
                 sonos_player.client.player_ip = cur_address
@@ -168,6 +169,7 @@ class SonosPlayerProvider(PlayerProvider):
             return
         self.logger.debug("Discovered Sonos device %s on %s", name, address)
         sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
+        sonos_player.last_bootseq = try_parse_int(info.decoded_properties.get("bootseq"), None)
         sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         await sonos_player.setup()
 

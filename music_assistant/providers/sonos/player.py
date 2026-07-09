@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -794,8 +795,16 @@ class SonosPlayer(Player):
     async def _disconnect(self) -> None:
         """Disconnect the client and cleanup."""
         self.connected = False
-        if self._listen_task and not self._listen_task.done():
-            self._listen_task.cancel()
+        if (
+            (listen_task := self._listen_task)
+            and not listen_task.done()
+            and listen_task is not asyncio.current_task()
+        ):
+            listen_task.cancel()
+            # await the cancellation so a subsequent (re)connect doesn't
+            # mistake the finishing task for a live connection
+            with suppress(asyncio.CancelledError):
+                await listen_task
         if self.client:
             await self.client.disconnect()
         self.logger.debug("Disconnected from player API")
