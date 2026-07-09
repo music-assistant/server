@@ -57,7 +57,6 @@ class DLNAPlayerProvider(PlayerProvider):
                 "available": player.available,
                 "eventing": not player.force_poll,
                 "last_seen_age_sec": round(now - player.last_seen),
-                "bootid": player.bootid,
             }
             for player in self.players
             if isinstance(player, DLNAPlayer)
