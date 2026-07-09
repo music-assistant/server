@@ -40,6 +40,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
+    MEDIA_ITEM_DB_TABLES,
     VACUUM_MIN_RECLAIM_RATIO,
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
@@ -530,6 +531,17 @@ class MusicDatabaseSetupMixin:
                     UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
         )
 
+        # full-text search tables (trigram tokenizer for substring matching on search_name)
+        for db_table in MEDIA_ITEM_DB_TABLES:
+            await self.database.execute(
+                f"""CREATE VIRTUAL TABLE IF NOT EXISTS {db_table}_fts USING fts5(
+                    search_name,
+                    content='{db_table}',
+                    content_rowid='item_id',
+                    tokenize='trigram'
+                    );"""
+            )
+
         await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
@@ -667,16 +679,7 @@ class MusicDatabaseSetupMixin:
     async def __create_database_triggers(self) -> None:
         """Create database triggers."""
         # triggers to auto update timestamps
-        for db_table in (
-            "artists",
-            "albums",
-            "tracks",
-            "playlists",
-            "radios",
-            "audiobooks",
-            "podcasts",
-            "genres",
-        ):
+        for db_table in MEDIA_ITEM_DB_TABLES:
             await self.database.execute(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
@@ -684,6 +687,40 @@ class MusicDatabaseSetupMixin:
                 BEGIN
                     UPDATE {db_table} SET timestamp_modified=cast(strftime('%s','now') as int)
                     WHERE rowid = new.rowid;
+                END;
+                """
+            )
+        # triggers to keep the FTS search tables in sync with the content tables
+        for db_table in MEDIA_ITEM_DB_TABLES:
+            await self.database.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {db_table}_fts_insert
+                AFTER INSERT ON {db_table}
+                BEGIN
+                    INSERT INTO {db_table}_fts(rowid, search_name)
+                    VALUES (new.item_id, new.search_name);
+                END;
+                """
+            )
+            await self.database.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {db_table}_fts_delete
+                AFTER DELETE ON {db_table}
+                BEGIN
+                    INSERT INTO {db_table}_fts({db_table}_fts, rowid, search_name)
+                    VALUES ('delete', old.item_id, old.search_name);
+                END;
+                """
+            )
+            await self.database.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {db_table}_fts_update
+                AFTER UPDATE OF search_name ON {db_table}
+                BEGIN
+                    INSERT INTO {db_table}_fts({db_table}_fts, rowid, search_name)
+                    VALUES ('delete', old.item_id, old.search_name);
+                    INSERT INTO {db_table}_fts(rowid, search_name)
+                    VALUES (new.item_id, new.search_name);
                 END;
                 """
             )

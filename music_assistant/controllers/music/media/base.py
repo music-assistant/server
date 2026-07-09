@@ -43,6 +43,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
 )
+from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
 from music_assistant.helpers.database import UNSET
@@ -1106,7 +1107,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query_params = dict(extra_query_params) if extra_query_params else {}
         query_parts: list[str] = list(extra_query_parts) if extra_query_parts else []
         join_parts: list[str] = list(extra_join_parts) if extra_join_parts else []
-        search = self._preprocess_search(search, query_params)
+        search = self._preprocess_search(search)
         genre_ids = self._preprocess_genre_ids(genre_ids)
         # create special performant random query
         if order_by and order_by.startswith("random"):
@@ -1242,18 +1243,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> None:
         """Update existing library record in the database."""
 
-    @property
-    def _search_filter_clause(self) -> str:
+    def _search_filter_clause(self, search: str, query_params: dict[str, Any]) -> str:
         """Return the SQL WHERE clause fragment used for search filtering."""
-        return f"{self.db_table}.search_name LIKE :search"
+        return search_name_match_clause(self.db_table, search, "search", query_params)
 
     @final
-    def _preprocess_search(self, search: str | None, query_params: dict[str, Any]) -> str | None:
-        """Preprocess search string and add to query params."""
-        if search:
-            search = create_safe_string(search, True, True)
-            query_params["search"] = f"%{search}%"
-        return search
+    def _preprocess_search(self, search: str | None) -> str | None:
+        """Normalize the search string for use in the search filter clauses."""
+        return create_safe_string(search, True, True) if search else search
 
     @final
     @staticmethod
@@ -1334,7 +1331,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Apply search, favorite, and provider filters."""
         # handle search
         if search:
-            query_parts.append(self._search_filter_clause)
+            query_parts.append(self._search_filter_clause(search, query_params))
         # handle favorite filter
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")

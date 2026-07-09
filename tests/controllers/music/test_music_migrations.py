@@ -276,3 +276,37 @@ async def test_migrate_database_backfills_external_id_lookup(
     )
     assert not old_indexes
     await music.database.close()
+
+
+async def test_migration_populates_fts_tables(database: DatabaseConnection) -> None:
+    """Migrating a pre-FTS database builds and fills the FTS search tables."""
+    await database.execute("DROP TABLE tracks")
+    await database.execute(
+        "CREATE TABLE tracks([item_id] INTEGER PRIMARY KEY, "
+        "[external_ids] json NOT NULL DEFAULT '[]', [search_name] TEXT NOT NULL)"
+    )
+    await database.execute(
+        "INSERT INTO tracks(item_id, search_name) VALUES (1, 'bohemianrhapsody')"
+    )
+    await database.execute("INSERT INTO tracks(item_id, search_name) VALUES (2, 'radiogaga')")
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=51,
+        create_tables=AsyncMock(),
+    )
+
+    rows = await database.get_rows_from_query(
+        "SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH :term", {"term": '"rhapsody"'}
+    )
+    assert [row["rowid"] for row in rows] == [1]
+    # tables without a search_name column (stand-ins in this bare test db) are skipped
+    rows = await database.get_rows_from_query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'albums_fts'"
+    )
+    assert not rows

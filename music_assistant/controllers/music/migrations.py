@@ -35,6 +35,7 @@ from music_assistant.constants import (
     DEFAULT_GENRE_MAPPING,
     GENRE_ICONS_DIR_NAME,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
+    MEDIA_ITEM_DB_TABLES,
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
@@ -814,6 +815,27 @@ async def migrate_database(  # noqa: PLR0915
             await mass.music.genres.restore_default_genres(full_restore=False)
         except Exception as err:
             logger.warning("Could not seed default podcast/audiobook genres: %s", err)
+
+    # (re)build the FTS search tables so they are in sync with the content tables;
+    # this both populates them on first migration to the FTS-enabled schema and
+    # repairs them after any migration that rewrote rows without the sync triggers active
+    for table in MEDIA_ITEM_DB_TABLES:
+        table_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+        }
+        if "search_name" not in table_columns:
+            # guard against (test) databases with stand-in tables
+            continue
+        await database.execute(
+            f"""CREATE VIRTUAL TABLE IF NOT EXISTS {table}_fts USING fts5(
+                search_name,
+                content='{table}',
+                content_rowid='item_id',
+                tokenize='trigram'
+                );"""
+        )
+        await database.execute(f"INSERT INTO {table}_fts({table}_fts) VALUES('rebuild')")
 
     # save changes
     await database.commit()
