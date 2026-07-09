@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sqlite3
 from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import MusicAssistantError
@@ -533,14 +534,21 @@ class MusicDatabaseSetupMixin:
 
         # full-text search tables (trigram tokenizer for substring matching on search_name)
         for db_table in MEDIA_ITEM_DB_TABLES:
-            await self.database.execute(
-                f"""CREATE VIRTUAL TABLE IF NOT EXISTS {db_table}_fts USING fts5(
-                    search_name,
-                    content='{db_table}',
-                    content_rowid='item_id',
-                    tokenize='trigram'
-                    );"""
-            )
+            try:
+                await self.database.execute(
+                    f"""CREATE VIRTUAL TABLE IF NOT EXISTS {db_table}_fts USING fts5(
+                        search_name,
+                        content='{db_table}',
+                        content_rowid='item_id',
+                        tokenize='trigram'
+                        );"""
+                )
+            except sqlite3.OperationalError as err:
+                msg = (
+                    "The library database requires SQLite 3.34+ with FTS5 support "
+                    f"(detected version: {sqlite3.sqlite_version})"
+                )
+                raise MusicAssistantError(msg) from err
 
         await self.database.commit()
 
