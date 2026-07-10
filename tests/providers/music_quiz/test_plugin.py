@@ -9,12 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import ConfigEntryType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.music_quiz import (
     MUSIC_QUIZ_GUEST_USER,
     MusicQuizPlugin,
+    get_config_entries,
 )
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizGameActiveError,
@@ -78,14 +79,22 @@ def _make_round(round_index: int, suggestion_count: int = 4) -> MusicQuizRound:
     )
 
 
-def _create_plugin(mode: str = "venue", player: str | None = "venue_player") -> MusicQuizPlugin:
+def _create_plugin(
+    mode: str = "venue",
+    player: str | None = "venue_player",
+    use_ai_distractors: bool = False,
+) -> MusicQuizPlugin:
     """Create a minimally configured Music Quiz plugin for unit tests."""
     plugin = MusicQuizPlugin.__new__(MusicQuizPlugin)
     plugin.mass = MagicMock()
     plugin.logger = MagicMock()
     plugin.config = MagicMock()
     plugin.config.instance_id = INSTANCE_ID
-    plugin.config.get_value.side_effect = {"mode": mode, "player": player}.__getitem__
+    plugin.config.get_value.side_effect = {
+        "mode": mode,
+        "player": player,
+        "use_ai_distractors": use_ai_distractors,
+    }.__getitem__
     plugin._game = None
     plugin._quiz_type = None
     plugin._game_lock = asyncio.Lock()
@@ -582,3 +591,26 @@ async def test_unload_cleans_up() -> None:
     session.close.assert_awaited_once()
     assert plugin._game is None
     revoke.assert_awaited_once_with(plugin.mass, MUSIC_QUIZ_GUEST_USER)
+
+
+@pytest.mark.asyncio
+async def test_create_game_rejects_invalid_difficulty() -> None:
+    """An unknown difficulty is rejected before a game is created."""
+    plugin = _create_plugin()
+    with pytest.raises(InvalidDataError, match="difficulty"):
+        await plugin.create_game(source_uris=["library://playlist/1"], difficulty="impossible")
+    assert plugin._game is None
+
+
+@pytest.mark.asyncio
+async def test_get_config_entries_includes_ai_distractor_toggle() -> None:
+    """The provider exposes an off-by-default AI distractor toggle."""
+    mass = MagicMock()
+    mass.players.all_players.return_value = []
+
+    entries = await get_config_entries(mass)
+
+    ai_entry = next(entry for entry in entries if entry.key == "use_ai_distractors")
+    assert ai_entry.type == ConfigEntryType.BOOLEAN
+    assert ai_entry.default_value is False
+    assert ai_entry.required is False

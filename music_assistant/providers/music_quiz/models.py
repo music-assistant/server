@@ -17,6 +17,14 @@ class MusicQuizPhase(StrEnum):
     FINISHED = "finished"
 
 
+class MusicQuizDifficulty(StrEnum):
+    """Difficulty levels for the guess-the-song quiz type."""
+
+    EASY = "easy"
+    NORMAL = "normal"
+    HARD = "hard"
+
+
 @dataclass
 class MusicQuizConfig(DataClassDictMixin):
     """Configuration for a Music Quiz game."""
@@ -26,6 +34,9 @@ class MusicQuizConfig(DataClassDictMixin):
     answer_duration: int = 30
     source_uris: list[str] = field(default_factory=list)
     name: str | None = None
+    # guess-the-song specific; other quiz types ignore these
+    difficulty: str = MusicQuizDifficulty.NORMAL
+    use_ai_distractors: bool = False
 
 
 @dataclass

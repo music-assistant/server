@@ -93,6 +93,7 @@ from music_assistant.providers.music_quiz.game import (
 )
 from music_assistant.providers.music_quiz.models import (
     MusicQuizConfig,
+    MusicQuizDifficulty,
     MusicQuizGame,
     MusicQuizPhase,
     MusicQuizPlayer,
@@ -116,6 +117,7 @@ _ApiHandler = Callable[..., Coroutine[Any, Any, Any]]
 CONF_MODE = "mode"
 CONF_PLAYER = "player"
 CONF_PLAYER_AUTO = "__auto__"
+CONF_USE_AI_DISTRACTORS = "use_ai_distractors"
 
 MUSIC_QUIZ_GUEST_USER = "music_quiz_guest"
 MUSIC_QUIZ_GUEST_DISPLAY_NAME = "Music Quiz Guest"
@@ -188,6 +190,12 @@ async def get_config_entries(
                     )
                 ],
             ],
+        ),
+        ConfigEntry(
+            key=CONF_USE_AI_DISTRACTORS,
+            type=ConfigEntryType.BOOLEAN,
+            required=False,
+            default_value=False,
         ),
     )
 
@@ -281,6 +289,7 @@ class MusicQuizPlugin(PluginProvider):
         answer_duration: int = 30,
         source_uris: list[str] | None = None,
         name: str | None = None,
+        difficulty: str = MusicQuizDifficulty.NORMAL,
     ) -> dict[str, Any]:
         """
         Create a new Music Quiz game, replacing a previous (finished) game.
@@ -291,6 +300,7 @@ class MusicQuizPlugin(PluginProvider):
         :param answer_duration: Answering duration in seconds.
         :param source_uris: Track or playlist URIs to draw the rounds from.
         :param name: Optional game name.
+        :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
         """
         if quiz_type not in QUIZ_TYPES:
             raise InvalidDataError(
@@ -304,6 +314,8 @@ class MusicQuizPlugin(PluginProvider):
             answer_duration=answer_duration,
             source_uris=source_uris or [],
             name=_clean_game_name(name),
+            difficulty=difficulty,
+            use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
         )
         _validate_config(game_config)
         async with self._game_lock:
@@ -867,6 +879,12 @@ class MusicQuizPlugin(PluginProvider):
 
 def _validate_config(config: MusicQuizConfig) -> None:
     """Validate game config."""
+    if config.difficulty not in {item.value for item in MusicQuizDifficulty}:
+        raise InvalidDataError(
+            f"Unknown difficulty: {config.difficulty}",
+            translation_key="music_quiz_invalid_difficulty",
+            translation_owner=TRANSLATION_OWNER,
+        )
     if config.round_count < 1:
         raise InvalidDataError(
             "Music Quiz requires at least 1 round",

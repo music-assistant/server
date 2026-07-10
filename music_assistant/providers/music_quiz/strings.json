@@ -17,6 +17,10 @@
       "options": {
         "__auto__": "Auto (last active player)"
       }
+    },
+    "use_ai_distractors": {
+      "label": "Use AI for wrong answers",
+      "description": "When enabled and an AI provider (such as the Home Assistant AI Task) is configured, generate extra-plausible wrong answers with AI. Falls back to the built-in answer options when no AI provider is available."
     }
   },
   "errors": {
@@ -38,6 +42,7 @@
     "music_quiz_source_required": "At least one source is required.",
     "music_quiz_sources_unavailable": "None of the configured sources could be loaded.",
     "music_quiz_source_count_max": "Music Quiz supports at most {0} sources.",
+    "music_quiz_invalid_difficulty": "The selected difficulty is not valid.",
     "music_quiz_no_unused_source_tracks": "No unused source tracks are available.",
     "music_quiz_not_enough_distractors": "Not enough distinct tracks are available to build answer options.",
     "music_quiz_guest_only": "This action is only available to Music Quiz guests.",

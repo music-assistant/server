@@ -13,6 +13,7 @@ from music_assistant.providers.music_quiz.suggestions import (
     build_answer_label,
     build_suggestions,
     normalize_answer_label,
+    parse_ai_distractors,
     suggestion_candidates_are_too_close,
 )
 
@@ -222,3 +223,41 @@ def test_build_suggestions_use_opaque_ids() -> None:
 
     # every id comes from the opaque token source, never derived from the answer
     assert {suggestion.suggestion_id for suggestion in suggestions} == set(opaque_ids)
+
+
+def test_parse_ai_distractors_parses_artist_title_lines() -> None:
+    """Parse plain 'Artist - Title' lines into candidates."""
+    result = parse_ai_distractors("Daft Punk - Aerodynamic\nJustice - Genesis")
+    assert [(item.label, item.title) for item in result] == [
+        ("Daft Punk - Aerodynamic", "Aerodynamic"),
+        ("Justice - Genesis", "Genesis"),
+    ]
+
+
+def test_parse_ai_distractors_strips_numbering_bullets_and_quotes() -> None:
+    """Tolerate list markers, numbering and surrounding quotes."""
+    text = '1. Daft Punk - Aerodynamic\n- Justice - Genesis\n* Air - La Femme\n"Phoenix - 1901"'
+    assert [item.label for item in parse_ai_distractors(text)] == [
+        "Daft Punk - Aerodynamic",
+        "Justice - Genesis",
+        "Air - La Femme",
+        "Phoenix - 1901",
+    ]
+
+
+def test_parse_ai_distractors_supports_dash_variants() -> None:
+    """Accept en dash and em dash separators between artist and title."""
+    result = parse_ai_distractors("Daft Punk \u2013 Aerodynamic\nJustice \u2014 Genesis")
+    assert [item.title for item in result] == ["Aerodynamic", "Genesis"]
+
+
+def test_parse_ai_distractors_drops_lines_without_separator() -> None:
+    """Discard preamble/commentary lines that are not 'Artist - Title'."""
+    text = "Here are some options:\nDaft Punk - Aerodynamic\n\nHope that helps!"
+    assert [item.label for item in parse_ai_distractors(text)] == ["Daft Punk - Aerodynamic"]
+
+
+def test_parse_ai_distractors_empty_or_unusable_returns_empty() -> None:
+    """Return an empty list for empty or unusable output."""
+    assert parse_ai_distractors("") == []
+    assert parse_ai_distractors("Sorry, I cannot help with that.") == []
