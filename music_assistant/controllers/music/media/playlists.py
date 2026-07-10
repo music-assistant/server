@@ -145,10 +145,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
             page += 1
 
         if refresh_dynamic_metadata and library_item is not None:
-            # runs after the loop so it reads the freshly cached track sample
-            self.mass.create_task(
-                self.mass.metadata.update_metadata(library_item, force_refresh=True)
-            )
+            # dynamic playlists are excluded from the periodic metadata batch job, so
+            # recompute here from the freshly cached track sample. clearing last_refresh
+            # requests the recompute the way the add/remove track handlers do, without
+            # relying on force_refresh (whose purpose is to bypass caches).
+            library_item.metadata.last_refresh = None
+            self.mass.create_task(self.mass.metadata.update_metadata(library_item))
 
     async def create_playlist(
         self,

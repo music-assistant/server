@@ -36,7 +36,9 @@ async def test_force_refresh_dynamic_playlist_updates_metadata() -> None:
     await _consume(ctrl, force_refresh=True)
 
     ctrl.mass.create_task.assert_called_once()
-    ctrl.mass.metadata.update_metadata.assert_called_once_with(library_item, force_refresh=True)
+    # recompute is requested by clearing last_refresh; force_refresh is not passed
+    assert library_item.metadata.last_refresh is None
+    ctrl.mass.metadata.update_metadata.assert_called_once_with(library_item)
 
 
 @pytest.mark.asyncio
