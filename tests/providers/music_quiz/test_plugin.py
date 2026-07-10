@@ -281,6 +281,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     assert payload["event"] == "game_updated"
     state = payload["state"]
     assert state["phase"] == "answering"
+    assert state["quiz_type"] == "guess_the_song"
     assert state["mode"] == "venue"
     current_round = state["current_round"]
     assert set(current_round) == {
@@ -308,8 +309,8 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_game_info_exposes_playback_mode() -> None:
-    """The join-screen info includes the configured playback mode."""
+async def test_game_info_exposes_game_identity_and_playback_mode() -> None:
+    """The join-screen info includes the game identity and playback mode."""
     plugin = _create_plugin(mode="remote", player=None)
     assert await plugin.get_game_info() is None
     await plugin.create_game(source_uris=["library://playlist/1"], name="Test Quiz")
@@ -317,11 +318,59 @@ async def test_game_info_exposes_playback_mode() -> None:
     info = await plugin.get_game_info()
     assert info == {
         "name": "Test Quiz",
+        "quiz_type": "guess_the_song",
         "phase": "lobby",
         "mode": "remote",
         "player_count": 0,
         "round_count": 5,
     }
+
+
+@pytest.mark.asyncio
+async def test_create_and_get_expose_persisted_quiz_type() -> None:
+    """Create and host state use the quiz type persisted on the game."""
+    plugin = _create_plugin()
+
+    created = await plugin.create_game(
+        quiz_type="guess_the_song",
+        source_uris=["library://playlist/1"],
+    )
+    game = plugin._game
+    assert game is not None
+    assert game.quiz_type == "guess_the_song"
+    assert created["quiz_type"] == game.quiz_type
+    assert (await plugin.get_game())["quiz_type"] == game.quiz_type
+
+
+@pytest.mark.asyncio
+async def test_join_and_player_state_expose_persisted_quiz_type() -> None:
+    """Join and personalized state include the persisted quiz type."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        joined = await plugin.join_game("Alice")
+        assert joined["state"]["quiz_type"] == "guess_the_song"
+        state = await plugin.get_player_state(joined["player_id"])
+
+    assert state["quiz_type"] == "guess_the_song"
+
+
+@pytest.mark.asyncio
+async def test_reset_preserves_quiz_type_in_state_and_events() -> None:
+    """Reset preserves the selected quiz type in returned and broadcast state."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+
+    state = await plugin.reset()
+
+    assert state["phase"] == "lobby"
+    assert state["quiz_type"] == "guess_the_song"
+    payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]
+    assert payload["state"]["quiz_type"] == "guess_the_song"
 
 
 @pytest.mark.asyncio

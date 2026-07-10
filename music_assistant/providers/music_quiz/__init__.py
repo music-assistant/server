@@ -22,8 +22,8 @@ contract (all payloads are JSON objects)::
 
 The public game state is guest-safe by construction and contains:
 
-- always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``mode``
-  (the configured playback mode: venue/remote), ``round_count``,
+- always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``quiz_type``,
+  ``mode`` (the configured playback mode: venue/remote), ``round_count``,
   ``suggestion_count``, ``answer_duration`` and
   ``players``: a list of ``{name, score, ready, answered}`` entries
   (players are keyed by their unique display name; private player IDs
@@ -328,10 +328,11 @@ class MusicQuizPlugin(PluginProvider):
             self._cancel_next_round_task()
             self._game = MusicQuizGame(
                 config=game_config,
+                quiz_type=quiz_type,
                 sources=await self._resolve_sources(game_config.source_uris),
                 created_at=time.time(),
             )
-            self._quiz_type = QUIZ_TYPES[quiz_type](self.mass, game_config)
+            self._quiz_type = QUIZ_TYPES[self._game.quiz_type](self.mass, game_config)
             self._prefetch_round(0)
             self._signal_game_updated()
             return await self._host_state()
@@ -405,6 +406,7 @@ class MusicQuizPlugin(PluginProvider):
             return None
         return {
             "name": self._game.config.name,
+            "quiz_type": self._game.quiz_type,
             "phase": self._game.phase.value,
             "mode": self._mode,
             "player_count": len(self._game.players),
@@ -1001,6 +1003,7 @@ def _public_state(game: MusicQuizGame, mode: str) -> dict[str, Any]:
     return {
         "phase": game.phase.value,
         "name": game.config.name,
+        "quiz_type": game.quiz_type,
         "mode": mode,
         "round_count": game.config.round_count,
         "suggestion_count": game.config.suggestion_count,
