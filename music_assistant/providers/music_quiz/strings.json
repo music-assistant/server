@@ -19,8 +19,8 @@
       }
     },
     "use_ai_distractors": {
-      "label": "Enhance the experience with AI",
-      "description": "When enabled, the quiz uses a configured AI provider (such as Home Assistant, which provides LLM access) to enhance the experience, for example by generating more convincing fake answers for each round. Falls back to the built-in behavior when no AI provider is available."
+      "label": "Enhance the Experience with AI",
+      "description": "When enabled, the quiz uses a configured AI provider (such as Home Assistant, which provides LLM access) to enhance the experience — for example, generating more convincing fake answers for each round. Falls back to the built-in behavior when no AI provider is available."
     }
   },
   "errors": {
