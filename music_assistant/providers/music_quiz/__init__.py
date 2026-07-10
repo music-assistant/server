@@ -262,9 +262,11 @@ class MusicQuizPlugin(PluginProvider):
         self._unregister_handles.clear()
         self._cancel_timers()
         self._cancel_next_round_task()
-        await self._close_playback_session()
+        # clear game state before tearing down the session so a guest listen-in
+        # racing with unload cannot (re)create or join a session mid-teardown
         self._game = None
         self._quiz_type = None
+        await self._close_playback_session()
         if is_removed:
             await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
         await super().unload(is_removed)
@@ -324,8 +326,11 @@ class MusicQuizPlugin(PluginProvider):
 
     async def get_game(self) -> dict[str, Any]:
         """Return the host-visible state of the current game."""
-        self._require_game()
-        return await self._host_state()
+        # take the game lock so the snapshot cannot tear against a concurrent
+        # reveal/reset while _host_state awaits the join URL
+        async with self._game_lock:
+            self._require_game()
+            return await self._host_state()
 
     async def start_game(self) -> dict[str, Any]:
         """Start the first round of the current game."""
@@ -370,12 +375,14 @@ class MusicQuizPlugin(PluginProvider):
             self._require_game()
             self._cancel_timers()
             self._cancel_next_round_task()
+            # clear game state before tearing down the session so a guest listen-in
+            # racing with delete cannot (re)create or join a session mid-teardown
+            self._game = None
+            self._quiz_type = None
             await self._stop_playback()
             # tear down the shared session so its virtual player / listen-in
             # guests do not linger once the game is gone
             await self._close_playback_session()
-            self._game = None
-            self._quiz_type = None
             self.signal_provider_event({"event": "game_removed"})
 
     # ==================== Guest API Commands ====================
@@ -483,11 +490,14 @@ class MusicQuizPlugin(PluginProvider):
         :param web_player_id: The player_id of the guest's web player.
         """
         self._validate_guest_access()
-        self._require_game()
-        session = await self._get_playback_session()
-        if session is None:
-            raise MusicQuizNoPlaybackTargetError("Listen-in is not available for this game")
-        await session.add_guest_listener(web_player_id)
+        # hold the playback lock across resolving and joining the session so a
+        # guest can never be attached to a session that is being torn down
+        async with self._playback_lock:
+            self._require_game()
+            session = await self._get_or_create_session_locked()
+            if session is None:
+                raise MusicQuizNoPlaybackTargetError("Listen-in is not available for this game")
+            await session.add_guest_listener(web_player_id)
 
     async def stop_listen_in(self, web_player_id: str) -> None:
         """
@@ -496,8 +506,9 @@ class MusicQuizPlugin(PluginProvider):
         :param web_player_id: The player_id of the guest's web player.
         """
         self._validate_guest_access()
-        if self._playback_session is not None:
-            await self._playback_session.remove_guest_listener(web_player_id)
+        async with self._playback_lock:
+            if self._playback_session is not None:
+                await self._playback_session.remove_guest_listener(web_player_id)
 
     async def can_listen_in(self, web_player_id: str) -> bool:
         """
@@ -506,10 +517,9 @@ class MusicQuizPlugin(PluginProvider):
         :param web_player_id: The player_id of the guest's web player.
         """
         self._validate_guest_access()
-        if self._game is None:
-            return False
-        session = await self._get_playback_session()
-        return session is not None and session.can_listen_in(web_player_id)
+        async with self._playback_lock:
+            session = await self._get_or_create_session_locked()
+            return session is not None and session.can_listen_in(web_player_id)
 
     # ==================== Internals ====================
 
@@ -769,35 +779,52 @@ class MusicQuizPlugin(PluginProvider):
         :return: The session, or None when no session is available.
         """
         async with self._playback_lock:
-            # drop a stale session whose player no longer exists
-            if self._playback_session is not None and (
-                self.mass.players.get_player(self._playback_session.player_id) is None
-            ):
-                await self._playback_session.close()
-                self._playback_session = None
+            return await self._get_or_create_session_locked()
 
-            if self._playback_session is not None:
-                return self._playback_session
+    async def _get_or_create_session_locked(self) -> SharedPlaybackSession | None:
+        """
+        Get or (re)create the shared playback session.
 
-            if self.config.get_value(CONF_MODE) == SharedPlaybackMode.REMOTE.value:
-                game_name = self._game.config.name if self._game else None
-                try:
-                    self._playback_session = await SharedPlaybackSession.create_remote(
-                        self.mass,
-                        owner_instance_id=self.instance_id,
-                        display_name=game_name or "Music Quiz",
-                        session_id=self.instance_id,
-                    )
-                except SetupFailedError as err:
-                    self.logger.warning("Unable to create remote quiz session: %s", err)
-            elif player_id := self._resolve_venue_player_id():
-                try:
-                    self._playback_session = await SharedPlaybackSession.create_venue(
-                        self.mass, player_id
-                    )
-                except SetupFailedError as err:
-                    self.logger.warning("Unable to create venue quiz session: %s", err)
+        The caller must hold ``_playback_lock``; guest listen-in and session
+        teardown share the lock so a session is never created or joined while it
+        is being closed.
+
+        :return: The session, or None when no game is active or none is available.
+        """
+        # a session only makes sense while a game is active; without one, never
+        # (re)create it - this also stops a guest listen-in that races with game
+        # teardown from leaking a fresh session / virtual player
+        if self._game is None:
+            return None
+        # drop a stale session whose player no longer exists
+        if self._playback_session is not None and (
+            self.mass.players.get_player(self._playback_session.player_id) is None
+        ):
+            await self._playback_session.close()
+            self._playback_session = None
+
+        if self._playback_session is not None:
             return self._playback_session
+
+        if self.config.get_value(CONF_MODE) == SharedPlaybackMode.REMOTE.value:
+            game_name = self._game.config.name if self._game else None
+            try:
+                self._playback_session = await SharedPlaybackSession.create_remote(
+                    self.mass,
+                    owner_instance_id=self.instance_id,
+                    display_name=game_name or "Music Quiz",
+                    session_id=self.instance_id,
+                )
+            except SetupFailedError as err:
+                self.logger.warning("Unable to create remote quiz session: %s", err)
+        elif player_id := self._resolve_venue_player_id():
+            try:
+                self._playback_session = await SharedPlaybackSession.create_venue(
+                    self.mass, player_id
+                )
+            except SetupFailedError as err:
+                self.logger.warning("Unable to create venue quiz session: %s", err)
+        return self._playback_session
 
     def _resolve_venue_player_id(self) -> str | None:
         """
