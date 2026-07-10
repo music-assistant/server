@@ -10,7 +10,11 @@ import aiohttp
 import pytest
 from multidict import CIMultiDict
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import Radio, SearchResults
 
 from music_assistant.providers.mammamiradio import (
@@ -22,6 +26,7 @@ from music_assistant.providers.mammamiradio import (
     SUPPORTED_FEATURES,
     MammamiradioProvider,
     _audio_format_from_contract,
+    _normalize_base_url,
     _segment_to_stream_metadata,
     _v1_to_stream_metadata,
     get_config_entries,
@@ -648,6 +653,110 @@ async def test_fragment_in_configured_url_is_stripped(
     mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
     details = await prov.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
     assert details.path == "http://localhost:8000/stream"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("http://localhost:8000", "http://localhost:8000"),
+        ("https://radio.example.test", "https://radio.example.test"),
+        ("https://radio.example.test/mamma/", "https://radio.example.test/mamma"),
+        ("http://[::1]:8000/", "http://[::1]:8000"),
+        ("http://user:secret@host:8000?token=x#frag", "http://host:8000"),
+        ("  http://localhost:8000  ", "http://localhost:8000"),
+        ("HTTP://localhost:8000", "http://localhost:8000"),
+    ],
+)
+def test_normalize_base_url_accepts(raw: str, expected: str) -> None:
+    """Valid http(s) base URLs normalize to a sanitized scheme://host[:port][/path]."""
+    assert _normalize_base_url(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "localhost:8000",
+        "//localhost:8000",
+        "ftp://localhost:8000",
+        "http:///stream",
+        "",
+        "   ",
+        "http://[::1:8000",
+        "http://localhost:99999",
+        "http://localhost:notaport",
+        "http://local host:8000",
+        "http://local\thost:8000",
+    ],
+)
+def test_normalize_base_url_rejects_bad_urls(raw: str) -> None:
+    """Any string that is not a full http(s) URL with a hostname raises ValueError."""
+    with pytest.raises(ValueError, match="base URL"):
+        _normalize_base_url(raw)
+
+
+@pytest.mark.parametrize("raw", [123, True, None, ["http://localhost:8000"]])
+def test_normalize_base_url_rejects_non_strings(raw: Any) -> None:
+    """Provider-visible non-string values raise TypeError instead of being coerced."""
+    with pytest.raises(TypeError, match="base URL"):
+        _normalize_base_url(raw)
+
+
+async def test_invalid_base_url_fails_setup_before_http(mass_mock: MagicMock) -> None:
+    """A schemeless URL raises a provider-localized SetupFailedError before any request."""
+    prov = _build_provider_with_url(mass_mock, "localhost:8000")
+    with pytest.raises(SetupFailedError) as excinfo:
+        await prov.handle_async_init()
+    assert excinfo.value.translation_key == "invalid_base_url"
+    assert excinfo.value.translation_owner == "provider.mammamiradio"
+    mass_mock.http_session.get.assert_not_called()
+
+
+async def test_cached_base_url_survives_config_replacement(mass_mock: MagicMock) -> None:
+    """
+    A bound metadata callback keeps its resolved root after ``self.config`` is swapped.
+
+    Base ``Provider.update_config`` replaces ``self.config`` immediately and
+    schedules the reload later; an already-resolved stream must keep polling the
+    root it was created with instead of raising through the callback.
+    """
+    prov = _build_provider_with_url(mass_mock, "http://radio.example.test:8000")
+    details = await prov.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://radio.example.test:8000/stream"
+
+    bad_config = MagicMock()
+    bad_config.get_value.return_value = "not a url"
+    prov.config = bad_config
+    payload = {
+        "now_streaming": {"type": "music", "label": "A", "metadata": {"title": "A"}},
+        "upcoming": [],
+        "brand": _BRAND,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(payload))
+    await prov._update_stream_metadata(details, 0)  # must not raise
+    called_url = mass_mock.http_session.get.call_args.args[0]
+    assert called_url == "http://radio.example.test:8000/public-status"
+
+
+def test_legacy_album_only_on_music_segments() -> None:
+    """The legacy mapper mirrors v1: album is the station name for music, None otherwise."""
+    music = _segment_to_stream_metadata(
+        {"type": "music", "label": "A", "metadata": {"title": "A"}},
+        [],
+        {},
+        _BRAND,
+        show_upcoming=False,
+    )
+    assert music.album == "mammamiradio"
+    for now in (
+        {"type": "banter", "label": "B"},
+        {"type": "ad", "label": "C"},
+        {"type": "news_flash", "label": "D"},
+        {"type": "station_id", "label": "E"},
+        {"type": "stopped"},
+        {"type": "mystery", "label": "F"},
+    ):
+        sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+        assert sm.album is None, f"album leaked for segment type {now['type']}"
 
 
 async def test_search_empty_query_returns_empty(
@@ -1667,7 +1776,9 @@ async def test_live_stream_smoke() -> None:
         mass.http_session = session
         prov = _build_provider_with_url(mass, live_url)
 
-        # Init raises if /healthz is absent or unhealthy.
+        # Init probes the v1 now-playing contract first and falls back to the
+        # legacy /healthz + /public-status pair on older addons; raises only if
+        # the addon is unreachable or unhealthy.
         await prov.handle_async_init()
         # Browse returns exactly one Radio entry.
         items = await prov.browse("mammamiradio://")
@@ -1678,7 +1789,8 @@ async def test_live_stream_smoke() -> None:
         assert isinstance(details.path, str)
         assert details.path.endswith("/stream")
         assert details.audio_format.content_type == ContentType.MP3
-        # The live-metadata callback fetches a real /public-status payload.
+        # The live-metadata callback polls the endpoint selected at init
+        # (v1 now-playing on current addons, /public-status on older ones).
         await prov._update_stream_metadata(details, 0)
         assert details.stream_metadata is not None
         assert details.stream_metadata.title

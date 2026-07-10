@@ -2,8 +2,11 @@
   "config_entries": {
     "mammamiradio_url": {
       "label": "Mamma Mi Radio URL",
-      "description": "Public base URL of your Mamma Mi Radio HA addon. Do not include an admin token; the default matches the stock addon configuration."
+      "description": "Full HTTP(S) base URL of your Mamma Mi Radio HA addon. The default works when Music Assistant and the addon run on the same Home Assistant host; remote or custom deployments need a reachable URL. Do not include an admin token."
     }
+  },
+  "errors": {
+    "invalid_base_url": "Invalid Mamma Mi Radio URL. Enter a full HTTP(S) base URL with a hostname, for example http://localhost:8000."
   },
   "manifest": {
     "description": "AI-generated Italian radio station — continuous music, banter, and ads. Self-hosted via the Mamma Mi Radio HA addon."

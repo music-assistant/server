@@ -26,7 +26,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -127,6 +131,41 @@ def _supports_v1_schema(value: Any) -> bool:
     if isinstance(value, int):
         value = str(value)
     return isinstance(value, str) and value.strip() in SUPPORTED_SCHEMA_VERSIONS
+
+
+def _normalize_base_url(value: Any) -> str:
+    """
+    Normalize a configured base URL to ``scheme://host[:port][/path]``.
+
+    Query strings, fragments, and userinfo are intentionally discarded so an
+    admin token pasted into the setup field never reaches MA stream URLs,
+    probe URLs, logs, or provider-unavailable errors. Trailing path slashes are
+    stripped; a reverse-proxy path prefix is preserved.
+
+    :param value: The raw configured value.
+    :raises TypeError: if the value is not a string.
+    :raises ValueError: if the value is not a full http(s) URL with a hostname.
+    """
+    if not isinstance(value, str):
+        raise TypeError("base URL must be a string")
+    raw = value.strip()
+    if not raw:
+        raise ValueError("base URL is empty")
+    if any(ch.isspace() or not ch.isprintable() for ch in raw):
+        raise ValueError("base URL contains whitespace or control characters")
+    try:
+        parts = urlsplit(raw)
+        hostname = parts.hostname
+        _ = parts.port  # a nonnumeric or out-of-range port raises ValueError
+    except ValueError as err:
+        msg = f"base URL is malformed: {err}"
+        raise ValueError(msg) from err
+    if parts.scheme not in ("http", "https"):
+        raise ValueError("base URL must start with http:// or https://")
+    if not hostname:
+        raise ValueError("base URL has no hostname")
+    netloc = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
 
 
 def _stream_path_from_contract(value: Any) -> str:
@@ -341,7 +380,9 @@ def _segment_to_stream_metadata(
     return StreamMetadata(
         title=title,
         artist=_clean_str(artist),
-        album=station_name,
+        # Album only carries a value for music segments, mirroring the v1 mapper
+        # (an ad or banter break should not render the station name as its album).
+        album=station_name if seg_type == "music" else None,
         image_url=_clean_str(image_url),
         description=description,
     )
@@ -380,6 +421,7 @@ class MammamiradioProvider(MusicProvider):
     _use_v1: bool = False
     _audio_format_dict: dict[str, Any] | None = None
     _stream_path: str = STREAM_PATH
+    _base_url: str | None = None
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -741,16 +783,27 @@ class MammamiradioProvider(MusicProvider):
 
     def _stream_url_root(self) -> str:
         """
-        Return the configured mammamiradio URL stripped to a public base URL.
+        Return the validated base URL of the configured addon (cached per instance).
 
-        Query strings, fragments, and userinfo are intentionally discarded so an
-        admin token pasted into the setup field never reaches MA stream URLs,
-        probe URLs, logs, or provider-unavailable errors.
+        Normalized once on first use and cached for the instance's lifetime, so an
+        already-resolved stream and its bound metadata callback stay on one
+        endpoint even if ``self.config`` is replaced while a config-change reload
+        is pending. Raises a provider-localized ``SetupFailedError`` before any
+        HTTP request when the configured value is not a full http(s) URL with a
+        hostname; the error intentionally never echoes the raw input.
         """
-        raw = str(self.config.get_value(CONF_MAMMAMIRADIO_URL) or DEFAULT_URL).strip()
-        parts = urlsplit(raw)
-        netloc = parts.netloc.rsplit("@", 1)[-1]
-        return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
+        if self._base_url is None:
+            raw = self.config.get_value(CONF_MAMMAMIRADIO_URL)
+            try:
+                self._base_url = _normalize_base_url(DEFAULT_URL if raw is None else raw)
+            except (TypeError, ValueError) as err:
+                msg = "mammamiradio: invalid base URL configured; enter a full http(s):// URL"
+                raise SetupFailedError(
+                    msg,
+                    translation_key="invalid_base_url",
+                    translation_owner=self.translation_owner,
+                ) from err
+        return self._base_url
 
     def _build_radio(self) -> Radio:
         """Construct the single Radio object for mammamiradio."""
