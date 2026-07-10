@@ -11,7 +11,10 @@ from music_assistant_models.media_items import ItemMapping, ProviderMapping, Tra
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.models.plugin import PluginProvider
-from music_assistant.providers.music_quiz.models import MusicQuizConfig
+from music_assistant.providers.music_quiz.models import (
+    MultipleChoiceRoundState,
+    MusicQuizConfig,
+)
 from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
 from music_assistant.providers.music_quiz.suggestions import SuggestionCandidate
 
@@ -279,6 +282,8 @@ async def test_prepare_round_builds_suggestions_from_similar_tracks() -> None:
     game_round = await quiz_type.prepare_round(0, [])
 
     assert game_round.track_uri == correct_track.uri
-    assert len(game_round.suggestions) == 4
-    assert sum(item.is_correct for item in game_round.suggestions) == 1
-    assert [item.label for item in game_round.suggestions if item.is_correct] == [CORRECT_LABEL]
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    suggestions = game_round.answer_state.suggestions
+    assert len(suggestions) == 4
+    assert sum(item.is_correct for item in suggestions) == 1
+    assert [item.label for item in suggestions if item.is_correct] == [CORRECT_LABEL]

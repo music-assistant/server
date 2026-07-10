@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
     MultipleChoiceAnswerType,
@@ -10,34 +11,30 @@ from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
 )
 from music_assistant.providers.music_quiz.errors import MusicQuizInvalidAnswerError
 from music_assistant.providers.music_quiz.models import (
-    MusicQuizAnswer,
-    MusicQuizRound,
-    MusicQuizSuggestion,
+    MultipleChoiceAnswer,
+    MultipleChoiceRoundState,
+    MultipleChoiceSuggestion,
+    MusicQuizAnswerType,
+    QuizRoundAnswerState,
 )
 
 ANSWER_TYPE = MultipleChoiceAnswerType()
 
 
-def _round() -> MusicQuizRound:
-    """Return a multiple-choice round."""
-    return MusicQuizRound(
-        round_index=0,
-        track_uri="library://track/1",
-        answer_label="Daft Punk - One More Time",
+def _state() -> MultipleChoiceRoundState:
+    """Return multiple-choice round state."""
+    return MultipleChoiceRoundState(
         suggestions=[
-            MusicQuizSuggestion(
+            MultipleChoiceSuggestion(
                 suggestion_id="correct",
                 label="Daft Punk - One More Time",
                 is_correct=True,
             ),
-            MusicQuizSuggestion(
+            MultipleChoiceSuggestion(
                 suggestion_id="wrong",
                 label="Justice - D.A.N.C.E.",
             ),
         ],
-        image_url="https://example.test/artwork.jpg",
-        duration=180,
-        started_at=10,
     )
 
 
@@ -77,10 +74,10 @@ def test_parse_submission_rejects_malformed_payload(payload: dict[str, object]) 
 
 def test_round_serialization_redacts_answer_until_reveal() -> None:
     """Expose suggestion choices without revealing which one is correct."""
-    game_round = _round()
+    state = _state()
 
-    hidden = ANSWER_TYPE.serialize_round(game_round, revealed=False)
-    revealed = ANSWER_TYPE.serialize_round(game_round, revealed=True)
+    hidden = ANSWER_TYPE.serialize_round(state, revealed=False)
+    revealed = ANSWER_TYPE.serialize_round(state, revealed=True)
 
     assert hidden == {
         "suggestions": [
@@ -95,8 +92,8 @@ def test_round_serialization_redacts_answer_until_reveal() -> None:
 
 def test_player_serialization_separates_public_and_personal_state() -> None:
     """Keep a locked answer private and its correctness hidden before reveal."""
-    game_round = _round()
-    game_round.answers["p1"] = MusicQuizAnswer(
+    state = _state()
+    state.answers["p1"] = MultipleChoiceAnswer(
         player_id="p1",
         suggestion_id="correct",
         answered_at=12,
@@ -104,16 +101,14 @@ def test_player_serialization_separates_public_and_personal_state() -> None:
         points=1000,
     )
 
-    assert ANSWER_TYPE.serialize_public_player(game_round, "p1", revealed=False) == {
-        "answered": True
-    }
-    assert ANSWER_TYPE.serialize_personal_player(game_round, "p1", revealed=False) == {
+    assert ANSWER_TYPE.serialize_public_player(state, "p1", revealed=False) == {"answered": True}
+    assert ANSWER_TYPE.serialize_personal_player(state, "p1", revealed=False) == {
         "answer": {
             "suggestion_id": "correct",
             "answered_at": 12,
         }
     }
-    assert ANSWER_TYPE.serialize_public_player(game_round, "p1", revealed=True) == {
+    assert ANSWER_TYPE.serialize_public_player(state, "p1", revealed=True) == {
         "answered": True,
         "last_answer": {
             "suggestion_id": "correct",
@@ -121,7 +116,7 @@ def test_player_serialization_separates_public_and_personal_state() -> None:
             "points": 1000,
         },
     }
-    assert ANSWER_TYPE.serialize_personal_player(game_round, "p1", revealed=True) == {
+    assert ANSWER_TYPE.serialize_personal_player(state, "p1", revealed=True) == {
         "answer": {
             "suggestion_id": "correct",
             "answered_at": 12,
@@ -129,3 +124,49 @@ def test_player_serialization_separates_public_and_personal_state() -> None:
             "points": 1000,
         }
     }
+
+
+def test_host_serialization_preserves_full_flat_answer_state() -> None:
+    """Serialize full multiple-choice state for the host round payload."""
+    state = _state()
+    state.answers["p1"] = MultipleChoiceAnswer(
+        player_id="p1",
+        suggestion_id="correct",
+        answered_at=12,
+        is_correct=True,
+        points=1000,
+    )
+
+    assert ANSWER_TYPE.serialize_host_round(state) == {
+        "suggestions": [
+            {
+                "suggestion_id": "correct",
+                "label": "Daft Punk - One More Time",
+                "uri": None,
+                "is_correct": True,
+            },
+            {
+                "suggestion_id": "wrong",
+                "label": "Justice - D.A.N.C.E.",
+                "uri": None,
+                "is_correct": False,
+            },
+        ],
+        "answers": {
+            "p1": {
+                "player_id": "p1",
+                "suggestion_id": "correct",
+                "answered_at": 12,
+                "is_correct": True,
+                "points": 1000,
+            }
+        },
+    }
+
+
+def test_strategy_rejects_matching_discriminator_on_wrong_state_class() -> None:
+    """Reject state whose discriminator matches but concrete model does not."""
+    state = QuizRoundAnswerState(answer_type=MusicQuizAnswerType.MULTIPLE_CHOICE)
+
+    with pytest.raises(InvalidDataError, match="does not match"):
+        ANSWER_TYPE.serialize_round(state, revealed=False)

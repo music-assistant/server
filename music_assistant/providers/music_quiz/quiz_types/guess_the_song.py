@@ -13,6 +13,7 @@ from music_assistant_models.media_items import Playlist, Track
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
+    MultipleChoiceRoundState,
     MusicQuizAnswerType,
     MusicQuizDifficulty,
     MusicQuizRound,
@@ -86,7 +87,7 @@ class GuessTheSongQuizType(QuizType):
             round_index=round_index,
             track_uri=track.uri,
             answer_label=correct.label,
-            suggestions=suggestions,
+            answer_state=MultipleChoiceRoundState(suggestions=suggestions),
             image_url=await self.mass.metadata.get_image_url_for_item(track),
             duration=track.duration,
         )
