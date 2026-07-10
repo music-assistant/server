@@ -193,6 +193,19 @@ class TimelineAnswerType(QuizAnswerType):
             return
         raise MusicQuizInvalidAnswerError("Submission does not match the timeline answer type")
 
+    def remove_player(self, state: QuizRoundAnswerState, player_id: str) -> None:
+        """
+        Remove a player's timeline answer state.
+
+        :param state: Round answer state to mutate.
+        :param player_id: Player whose answer should be removed.
+        """
+        timeline_state = self._get_state(state)
+        timeline_state.placements.pop(player_id, None)
+        timeline_state.bonus_answers.pop(player_id, None)
+        timeline_state.finished_at.pop(player_id, None)
+        timeline_state.results.pop(player_id, None)
+
     def is_player_complete(self, state: QuizRoundAnswerState, player_id: str) -> bool:
         """
         Return whether a player completed the timeline round.

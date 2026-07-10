@@ -391,6 +391,23 @@ def test_placement_locks_and_completes_immediately_without_bonuses() -> None:
         ANSWER_TYPE.submit(game, state, player, _correct_placement(), 13)
 
 
+def test_remove_player_clears_all_timeline_answer_state() -> None:
+    """Remove placement, bonus, finish and result state for an expired player."""
+    state = _state()
+    game = _game(state)
+    ANSWER_TYPE.submit(game, state, game.players["p1"], _correct_placement(), 1)
+    state.bonus_answers["p1"] = []
+    ANSWER_TYPE.reveal(game, state)
+
+    ANSWER_TYPE.remove_player(state, "p1")
+    ANSWER_TYPE.remove_player(state, "missing")
+
+    assert state.placements == {}
+    assert state.bonus_answers == {}
+    assert state.finished_at == {}
+    assert state.results == {}
+
+
 def test_bonus_and_finish_rules_reject_invalid_action_order_and_modes() -> None:
     """Enforce placement-first, mode matching, uniqueness, finish and post-finish locks."""
     definitions = [

@@ -213,6 +213,18 @@ def _presence_timer_call(plugin: MusicQuizPlugin) -> tuple[float, Any]:
     raise AssertionError("No player presence timer was scheduled")
 
 
+def _round_timer_call(plugin: MusicQuizPlugin, task_id: str) -> tuple[float, Any, int]:
+    """Return the most recently scheduled timer for a game round."""
+    for timer_call in reversed(cast("MagicMock", plugin.mass.call_later).call_args_list):
+        if timer_call.kwargs.get("task_id") == task_id:
+            return (
+                cast("float", timer_call.args[0]),
+                timer_call.args[1],
+                cast("int", timer_call.args[2]),
+            )
+    raise AssertionError(f"No round timer was scheduled for {task_id}")
+
+
 def _timeline_answer_state(game_round: MusicQuizRound) -> TimelineRoundState:
     """Return timeline state from a test round."""
     assert isinstance(game_round.answer_state, TimelineRoundState)
@@ -656,7 +668,7 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
                     "value": "Secret Artist 0",
                 },
             )
-        _, deadline_callback, round_index = cast("MagicMock", plugin.mass.call_later).call_args[0]
+        _, deadline_callback, round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
         await deadline_callback(round_index)
 
     game = plugin._game
@@ -749,7 +761,10 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
         if initialize_call_count == 2:
             pending_task.cancel.assert_called_once()
             assert plugin._next_round_task is None
-            assert cast("MagicMock", plugin.mass.cancel_timer).call_count == 2
+            cancel_timer = cast("MagicMock", plugin.mass.cancel_timer)
+            cancel_timer.assert_any_call(plugin._reveal_timer_id)
+            cancel_timer.assert_any_call(plugin._advance_timer_id)
+            cancel_timer.assert_any_call(plugin._presence_timer_id)
 
     initialize = AsyncMock(side_effect=_initialize)
     with (
@@ -1700,7 +1715,10 @@ async def test_create_game_cancels_previous_background_work_before_initialize() 
     async def _initialize(_strategy: Any) -> None:
         pending_task.cancel.assert_called_once()
         assert plugin._next_round_task is None
-        assert cast("MagicMock", plugin.mass.cancel_timer).call_count == 2
+        cancel_timer = cast("MagicMock", plugin.mass.cancel_timer)
+        cancel_timer.assert_any_call(plugin._reveal_timer_id)
+        cancel_timer.assert_any_call(plugin._advance_timer_id)
+        cancel_timer.assert_any_call(plugin._presence_timer_id)
 
     with (
         patch(
