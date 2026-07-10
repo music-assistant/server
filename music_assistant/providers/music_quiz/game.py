@@ -40,6 +40,25 @@ def add_player(
     game.players[player.player_id] = player
 
 
+def remove_player(
+    game: MusicQuizGame,
+    player_id: str,
+    answer_type: QuizAnswerType,
+) -> None:
+    """
+    Remove a player and their answer-specific round state.
+
+    :param game: Game to mutate.
+    :param player_id: Player to remove.
+    :param answer_type: Answer strategy for the game.
+    """
+    if player_id not in game.players:
+        raise MusicQuizUnknownPlayerError("Unknown player")
+    for game_round in game.rounds:
+        answer_type.remove_player(game_round.answer_state, player_id)
+    del game.players[player_id]
+
+
 def submit_answer(
     game: MusicQuizGame,
     player_id: str,

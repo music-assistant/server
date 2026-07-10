@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal
 
-from mashumaro import DataClassDictMixin
+from mashumaro import DataClassDictMixin, field_options
 from mashumaro.config import BaseConfig
 from mashumaro.types import Discriminator
 
@@ -70,6 +70,12 @@ class MusicQuizPlayer(DataClassDictMixin):
     active_from_round: int
     score: int = 0
     ready: bool = False
+    last_seen: float = field(
+        default=0,
+        compare=False,
+        repr=False,
+        metadata=field_options(serialize="omit"),
+    )
 
 
 @dataclass

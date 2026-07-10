@@ -15,6 +15,7 @@ from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
     MultipleChoiceSuggestion,
     MusicQuizAnswerType,
+    MusicQuizPlayer,
     MusicQuizRound,
 )
 
@@ -86,6 +87,26 @@ def test_round_answer_state_round_trips_with_discriminator() -> None:
     assert restored == game_round
     assert isinstance(restored.answer_state, MultipleChoiceRoundState)
     assert restored.answer_state.answer_type is MusicQuizAnswerType.MULTIPLE_CHOICE
+
+
+def test_player_presence_is_not_serialized() -> None:
+    """Keep internal presence timestamps out of serialized player state."""
+    player = MusicQuizPlayer(
+        player_id="private",
+        name="Alice",
+        joined_at=10.0,
+        active_from_round=0,
+        last_seen=20.0,
+    )
+
+    assert player.to_dict() == {
+        "player_id": "private",
+        "name": "Alice",
+        "joined_at": 10.0,
+        "active_from_round": 0,
+        "score": 0,
+        "ready": False,
+    }
 
 
 @pytest.mark.parametrize(
