@@ -184,8 +184,13 @@ class Provider:
         """Return the stage of this provider."""
         return self.manifest.stage
 
-    def unload_with_error(self, error: str) -> None:
-        """Unload provider with error message."""
+    def unload_with_error(self, error: str | Exception) -> None:
+        """
+        Unload this provider and record an error for the user to act on.
+
+        :param error: The originating exception (preferred, so its error code and localized
+            message are preserved) or a plain string for a generic error message.
+        """
         self.mass.call_later(1, self.mass.unload_provider_with_error, self.instance_id, error)
 
     def to_dict(self) -> dict[str, Any]:

@@ -856,11 +856,9 @@ class SpotifyProvider(MusicProvider):
                 if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_GLOBAL, refresh_token):
                     self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
                     if self.available:
-                        self.unload_with_error(str(err))
+                        self.unload_with_error(err)
             elif self.available:
-                self.mass.create_task(
-                    self.mass.unload_provider_with_error(self.instance_id, str(err))
-                )
+                self.mass.create_task(self.mass.unload_provider_with_error(self.instance_id, err))
             raise
 
         # make sure that our updated creds get stored in memory + config
