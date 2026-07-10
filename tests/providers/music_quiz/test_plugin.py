@@ -897,6 +897,32 @@ async def test_expiry_unblocks_answer_completion_and_keeps_events_private() -> N
 
 
 @pytest.mark.asyncio
+async def test_expiry_reveals_when_only_late_joiners_remain() -> None:
+    """Reveal immediately when expiry leaves no player eligible for the current round."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        late_join = await plugin.join_game("Late")
+
+    game = plugin._game
+    assert game is not None
+    late_player_id = late_join["player_id"]
+    assert game.players[late_player_id].active_from_round == 1
+    game.players[player_ids["Alice"]].last_seen = 100.0
+    game.players[late_player_id].last_seen = 200.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=160.0):
+        await plugin._expire_inactive_players()
+
+    assert set(game.players) == {late_player_id}
+    assert game.phase == MusicQuizPhase.REVEAL
+
+
+@pytest.mark.asyncio
 async def test_expiry_unblocks_reveal_readiness() -> None:
     """Removing an inactive holdout advances when every remaining player is ready."""
     plugin = _create_plugin()

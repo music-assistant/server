@@ -176,7 +176,9 @@ def all_active_players_complete(game: MusicQuizGame, answer_type: QuizAnswerType
         return False
     current_round = get_current_round(game)
     players = active_players_for_round(game, current_round.round_index)
-    return answer_type.is_round_complete(current_round.answer_state, players)
+    return bool(game.players) and (
+        not players or answer_type.is_round_complete(current_round.answer_state, players)
+    )
 
 
 def finish_game(game: MusicQuizGame) -> None:

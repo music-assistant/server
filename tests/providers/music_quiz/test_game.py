@@ -256,6 +256,17 @@ def test_all_active_players_complete_tracks_current_round() -> None:
     assert all_active_players_complete(game, ANSWER_TYPE) is True
 
 
+def test_all_active_players_complete_when_only_future_players_remain() -> None:
+    """Allow a round to reveal when participants remain but none can answer it."""
+    game = _game()
+    add_player(game, _player("late", "Late", active_from_round=1))
+
+    assert all_active_players_complete(game, ANSWER_TYPE) is True
+
+    game.players.clear()
+    assert all_active_players_complete(game, ANSWER_TYPE) is False
+
+
 def test_reveal_round_applies_scores_to_correct_answers_in_order() -> None:
     """Apply linear scores when a round is revealed."""
     game = _game()
