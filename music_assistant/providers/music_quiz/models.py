@@ -17,6 +17,12 @@ class MusicQuizPhase(StrEnum):
     FINISHED = "finished"
 
 
+class MusicQuizAnswerType(StrEnum):
+    """Supported Music Quiz answer types."""
+
+    MULTIPLE_CHOICE = "multiple_choice"
+
+
 class MusicQuizDifficulty(StrEnum):
     """Difficulty levels for the guess-the-song quiz type."""
 
@@ -108,6 +114,7 @@ class MusicQuizGame(DataClassDictMixin):
 
     config: MusicQuizConfig
     quiz_type: str
+    answer_type: MusicQuizAnswerType
     phase: MusicQuizPhase = MusicQuizPhase.LOBBY
     created_at: float = 0
     players: dict[str, MusicQuizPlayer] = field(default_factory=dict)

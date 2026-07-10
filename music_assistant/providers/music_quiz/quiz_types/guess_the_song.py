@@ -12,7 +12,11 @@ from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
-from music_assistant.providers.music_quiz.models import MusicQuizDifficulty, MusicQuizRound
+from music_assistant.providers.music_quiz.models import (
+    MusicQuizAnswerType,
+    MusicQuizDifficulty,
+    MusicQuizRound,
+)
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
 from music_assistant.providers.music_quiz.suggestions import (
     SuggestionCandidate,
@@ -32,6 +36,8 @@ LOGGER = logging.getLogger(__name__)
 
 class GuessTheSongQuizType(QuizType):
     """Quiz type where players guess the currently playing track."""
+
+    answer_type = MusicQuizAnswerType.MULTIPLE_CHOICE
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
         """
