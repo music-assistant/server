@@ -7,6 +7,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import EventType, ProviderType
+from music_assistant_models.errors import LoginFailed
 from music_assistant_models.provider import ProviderInstance
 
 from music_assistant.models.provider import Provider
@@ -58,4 +59,15 @@ def test_unload_with_error_schedules_error_unload() -> None:
     mass = cast("MagicMock", provider.mass)
     mass.call_later.assert_called_once_with(
         1, mass.unload_provider_with_error, "test_instance", "boom"
+    )
+
+
+def test_unload_with_error_forwards_exception() -> None:
+    """An exception is forwarded unchanged so its error code + localized message are preserved."""
+    provider = _make_base_provider()
+    err = LoginFailed("token revoked")
+    provider.unload_with_error(err)
+    mass = cast("MagicMock", provider.mass)
+    mass.call_later.assert_called_once_with(
+        1, mass.unload_provider_with_error, "test_instance", err
     )

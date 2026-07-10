@@ -258,12 +258,13 @@ async def setup(
             mass.config.set_raw_provider_config_value(
                 config.instance_id, CONF_REFRESH_TOKEN_GLOBAL, legacy_token, encrypted=True
             )
+            # reflect the migrated token locally; the provider isn't registered yet, so the store
+            # write above can't sync this config snapshot and a re-read would still come back empty
+            global_token = legacy_token
         # Remove the deprecated legacy token from config
         mass.config.set_raw_provider_config_value(
             config.instance_id, CONF_REFRESH_TOKEN_DEPRECATED, None
         )
-        # Re-fetch the updated config value
-        global_token = config.get_value(CONF_REFRESH_TOKEN_GLOBAL)
 
     if global_token in (None, ""):
         msg = "Re-Authentication required"
