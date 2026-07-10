@@ -1508,9 +1508,9 @@ class Player(ABC):
         :param protocol_id: The protocol player_id to set as active, "native" for native playback,
             or None to clear the active protocol.
         """
-        # cancel any existing timer to set/clear the active protocol,
+        # cancel any pending scheduled protocol clear,
         # as we're explicitly setting it now
-        self.mass.cancel_timer(f"clear_active_protocol_{self.player_id}")
+        self.mass.cancel_task(f"clear_active_protocol_{self.player_id}")
         if self.__attr_active_output_protocol == protocol_id:
             return  # No change
         if protocol_id == self.player_id:

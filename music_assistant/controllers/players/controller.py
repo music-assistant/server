@@ -2353,25 +2353,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Clear the player's active output protocol once it stops playing.
 
-        Devices may keep reporting PLAYING for a short while after a stop
-        command, so the clear happens as soon as the player no longer reports
-        PLAYING (with a deadline as fallback). Starting a new session cancels
-        the pending clear (see Player.set_active_output_protocol).
+        A device may keep reporting PLAYING for a short while after a stop
+        command, so the clear is deferred until the player reports IDLE (with a
+        timeout as fallback). Starting a new session cancels the pending clear
+        (see Player.set_active_output_protocol).
 
         :param player: The player whose active output protocol must be cleared.
         """
-        deadline = self.mass.loop.time() + 10
-
-        def check() -> None:
-            if (
-                player.state.playback_state != PlaybackState.PLAYING
-                or self.mass.loop.time() >= deadline
-            ):
-                player.set_active_output_protocol(None)
-                return
-            self.mass.call_later(0.5, check, task_id=f"clear_active_protocol_{player.player_id}")
-
-        self.mass.call_later(0.5, check, task_id=f"clear_active_protocol_{player.player_id}")
+        # Deduplicated per player via task_id: if a clear is already pending we
+        # keep it, so the single tracked task stays cancellable by a new session.
+        self.mass.create_task(
+            self._clear_active_output_protocol_when_idle(player),
+            task_id=f"clear_active_protocol_{player.player_id}",
+        )
 
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
@@ -2643,6 +2637,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         elapsed = time.time() - start_timestamp
         if elapsed < minimal_time:
             await asyncio.sleep(minimal_time - elapsed)
+
+    async def _clear_active_output_protocol_when_idle(self, player: Player) -> None:
+        """Wait for the player to stop playing, then clear its active output protocol."""
+        await self._wait_for_playback_state(player, PlaybackState.IDLE, timeout=10)
+        player.set_active_output_protocol(None)
 
     def _handle_membership_cleanup_on_state_change(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
