@@ -35,7 +35,7 @@ def _lookup_strings_key(key: str) -> str | None:
     """Resolve provider.yandex_music.media.<group>.<slug>.name against strings.json."""
     parts = key.split(".")
     node: object = _STRINGS
-    for part in parts[2:]:  # skip "provider.yandex_music"
+    for part in parts[2:]:  # skip "music_assistant.providers.yandex_music.yandex_music"
         if not isinstance(node, dict) or part not in node:
             return None
         node = node[part]

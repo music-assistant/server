@@ -12,51 +12,66 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
 
-# In the provider-repo layout, tests must exercise the working tree, not the
-# provider snapshot baked into the venv's music_assistant install — alias the
-# local ``provider`` package onto the upstream import path before any test
-# module imports it. In the upstream (inlined) layout there is no sibling
-# ``provider/`` directory and the package under test IS the checkout itself,
-# so the aliasing must no-op instead of failing collection.
-_PROVIDER_DIR = Path(__file__).resolve().parent.parent / "provider"
 _PROVIDER_PKG = "music_assistant.providers.yandex_music"
-_existing = sys.modules.get(_PROVIDER_PKG)
-if not _PROVIDER_DIR.is_dir():
-    pass  # upstream layout — nothing to alias
-elif _existing is not None:
-    # Something imported the provider before this conftest ran — silently
-    # testing the venv snapshot instead of the working tree must be fatal.
-    _loaded_from = Path(getattr(_existing, "__file__", "") or "").resolve().parent
-    if _loaded_from != _PROVIDER_DIR:
-        raise RuntimeError(
-            f"{_PROVIDER_PKG} was already imported from {_loaded_from}; "
-            f"tests must run against {_PROVIDER_DIR}"
-        )
-else:
-    _spec = importlib.util.spec_from_file_location(
+
+
+def _alias_working_tree_provider(provider_dir: Path) -> None:
+    """
+    Alias the ``provider`` working-tree package onto the upstream import path.
+
+    In the provider-repo layout, tests must exercise the working tree, not the
+    provider snapshot baked into the venv's music_assistant install. In the
+    upstream (inlined) layout there is no sibling ``provider/`` directory and
+    the package under test IS the checkout itself, so the aliasing must no-op
+    instead of failing collection.
+
+    :param provider_dir: Path to the ``provider`` working-tree directory.
+    """
+    provider_dir = provider_dir.resolve()
+    if not provider_dir.is_dir():
+        return
+    existing = sys.modules.get(_PROVIDER_PKG)
+    if existing is not None:
+        # Something imported the provider before this conftest ran — silently
+        # testing the venv snapshot instead of the working tree must be fatal.
+        loaded_from = Path(getattr(existing, "__file__", "") or "").resolve().parent
+        if loaded_from != provider_dir:
+            raise RuntimeError(
+                f"{_PROVIDER_PKG} was already imported from {loaded_from}; "
+                f"tests must run against {provider_dir}"
+            )
+        return
+    spec = importlib.util.spec_from_file_location(
         _PROVIDER_PKG,
-        _PROVIDER_DIR / "__init__.py",
-        submodule_search_locations=[str(_PROVIDER_DIR)],
+        provider_dir / "__init__.py",
+        submodule_search_locations=[str(provider_dir)],
     )
-    if _spec is None or _spec.loader is None:
-        raise ImportError(f"cannot load provider package from {_PROVIDER_DIR}")
-    _module = importlib.util.module_from_spec(_spec)
-    sys.modules[_PROVIDER_PKG] = _module
-    _spec.loader.exec_module(_module)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load provider package from {provider_dir}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_PROVIDER_PKG] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # Mirror the import machinery: a failed exec must not leave a
+        # half-initialized module registered under the package name.
+        del sys.modules[_PROVIDER_PKG]
+        raise
     # Regular imports also bind the submodule as an attribute of its parent
     # package; monkeypatch and friends resolve dotted paths via getattr.
-    _parent = importlib.import_module("music_assistant.providers")
-    setattr(_parent, "yandex_music", _module)  # noqa: B010
+    parent = importlib.import_module("music_assistant.providers")
+    setattr(parent, "yandex_music", module)  # noqa: B010
+
+
+# The assignment + is_dir() shape (not a bare call argument) keeps this
+# dereference visible to the rewrite-safe Rule C gate in CI.
+_PROVIDER_DIR = Path(__file__).resolve().parent.parent / "provider"
+if _PROVIDER_DIR.is_dir():
+    _alias_working_tree_provider(_PROVIDER_DIR)
 
 
 def provider_dir() -> Path:
-    """
-    Directory of the provider package under test, in either layout.
-
-    Resolves through the imported package: in the provider repo the aliasing
-    above points it at the working tree's ``provider/``; upstream it is the
-    inlined ``music_assistant/providers/yandex_music/`` checkout itself.
-    """
+    """Directory of the provider package under test, in either layout."""
     pkg = importlib.import_module(_PROVIDER_PKG)
     pkg_file = pkg.__file__
     assert pkg_file is not None  # a real package always has a file
