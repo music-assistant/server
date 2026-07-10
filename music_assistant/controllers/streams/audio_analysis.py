@@ -35,7 +35,6 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import is_arm
-from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -87,10 +86,14 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.controllers.streams.controller import StreamsController
+    from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
 def _parse_row(row: Mapping[str, Any]) -> AudioAnalysisData | None:
     """Parse a single audio_analysis row's analysis_data, logging and skipping on error."""
+    # AudioAnalysisData is imported at use here (and below) to keep numpy off the startup path
+    from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
+
     try:
         return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
     except (ValueError, TypeError, KeyError) as err:
@@ -121,6 +124,8 @@ def _merged_from_rows(
         (non-None fields). When a tuple of AA provider domains is given, only those domains
         are considered and the first-listed domain wins each per-field conflict.
     """
+    from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
+
     merged = AudioAnalysisData()
     found = False
     if priority is None:
@@ -595,6 +600,8 @@ class AudioAnalysisController:
             or loudness_album <= LOUDNESS_MEASUREMENT_MIN_LUFS
         ):
             loudness_album = None
+        from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
+
         analysis = AudioAnalysisData(
             loudness_integrated=loudness,
             loudness_album=loudness_album,

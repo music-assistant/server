@@ -11,18 +11,17 @@ from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from json import JSONDecodeError
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mutagen
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
-from mutagen._vorbis import VCommentDict
-from mutagen.apev2 import APEv2
 
-# TXXX and UFID are ID3 frame classes pulled into mutagen.id3 via a dynamic
-# frames-table import that mypy's stubs do not follow, hence the attr-defined ignore.
-from mutagen.id3 import ID3, TSRC, TXXX, UFID  # type: ignore[attr-defined]
-from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags
+# mutagen is only needed when actually reading/writing tags of local files, so it is
+# imported inside the functions below to keep it off the server startup path
+if TYPE_CHECKING:
+    from mutagen._vorbis import VCommentDict
+    from mutagen.apev2 import APEv2
+    from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
@@ -1276,6 +1275,11 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
     :param input_file: Path to the audio file.
     """
+    import mutagen  # noqa: PLC0415
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.mp4 import MP4Tags  # noqa: PLC0415
+
     result: dict[str, Any] = {}
     try:
         audio = mutagen.File(input_file)  # type: ignore[attr-defined]
@@ -1332,6 +1336,8 @@ def get_apev2_image(input_file: str) -> bytes | None:
 
     :param input_file: Path to the local audio file.
     """
+    import mutagen  # noqa: PLC0415
+
     audio = mutagen.File(input_file)  # type: ignore[attr-defined]
     if audio is None or not hasattr(audio, "tags") or audio.tags is None:
         return None
@@ -1411,6 +1417,16 @@ async def write_replaygain_track_gain(path: str, track_gain_db: float) -> bool:
 
 
 def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
+    import mutagen  # noqa: PLC0415
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+
+    # TXXX and UFID are ID3 frame classes pulled into mutagen.id3 via a dynamic
+    # frames-table import that mypy's stubs do not follow, hence the attr-defined
+    # ignores on the mutagen.id3 imports here and below.
+    from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         audio = mutagen.File(path)  # type: ignore[attr-defined]
     except Exception as err:
@@ -1492,6 +1508,8 @@ async def write_identifier_tags(
 
 def _open_mutagen_for_write(path: str) -> Any | None:
     """Open a file for tag writing, returning the mutagen object or None on failure."""
+    import mutagen  # noqa: PLC0415
+
     try:
         audio = mutagen.File(path)  # type: ignore[attr-defined]
     # Broad: mutagen.File can raise format-specific parse errors, struct errors,
@@ -1551,6 +1569,11 @@ def _write_identifier_tags_sync(
 
 
 def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3, UFID  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         if isinstance(tags, ID3):
             # MusicBrainz Recording Id lives in a UFID frame (Picard convention).
@@ -1580,6 +1603,11 @@ def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
 
 
 def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         if isinstance(tags, ID3):
             tags.delall("TXXX:Acoustid Id")  # type: ignore[no-untyped-call]
@@ -1606,6 +1634,11 @@ def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
 
 
 def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3, TSRC  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         if isinstance(tags, ID3):
             # TSRC is ID3's dedicated ISRC frame; ID3v2.4 supports multiple values.
@@ -1629,6 +1662,11 @@ def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
 
 
 def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         if isinstance(tags, ID3):
             tags.delall("TXXX:MusicBrainz Artist Id")  # type: ignore[no-untyped-call]

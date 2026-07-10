@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, cast
 
 import aiofiles
 from aiohttp.client_exceptions import ClientError
-from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME
 from music_assistant.helpers.security import is_safe_path
@@ -369,6 +368,10 @@ async def _generate_and_cache_thumb(
     else:
 
         def _create_image() -> bytes:
+            # PIL is imported at use (here and in create_collage) to keep it off the
+            # server startup path
+            from PIL import Image, UnidentifiedImageError  # noqa: PLC0415
+
             data = BytesIO()
             try:
                 img: ImageClass = Image.open(BytesIO(img_data))
@@ -450,6 +453,8 @@ async def create_collage(
     dimensions: tuple[int, int] = (1500, 1500),
 ) -> bytes:
     """Create a basic collage image from multiple image urls."""
+    from PIL import Image  # noqa: PLC0415
+
     image_size = 250
 
     def _new_collage() -> ImageClass:

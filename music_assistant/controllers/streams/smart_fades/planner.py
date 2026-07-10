@@ -16,9 +16,6 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-import numpy as np
-import numpy.typing as npt
-
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.bands import (
     build_band_profile,
@@ -52,6 +49,9 @@ from music_assistant.controllers.streams.smart_fades.models import (
 )
 
 if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
+
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
@@ -228,6 +228,9 @@ class SmartCrossFadePlanner(TransitionPlanner):
         buffer_duration: float,
     ) -> None:
         """Load both tracks onto the decks, cue the outgoing tail and detect B's entry."""
+        # numpy is imported inside the methods here to keep it off the server startup path
+        import numpy as np  # noqa: PLC0415
+
         if (
             fade_out_analysis.bpm is None
             or fade_in_analysis.bpm is None
@@ -699,6 +702,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
         self, crossfade_duration: float, fadein_trim_start: float | None
     ) -> float:
         """Pick the bass-swap moment: B's groove entry when inside the overlap, else 60% through."""
+        import numpy as np  # noqa: PLC0415
+
         trim = fadein_trim_start or 0.0
         candidate = self._incoming_entry - trim
         if not 0.0 < candidate <= crossfade_duration:
@@ -832,6 +837,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
         crossfade_duration: float,
     ) -> bool:
         """Return True when both decks read bright, comparably loud, over a long enough blend."""
+        import numpy as np  # noqa: PLC0415
+
         assert self.outgoing_profile is not None  # narrowed by the caller
         assert self.incoming_profile is not None
         bar_out = 4 * 60.0 / self.outgoing.bpm
@@ -949,6 +956,8 @@ class SmartCrossFadePlanner(TransitionPlanner):
         n_samples: int = 64,
     ) -> float:
         """Max plateau-to-valley drop, in dB, of the predicted combined qsin-weighted power."""
+        import numpy as np  # noqa: PLC0415
+
         # qsin weights match the renderer's acrossfade=...:c1=qsin:c2=qsin curve
         schedules_a = {"low": eq_plan.low_out, "mid": eq_plan.mid_out, "high": eq_plan.high_out}
         schedules_b = {"low": eq_plan.low_in, "mid": eq_plan.mid_in, "high": eq_plan.high_in}
