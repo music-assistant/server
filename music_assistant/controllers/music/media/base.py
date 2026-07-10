@@ -226,7 +226,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query = f"""
         SELECT
             {self._summary_base_columns()},
-            {self._provider_mappings_summary_query()} AS provider_mappings
+            {self._provider_mappings_query()} AS provider_mappings
             FROM {self.db_table} """
         return query, {}
 
@@ -365,7 +365,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         genre: int | list[int] | None = None,
         played_only: bool = False,
         *,
-        summary: bool = False,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[ItemCls]:
         """
@@ -379,8 +379,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param played_only: Only include items that have been played (last_played > 0).
-        :param summary: Return slim summary items (only the fields needed for a list view)
-            instead of full items.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         items = await self.get_library_items_by_query(
             favorite=favorite,
@@ -490,7 +490,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
         if provider_instance_id_or_domain == "library":
-            return await self.library_items(search=search_query, limit=limit)
+            return await self.library_items(search=search_query, limit=limit, summary=False)
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
@@ -1238,21 +1238,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             WHERE pm.item_id = {self.db_table}.item_id
             AND pm.media_type = '{self.media_type.value}')"""
 
-    def _provider_mappings_summary_query(self) -> str:
-        """
-        Return a subquery selecting the slim provider mappings JSON of a summary row.
-
-        Only carries the fields needed to compute the availability flag; never
-        hydrated into ProviderMapping objects.
-        """
-        return f"""(SELECT JSON_GROUP_ARRAY(
-            json_object(
-                'provider_instance', pm.provider_instance,
-                'available', pm.available
-            )) FROM {DB_TABLE_PROVIDER_MAPPINGS} pm
-            WHERE pm.item_id = {self.db_table}.item_id
-            AND pm.media_type = '{self.media_type.value}')"""
-
     def _artist_mappings_summary_query(
         self, m2m_table: str, m2m_key: str, include_artist_type: bool = False
     ) -> str:
@@ -1706,30 +1691,37 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Override in a subclass to fill additional per-type fields (selected by the
         subclass's summary_query).
         """
+        provider_mappings = self._parse_summary_provider_mappings(db_row)
         return self.summary_item_cls(
             item_id=str(db_row["item_id"]),
             provider="library",
             name=db_row["name"],
             sort_name=db_row["sort_name"],
             favorite=bool(db_row["favorite"]),
-            available=self._parse_summary_available(db_row),
+            provider_mappings=provider_mappings,
+            available=self._summary_available(provider_mappings),
             metadata=self._parse_summary_metadata(db_row),
         )
 
     @final
     @staticmethod
-    def _parse_summary_available(db_row: Mapping[str, Any]) -> bool:
-        """Compute the availability flag from the slim provider mappings of a summary row."""
+    def _parse_summary_provider_mappings(db_row: Mapping[str, Any]) -> set[ProviderMapping]:
+        """Hydrate the provider mappings of a summary row into ProviderMapping objects."""
         if not (raw_mappings := db_row["provider_mappings"]):
-            return False
-        mappings = json_loads(raw_mappings)
+            return set()
+        return {ProviderMapping.from_dict(x) for x in json_loads(raw_mappings)}
+
+    @final
+    @staticmethod
+    def _summary_available(provider_mappings: set[ProviderMapping]) -> bool:
+        """Compute the availability flag from a summary item's provider mappings."""
         # same semantics as the MediaItem.available property
         if not (available_providers := get_global_cache_value("available_providers")):
-            return any(x["available"] for x in mappings)
+            return any(x.available for x in provider_mappings)
         if TYPE_CHECKING:
             available_providers = cast("set[str]", available_providers)
         return any(
-            x["available"] and x["provider_instance"] in available_providers for x in mappings
+            x.available and x.provider_instance in available_providers for x in provider_mappings
         )
 
     @final

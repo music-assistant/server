@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -25,6 +25,8 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant import MusicAssistant
     from music_assistant.providers.builtin import BuiltinProvider
 
@@ -54,9 +56,20 @@ class RadioController(MediaControllerBase[Radio]):
             required_scope=Scope.LIBRARY_WRITE,
         )
 
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for radio summary listings."""
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            json_extract({self.db_table}.metadata, '$.description') AS description,
+            {self._provider_mappings_query()} AS provider_mappings
+            FROM {self.db_table}"""
+        return query, {}
+
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
-        radios = await self.library_items(limit=10000, offset=0)
+        radios = await self.library_items(limit=10000, offset=0, summary=False)
         items = [media_item_to_playlist_item(radio) for radio in radios]
         return generate_m3u("Radio Stations", items)
 
@@ -225,3 +238,9 @@ class RadioController(MediaControllerBase[Radio]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> RadioSummary:
+        """Parse a raw summary db row into a RadioSummary object."""
+        item = cast("RadioSummary", super()._parse_summary_row(db_row))
+        item.metadata.description = db_row["description"]
+        return item

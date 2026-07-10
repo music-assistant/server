@@ -91,7 +91,7 @@ class AlbumsController(MediaControllerBase[Album]):
             albums.version,
             albums.year,
             albums.album_type,
-            {self._provider_mappings_summary_query()} AS provider_mappings,
+            {self._provider_mappings_query()} AS provider_mappings,
             {artists_query} AS artists
             FROM albums"""
         return query, {}
@@ -139,7 +139,7 @@ class AlbumsController(MediaControllerBase[Album]):
         played_only: bool = False,
         album_types: list[AlbumType] | None = None,
         *,
-        summary: bool = False,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Album]:
         """
@@ -153,8 +153,8 @@ class AlbumsController(MediaControllerBase[Album]):
         :param provider: Filter by provider instance ID (single string or list).
         :param album_types: Filter by album types.
         :param genre: Filter by genre id(s).
-        :param summary: Return slim summary items (only the fields needed for a list view)
-            instead of full items.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []

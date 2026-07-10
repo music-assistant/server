@@ -70,7 +70,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             podcasts.version,
             podcasts.publisher,
             podcasts.total_episodes,
-            {self._provider_mappings_summary_query()} AS provider_mappings
+            {self._provider_mappings_query()} AS provider_mappings
             FROM podcasts"""
         return query, {}
 
@@ -85,7 +85,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         genre: int | list[int] | None = None,
         played_only: bool = False,
         *,
-        summary: bool = False,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Podcast]:
         """
@@ -98,8 +98,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
-        :param summary: Return slim summary items (only the fields needed for a list view)
-            instead of full items.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         result = await self.get_library_items_by_query(
             favorite=favorite,

@@ -1086,7 +1086,7 @@ class BuiltinProvider(MusicProvider):
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
-            favorite=True, limit=250000, order_by="random_play_count"
+            favorite=True, limit=250000, order_by="random_play_count", summary=False
         )
         for idx, item in enumerate(res, 1):
             item.position = idx
@@ -1096,7 +1096,9 @@ class BuiltinProvider(MusicProvider):
     @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_tracks(self) -> list[Track]:
         result: list[Track] = []
-        res = await self.mass.music.tracks.library_items(limit=500, order_by="random_play_count")
+        res = await self.mass.music.tracks.library_items(
+            limit=500, order_by="random_play_count", summary=False
+        )
         for idx, item in enumerate(res, 1):
             item.position = idx
             result.append(item)
@@ -1123,7 +1125,7 @@ class BuiltinProvider(MusicProvider):
         for source in ("library", "top"):
             for min_tracks_required in (25, 10, 5, 1):
                 for random_artist in await self.mass.music.artists.library_items(
-                    limit=25, order_by="random"
+                    limit=25, order_by="random", summary=False
                 ):
                     if source == "library":
                         tracks = await self.mass.music.artists.tracks(
@@ -1193,7 +1195,7 @@ class BuiltinProvider(MusicProvider):
         limit = 25 * 3 if get_track_filter() is not None else 25
         candidates = list(
             await self.mass.music.tracks.library_items(
-                favorite=favorite, limit=limit, order_by="random"
+                favorite=favorite, limit=limit, order_by="random", summary=False
             )
         )
         tracks = filter_tracks(candidates)[:25]
