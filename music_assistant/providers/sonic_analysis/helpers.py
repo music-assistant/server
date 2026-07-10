@@ -290,8 +290,9 @@ def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioA
         harmonic_complexity=harmonic_complexity,
         roughness=roughness,
         rhythmic_regularity=rhythmic_regularity,
-        rms_energy=rms_energy_series,
-        spectral_centroid=spectral_centroid_series,
+        # the model stores plain float lists (numpy-free); convert the analysis arrays
+        rms_energy=rms_energy_series.tolist(),
+        spectral_centroid=spectral_centroid_series.tolist(),
     )
 
 

@@ -17,7 +17,7 @@ MIN_EFFECTIVE_FADE_BUFFER = 10.0
 
 
 def detect_effective_audio_end(
-    rms_energy: npt.NDArray[np.float32] | None,
+    rms_energy: npt.NDArray[np.float32] | list[float] | None,
     track_duration: float | None,
     buffer_duration: float,
 ) -> float:
@@ -34,12 +34,10 @@ def detect_effective_audio_end(
     # numpy is imported inside the functions here to keep it off the server startup path
     import numpy as np  # noqa: PLC0415
 
-    if (
-        rms_energy is None
-        or not track_duration
-        or len(rms_energy) < 2
-        or not np.any(np.isfinite(rms_energy))
-    ):
+    if rms_energy is None or not track_duration:
+        return buffer_duration
+    rms_energy = np.asarray(rms_energy, dtype=np.float32)
+    if len(rms_energy) < 2 or not np.any(np.isfinite(rms_energy)):
         return buffer_duration
     bin_duration = track_duration / len(rms_energy)
     start_bin = max(0, int((track_duration - buffer_duration) / bin_duration))
@@ -241,7 +239,7 @@ def sustained_energy_floor(rms_energy: npt.NDArray[np.float32]) -> float:
 
 
 def detect_groove_entry(
-    rms_energy: npt.NDArray[np.float32] | None,
+    rms_energy: npt.NDArray[np.float32] | list[float] | None,
     track_duration: float | None,
     downbeats: npt.NDArray[np.float32],
     k_sigma: float = 1.5,
@@ -263,6 +261,7 @@ def detect_groove_entry(
 
     if rms_energy is None or not track_duration or len(downbeats) < 12:
         return 0.0
+    rms_energy = np.asarray(rms_energy, dtype=np.float32)
     t = (np.arange(len(rms_energy)) + 0.5) * (track_duration / len(rms_energy))
     bar_rms = np.array(
         [

@@ -1335,7 +1335,7 @@ async def test_get_track_audio_metadata_none_without_relevant_analysis() -> None
 @pytest.mark.asyncio
 async def test_get_wave_form_returns_rms_bins() -> None:
     """wave_form returns the stored RMS energy bins as a plain list of floats."""
-    rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32)
+    rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32).tolist()
     c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, rms_energy=rms)])
     result = await c.get_wave_form("track-1", "test-provider")
     assert result is not None

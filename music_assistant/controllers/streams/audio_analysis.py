@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import importlib
 import logging
 import os
 import sys
@@ -36,6 +35,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import is_arm
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -87,14 +87,10 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.controllers.streams.controller import StreamsController
-    from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
 def _parse_row(row: Mapping[str, Any]) -> AudioAnalysisData | None:
     """Parse a single audio_analysis row's analysis_data, logging and skipping on error."""
-    # AudioAnalysisData is imported at use here (and below) to keep numpy off the startup path
-    from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
-
     try:
         return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
     except (ValueError, TypeError, KeyError) as err:
@@ -125,8 +121,6 @@ def _merged_from_rows(
         (non-None fields). When a tuple of AA provider domains is given, only those domains
         are considered and the first-listed domain wins each per-field conflict.
     """
-    from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
-
     merged = AudioAnalysisData()
     found = False
     if priority is None:
@@ -170,11 +164,6 @@ def _nice_analysis_worker() -> None:
         os.setpriority(os.PRIO_PROCESS, 0, ANALYSIS_THREAD_NICE)
 
 
-def _warm_analysis_model() -> None:
-    """Import the numpy-backed AudioAnalysisData model. Runs in a worker thread at setup."""
-    importlib.import_module("music_assistant.models._audio_analysis_data")
-
-
 class AudioAnalysisController:
     """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
@@ -207,7 +196,7 @@ class AudioAnalysisController:
         self._idle_unload_task: asyncio.Task[None] | None = None
 
     def setup(self) -> None:
-        """Register the nightly background scan task and warm the analysis model import."""
+        """Register the nightly background scan task."""
         utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
         self.mass.tasks.register_scheduled_task(
             task_id=BACKGROUND_SCAN_TASK_ID,
@@ -216,13 +205,6 @@ class AudioAnalysisController:
             schedule=TaskSchedule.daily(hour=utc_hour, minute=utc_minute),
             metadata={"task_domain": "audio_analysis"},
             allow_retry=True,
-        )
-        # AudioAnalysisData is kept out of the startup import graph, but the always-on
-        # loudness analysis provider reads and writes it at runtime, which imports numpy.
-        # Warm that import in a worker thread now so the first runtime touch never has to
-        # import numpy on the event loop.
-        self.mass.create_task(
-            asyncio.to_thread(_warm_analysis_model), task_id="warm_analysis_model"
         )
 
     async def close(self) -> None:
@@ -613,8 +595,6 @@ class AudioAnalysisController:
             or loudness_album <= LOUDNESS_MEASUREMENT_MIN_LUFS
         ):
             loudness_album = None
-        from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
-
         analysis = AudioAnalysisData(
             loudness_integrated=loudness,
             loudness_album=loudness_album,

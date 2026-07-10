@@ -15,13 +15,13 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     StandardCrossFade,
 )
 from music_assistant.helpers.audio import align_audio_to_frame_boundary, strip_silence
+from music_assistant.models.audio_analysis import AudioAnalysisData
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.controller import StreamsController
-    from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
 class SmartFadesMixer:

@@ -44,3 +44,12 @@ def test_server_import_defers_heavy_modules() -> None:
 def test_package_root_import_is_lazy() -> None:
     """Importing a submodule through the package root must not drag in the server."""
     assert "music_assistant.mass" not in _modules_loaded_by("import music_assistant.constants")
+
+
+def test_audio_analysis_model_is_numpy_free() -> None:
+    """Constructing and (de)serializing AudioAnalysisData must not import numpy."""
+    loaded = _modules_loaded_by(
+        "from music_assistant.models.audio_analysis import AudioAnalysisData; "
+        "AudioAnalysisData.from_dict({'loudness_integrated': -12.0, 'beats': [1.0, 2.0]}).to_dict()"
+    )
+    assert "numpy" not in {name.split(".")[0] for name in loaded}

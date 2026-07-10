@@ -238,16 +238,19 @@ class SmartCrossFadePlanner(TransitionPlanner):
             or fade_in_analysis.beats is None
         ):
             raise ValueError("AudioAnalysisData must have bpm and beats set for smart crossfade")
+        # AudioAnalysisData stores the grids as plain float lists (numpy-free model);
+        # the planner works in numpy, so convert once here.
+        incoming_beats = np.asarray(fade_in_analysis.beats, dtype=np.float32)
         incoming_downbeats = (
-            fade_in_analysis.downbeats
+            np.asarray(fade_in_analysis.downbeats, dtype=np.float32)
             if fade_in_analysis.downbeats is not None
-            else fade_in_analysis.beats
+            else incoming_beats
         )
         self.incoming = Deck(
             analysis=fade_in_analysis,
             bpm=fade_in_analysis.bpm,
             # Only beats within the buffered head are usable for alignment decisions
-            beats=fade_in_analysis.beats[fade_in_analysis.beats <= SMART_CROSSFADE_DURATION],
+            beats=incoming_beats[incoming_beats <= SMART_CROSSFADE_DURATION],
             downbeats=incoming_downbeats[incoming_downbeats <= SMART_CROSSFADE_DURATION],
         )
         self.outgoing = Deck(
@@ -255,9 +258,9 @@ class SmartCrossFadePlanner(TransitionPlanner):
             bpm=fade_out_analysis.bpm,
             # Raw full-track grids; the shift to buffer-local coordinates happens
             # in _cue_outgoing_tail where the actual buffer length is known
-            beats=fade_out_analysis.beats,
+            beats=np.asarray(fade_out_analysis.beats, dtype=np.float32),
             downbeats=(
-                fade_out_analysis.downbeats
+                np.asarray(fade_out_analysis.downbeats, dtype=np.float32)
                 if fade_out_analysis.downbeats is not None
                 else np.array([], dtype=np.float32)
             ),
