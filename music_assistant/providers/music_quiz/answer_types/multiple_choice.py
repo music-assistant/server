@@ -116,6 +116,16 @@ class MultipleChoiceAnswerType(QuizAnswerType):
             is_correct=suggestion.is_correct,
         )
 
+    def remove_player(self, state: QuizRoundAnswerState, player_id: str) -> None:
+        """
+        Remove a player's multiple-choice answer.
+
+        :param state: Round answer state to mutate.
+        :param player_id: Player whose answer should be removed.
+        """
+        multiple_choice_state = self._get_state(state)
+        multiple_choice_state.answers.pop(player_id, None)
+
     def is_player_complete(self, state: QuizRoundAnswerState, player_id: str) -> bool:
         """
         Return whether a player locked a selection.

@@ -43,8 +43,8 @@ The public game state is guest-safe by construction and contains:
 Guests authenticate through the standard guest access flow (join code in
 the join URL) and register themselves as quiz player via ``music_quiz/join``,
 which returns their private ``player_id``. That ID acts as the player's
-credential for ``music_quiz/answer``, ``music_quiz/ready`` and
-``music_quiz/state`` and must be kept client-side.
+credential for ``music_quiz/answer``, ``music_quiz/ready``,
+``music_quiz/heartbeat`` and ``music_quiz/state`` and must be kept client-side.
 """
 
 from __future__ import annotations
@@ -101,6 +101,9 @@ from music_assistant.providers.music_quiz.game import (
     start_round,
 )
 from music_assistant.providers.music_quiz.game import (
+    remove_player as remove_game_player,
+)
+from music_assistant.providers.music_quiz.game import (
     submit_answer as submit_game_answer,
 )
 from music_assistant.providers.music_quiz.models import (
@@ -144,6 +147,7 @@ MAX_SOURCE_COUNT = 200
 MAX_PLAYER_COUNT = 100
 # the joined name is broadcast to every client on each state update; bound it
 MAX_PLAYER_NAME_LENGTH = 40
+PLAYER_RECONNECT_GRACE_SECONDS = 60.0
 
 # minimum time players get to see the reveal/scoreboard before the game
 # advances, even when the round track has (almost) finished playing
@@ -251,6 +255,7 @@ class MusicQuizPlugin(PluginProvider):
             ("music_quiz/info", self.get_game_info),
             ("music_quiz/join", self.join_game),
             ("music_quiz/state", self.get_player_state),
+            ("music_quiz/heartbeat", self.heartbeat),
             ("music_quiz/submit_answer", self.submit_answer),
             ("music_quiz/answer", self.answer),
             ("music_quiz/ready", self.ready),
@@ -279,13 +284,14 @@ class MusicQuizPlugin(PluginProvider):
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
-        self._cancel_timers()
-        self._cancel_next_round_task()
-        # clear game state before tearing down the session so a guest listen-in
-        # racing with unload cannot (re)create or join a session mid-teardown
-        self._game = None
-        self._quiz_type = None
-        self._answer_type = None
+        async with self._game_lock:
+            self._cancel_timers()
+            self._cancel_next_round_task()
+            # clear game state before tearing down the session so a guest listen-in
+            # racing with unload cannot (re)create or join a session mid-teardown
+            self._game = None
+            self._quiz_type = None
+            self._answer_type = None
         await self._close_playback_session()
         if is_removed:
             await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
@@ -393,6 +399,7 @@ class MusicQuizPlugin(PluginProvider):
             await self._stop_playback()
             reset_game(game)
             self._prefetch_round(0)
+            self._schedule_presence_expiry()
             self._signal_game_updated()
             return await self._host_state()
 
@@ -449,13 +456,16 @@ class MusicQuizPlugin(PluginProvider):
                 )
             if len(game.players) >= MAX_PLAYER_COUNT:
                 raise MusicQuizGameFullError("Music Quiz game is full")
+            joined_at = time.time()
             player = MusicQuizPlayer(
                 player_id=secrets.token_urlsafe(24),
                 name=player_name,
-                joined_at=time.time(),
+                joined_at=joined_at,
                 active_from_round=_get_join_round(game),
+                last_seen=joined_at,
             )
             add_player(game, player)
+            self._schedule_presence_expiry(joined_at)
             self._signal_game_updated()
             return {
                 "player_id": player.player_id,
@@ -469,8 +479,25 @@ class MusicQuizPlugin(PluginProvider):
         :param player_id: The player's private player_id.
         """
         self._validate_guest_access()
-        game, _, answer_type = self._require_game_strategies()
-        return _player_state(game, _get_player(game, player_id), self._mode, answer_type)
+        async with self._game_lock:
+            game, _, answer_type = self._require_game_strategies()
+            player = _get_player(game, player_id)
+            self._refresh_player_presence(player)
+            return _player_state(game, player, self._mode, answer_type)
+
+    async def heartbeat(self, player_id: str) -> bool:
+        """
+        Refresh a player's reconnect grace period.
+
+        :param player_id: The player's private player_id.
+        :return: True when the player still exists, otherwise False.
+        """
+        self._validate_guest_access()
+        async with self._game_lock:
+            if self._game is None or (player := _find_player(self._game, player_id)) is None:
+                return False
+            self._refresh_player_presence(player)
+            return True
 
     async def submit_answer(
         self,
@@ -526,6 +553,7 @@ class MusicQuizPlugin(PluginProvider):
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             player = _get_player(game, player_id)
+            self._refresh_player_presence(player)
             # a repeat ready is a no-op: it cannot newly satisfy the all-ready
             # check, so return current state without re-broadcasting
             if game.phase != MusicQuizPhase.REVEAL or player.ready:
@@ -648,7 +676,9 @@ class MusicQuizPlugin(PluginProvider):
         :param submission: Validated answer submission.
         :param answer_type: Answer strategy for the game.
         """
-        submit_game_answer(game, player.player_id, submission, time.time(), answer_type)
+        submitted_at = time.time()
+        submit_game_answer(game, player.player_id, submission, submitted_at, answer_type)
+        self._refresh_player_presence(player, submitted_at)
         if all_active_players_complete(game, answer_type):
             self._do_reveal()
         else:
@@ -753,9 +783,44 @@ class MusicQuizPlugin(PluginProvider):
         if len(game.rounds) >= game.config.round_count:
             await self._stop_playback()
             finish_game(game)
+            self._cancel_presence_expiry()
             self._signal_game_updated()
             return
         await self._start_next_round()
+
+    async def _expire_inactive_players(self) -> None:
+        """Remove players whose reconnect grace period elapsed."""
+        async with self._game_lock:
+            if self._game is None or self._game.phase == MusicQuizPhase.FINISHED:
+                self._cancel_presence_expiry()
+                return
+            game, _, answer_type = self._require_game_strategies()
+            now = time.time()
+            expired_player_ids = [
+                player.player_id
+                for player in game.players.values()
+                if player.last_seen + PLAYER_RECONNECT_GRACE_SECONDS <= now
+            ]
+            if not expired_player_ids:
+                self._schedule_presence_expiry(now)
+                return
+
+            for player_id in expired_player_ids:
+                remove_game_player(game, player_id, answer_type)
+
+            if game.players and game.phase == MusicQuizPhase.ANSWERING:
+                if all_active_players_complete(game, answer_type):
+                    self._do_reveal()
+                else:
+                    self._signal_game_updated()
+            elif game.players and game.phase == MusicQuizPhase.REVEAL:
+                if are_active_players_ready(game):
+                    await self._advance_from_reveal()
+                else:
+                    self._signal_game_updated()
+            else:
+                self._signal_game_updated()
+            self._schedule_presence_expiry()
 
     async def _on_answer_deadline(self, round_index: int) -> None:
         """Reveal the round when the answering deadline passed."""
@@ -954,6 +1019,54 @@ class MusicQuizPlugin(PluginProvider):
 
     # ---------- timers ----------
 
+    def _refresh_player_presence(
+        self,
+        player: MusicQuizPlayer,
+        seen_at: float | None = None,
+    ) -> None:
+        """
+        Refresh a player's reconnect grace period.
+
+        :param player: Player whose presence should be refreshed.
+        :param seen_at: Server timestamp of the activity.
+        """
+        player.last_seen = seen_at if seen_at is not None else time.time()
+        self._schedule_presence_expiry(player.last_seen)
+
+    def _schedule_presence_expiry(self, now: float | None = None) -> None:
+        """
+        Schedule the next inactive-player expiry.
+
+        :param now: Current server timestamp.
+        """
+        if (
+            self._game is None
+            or self._game.phase == MusicQuizPhase.FINISHED
+            or not self._game.players
+        ):
+            self.mass.cancel_timer(self._presence_timer_id)
+            return
+        current_time = now if now is not None else time.time()
+        expires_at = min(
+            player.last_seen + PLAYER_RECONNECT_GRACE_SECONDS
+            for player in self._game.players.values()
+        )
+        self.mass.call_later(
+            max(expires_at - current_time, 0),
+            self._expire_inactive_players,
+            task_id=self._presence_timer_id,
+        )
+
+    def _cancel_presence_expiry(self, *, cancel_task: bool = False) -> None:
+        """
+        Cancel scheduled player expiry work.
+
+        :param cancel_task: Also cancel an expiry callback that already started.
+        """
+        self.mass.cancel_timer(self._presence_timer_id)
+        if cancel_task:
+            self.mass.cancel_task(self._presence_timer_id)
+
     @property
     def _reveal_timer_id(self) -> str:
         """Return the task_id of the answering deadline timer."""
@@ -964,10 +1077,16 @@ class MusicQuizPlugin(PluginProvider):
         """Return the task_id of the reveal auto-advance timer."""
         return f"music_quiz_advance_{self.instance_id}"
 
+    @property
+    def _presence_timer_id(self) -> str:
+        """Return the task_id of the player presence timer."""
+        return f"music_quiz_presence_{self.instance_id}"
+
     def _cancel_timers(self) -> None:
-        """Cancel all scheduled game progression timers."""
+        """Cancel all scheduled game timers."""
         self.mass.cancel_timer(self._reveal_timer_id)
         self.mass.cancel_timer(self._advance_timer_id)
+        self._cancel_presence_expiry(cancel_task=True)
 
 
 def _validate_config(config: MusicQuizConfig) -> None:
@@ -1056,10 +1175,17 @@ def _get_join_round(game: MusicQuizGame) -> int:
 
 def _get_player(game: MusicQuizGame, player_id: str) -> MusicQuizPlayer:
     """Return a player by their private player_id."""
+    if player := _find_player(game, player_id):
+        return player
+    raise MusicQuizUnknownPlayerError("Unknown Music Quiz player")
+
+
+def _find_player(game: MusicQuizGame, player_id: str) -> MusicQuizPlayer | None:
+    """Return a player by their private player_id, if present."""
     for player in game.players.values():
         if secrets.compare_digest(player.player_id, player_id):
             return player
-    raise MusicQuizUnknownPlayerError("Unknown Music Quiz player")
+    return None
 
 
 def _answer_window(game: MusicQuizGame, game_round: MusicQuizRound) -> float:

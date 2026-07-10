@@ -126,6 +126,22 @@ def test_player_serialization_separates_public_and_personal_state() -> None:
     }
 
 
+def test_remove_player_discards_multiple_choice_answer() -> None:
+    """Remove all multiple-choice state owned by a departed player."""
+    state = _state()
+    state.answers["p1"] = MultipleChoiceAnswer(
+        player_id="p1",
+        suggestion_id="correct",
+        answered_at=12,
+        is_correct=True,
+    )
+
+    ANSWER_TYPE.remove_player(state, "p1")
+    ANSWER_TYPE.remove_player(state, "missing")
+
+    assert state.answers == {}
+
+
 def test_host_serialization_preserves_full_flat_answer_state() -> None:
     """Serialize full multiple-choice state for the host round payload."""
     state = _state()

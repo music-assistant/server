@@ -66,6 +66,15 @@ class QuizAnswerType(ABC):
         """
 
     @abstractmethod
+    def remove_player(self, state: QuizRoundAnswerState, player_id: str) -> None:
+        """
+        Remove answer-specific state owned by a player.
+
+        :param state: Round answer state to mutate.
+        :param player_id: Player whose state should be removed.
+        """
+
+    @abstractmethod
     def is_player_complete(self, state: QuizRoundAnswerState, player_id: str) -> bool:
         """
         Return whether a player completed the answer requirements.

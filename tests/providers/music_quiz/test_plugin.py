@@ -14,6 +14,7 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.music_quiz import (
     MUSIC_QUIZ_GUEST_USER,
+    PLAYER_RECONNECT_GRACE_SECONDS,
     MusicQuizPlugin,
     get_config_entries,
 )
@@ -47,6 +48,7 @@ GUEST_COMMANDS = (
     "music_quiz/info",
     "music_quiz/join",
     "music_quiz/state",
+    "music_quiz/heartbeat",
     "music_quiz/submit_answer",
     "music_quiz/answer",
     "music_quiz/ready",
@@ -148,6 +150,14 @@ def _answer_state(game_round: MusicQuizRound) -> MultipleChoiceRoundState:
     return game_round.answer_state
 
 
+def _presence_timer_call(plugin: MusicQuizPlugin) -> tuple[float, Any]:
+    """Return the most recently scheduled player presence timer."""
+    for timer_call in reversed(cast("MagicMock", plugin.mass.call_later).call_args_list):
+        if timer_call.kwargs.get("task_id") == plugin._presence_timer_id:
+            return cast("float", timer_call.args[0]), timer_call.args[1]
+    raise AssertionError("No player presence timer was scheduled")
+
+
 async def _create_started_game(
     plugin: MusicQuizPlugin,
     player_names: tuple[str, ...] = ("Alice", "Bob"),
@@ -224,6 +234,15 @@ async def test_guest_commands_reject_non_guest_users() -> None:
     ):
         await plugin.answer("some_player", "some_suggestion")
 
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=SimpleNamespace(username="admin"),
+        ),
+        pytest.raises(InvalidDataError, match="guests"),
+    ):
+        await plugin.heartbeat("some_player")
+
 
 @pytest.mark.asyncio
 async def test_full_game_flow() -> None:
@@ -271,10 +290,16 @@ async def test_generic_submit_answer_uses_discriminated_payload() -> None:
     """The generic command accepts a strict typed multiple-choice submission."""
     plugin = _create_plugin()
     player_ids = await _create_started_game(plugin, player_names=("Alice",))
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
 
-    with patch(
-        "music_assistant.providers.music_quiz.get_current_user",
-        return_value=_guest_user(),
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=120.0),
     ):
         state = cast(
             "dict[str, Any]",
@@ -290,6 +315,7 @@ async def test_generic_submit_answer_uses_discriminated_payload() -> None:
     assert state["phase"] == "reveal"
     assert state["you"]["answer"]["correct"] is True
     assert state["you"]["answer"]["points"] == 1000
+    assert game.players[player_ids["Alice"]].last_seen == 120.0
 
 
 @pytest.mark.asyncio
@@ -611,6 +637,408 @@ async def test_join_and_player_state_expose_persisted_quiz_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_presence_expiry_honors_reconnect_grace_boundary() -> None:
+    """Keep a player just before the grace deadline and remove them just after it."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
+    ):
+        joined = await plugin.join_game("Alice")
+
+    game = plugin._game
+    assert game is not None
+    player_id = joined["player_id"]
+    assert game.players[player_id].last_seen == 100.0
+
+    with patch(
+        "music_assistant.providers.music_quiz.time.time",
+        return_value=100.0 + PLAYER_RECONNECT_GRACE_SECONDS - 0.001,
+    ):
+        await plugin._expire_inactive_players()
+
+    assert player_id in game.players
+    delay, _ = _presence_timer_call(plugin)
+    assert delay == pytest.approx(0.001)
+
+    with patch(
+        "music_assistant.providers.music_quiz.time.time",
+        return_value=100.0 + PLAYER_RECONNECT_GRACE_SECONDS + 0.001,
+    ):
+        await plugin._expire_inactive_players()
+
+    assert player_id not in game.players
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=161.0),
+    ):
+        assert await plugin.heartbeat(player_id) is False
+        rejoined = await plugin.join_game("Alice")
+    assert rejoined["player_id"] != player_id
+    assert rejoined["state"]["you"]["active_from_round"] == 0
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_reschedules_player_expiry() -> None:
+    """A heartbeat gives an existing player a fresh reconnect grace period."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
+    ):
+        joined = await plugin.join_game("Alice")
+
+    player_id = joined["player_id"]
+    game = plugin._game
+    assert game is not None
+    cast("MagicMock", plugin.mass.call_later).reset_mock()
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=130.0),
+    ):
+        assert await plugin.heartbeat(player_id) is True
+
+    assert game.players[player_id].last_seen == 130.0
+    delay, expiry_callback = _presence_timer_call(plugin)
+    assert delay == PLAYER_RECONNECT_GRACE_SECONDS
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=160.0):
+        await expiry_callback()
+    assert player_id in game.players
+    delay, _ = _presence_timer_call(plugin)
+    assert delay == 30.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=190.001):
+        await expiry_callback()
+    assert player_id not in game.players
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_returns_false_for_missing_game_or_player() -> None:
+    """Expected reconnect misses return false instead of raising an API error."""
+    plugin = _create_plugin()
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        assert await plugin.heartbeat("missing") is False
+        await plugin.create_game(source_uris=["library://playlist/1"])
+        assert await plugin.heartbeat("missing") is False
+        joined = await plugin.join_game("Alice")
+        await plugin.delete_game()
+        assert await plugin.heartbeat(joined["player_id"]) is False
+
+
+@pytest.mark.asyncio
+async def test_player_state_fetch_refreshes_presence() -> None:
+    """A successful personalized state fetch refreshes reconnect presence."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
+    ):
+        joined = await plugin.join_game("Alice")
+
+    player_id = joined["player_id"]
+    game = plugin._game
+    assert game is not None
+    cast("MagicMock", plugin.mass.call_later).reset_mock()
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=125.0),
+    ):
+        state = await plugin.get_player_state(player_id)
+
+    assert game.players[player_id].last_seen == 125.0
+    assert "last_seen" not in str(state)
+    delay, _ = _presence_timer_call(plugin)
+    assert delay == PLAYER_RECONNECT_GRACE_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_answer_and_ready_refresh_presence() -> None:
+    """Successful answer and ready actions refresh player presence."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin)
+    game = plugin._game
+    assert game is not None
+    alice = game.players[player_ids["Alice"]]
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=120.0),
+    ):
+        await plugin.answer(alice.player_id, "correct_0")
+    assert alice.last_seen == 120.0
+
+    await plugin.reveal()
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=130.0),
+    ):
+        await plugin.ready(alice.player_id)
+    assert alice.last_seen == 130.0
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=140.0),
+    ):
+        await plugin.ready(alice.player_id)
+    assert alice.last_seen == 140.0
+
+
+@pytest.mark.asyncio
+async def test_expiry_removes_player_answer_state_from_every_round() -> None:
+    """Removing a player clears their answer-owned state from all played rounds."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin)
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        await plugin.answer(player_ids["Alice"], "correct_0")
+        await plugin.answer(player_ids["Bob"], "wrong_0_1")
+        await plugin.ready(player_ids["Alice"])
+        await plugin.ready(player_ids["Bob"])
+        await plugin.answer(player_ids["Alice"], "correct_1")
+
+    game = plugin._game
+    assert game is not None
+    assert all(
+        player_ids["Alice"] in _answer_state(game_round).answers for game_round in game.rounds
+    )
+    game.players[player_ids["Alice"]].last_seen = 100.0
+    game.players[player_ids["Bob"]].last_seen = 200.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=160.0):
+        await plugin._expire_inactive_players()
+
+    assert player_ids["Alice"] not in game.players
+    assert all(
+        player_ids["Alice"] not in _answer_state(game_round).answers for game_round in game.rounds
+    )
+    assert game.phase == MusicQuizPhase.ANSWERING
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        await plugin.answer(player_ids["Bob"], "correct_1")
+    assert game.players[player_ids["Bob"]].score == 1000
+
+
+@pytest.mark.asyncio
+async def test_expiry_unblocks_answer_completion_and_keeps_events_private() -> None:
+    """Removing an inactive holdout reveals without leaking private presence state."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin)
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        await plugin.answer(player_ids["Alice"], "correct_0")
+
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 200.0
+    game.players[player_ids["Bob"]].last_seen = 100.0
+    cast("MagicMock", plugin.signal_provider_event).reset_mock()
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=160.0):
+        await plugin._expire_inactive_players()
+
+    assert game.phase == MusicQuizPhase.REVEAL
+    assert player_ids["Bob"] not in game.players
+    assert game.players[player_ids["Alice"]].score == 1000
+    payload = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]
+    serialized = str(payload)
+    assert payload["state"]["players"][0]["name"] == "Alice"
+    assert "last_seen" not in serialized
+    for player_id in player_ids.values():
+        assert player_id not in serialized
+
+
+@pytest.mark.asyncio
+async def test_expiry_reveals_when_only_late_joiners_remain() -> None:
+    """Reveal immediately when expiry leaves no player eligible for the current round."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        late_join = await plugin.join_game("Late")
+
+    game = plugin._game
+    assert game is not None
+    late_player_id = late_join["player_id"]
+    assert game.players[late_player_id].active_from_round == 1
+    game.players[player_ids["Alice"]].last_seen = 100.0
+    game.players[late_player_id].last_seen = 200.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=160.0):
+        await plugin._expire_inactive_players()
+
+    assert set(game.players) == {late_player_id}
+    assert game.phase == MusicQuizPhase.REVEAL
+
+
+@pytest.mark.asyncio
+async def test_expiry_unblocks_reveal_readiness() -> None:
+    """Removing an inactive holdout advances when every remaining player is ready."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin)
+    await plugin.reveal()
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        await plugin.ready(player_ids["Alice"])
+
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 200.0
+    game.players[player_ids["Bob"]].last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=160.0):
+        await plugin._expire_inactive_players()
+
+    assert player_ids["Bob"] not in game.players
+    assert game.phase == MusicQuizPhase.ANSWERING
+    assert game.current_round_index == 1
+
+
+@pytest.mark.asyncio
+async def test_expiry_propagates_reveal_advance_failure() -> None:
+    """Surface unexpected expiry-driven advance failures to task error handling."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin)
+    await plugin.reveal()
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        await plugin.ready(player_ids["Alice"])
+
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 200.0
+    game.players[player_ids["Bob"]].last_seen = 100.0
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.time.time",
+            return_value=160.0,
+        ),
+        patch.object(
+            plugin,
+            "_advance_from_reveal",
+            new=AsyncMock(side_effect=RuntimeError("advance failed")),
+        ),
+        pytest.raises(RuntimeError, match="advance failed"),
+    ):
+        await plugin._expire_inactive_players()
+
+    assert player_ids["Bob"] not in game.players
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", [MusicQuizPhase.ANSWERING, MusicQuizPhase.REVEAL])
+async def test_expiry_with_zero_remaining_players_does_not_auto_transition(
+    phase: MusicQuizPhase,
+) -> None:
+    """Removing the final player leaves the current phase stable."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+    if phase == MusicQuizPhase.REVEAL:
+        await plugin.reveal()
+
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=160.0):
+        await plugin._expire_inactive_players()
+
+    assert game.players == {}
+    assert game.phase == phase
+    payload = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]
+    assert payload["state"]["players"] == []
+
+
+@pytest.mark.asyncio
+async def test_finished_game_stops_presence_expiry() -> None:
+    """Finished standings and answer history remain intact without presence expiry."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(
+        plugin,
+        player_names=("Alice",),
+        round_count=1,
+    )
+    game = plugin._game
+    assert game is not None
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        await plugin.answer(player_ids["Alice"], "correct_0")
+    await plugin.next_round()
+
+    assert game.phase == MusicQuizPhase.FINISHED
+    assert game.players[player_ids["Alice"]].score == 1000
+    cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._presence_timer_id)
+    game.players[player_ids["Alice"]].last_seen = 0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=10_000.0):
+        await plugin._expire_inactive_players()
+
+    assert player_ids["Alice"] in game.players
+    assert player_ids["Alice"] in _answer_state(game.rounds[0]).answers
+
+
+@pytest.mark.asyncio
 async def test_reset_preserves_quiz_type_in_state_and_events() -> None:
     """Reset preserves the selected quiz type in returned and broadcast state."""
     plugin = _create_plugin()
@@ -624,6 +1052,28 @@ async def test_reset_preserves_quiz_type_in_state_and_events() -> None:
     payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]
     assert payload["state"]["quiz_type"] == "guess_the_song"
     assert payload["state"]["answer_type"] == "multiple_choice"
+
+
+@pytest.mark.asyncio
+async def test_reset_restarts_presence_timer_without_refreshing_players() -> None:
+    """Reset replaces presence work while preserving each player's last activity."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+    cast("MagicMock", plugin.mass.call_later).reset_mock()
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=120.0):
+        await plugin.reset()
+
+    cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._presence_timer_id)
+    cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
+    delay, _ = _presence_timer_call(plugin)
+    assert delay == 40.0
+    assert game.players[player_ids["Alice"]].last_seen == 100.0
 
 
 @pytest.mark.asyncio
@@ -697,9 +1147,11 @@ async def test_create_game_replaces_finished_game() -> None:
     await plugin.next_round()
     assert game.phase == MusicQuizPhase.FINISHED
 
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
     result = await plugin.create_game(source_uris=["library://playlist/2"])
     assert result["phase"] == "lobby"
     assert plugin._game is not game
+    cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
 
 
 @pytest.mark.asyncio
@@ -730,6 +1182,8 @@ async def test_delete_game_signals_removal() -> None:
     session = MagicMock()
     session.close = AsyncMock()
     plugin._playback_session = session
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
 
     await plugin.delete_game()
     assert plugin._game is None
@@ -737,6 +1191,8 @@ async def test_delete_game_signals_removal() -> None:
     assert plugin._answer_type is None
     cast("AsyncMock", plugin._stop_playback).assert_awaited()
     session.close.assert_awaited_once()
+    cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._presence_timer_id)
+    cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
     payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]
     assert payload == {"event": "game_removed"}
     assert await plugin.get_game() is None
@@ -903,6 +1359,8 @@ async def test_unload_cleans_up() -> None:
     session = MagicMock()
     session.close = AsyncMock()
     plugin._playback_session = session
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
 
     with patch(
         "music_assistant.helpers.guest_access.revoke_guest_access",
@@ -913,6 +1371,8 @@ async def test_unload_cleans_up() -> None:
     unregister.assert_called_once()
     session.close.assert_awaited_once()
     assert plugin._game is None
+    cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._presence_timer_id)
+    cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
     revoke.assert_awaited_once_with(plugin.mass, MUSIC_QUIZ_GUEST_USER)
 
 
