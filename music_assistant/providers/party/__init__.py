@@ -22,8 +22,8 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
-from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
@@ -31,6 +31,7 @@ from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -659,7 +660,7 @@ class PartyPlugin(PluginProvider):
                     MediaType.RADIO,
                 ):
                     raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-                queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+                queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
                 queue_item.extra_attributes[ATTR_PARTY_GUEST] = True
                 if boost:
                     queue_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
@@ -814,7 +815,7 @@ class PartyPlugin(PluginProvider):
             raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
 
         # Create a QueueItem from the media item
-        queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+        queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
         queue_item.extra_attributes.update(extra_attributes)
 
         # Determine the attribute to scan for when finding the section boundary.
@@ -949,15 +950,19 @@ class PartyPlugin(PluginProvider):
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
 
-        session = await self._get_session()
-        if not session:
-            raise InvalidDataError("Listen-in is not available for this party")
-        await session.add_guest_listener(web_player_id)
+        # hold the session lock across resolving and joining the session so a
+        # guest can never be attached to a session that is being torn down
+        async with self._session_lock:
+            session = await self._get_or_create_session_locked()
+            if not session:
+                raise InvalidDataError("Listen-in is not available for this party")
+            await session.add_guest_listener(web_player_id)
+            queue_id = session.queue_id
 
         self.logger.info("Guest player %s is now listening in", web_player_id)
         return {
             "success": True,
-            "queue_id": session.queue_id,
+            "queue_id": queue_id,
         }
 
     async def stop_listen_in(self, web_player_id: str) -> dict[str, Any]:
@@ -986,8 +991,9 @@ class PartyPlugin(PluginProvider):
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return False
 
-        session = await self._get_session()
-        return session is not None and session.can_listen_in(web_player_id)
+        async with self._session_lock:
+            session = await self._get_or_create_session_locked()
+            return session is not None and session.can_listen_in(web_player_id)
 
     # ==================== Helper Methods ====================
 
@@ -1004,37 +1010,49 @@ class PartyPlugin(PluginProvider):
         :returns: The session, or None when no session is available.
         """
         async with self._session_lock:
-            # drop a stale session whose player no longer exists
-            if self._session is not None and (
-                self.mass.players.get_player(self._session.player_id) is None
-            ):
-                await self._session.close()
-                self._session = None
+            return await self._get_or_create_session_locked()
 
-            if self._session is not None:
-                return self._session
+    async def _get_or_create_session_locked(self) -> SharedPlaybackSession | None:
+        """
+        Get or (re)create the shared playback session.
 
-            if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
-                party_name = cast("str | None", self.config.get_value(CONF_PARTY_NAME))
+        The caller must hold ``_session_lock``; guest listen-in and session
+        teardown share the lock so a session is never created or joined while it
+        is being closed.
+
+        :returns: The session, or None when no session is available.
+        """
+        # drop a stale session whose player no longer exists
+        if self._session is not None and (
+            self.mass.players.get_player(self._session.player_id) is None
+        ):
+            await self._session.close()
+            self._session = None
+
+        if self._session is not None:
+            return self._session
+
+        if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            party_name = cast("str | None", self.config.get_value(CONF_PARTY_NAME))
+            try:
+                self._session = await SharedPlaybackSession.create_remote(
+                    self.mass,
+                    owner_instance_id=self.instance_id,
+                    display_name=party_name or "Party",
+                    session_id=self.instance_id,
+                )
+            except SetupFailedError as err:
+                self.logger.warning("Unable to create remote party session: %s", err)
+        else:
+            player_id = self.config.get_value(CONF_PARTY_PLAYER)
+            if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
                 try:
-                    self._session = await SharedPlaybackSession.create_remote(
-                        self.mass,
-                        owner_instance_id=self.instance_id,
-                        display_name=party_name or "Party",
-                        session_id=self.instance_id,
+                    self._session = await SharedPlaybackSession.create_venue(
+                        self.mass, str(player_id)
                     )
                 except SetupFailedError as err:
-                    self.logger.warning("Unable to create remote party session: %s", err)
-            else:
-                player_id = self.config.get_value(CONF_PARTY_PLAYER)
-                if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
-                    try:
-                        self._session = await SharedPlaybackSession.create_venue(
-                            self.mass, str(player_id)
-                        )
-                    except SetupFailedError as err:
-                        self.logger.warning("Unable to create venue party session: %s", err)
-            return self._session
+                    self.logger.warning("Unable to create venue party session: %s", err)
+        return self._session
 
     async def _revoke_guest_tokens(self) -> None:
         """
