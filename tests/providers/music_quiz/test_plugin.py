@@ -485,6 +485,30 @@ async def test_game_info_exposes_game_identity_and_playback_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_game_returns_none_without_active_game() -> None:
+    """The host getter exposes an empty state without raising an error."""
+    plugin = _create_plugin()
+
+    assert await plugin.get_game() is None
+
+
+@pytest.mark.asyncio
+async def test_host_actions_still_require_active_game() -> None:
+    """Host lifecycle actions still reject requests without an active game."""
+    plugin = _create_plugin()
+
+    for action in (
+        plugin.start_game,
+        plugin.reveal,
+        plugin.next_round,
+        plugin.reset,
+        plugin.delete_game,
+    ):
+        with pytest.raises(MusicQuizNoGameError):
+            await action()
+
+
+@pytest.mark.asyncio
 async def test_create_and_get_expose_persisted_quiz_type() -> None:
     """Create and host state use the quiz type persisted on the game."""
     plugin = _create_plugin()
@@ -499,8 +523,10 @@ async def test_create_and_get_expose_persisted_quiz_type() -> None:
     assert game.answer_type == "multiple_choice"
     assert created["quiz_type"] == game.quiz_type
     assert created["answer_type"] == game.answer_type
-    assert (await plugin.get_game())["quiz_type"] == game.quiz_type
-    assert (await plugin.get_game())["answer_type"] == game.answer_type
+    host_state = await plugin.get_game()
+    assert host_state is not None
+    assert host_state["quiz_type"] == game.quiz_type
+    assert host_state["answer_type"] == game.answer_type
 
 
 @pytest.mark.asyncio
@@ -515,6 +541,7 @@ async def test_host_rounds_preserve_flat_wire_shape() -> None:
 
     host_state = await plugin.get_game()
 
+    assert host_state is not None
     assert host_state["rounds"] == [
         {
             "round_index": game_round.round_index,
@@ -548,6 +575,19 @@ async def test_cached_strategy_mismatch_is_rejected() -> None:
     plugin._answer_type = MagicMock()
 
     with pytest.raises(InvalidDataError, match="identity mismatch"):
+        await plugin.get_game()
+
+
+@pytest.mark.asyncio
+async def test_get_game_rejects_unsupported_active_game() -> None:
+    """An active game with an unsupported quiz type still raises its validation error."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+    game = plugin._game
+    assert game is not None
+    game.quiz_type = "unsupported"
+
+    with pytest.raises(InvalidDataError, match="Unknown quiz type"):
         await plugin.get_game()
 
 
@@ -663,6 +703,26 @@ async def test_create_game_replaces_finished_game() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_game_serializes_with_create_and_delete() -> None:
+    """The host getter sees complete states while create and delete are in progress."""
+    plugin = _create_plugin()
+    async with plugin._game_lock:
+        create_task = asyncio.create_task(plugin.create_game(source_uris=["library://playlist/1"]))
+        await asyncio.sleep(0)
+        get_task = asyncio.create_task(plugin.get_game())
+    created, fetched = await asyncio.gather(create_task, get_task)
+    assert fetched == created
+
+    async with plugin._game_lock:
+        get_task = asyncio.create_task(plugin.get_game())
+        await asyncio.sleep(0)
+        delete_task = asyncio.create_task(plugin.delete_game())
+    fetched, _ = await asyncio.gather(get_task, delete_task)
+    assert fetched == created
+    assert await plugin.get_game() is None
+
+
+@pytest.mark.asyncio
 async def test_delete_game_signals_removal() -> None:
     """Deleting the game stops playback, closes the session and broadcasts game_removed."""
     plugin = _create_plugin()
@@ -679,8 +739,7 @@ async def test_delete_game_signals_removal() -> None:
     session.close.assert_awaited_once()
     payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]
     assert payload == {"event": "game_removed"}
-    with pytest.raises(MusicQuizNoGameError):
-        await plugin.get_game()
+    assert await plugin.get_game() is None
 
 
 def test_cancel_prefetch_task_consumes_exception() -> None:
