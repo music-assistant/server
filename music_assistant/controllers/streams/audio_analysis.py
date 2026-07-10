@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import importlib
 import logging
 import os
 import sys
@@ -169,6 +170,11 @@ def _nice_analysis_worker() -> None:
         os.setpriority(os.PRIO_PROCESS, 0, ANALYSIS_THREAD_NICE)
 
 
+def _warm_analysis_model() -> None:
+    """Import the numpy-backed AudioAnalysisData model. Runs in a worker thread at setup."""
+    importlib.import_module("music_assistant.models._audio_analysis_data")
+
+
 class AudioAnalysisController:
     """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
@@ -201,7 +207,7 @@ class AudioAnalysisController:
         self._idle_unload_task: asyncio.Task[None] | None = None
 
     def setup(self) -> None:
-        """Register the nightly background scan task."""
+        """Register the nightly background scan task and warm the analysis model import."""
         utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
         self.mass.tasks.register_scheduled_task(
             task_id=BACKGROUND_SCAN_TASK_ID,
@@ -210,6 +216,13 @@ class AudioAnalysisController:
             schedule=TaskSchedule.daily(hour=utc_hour, minute=utc_minute),
             metadata={"task_domain": "audio_analysis"},
             allow_retry=True,
+        )
+        # AudioAnalysisData is kept out of the startup import graph, but the always-on
+        # loudness analysis provider reads and writes it at runtime, which imports numpy.
+        # Warm that import in a worker thread now so the first runtime touch never has to
+        # import numpy on the event loop.
+        self.mass.create_task(
+            asyncio.to_thread(_warm_analysis_model), task_id="warm_analysis_model"
         )
 
     async def close(self) -> None:

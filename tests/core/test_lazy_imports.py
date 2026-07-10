@@ -3,9 +3,11 @@
 import subprocess
 import sys
 
-# Heavy third-party modules that must only be imported on first use
-# (audio analysis, image processing, local file tag scanning).
-HEAVY_MODULES = ("numpy", "PIL", "mutagen")
+# Heavy third-party modules that must stay off the startup import graph and only
+# load on first use: numpy (audio analysis) and mutagen (local file tag scanning).
+# PIL is intentionally NOT in this list — thumbnails are a universal feature, so it
+# stays eagerly imported.
+HEAVY_MODULES = ("numpy", "mutagen")
 
 
 def _modules_loaded_by(import_statement: str) -> set[str]:
