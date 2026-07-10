@@ -10,7 +10,8 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from music_assistant_models.enums import QueueOption, RepeatMode
 from music_assistant_models.errors import InvalidDataError, MusicAssistantError
-from music_assistant_models.queue_item import QueueItem
+
+from music_assistant.controllers.player_queues.helpers import build_queue_item
 
 from ..models import AddToQueueResult, QueueBrief
 from ..tags import Tag
@@ -103,7 +104,7 @@ async def _add_to_queue_at_index(
     except InvalidDataError as err:
         raise ToolError(str(err)) from err
     queue_items = [
-        QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
+        build_queue_item(queue_id, cast("PlayableMediaItemType", x))
         for x in resolved
         if x and getattr(x, "available", True)
     ]

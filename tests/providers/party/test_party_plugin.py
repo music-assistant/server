@@ -77,7 +77,7 @@ async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None
             "music_assistant.providers.party.get_current_user",
             return_value=SimpleNamespace(username=PARTY_GUEST_USER),
         ),
-        patch("music_assistant.providers.party.QueueItem.from_media_item", return_value=queue_item),
+        patch("music_assistant.providers.party.build_queue_item", return_value=queue_item),
         pytest.raises(InvalidDataError, match="already in the queue"),
     ):
         await plugin.add_to_queue(uri)
