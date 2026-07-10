@@ -699,6 +699,7 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
             artist_bonus_mode="free_text",
         )
         host_state = await plugin.get_game()
+        assert host_state is not None
         host_round = host_state["rounds"][0]
         assert "answer_state" not in host_round
         assert host_round["current_entry"]["title"] == "Secret Title 0"
