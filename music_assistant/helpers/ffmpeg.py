@@ -426,8 +426,13 @@ async def get_ffmpeg_overlay_stream(
         ]
     overlay_input_args += ["-stream_loop", "-1", "-i", overlay_input]
     channel_layout = "mono" if pcm_format.channels == 1 else "stereo"
+    # silenceremove strips a near-silent intro from the overlay source (e.g. a soft
+    # fade-in) so it becomes audible right away; it is a no-op for sources that
+    # already start at full level. It runs before volume so detection is based on
+    # the source's own levels rather than the scaled output.
     filter_complex = (
-        f"[0:a]volume={overlay_volume / 100},"
+        f"[0:a]silenceremove=start_periods=1:start_threshold=-40dB,"
+        f"volume={overlay_volume / 100},"
         f"aresample={pcm_format.sample_rate},"
         f"aformat=channel_layouts={channel_layout}[overlay];"
         "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
