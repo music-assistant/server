@@ -108,6 +108,7 @@ class FakePlexTrack:
             media.container = container
             media_part = MagicMock()
             media_part.key = f"{key}/part"
+            media_part.audioStreams.return_value = [MagicMock()]
             media.parts = [media_part] if has_parts else []
             self.media = [media]
         else:
@@ -194,7 +195,7 @@ def _make_album(tracks: list[Any], **kwargs: Any) -> FakePlexAlbum:
     return FakePlexAlbum(tracks, **kwargs)
 
 
-def _make_stream_track(container: str = "flac") -> MagicMock:
+def _make_stream_track(container: str = "flac", has_audio_streams: bool = True) -> MagicMock:
     """Build a Plex track mock with one playable media part."""
     plex_track = MagicMock()
     plex_track.key = "/library/metadata/1"
@@ -206,7 +207,7 @@ def _make_stream_track(container: str = "flac") -> MagicMock:
 
     media_part = MagicMock()
     media_part.key = "/library/parts/1/file.flac"
-    media_part.audioStreams.return_value = [audio_stream]
+    media_part.audioStreams.return_value = [audio_stream] if has_audio_streams else []
 
     media = MagicMock()
     media.container = container
@@ -414,11 +415,29 @@ class TestStreamDetailsGuards:
         assert result.audio_format.bit_rate == 128
 
     @pytest.mark.asyncio
+    async def test_music_stream_transcode_without_audio_streams_uses_download(self) -> None:
+        """Unanalyzed Plex tracks should keep the direct download fallback."""
+        provider = _make_provider(stream_quality=STREAM_QUALITY_128)
+        plex_track = _make_stream_track(has_audio_streams=False)
+        provider._get_data = AsyncMock(return_value=plex_track)
+        provider._plex_server.url.return_value = "http://plex.local/file.flac?download=1"
+
+        result = await provider.get_stream_details("/library/metadata/1", MediaType.TRACK)
+
+        assert result.stream_type == StreamType.HTTP
+        assert result.path == "http://plex.local/file.flac?download=1"
+        assert result.audio_format.content_type == ContentType.FLAC
+        assert result.audio_format.bit_rate is None
+
+    @pytest.mark.asyncio
     async def test_podcast_episode_stream_transcoded_uses_plex_hls(self) -> None:
         """Configured bitrate should request Plex HLS transcoding for podcast episodes."""
         provider = _make_provider(LIBRARY_TYPE_PODCASTS, stream_quality=STREAM_QUALITY_128)
         plex_track = _make_stream_track()
         provider._plex_library.fetchItem = MagicMock(return_value=plex_track)
+        provider._run_async = AsyncMock(
+            side_effect=lambda call, *args, **kwargs: call(*args, **kwargs)
+        )
         provider._plex_server.url.side_effect = lambda path, _include_token: (
             f"http://plex.local{path}&X-Plex-Token=token"
         )
@@ -435,6 +454,30 @@ class TestStreamDetailsGuards:
         assert query["maxAudioBitrate"] == ["128"]
         assert result.audio_format.content_type == ContentType.OPUS
         assert result.audio_format.bit_rate == 128
+        assert result.duration == 123
+
+    @pytest.mark.asyncio
+    async def test_podcast_episode_stream_transcode_without_audio_streams_uses_download(
+        self,
+    ) -> None:
+        """Unanalyzed podcast episodes should keep the direct download fallback."""
+        provider = _make_provider(LIBRARY_TYPE_PODCASTS, stream_quality=STREAM_QUALITY_128)
+        plex_track = _make_stream_track(has_audio_streams=False)
+        provider._plex_library.fetchItem = MagicMock(return_value=plex_track)
+        provider._run_async = AsyncMock(
+            side_effect=lambda call, *args, **kwargs: call(*args, **kwargs)
+        )
+        provider._plex_server.url.return_value = "http://plex.local/file.flac?download=1"
+
+        result = await provider.get_stream_details(
+            "podcast_episode:/library/metadata/1", MediaType.PODCAST_EPISODE
+        )
+
+        assert result.stream_type == StreamType.HTTP
+        assert result.path == "http://plex.local/file.flac?download=1"
+        assert result.audio_format.content_type == ContentType.FLAC
+        assert result.audio_format.bit_rate is None
+        assert result.duration == 123
 
     @pytest.mark.asyncio
     async def test_single_part_audiobook_stream_transcoded_uses_plex_hls(self) -> None:
@@ -461,6 +504,29 @@ class TestStreamDetailsGuards:
         assert query["maxAudioBitrate"] == ["128"]
         assert result.audio_format.content_type == ContentType.OPUS
         assert result.audio_format.bit_rate == 128
+
+    @pytest.mark.asyncio
+    async def test_single_part_audiobook_without_audio_streams_uses_download(self) -> None:
+        """Unanalyzed single-part audiobooks should keep the direct download fallback."""
+        provider = _make_provider(LIBRARY_TYPE_AUDIOBOOKS, stream_quality=STREAM_QUALITY_128)
+        tracks = _make_tracks({"key": "/library/metadata/1", "duration": 123000})
+        tracks[0].media[0].parts[0].audioStreams.return_value = []
+        album = _make_album(tracks)
+        provider._plex_library.fetchItem = MagicMock(return_value=album)
+        provider._run_async = AsyncMock(
+            side_effect=lambda call, *args, **kwargs: call(*args, **kwargs)
+        )
+        provider._plex_server.url.return_value = "http://plex.local/file.mp3?download=1"
+
+        result = await provider.get_stream_details(
+            "audiobook:/library/metadata/100", MediaType.AUDIOBOOK
+        )
+
+        assert result.stream_type == StreamType.HTTP
+        assert result.path == "http://plex.local/file.mp3?download=1"
+        assert result.audio_format.content_type == ContentType.MP3
+        assert result.audio_format.bit_rate is None
+        assert result.duration == 123
 
     @pytest.mark.asyncio
     async def test_music_stream_invalid_quality_falls_back_to_original(self) -> None:
