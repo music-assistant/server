@@ -346,12 +346,17 @@ class MusicQuizPlugin(PluginProvider):
             self._signal_game_updated()
             return await self._host_state()
 
-    async def get_game(self) -> dict[str, Any]:
-        """Return the host-visible state of the current game."""
-        # take the game lock so the snapshot cannot tear against a concurrent
-        # reveal/reset while _host_state awaits the join URL
+    async def get_game(self) -> dict[str, Any] | None:
+        """
+        Return the host-visible state of the current game.
+
+        :return: The current host state, or None when no game is active.
+        """
+        # take the game lock so the empty/active decision and snapshot cannot
+        # tear against a lifecycle or state change while _host_state awaits the join URL
         async with self._game_lock:
-            self._require_game()
+            if self._game is None:
+                return None
             return await self._host_state()
 
     async def start_game(self) -> dict[str, Any]:
