@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -14,7 +14,12 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, PlayerType, ProviderType
 
-from music_assistant.constants import CONF_PROVIDERS, CONF_VOLUME_NORMALIZATION_TARGET
+from music_assistant.constants import (
+    CONF_ENTRY_LOG_LEVEL,
+    CONF_PROVIDERS,
+    CONF_VOLUME_NORMALIZATION_TARGET,
+)
+from music_assistant.models.provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -146,3 +151,104 @@ async def test_set_raw_provider_config_value_syncs_unavailable_provider(
     )
     mass_minimal.config.set_raw_provider_config_value(PROVIDER_INSTANCE, "api_token", "abc")
     assert provider.config.get_value("api_token") == "abc"
+
+
+def _provider_config_entries() -> list[ConfigEntry]:
+    return [CONF_ENTRY_LOG_LEVEL, _entry("api_token", ConfigEntryType.STRING, "old")]
+
+
+def _raw_provider_conf(instance_id: str, api_token: str) -> dict[str, object]:
+    return {
+        "type": ProviderType.MUSIC.value,
+        "domain": "test",
+        "instance_id": instance_id,
+        "enabled": True,
+        "values": {"api_token": api_token},
+    }
+
+
+async def test_save_provider_config_syncs_loaded_available_provider(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """
+    The bulk config-save path keeps a loaded, available provider's copy in sync too.
+
+    Regression test for the store<->snapshot invariant: whichever write path persists a
+    provider config change, a loaded provider's in-place config copy must reflect it.
+    """
+    instance = PROVIDER_INSTANCE
+    entries = _provider_config_entries()
+    mass_minimal.config.set(f"{CONF_PROVIDERS}/{instance}", _raw_provider_conf(instance, "old"))
+    manifest = MagicMock(domain="test", type=ProviderType.MUSIC)
+    provider = Provider(
+        mass_minimal,
+        manifest,
+        cast("ProviderConfig", ProviderConfig.parse(entries, _raw_provider_conf(instance, "old"))),
+    )
+    provider.available = True
+    mass_minimal.get_provider = MagicMock(return_value=provider)  # type: ignore[method-assign]
+    mass_minimal.call_later = MagicMock()  # type: ignore[method-assign] # don't schedule a real reload
+
+    async def _get_provider_config(_instance_id: str) -> ProviderConfig:
+        raw_conf = mass_minimal.config.get(f"{CONF_PROVIDERS}/{instance}")
+        return cast("ProviderConfig", ProviderConfig.parse(entries, raw_conf))
+
+    with patch.object(mass_minimal.config, "get_provider_config", side_effect=_get_provider_config):
+        await mass_minimal.config.save_provider_config(
+            "test", {"api_token": "new"}, instance_id=instance
+        )
+
+    assert provider.config.get_value("api_token") == "new"
+    assert mass_minimal.config.get_raw_provider_config_value(instance, "api_token") == "new"
+
+
+async def test_save_provider_config_reloads_loaded_unavailable_provider(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """
+    The bulk config-save path reloads (rather than patches) an unavailable loaded provider.
+
+    An unavailable provider instance never receives a direct config-copy sync; instead the
+    save must trigger a full reload with the freshly persisted values, so the replacement
+    provider instance can never end up with a stale copy.
+    """
+    instance = PROVIDER_INSTANCE
+    entries = _provider_config_entries()
+    mass_minimal.config.set(f"{CONF_PROVIDERS}/{instance}", _raw_provider_conf(instance, "old"))
+    manifest = MagicMock(domain="test", type=ProviderType.MUSIC)
+    provider = Provider(
+        mass_minimal,
+        manifest,
+        cast("ProviderConfig", ProviderConfig.parse(entries, _raw_provider_conf(instance, "old"))),
+    )
+    provider.available = False  # loaded, but currently unavailable (e.g. failed token refresh)
+
+    def _get_provider(
+        _instance: str, return_unavailable: bool = False, **_kwargs: object
+    ) -> object | None:
+        return provider if return_unavailable else None
+
+    mass_minimal.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
+
+    async def _get_provider_config(_instance_id: str) -> ProviderConfig:
+        raw_conf = mass_minimal.config.get(f"{CONF_PROVIDERS}/{instance}")
+        return cast("ProviderConfig", ProviderConfig.parse(entries, raw_conf))
+
+    with (
+        patch.object(mass_minimal.config, "get_provider_config", side_effect=_get_provider_config),
+        patch.object(mass_minimal, "load_provider_config", AsyncMock()) as mock_load,
+    ):
+        await mass_minimal.config.save_provider_config(
+            "test", {"api_token": "new"}, instance_id=instance
+        )
+
+    # the value is persisted before the reload is triggered...
+    assert mass_minimal.config.get_raw_provider_config_value(instance, "api_token") == "new"
+    # ...and the reload receives that same, up-to-date value, so the replacement
+    # provider instance created by the reload can never end up with a stale copy
+    mock_load.assert_awaited_once()
+    assert mock_load.await_args is not None
+    reloaded_config = mock_load.await_args.args[0]
+    assert reloaded_config.get_value("api_token") == "new"
+    # the stale (unavailable) instance itself is never patched in place
+    assert provider.config.get_value("api_token") == "old"
