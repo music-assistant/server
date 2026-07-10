@@ -217,11 +217,12 @@ class GuessTheSongQuizType(QuizType):
         return candidates
 
     async def _get_easy_distractors(self, track: Track) -> list[SuggestionCandidate]:
-        """Return obviously-different distractors drawn from the configured source pool."""
+        """Return obviously-different distractors sampled from the configured source pool."""
         pool = await self._get_source_track_pool()
         others = [item for uri, item in pool.items() if uri != track.uri]
-        secrets.SystemRandom().shuffle(others)
-        return [_track_to_candidate(item) for item in others]
+        sample_size = min(len(others), max(self.config.suggestion_count * 4, 12))
+        sampled = secrets.SystemRandom().sample(others, sample_size)
+        return [_track_to_candidate(item) for item in sampled]
 
     async def _get_ai_distractors(self, correct: SuggestionCandidate) -> list[SuggestionCandidate]:
         """Return AI-generated distractors, or an empty list when unavailable or unusable."""
