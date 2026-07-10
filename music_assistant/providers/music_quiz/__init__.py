@@ -338,6 +338,8 @@ class MusicQuizPlugin(PluginProvider):
                 MusicQuizPhase.REVEAL,
             ):
                 raise MusicQuizGameActiveError("A Music Quiz game is already in progress")
+            self._cancel_timers()
+            self._cancel_next_round_task()
             game = MusicQuizGame(
                 config=game_config,
                 quiz_type=quiz_type,
@@ -347,8 +349,6 @@ class MusicQuizPlugin(PluginProvider):
             )
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
             await quiz_strategy.initialize()
-            self._cancel_timers()
-            self._cancel_next_round_task()
             self._game = game
             self._quiz_type = quiz_strategy
             self._answer_type = answer_strategy
@@ -398,10 +398,10 @@ class MusicQuizPlugin(PluginProvider):
         """Reset the current game for a new run with the same settings and players."""
         async with self._game_lock:
             game = self._require_game()
-            quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
-            await quiz_strategy.initialize()
             self._cancel_timers()
             self._cancel_next_round_task()
+            quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
+            await quiz_strategy.initialize()
             await self._stop_playback()
             reset_game(game)
             self._quiz_type = quiz_strategy
@@ -432,18 +432,18 @@ class MusicQuizPlugin(PluginProvider):
 
     async def get_game_info(self) -> dict[str, Any] | None:
         """Return public metadata of the current game (e.g. for the join screen)."""
-        if self._game is None:
-            return None
-        game, _, _ = self._require_game_strategies()
-        return {
-            "name": game.config.name,
-            "quiz_type": game.quiz_type,
-            "answer_type": game.answer_type.value,
-            "phase": game.phase.value,
-            "mode": self._mode,
-            "player_count": len(game.players),
-            "round_count": game.config.round_count,
-        }
+        async with self._game_lock:
+            if (game := self._game) is None:
+                return None
+            return {
+                "name": game.config.name,
+                "quiz_type": game.quiz_type,
+                "answer_type": game.answer_type.value,
+                "phase": game.phase.value,
+                "mode": self._mode,
+                "player_count": len(game.players),
+                "round_count": game.config.round_count,
+            }
 
     async def join_game(self, name: str) -> dict[str, Any]:
         """

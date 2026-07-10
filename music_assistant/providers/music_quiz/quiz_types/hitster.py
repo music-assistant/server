@@ -6,6 +6,7 @@ import asyncio
 import logging
 import secrets
 from dataclasses import replace
+from itertools import batched
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
@@ -168,20 +169,26 @@ class HitsterQuizType(QuizType):
         if self._eligible_tracks is not None:
             return self._eligible_tracks
         source_tracks = list((await self._get_source_track_pool()).values())
-        enrichment_limit = asyncio.Semaphore(TRACK_ENRICHMENT_CONCURRENCY)
 
         async def _resolve_track(track: Track) -> Track | None:
             if self._track_is_eligible(track):
                 return track
-            async with enrichment_limit:
-                try:
-                    enriched = await self.mass.music.tracks.get(track.item_id, track.provider)
-                except Exception as err:
-                    LOGGER.debug("Could not enrich Music Quiz track %s: %s", track.uri, err)
-                    return None
+            try:
+                enriched = await self.mass.music.tracks.get(track.item_id, track.provider)
+            except Exception as err:
+                LOGGER.debug("Could not enrich Music Quiz track %s: %s", track.uri, err)
+                return None
             return enriched if self._track_is_eligible(enriched) else None
 
-        resolved_tracks = await asyncio.gather(*(_resolve_track(track) for track in source_tracks))
+        resolved_tracks: list[Track | None] = []
+        for track_batch in batched(
+            source_tracks,
+            TRACK_ENRICHMENT_CONCURRENCY,
+            strict=False,
+        ):
+            resolved_tracks.extend(
+                await asyncio.gather(*(_resolve_track(track) for track in track_batch))
+            )
         self._eligible_tracks = list(
             {
                 track.uri: track

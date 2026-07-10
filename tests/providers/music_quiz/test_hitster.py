@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -28,6 +29,7 @@ from music_assistant.providers.music_quiz.models import (
 )
 from music_assistant.providers.music_quiz.quiz_types.hitster import (
     DEFAULT_BONUS_OPTION_COUNT,
+    TRACK_ENRICHMENT_CONCURRENCY,
     HitsterQuizType,
 )
 
@@ -188,6 +190,32 @@ async def test_partial_playlist_tracks_are_enriched_through_track_api() -> None:
     mass.music.tracks.get.assert_awaited_once_with(partial.item_id, partial.provider)
     assert quiz._eligible_tracks is not None
     assert {track.item_id for track in quiz._eligible_tracks} == {"partial", "other"}
+
+
+@pytest.mark.asyncio
+async def test_track_enrichment_concurrency_is_bounded() -> None:
+    """Process large undated pools in bounded batches."""
+    tracks = [_track(f"track-{index}", f"Track {index}", f"Artist {index}") for index in range(25)]
+    tracks_by_id = {track.item_id: track for track in tracks}
+    quiz, mass = _quiz(tracks)
+    active_calls = 0
+    max_active_calls = 0
+
+    async def _get_track(item_id: str, _provider: str) -> Track:
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        await asyncio.sleep(0)
+        active_calls -= 1
+        return tracks_by_id[item_id]
+
+    mass.music.tracks.get.side_effect = _get_track
+
+    with pytest.raises(InvalidDataError):
+        await quiz.initialize()
+
+    assert mass.music.tracks.get.await_count == len(tracks)
+    assert max_active_calls <= TRACK_ENRICHMENT_CONCURRENCY
 
 
 def test_release_year_prefers_album_and_falls_back_to_track_metadata() -> None:

@@ -739,7 +739,19 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
 async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> None:
     """Reset Hitster to a fresh lobby while preserving its typed game config."""
     plugin = _create_plugin()
-    initialize = AsyncMock()
+    pending_task = MagicMock()
+    pending_task.cancelled.return_value = False
+    initialize_call_count = 0
+
+    def _initialize() -> None:
+        nonlocal initialize_call_count
+        initialize_call_count += 1
+        if initialize_call_count == 2:
+            pending_task.cancel.assert_called_once()
+            assert plugin._next_round_task is None
+            assert cast("MagicMock", plugin.mass.cancel_timer).call_count == 2
+
+    initialize = AsyncMock(side_effect=_initialize)
     with (
         patch(
             "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
@@ -753,6 +765,8 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
         ),
     ):
         await _create_started_hitster_game(plugin)
+        plugin._next_round_task = pending_task
+        cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
         state = await plugin.reset()
 
     game = plugin._game
@@ -1670,6 +1684,40 @@ async def test_create_game_replaces_finished_game() -> None:
     assert result["phase"] == "lobby"
     assert plugin._game is not game
     cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
+
+
+@pytest.mark.asyncio
+async def test_create_game_cancels_previous_background_work_before_initialize() -> None:
+    """Stop an old lobby prefetch and timers before initializing its replacement."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+    plugin._cancel_next_round_task()
+    pending_task = MagicMock()
+    pending_task.cancelled.return_value = False
+    plugin._next_round_task = pending_task
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+
+    async def _initialize(_strategy: Any) -> None:
+        pending_task.cancel.assert_called_once()
+        assert plugin._next_round_task is None
+        assert cast("MagicMock", plugin.mass.cancel_timer).call_count == 2
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            new=_initialize,
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            new=AsyncMock(
+                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+            ),
+        ),
+    ):
+        await plugin.create_game(
+            quiz_type="hitster",
+            source_uris=["library://playlist/2"],
+        )
 
 
 @pytest.mark.asyncio
