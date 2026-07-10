@@ -263,6 +263,34 @@ class TestActiveProtocolDomain:
         source = inspect.getsource(sgp._dissolve_syncgroup)
         assert "self.sync_leader = None" in source
 
+    @pytest.mark.asyncio
+    async def test_dissolve_schedules_protocol_clear_while_leader_still_playing(self) -> None:
+        """
+        Dissolve must schedule the delayed protocol clear while the leader plays.
+
+        Real devices report new state with a delay after a stop, so a playback
+        state check here would skip the clear and leave a stale active protocol
+        on the leader.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="wiim",
+            active_output_protocol="ap_leader",
+            playback_state=PlaybackState.PLAYING,
+        )
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        # use getattr to defeat mypy's narrowing after the earlier assignment,
+        # since it can't see that _dissolve_syncgroup mutates sync_leader.
+        assert getattr(sgp, "sync_leader") is None  # noqa: B009
+        mass.players.schedule_active_output_protocol_clear.assert_called_once_with(leader)
+
 
 class TestControllerLockCategory:
     """Test that the controller's lock categories serialize correctly."""
