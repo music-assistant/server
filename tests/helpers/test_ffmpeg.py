@@ -187,6 +187,27 @@ def overlay_file(tmp_path: Path) -> Path:
     return overlay_path
 
 
+@pytest.fixture
+def overlay_file_with_silent_intro(tmp_path: Path) -> Path:
+    """Generate a 2 second overlay wav that starts with 1s of silence then a 1s tone."""
+    overlay_path = tmp_path / "overlay_silent_intro.wav"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-af",
+            "adelay=1000:all=1",
+            str(overlay_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return overlay_path
+
+
 async def _silence(seconds: int) -> AsyncGenerator[bytes]:
     """Yield the given amount of seconds of PCM silence in 1-second chunks."""
     for _ in range(seconds):
@@ -232,3 +253,22 @@ async def test_overlay_stream_applies_volume(overlay_file: Path) -> None:
     )
     assert len(output) == _BYTES_PER_SECOND
     assert not any(output)
+
+
+async def test_overlay_stream_trims_leading_silence(
+    overlay_file_with_silent_intro: Path,
+) -> None:
+    """A near-silent intro on the overlay source is trimmed so it plays immediately."""
+    output = b"".join(
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=_silence(1),
+                overlay_input=str(overlay_file_with_silent_intro),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+    )
+    assert len(output) == _BYTES_PER_SECOND
+    # without trimming, the first second would be the overlay's silent intro;
+    # the trim makes the tone play from the start, so the first second has signal
+    assert any(output)

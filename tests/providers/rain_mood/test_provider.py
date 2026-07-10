@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers import rain_mood
@@ -62,6 +62,7 @@ async def test_stream_details() -> None:
     assert stream_details.stream_type == StreamType.HTTP
     assert stream_details.media_type == MediaType.SOUND_EFFECT
     assert stream_details.path == RAIN_URL
+    assert stream_details.audio_format.content_type == ContentType.MP3
 
 
 async def test_stream_details_unknown() -> None:
