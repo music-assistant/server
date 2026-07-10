@@ -261,3 +261,19 @@ def test_parse_ai_distractors_empty_or_unusable_returns_empty() -> None:
     """Return an empty list for empty or unusable output."""
     assert parse_ai_distractors("") == []
     assert parse_ai_distractors("Sorry, I cannot help with that.") == []
+
+
+def test_parse_ai_distractors_preserves_inner_apostrophes() -> None:
+    """Only surrounding quote pairs are stripped; apostrophes in titles are kept."""
+    result = parse_ai_distractors("Eminem - 'Till I Collapse\nKool & The Gang - Jungle Boogie'")
+    assert [(item.label, item.title) for item in result] == [
+        ("Eminem - 'Till I Collapse", "'Till I Collapse"),
+        ("Kool & The Gang - Jungle Boogie'", "Jungle Boogie'"),
+    ]
+
+
+def test_parse_ai_distractors_strips_single_quote_wrapping() -> None:
+    """A label wrapped in a matching single-quote pair is unwrapped."""
+    assert [item.label for item in parse_ai_distractors("'Justice - Genesis'")] == [
+        "Justice - Genesis"
+    ]

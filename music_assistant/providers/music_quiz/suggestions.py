@@ -106,7 +106,7 @@ def parse_ai_distractors(text: str) -> list[SuggestionCandidate]:
     """
     candidates: list[SuggestionCandidate] = []
     for line in text.splitlines():
-        label = AI_LIST_MARKER_PATTERN.sub("", line).strip().strip("\"'").strip()
+        label = _strip_wrapping_quotes(AI_LIST_MARKER_PATTERN.sub("", line).strip())
         if not label:
             continue
         title = _split_artist_title(label)
@@ -198,3 +198,10 @@ def _split_artist_title(label: str) -> str | None:
         if found and artist.strip() and title.strip():
             return title.strip()
     return None
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    """Strip one matching pair of surrounding quotes, preserving inner apostrophes."""
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1].strip()
+    return text
