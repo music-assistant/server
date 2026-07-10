@@ -20,6 +20,7 @@ from music_assistant.providers.music_quiz import (
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizGameActiveError,
+    MusicQuizInvalidAnswerError,
     MusicQuizNoGameError,
     MusicQuizUnknownPlayerError,
 )
@@ -310,7 +311,7 @@ async def test_generic_submit_answer_rejects_invalid_payload(
             "music_assistant.providers.music_quiz.get_current_user",
             return_value=_guest_user(),
         ),
-        pytest.raises(InvalidDataError),
+        pytest.raises(MusicQuizInvalidAnswerError),
     ):
         await plugin.submit_answer(player_ids["Alice"], submission)
 
@@ -338,7 +339,7 @@ async def test_generic_submit_answer_rejects_game_type_mismatch() -> None:
                 mismatched_type if answer_type == "other" else get_answer_type(answer_type)
             ),
         ),
-        pytest.raises(InvalidDataError, match="does not match"),
+        pytest.raises(MusicQuizInvalidAnswerError, match="does not match"),
     ):
         await plugin.submit_answer(
             player_ids["Alice"],

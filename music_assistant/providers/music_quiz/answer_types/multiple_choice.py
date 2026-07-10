@@ -15,6 +15,7 @@ from music_assistant.providers.music_quiz.answer_types.base import (
 )
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizAlreadyAnsweredError,
+    MusicQuizInvalidAnswerError,
     MusicQuizUnknownSuggestionError,
 )
 from music_assistant.providers.music_quiz.models import (
@@ -49,15 +50,15 @@ class MultipleChoiceAnswerType(QuizAnswerType):
         """
         expected_keys = {"answer_type", "suggestion_id"}
         if payload.keys() != expected_keys:
-            raise InvalidDataError(
+            raise MusicQuizInvalidAnswerError(
                 "Multiple-choice submissions require answer_type and suggestion_id"
             )
         answer_type = payload["answer_type"]
         if not isinstance(answer_type, str) or answer_type != self.answer_type:
-            raise InvalidDataError("Answer type must be multiple_choice")
+            raise MusicQuizInvalidAnswerError("Answer type must be multiple_choice")
         suggestion_id = payload["suggestion_id"]
         if not isinstance(suggestion_id, str) or not suggestion_id:
-            raise InvalidDataError("Suggestion ID must be a non-empty string")
+            raise MusicQuizInvalidAnswerError("Suggestion ID must be a non-empty string")
         return MultipleChoiceSubmission(suggestion_id=suggestion_id)
 
     def validate_round(self, game: MusicQuizGame, game_round: MusicQuizRound) -> None:
@@ -90,7 +91,9 @@ class MultipleChoiceAnswerType(QuizAnswerType):
         :param submitted_at: Server timestamp of the submission.
         """
         if not isinstance(submission, MultipleChoiceSubmission):
-            raise InvalidDataError("Submission does not match the multiple-choice answer type")
+            raise MusicQuizInvalidAnswerError(
+                "Submission does not match the multiple-choice answer type"
+            )
         if player.player_id in game_round.answers:
             raise MusicQuizAlreadyAnsweredError("Player already answered this round")
         suggestion = next(

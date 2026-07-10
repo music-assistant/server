@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
     MultipleChoiceAnswerType,
     MultipleChoiceSubmission,
 )
+from music_assistant.providers.music_quiz.errors import MusicQuizInvalidAnswerError
 from music_assistant.providers.music_quiz.models import (
     MusicQuizAnswer,
     MusicQuizRound,
@@ -71,7 +71,7 @@ def test_parse_submission_returns_typed_request() -> None:
 )
 def test_parse_submission_rejects_malformed_payload(payload: dict[str, object]) -> None:
     """Reject missing, mismatched, incorrectly typed and extra fields."""
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(MusicQuizInvalidAnswerError):
         ANSWER_TYPE.parse_submission(payload)
 
 

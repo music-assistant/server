@@ -83,6 +83,7 @@ from music_assistant.providers.music_quiz.errors import (
     TRANSLATION_OWNER,
     MusicQuizGameActiveError,
     MusicQuizGameFullError,
+    MusicQuizInvalidAnswerError,
     MusicQuizNoGameError,
     MusicQuizNoPlaybackTargetError,
     MusicQuizUnknownPlayerError,
@@ -482,10 +483,12 @@ class MusicQuizPlugin(PluginProvider):
             game, _, answer_type = self._require_game_strategies()
             submission_type = submission.get("answer_type")
             if not isinstance(submission_type, str):
-                raise InvalidDataError("Answer submission requires an answer_type string")
+                raise MusicQuizInvalidAnswerError(
+                    "Answer submission requires an answer_type string"
+                )
             submitted_answer_type = get_answer_type(submission_type)
             if submitted_answer_type.answer_type != game.answer_type:
-                raise InvalidDataError("Submission answer type does not match the game")
+                raise MusicQuizInvalidAnswerError("Submission answer type does not match the game")
             parsed_submission = answer_type.parse_submission(submission)
             player = _get_player(game, player_id)
             return self._submit_player_answer(game, player, parsed_submission, answer_type)
@@ -501,7 +504,9 @@ class MusicQuizPlugin(PluginProvider):
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             if game.answer_type != MusicQuizAnswerType.MULTIPLE_CHOICE:
-                raise InvalidDataError("The compatibility answer command requires multiple_choice")
+                raise MusicQuizInvalidAnswerError(
+                    "The compatibility answer command requires multiple_choice"
+                )
             player = _get_player(game, player_id)
             submission = MultipleChoiceSubmission(suggestion_id=suggestion_id)
             return self._submit_player_answer(game, player, submission, answer_type)

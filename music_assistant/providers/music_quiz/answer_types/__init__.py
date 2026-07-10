@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from music_assistant_models.errors import InvalidDataError
-
 from music_assistant.providers.music_quiz.answer_types.base import QuizAnswerType
 from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
     MultipleChoiceAnswerType,
 )
+from music_assistant.providers.music_quiz.errors import MusicQuizInvalidAnswerError
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 ANSWER_TYPES: dict[MusicQuizAnswerType, type[QuizAnswerType]] = {
@@ -25,4 +24,4 @@ def get_answer_type(answer_type: MusicQuizAnswerType | str) -> type[QuizAnswerTy
         answer_type_id = MusicQuizAnswerType(answer_type)
         return ANSWER_TYPES[answer_type_id]
     except (KeyError, ValueError) as err:
-        raise InvalidDataError(f"Unknown answer type: {answer_type}") from err
+        raise MusicQuizInvalidAnswerError(f"Unknown answer type: {answer_type}") from err
