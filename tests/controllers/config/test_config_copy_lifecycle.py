@@ -153,20 +153,6 @@ async def test_set_raw_provider_config_value_syncs_unavailable_provider(
     assert provider.config.get_value("api_token") == "abc"
 
 
-def _provider_config_entries() -> list[ConfigEntry]:
-    return [CONF_ENTRY_LOG_LEVEL, _entry("api_token", ConfigEntryType.STRING, "old")]
-
-
-def _raw_provider_conf(instance_id: str, api_token: str) -> dict[str, object]:
-    return {
-        "type": ProviderType.MUSIC.value,
-        "domain": "test",
-        "instance_id": instance_id,
-        "enabled": True,
-        "values": {"api_token": api_token},
-    }
-
-
 async def test_save_provider_config_syncs_loaded_available_provider(
     mass_minimal: MusicAssistant,
 ) -> None:
@@ -252,3 +238,17 @@ async def test_save_provider_config_reloads_loaded_unavailable_provider(
     assert reloaded_config.get_value("api_token") == "new"
     # the stale (unavailable) instance itself is never patched in place
     assert provider.config.get_value("api_token") == "old"
+
+
+def _provider_config_entries() -> list[ConfigEntry]:
+    return [CONF_ENTRY_LOG_LEVEL, _entry("api_token", ConfigEntryType.STRING, "old")]
+
+
+def _raw_provider_conf(instance_id: str, api_token: str) -> dict[str, object]:
+    return {
+        "type": ProviderType.MUSIC.value,
+        "domain": "test",
+        "instance_id": instance_id,
+        "enabled": True,
+        "values": {"api_token": api_token},
+    }
