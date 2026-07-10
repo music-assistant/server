@@ -36,7 +36,7 @@ def _modules_loaded_by(import_statement: str) -> set[str]:
 
 
 def test_server_import_defers_heavy_modules() -> None:
-    """Importing the full server module must not import numpy, PIL or mutagen."""
+    """Importing the full server module must not import numpy or mutagen (PIL stays eager)."""
     top_level = {name.split(".")[0] for name in _modules_loaded_by("import music_assistant.mass")}
     assert not top_level.intersection(HEAVY_MODULES)
 
