@@ -1,0 +1,93 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [testing/connection-resilience]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: foobarth/music-assistant-server
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # 1️⃣ MA Server inkl. Patches auschecken (full history für commit count)
+      - uses: actions/checkout@v4
+        with:
+          path: server
+          fetch-depth: 0
+
+      # 2️⃣ aiosendspin Fork (Feature-Branch mit 300s Cleanup)
+      - uses: actions/checkout@v4
+        with:
+          repository: foobarth/sendspin-aiosendspin
+          ref: feat/cleanup-delay-300s
+          path: sendspin
+
+      # 3️⃣ Python + Build-Tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build
+        run: pip install build
+
+      # 4️⃣ aiosendspin Wheel bauen + ins Build-Kontext legen
+      - name: Build aiosendspin wheel
+        run: |
+          cd sendspin
+          python -m build --wheel
+          mkdir -p ../server/dist
+          cp dist/*.whl ../server/dist/
+
+      # 5️⃣ Version aus totalem Commit-Count (stabil, kein Tag-Zugriff nötig)
+      - name: Derive version
+        id: version
+        run: |
+          cd server
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          TOTAL_COMMITS=$(git rev-list --count HEAD)
+          # PEP 440: saubere Dev-Version fürs Wheel
+          CLEAN_VER="2.10.0.dev${TOTAL_COMMITS}"
+          echo "mass_version=${CLEAN_VER}" >> $GITHUB_OUTPUT
+          # Docker-Tag: total-commits + SHA (deterministisch, traceable)
+          IMAGE_TAG="${CLEAN_VER}.${SHORT_SHA}"
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          sed -i 's/^version = ".*"/version = "'"${CLEAN_VER}"'"/' pyproject.toml
+          echo "Wheel version: ${CLEAN_VER}"
+          echo "Image tag: ${IMAGE_TAG}"
+
+      # 6️⃣ MA Wheel bauen (aus unserem Branch = Patches drin)
+      - name: Build MA wheel
+        run: |
+          cd server
+          python -m build --wheel
+
+      # 7️⃣ Docker Buildx
+      - uses: docker/setup-buildx-action@v3
+
+      # 8️⃣ GHCR Login (via GITHUB_TOKEN)
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 9️⃣ Image bauen + pushen
+      - uses: docker/build-push-action@v6
+        with:
+          context: server
+          push: true
+          tags: |
+            ghcr.io/foobarth/music-assistant-server:testing-connection-resilience
+            ghcr.io/foobarth/music-assistant-server:${{ steps.version.outputs.image_tag }}
+          build-args: |
+            MASS_VERSION=${{ steps.version.outputs.mass_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
