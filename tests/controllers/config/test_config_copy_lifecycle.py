@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
+    ConfigValueType,
     CoreConfig,
     PlayerConfig,
     ProviderConfig,
@@ -29,8 +30,8 @@ PLAYER_ID = "test_copy_player"
 PROVIDER_INSTANCE = "test_copy_provider"
 
 
-def _entry(key: str, entry_type: ConfigEntryType, default: object) -> ConfigEntry:
-    return ConfigEntry(key=key, type=entry_type, default_value=default, required=False)  # type: ignore[arg-type]
+def _entry(key: str, entry_type: ConfigEntryType, default: ConfigValueType) -> ConfigEntry:
+    return ConfigEntry(key=key, type=entry_type, default_value=default, required=False)
 
 
 async def test_core_controllers_hold_active_config(mass: MusicAssistant) -> None:
@@ -153,6 +154,107 @@ async def test_set_raw_provider_config_value_syncs_unavailable_provider(
     assert provider.config.get_value("api_token") == "abc"
 
 
+async def test_provider_get_config_value_prefers_persisted_value(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A provider reads a persisted value instead of its stale config snapshot."""
+    entries = _provider_config_entries()
+    mass_minimal.config.set(
+        f"{CONF_PROVIDERS}/{PROVIDER_INSTANCE}",
+        _raw_provider_conf(PROVIDER_INSTANCE, "persisted"),
+    )
+    provider = _create_provider(mass_minimal, entries, api_token="stale")
+
+    assert provider.get_config_value("api_token") == "persisted"
+
+
+async def test_provider_get_config_value_decrypts_persisted_secure_value(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A provider transparently decrypts a persisted secure config value."""
+    entries = [
+        CONF_ENTRY_LOG_LEVEL,
+        _entry("api_secret", ConfigEntryType.SECURE_STRING, None),
+    ]
+    mass_minimal.config.set(
+        f"{CONF_PROVIDERS}/{PROVIDER_INSTANCE}",
+        _raw_provider_conf(PROVIDER_INSTANCE),
+    )
+    mass_minimal.config.set_raw_provider_config_value(
+        PROVIDER_INSTANCE, "api_secret", "persisted-secret", encrypted=True
+    )
+    provider = _create_provider(mass_minimal, entries, api_secret="stale-secret")
+
+    assert provider.get_config_value("api_secret") == "persisted-secret"
+
+
+async def test_provider_get_config_value_falls_back_to_active_config(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A provider uses active values and defaults when no persisted value exists."""
+    entries = [
+        CONF_ENTRY_LOG_LEVEL,
+        _entry("active_value", ConfigEntryType.STRING, None),
+        _entry("active_default", ConfigEntryType.STRING, "entry-default"),
+    ]
+    mass_minimal.config.set(
+        f"{CONF_PROVIDERS}/{PROVIDER_INSTANCE}",
+        _raw_provider_conf(PROVIDER_INSTANCE, unknown="store-only"),
+    )
+    provider = _create_provider(mass_minimal, entries, active_value="snapshot-value")
+
+    assert provider.get_config_value("active_value") == "snapshot-value"
+    assert provider.get_config_value("active_default") == "entry-default"
+    assert provider.get_config_value("unknown", "explicit-default") == "explicit-default"
+
+
+async def test_provider_update_config_value_syncs_initializing_snapshot(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A provider-originated write updates its snapshot before registration completes."""
+    entries = _provider_config_entries()
+    mass_minimal.config.set(
+        f"{CONF_PROVIDERS}/{PROVIDER_INSTANCE}",
+        _raw_provider_conf(PROVIDER_INSTANCE, "old"),
+    )
+    provider = _create_provider(mass_minimal, entries, api_token="old")
+    get_provider = MagicMock(return_value=None)
+    mass_minimal.get_provider = get_provider  # type: ignore[method-assign]
+
+    provider._update_config_value("api_token", "new")
+
+    assert (
+        mass_minimal.config.get_raw_provider_config_value(PROVIDER_INSTANCE, "api_token") == "new"
+    )
+    assert provider.config.values["api_token"].value == "new"
+    get_provider.assert_called_once_with(PROVIDER_INSTANCE, return_unavailable=True)
+
+
+async def test_provider_encrypted_update_keeps_raw_snapshot_value(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An encrypted provider write stores raw ciphertext while reads return plaintext."""
+    entries = [
+        CONF_ENTRY_LOG_LEVEL,
+        _entry("api_secret", ConfigEntryType.SECURE_STRING, None),
+    ]
+    mass_minimal.config.set(
+        f"{CONF_PROVIDERS}/{PROVIDER_INSTANCE}",
+        _raw_provider_conf(PROVIDER_INSTANCE),
+    )
+    provider = _create_provider(mass_minimal, entries)
+    get_provider = MagicMock(return_value=None)
+    mass_minimal.get_provider = get_provider  # type: ignore[method-assign]
+
+    provider._update_config_value("api_secret", "new-secret", encrypted=True)
+
+    raw_value = mass_minimal.config.get_raw_provider_config_value(PROVIDER_INSTANCE, "api_secret")
+    assert isinstance(raw_value, str)
+    assert raw_value != "new-secret"
+    assert provider.config.values["api_secret"].value == raw_value
+    assert provider.get_config_value("api_secret") == "new-secret"
+
+
 async def test_save_provider_config_syncs_loaded_available_provider(
     mass_minimal: MusicAssistant,
 ) -> None:
@@ -244,11 +346,29 @@ def _provider_config_entries() -> list[ConfigEntry]:
     return [CONF_ENTRY_LOG_LEVEL, _entry("api_token", ConfigEntryType.STRING, "old")]
 
 
-def _raw_provider_conf(instance_id: str, api_token: str) -> dict[str, object]:
+def _create_provider(
+    mass: MusicAssistant,
+    entries: list[ConfigEntry],
+    **values: ConfigValueType,
+) -> Provider:
+    """Create a provider with an active config snapshot."""
+    manifest = MagicMock(domain="test", type=ProviderType.MUSIC)
+    config = cast(
+        "ProviderConfig",
+        ProviderConfig.parse(entries, _raw_provider_conf(PROVIDER_INSTANCE, **values)),
+    )
+    return Provider(mass, manifest, config)
+
+
+def _raw_provider_conf(
+    instance_id: str, api_token: ConfigValueType = None, **values: ConfigValueType
+) -> dict[str, object]:
+    if api_token is not None:
+        values["api_token"] = api_token
     return {
         "type": ProviderType.MUSIC.value,
         "domain": "test",
         "instance_id": instance_id,
         "enabled": True,
-        "values": {"api_token": api_token},
+        "values": values,
     }
