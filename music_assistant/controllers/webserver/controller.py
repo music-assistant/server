@@ -284,8 +284,6 @@ class WebserverController(CoreController):
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
         routes.append(("POST", "/api", self._handle_jsonrpc_api_command))
-        # add diagnostics report download (handler enforces authentication itself)
-        routes.append(("GET", "/diagnostics", self.mass.diagnostics.handle_http_download))
         # add api documentation
         routes.append(("GET", "/api-docs", self._handle_api_intro))
         routes.append(("GET", "/api-docs/", self._handle_api_intro))
