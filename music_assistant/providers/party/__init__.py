@@ -105,6 +105,8 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()
 class PartyConfig(DataClassDictMixin):
     """Configuration data returned to the party guest frontend."""
 
+    # Shared-audio experience mode: "venue" (opt-in) or "remote" (silent disco).
+    mode: str
     # Feature toggles
     enable_rate_limiting: bool
     enable_add_queue: bool
@@ -560,6 +562,7 @@ class PartyPlugin(PluginProvider):
         :returns: PartyConfig with feature toggles, token limits, refill rates, and colors.
         """
         return PartyConfig(
+            mode=cast("str", self.config.get_value(CONF_PARTY_MODE)),
             enable_rate_limiting=cast("bool", self.config.get_value(CONF_ENABLE_RATE_LIMITING)),
             enable_add_queue=cast("bool", self.config.get_value(CONF_ENABLE_ADD_QUEUE)),
             add_queue_limit=cast("int", self.config.get_value(CONF_PARTY_ADD_QUEUE_LIMIT)),

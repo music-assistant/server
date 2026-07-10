@@ -84,6 +84,24 @@ async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None
     player_queues.load.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_get_party_config_includes_mode() -> None:
+    """Expose the configured shared-playback mode in the guest config payload."""
+    plugin = _create_party_plugin()
+
+    def get_value(key: str) -> object:
+        if key == CONF_PARTY_MODE:
+            return SharedPlaybackMode.VENUE.value
+        return MagicMock()
+
+    config = cast("MagicMock", plugin.config)
+    config.get_value.side_effect = get_value
+
+    party_config = await plugin.get_party_config()
+
+    assert party_config.mode == SharedPlaybackMode.VENUE.value
+
+
 def _create_session_test_plugin(mode: str) -> PartyPlugin:
     """Create a party plugin with a real get_party_player for session tests."""
     plugin = PartyPlugin.__new__(PartyPlugin)
