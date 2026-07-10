@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sqlite3
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from contextlib import closing
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -1281,7 +1283,9 @@ def _track_with_mapping(item_id: str = "track-1", provider: str = "test-provider
     )
 
 
-def _analysis_controller_with_rows(rows: list[dict[str, Any]]) -> AudioAnalysisController:
+def _analysis_controller_with_rows(
+    rows: list[Mapping[str, Any]],
+) -> AudioAnalysisController:
     """Build a stub controller whose DB returns the given analysis rows for any track."""
     c, db = _stub_controller()
     db.get_rows = AsyncMock(return_value=rows)
@@ -1296,6 +1300,46 @@ def _analysis_controller_with_rows(rows: list[dict[str, Any]]) -> AudioAnalysisC
         ]
     )
     return c
+
+
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_skips_corrupt_sqlite_row(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A corrupt sqlite3.Row is logged and skipped without hiding valid analysis."""
+    corrupt_data = json_dumps({"spectral_centroid": [100.0, None]})
+    valid_data = json_dumps(AudioAnalysisData(bpm=128.0).to_dict())
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.row_factory = sqlite3.Row
+        rows = cast(
+            "list[Mapping[str, Any]]",
+            db.execute(
+                """
+                SELECT 1 AS id, ? AS aa_provider_domain, ? AS analysis_data
+                UNION ALL
+                SELECT 2, ?, ?
+                """,
+                (
+                    SONIC_ANALYSIS_DOMAIN,
+                    corrupt_data,
+                    SMART_FADES_ANALYSIS_DOMAIN,
+                    valid_data,
+                ),
+            ).fetchall(),
+        )
+
+    controller = _analysis_controller_with_rows(rows)
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        result = await controller.get_track_audio_metadata(_track_with_mapping())
+
+    assert result is not None
+    assert result.bpm == 128.0
+    warning = next(
+        record for record in caplog.records if record.name == audio_analysis_mod.LOGGER.name
+    )
+    assert "id=1, domain=sonic_analysis" in warning.getMessage()
+    assert corrupt_data not in warning.getMessage()
+    assert warning.exc_info is None
 
 
 @pytest.mark.asyncio
