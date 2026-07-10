@@ -1,4 +1,4 @@
-"""Tests for image-cache invalidation on explicit library item updates."""
+"""Tests for image-cache invalidation on library item updates and removals."""
 
 from __future__ import annotations
 
@@ -37,55 +37,52 @@ def _track(images: list[MediaItemImage]) -> Track:
     )
 
 
-def _controller_returning(*items: Track) -> tuple[TracksController, AsyncMock, AsyncMock]:
-    """Build a TracksController with mocked db plus its invalidation/get mocks."""
+def _controller_returning(item: Track) -> tuple[TracksController, AsyncMock]:
+    """Build a TracksController with mocked db plus its invalidation mock."""
     mass = MagicMock()
+    mass.music.database = AsyncMock()
+    # deferred_commit is used as (sync-called) async context manager
+    mass.music.database.deferred_commit = MagicMock()
     invalidate_mock = AsyncMock()
     mass.metadata.invalidate_image_cache = invalidate_mock
     mass.get_provider.return_value = None
     controller = TracksController(mass)
-    get_item_mock = AsyncMock(side_effect=list(items))
-    controller.get_library_item = get_item_mock  # type: ignore[method-assign]
+    controller.get_library_item = AsyncMock(return_value=item)  # type: ignore[method-assign]
     controller._update_library_item = AsyncMock()  # type: ignore[method-assign]
-    return controller, invalidate_mock, get_item_mock
+    return controller, invalidate_mock
 
 
-async def test_replaced_image_is_invalidated() -> None:
-    """Replacing an item's image invalidates the cached artwork of the old image."""
-    prev_item = _track([_image("Artist/old-cover.jpg")])
-    updated_item = _track([_image("Artist/new-cover.jpg")])
-    controller, invalidate_mock, _ = _controller_returning(prev_item, updated_item)
-    await controller.update_item_in_library("1", updated_item)
-    invalidate_mock.assert_awaited_once_with("test--1", "Artist/old-cover.jpg")
-
-
-async def test_unchanged_images_are_not_invalidated() -> None:
-    """An update that keeps the same images busts nothing."""
-    prev_item = _track([_image("Artist/cover.jpg")])
+async def test_updated_item_artwork_is_invalidated() -> None:
+    """Updating an item drops its cached artwork so replaced art is served fresh."""
     updated_item = _track([_image("Artist/cover.jpg")])
-    controller, invalidate_mock, _ = _controller_returning(prev_item, updated_item)
+    controller, invalidate_mock = _controller_returning(updated_item)
+    await controller.update_item_in_library("1", updated_item)
+    invalidate_mock.assert_awaited_once_with("test--1", "Artist/cover.jpg")
+
+
+async def test_update_without_images_invalidates_nothing() -> None:
+    """An item without any images busts nothing."""
+    updated_item = _track([])
+    controller, invalidate_mock = _controller_returning(updated_item)
     await controller.update_item_in_library("1", updated_item)
     invalidate_mock.assert_not_awaited()
 
 
-async def test_added_image_is_not_invalidated() -> None:
-    """Merely adding an image (e.g. metadata enrichment) busts nothing."""
-    prev_item = _track([])
-    updated_item = _track([_image("Artist/fresh-cover.jpg")])
-    controller, invalidate_mock, _ = _controller_returning(prev_item, updated_item)
-    await controller.update_item_in_library("1", updated_item)
-    invalidate_mock.assert_not_awaited()
-
-
-async def test_suppressed_update_skips_snapshot_and_invalidation() -> None:
-    """During a provider sync neither the pre-fetch nor any invalidation runs."""
+async def test_suppressed_update_skips_invalidation() -> None:
+    """During a provider sync no invalidation runs for updated items."""
     updated_item = _track([_image("Artist/new-cover.jpg")])
-    controller, invalidate_mock, get_item_mock = _controller_returning(updated_item)
+    controller, invalidate_mock = _controller_returning(updated_item)
     token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
     try:
         await controller.update_item_in_library("1", updated_item)
     finally:
         SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
-    # only the post-update read happened; no snapshot read, no invalidation
-    assert get_item_mock.await_count == 1
     invalidate_mock.assert_not_awaited()
+
+
+async def test_removed_item_artwork_is_invalidated() -> None:
+    """Removing an item drops its cached artwork."""
+    library_item = _track([_image("Artist/cover.jpg")])
+    controller, invalidate_mock = _controller_returning(library_item)
+    await controller.remove_item_from_library("1", recursive=False)
+    invalidate_mock.assert_awaited_once_with("test--1", "Artist/cover.jpg")
