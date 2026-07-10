@@ -152,17 +152,23 @@ async def test_provider_bytes_use_disk_cache_across_restart(
     assert len(fetch_calls) == 1
 
 
-async def test_local_file_read_skips_disk_cache(
+async def test_local_file_read_cached_on_disk(
     mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
 ) -> None:
-    """A direct local file read is cached in memory only (no redundant disk copy)."""
+    """A local file read lands in both cache tiers and is served from disk after restart."""
     image_path = _make_png_file(tmp_path)
-    await get_image_data(mass_minimal, image_path, "builtin")
+    data = await get_image_data(mass_minimal, image_path, "builtin")
     assert len(fetch_calls) == 1
     cache_key = create_thumb_hash("builtin", image_path)
     assert cache_key in images._source_memory_cache.entries
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert not os.path.exists(src_file)
+    assert os.path.isfile(src_file)
+
+    # after a restart the disk entry serves the bytes without touching the origin
+    # (which may live on a network mount) - local entries have no TTL
+    images._source_memory_cache.clear()
+    assert await get_image_data(mass_minimal, image_path, "builtin") == data
+    assert len(fetch_calls) == 1
 
 
 async def test_remote_disk_entry_expires_after_ttl(
@@ -233,13 +239,14 @@ async def test_invalidate_cached_image_clears_all_tiers(
     thumb_dir = Path(mass_minimal.cache_path, "thumbnails")
     target_hash = create_thumb_hash("builtin", image_path)
     other_hash = create_thumb_hash("builtin", other_path)
-    assert len([f for f in thumb_dir.iterdir() if f.name.startswith(target_hash)]) == 2
+    # two thumb variants plus the source entry per image
+    assert len([f for f in thumb_dir.iterdir() if f.name.startswith(target_hash)]) == 3
 
     await invalidate_cached_image(mass_minimal, "builtin", image_path)
 
     # all artifacts of the target image are gone, the other image is untouched
     assert not [f for f in thumb_dir.iterdir() if f.name.startswith(target_hash)]
-    assert len([f for f in thumb_dir.iterdir() if f.name.startswith(other_hash)]) == 2
+    assert len([f for f in thumb_dir.iterdir() if f.name.startswith(other_hash)]) == 3
     assert target_hash not in images._source_memory_cache.entries
     assert not any(key.startswith(f"{target_hash}_") for key in images._thumb_memory_cache)
     assert any(key.startswith(f"{other_hash}_") for key in images._thumb_memory_cache)

@@ -58,9 +58,9 @@ _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
 # ffmpeg-extracted embedded art) that every derived artifact (thumb sizes/formats,
 # color palette, collage tiles) is generated from. Without it, first display of a
 # single item fetches the same source several times within seconds. The memory
-# tier is byte-budgeted (originals can be multi-MB); expensive fetches also get an
-# on-disk `<hash>_src` entry in the thumbnail cache dir so multi-variant
-# generation after a restart doesn't re-fetch either.
+# tier is byte-budgeted (originals can be multi-MB); sources also get an on-disk
+# `<hash>_src` entry in the thumbnail cache dir so multi-variant generation
+# after a restart doesn't re-fetch either.
 _SOURCE_CACHE_SUFFIX = "_src"
 # remote urls can serve new content behind a stable url, so keep the TTL modest;
 # local files don't rely on it as invalidate_cached_image busts them on change
@@ -245,10 +245,10 @@ async def get_image_data(
     """
     Retrieve image data from a path or URL.
 
-    Source bytes are cached (in-memory, plus on-disk for expensive fetches) so
-    that deriving multiple artifacts from one image (thumb sizes/formats,
-    palette, collage tiles) only fetches the origin once. Concurrent requests
-    for the same source share a single fetch.
+    Source bytes are cached (in memory and on disk) so that deriving multiple
+    artifacts from one image (thumb sizes/formats, palette, collage tiles)
+    only fetches the origin once. Concurrent requests for the same source
+    share a single fetch.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: The image path, URL, or base64 data URI.
@@ -360,9 +360,9 @@ async def _fetch_and_cache_source_image(
         _source_memory_cache.put(cache_key, disk_data)
         return disk_data
 
-    img_data, disk_worthy = await _fetch_source_image(mass, path_or_url, provider, depth)
+    img_data, disk_cacheable = await _fetch_source_image(mass, path_or_url, provider, depth)
     _source_memory_cache.put(cache_key, img_data)
-    if disk_worthy:
+    if disk_cacheable:
         # persist to disk cache (best-effort, don't fail on I/O errors)
         try:
             await asyncio.to_thread(os.makedirs, os.path.dirname(filepath), exist_ok=True)
@@ -379,9 +379,11 @@ async def _fetch_source_image(
     """
     Fetch image bytes from their origin.
 
-    Returns the raw bytes plus whether the fetch was expensive enough to justify
-    an on-disk cache entry (remote downloads and ffmpeg-extracted embedded art;
-    a direct local file read is already as cheap as its cache copy would be).
+    Returns the raw bytes plus whether they may be persisted on disk under this
+    (provider, path) cache key. That is True for every origin except results
+    resolved under a different key (imageproxy URLs pointing at our own server):
+    an alias-keyed copy would keep being served after the underlying image is
+    invalidated.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: The image path or URL.
@@ -413,14 +415,14 @@ async def _fetch_source_image(
             raise FileNotFoundError(msg) from err
     # handle base64 embedded images
     if path_or_url.startswith("data:image"):
-        return b64decode(path_or_url.split(",")[-1]), False
+        return b64decode(path_or_url.split(",")[-1]), True
     # handle FILE location (of type image)
     if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg", "svg", "SVG")) and is_safe_path(
         path_or_url
     ):
         if await asyncio.to_thread(os.path.isfile, path_or_url):
             async with aiofiles.open(path_or_url, "rb") as _file:
-                return cast("bytes", await _file.read()), False
+                return cast("bytes", await _file.read()), True
     # use ffmpeg for embedded images
     if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
         return img_data, True
