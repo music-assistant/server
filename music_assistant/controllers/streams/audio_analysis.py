@@ -89,16 +89,24 @@ if TYPE_CHECKING:
     from music_assistant.controllers.streams.controller import StreamsController
 
 
+def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
+    """Return a database row value without assuming dict-only helpers."""
+    try:
+        return row[key]
+    except IndexError, KeyError, TypeError:
+        return None
+
+
 def _parse_row(row: Mapping[str, Any]) -> AudioAnalysisData | None:
     """Parse a single audio_analysis row's analysis_data, logging and skipping on error."""
     try:
         return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-    except (ValueError, TypeError, KeyError) as err:
+    except (IndexError, KeyError, TypeError, ValueError) as err:
         LOGGER.warning(
-            "Skipping unparsable audio_analysis row (id=%s, aa_provider_domain=%s): %s",
-            row.get("id"),
-            row.get("aa_provider_domain"),
-            err,
+            "Skipping unparsable audio_analysis row (id=%s, domain=%s, error=%s)",
+            _get_row_value(row, "id"),
+            _get_row_value(row, "aa_provider_domain"),
+            type(err).__name__,
         )
         return None
 
