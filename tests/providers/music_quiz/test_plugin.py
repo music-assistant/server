@@ -949,6 +949,41 @@ async def test_expiry_unblocks_reveal_readiness() -> None:
 
 
 @pytest.mark.asyncio
+async def test_expiry_propagates_reveal_advance_failure() -> None:
+    """Surface unexpected expiry-driven advance failures to task error handling."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin)
+    await plugin.reveal()
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        await plugin.ready(player_ids["Alice"])
+
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 200.0
+    game.players[player_ids["Bob"]].last_seen = 100.0
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.time.time",
+            return_value=160.0,
+        ),
+        patch.object(
+            plugin,
+            "_advance_from_reveal",
+            new=AsyncMock(side_effect=RuntimeError("advance failed")),
+        ),
+        pytest.raises(RuntimeError, match="advance failed"),
+    ):
+        await plugin._expire_inactive_players()
+
+    assert player_ids["Bob"] not in game.players
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("phase", [MusicQuizPhase.ANSWERING, MusicQuizPhase.REVEAL])
 async def test_expiry_with_zero_remaining_players_does_not_auto_transition(
     phase: MusicQuizPhase,

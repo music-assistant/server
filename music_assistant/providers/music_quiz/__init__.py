@@ -815,15 +815,7 @@ class MusicQuizPlugin(PluginProvider):
                     self._signal_game_updated()
             elif game.players and game.phase == MusicQuizPhase.REVEAL:
                 if are_active_players_ready(game):
-                    try:
-                        await self._advance_from_reveal()
-                    except Exception as err:
-                        self.logger.error(
-                            "Could not advance Music Quiz game after player expiry: %s",
-                            err,
-                            exc_info=err,
-                        )
-                        self._signal_game_updated()
+                    await self._advance_from_reveal()
                 else:
                     self._signal_game_updated()
             else:
