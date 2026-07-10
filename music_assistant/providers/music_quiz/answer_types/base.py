@@ -107,6 +107,14 @@ class QuizAnswerType(ABC):
         """
 
     @abstractmethod
+    def serialize_game_config(self, game: MusicQuizGame) -> dict[str, SerializableType]:
+        """
+        Serialize answer-specific game configuration.
+
+        :param game: Game whose configuration should be serialized.
+        """
+
+    @abstractmethod
     def serialize_host_round(self, state: QuizRoundAnswerState) -> dict[str, SerializableType]:
         """
         Serialize answer state for the host's flat round payload.

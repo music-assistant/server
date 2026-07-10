@@ -33,6 +33,16 @@ class SuggestionCandidate:
     title: str | None = None
 
 
+@dataclass(frozen=True)
+class OpaqueOption:
+    """An answer option with an opaque client-visible identity."""
+
+    option_id: str
+    label: str
+    uri: str | None
+    is_correct: bool
+
+
 def normalize_answer_label(label: str) -> str:
     """
     Normalize an answer label for duplicate detection.
@@ -131,31 +141,63 @@ def build_suggestions(
     :param suggestion_count: Total number of suggestions to return.
     :param rng: Optional random generator.
     """
-    if suggestion_count < 2:
+    return [
+        MultipleChoiceSuggestion(
+            suggestion_id=option.option_id,
+            label=option.label,
+            uri=option.uri,
+            is_correct=option.is_correct,
+        )
+        for option in build_opaque_options(
+            correct,
+            distractors,
+            suggestion_count,
+            rng=rng,
+        )
+    ]
+
+
+def build_opaque_options(
+    correct: SuggestionCandidate,
+    distractors: Iterable[SuggestionCandidate],
+    option_count: int,
+    *,
+    rng: random.Random | None = None,
+) -> list[OpaqueOption]:
+    """
+    Build shuffled answer options with opaque IDs and one correct answer.
+
+    :param correct: Correct answer candidate.
+    :param distractors: Wrong answer candidates.
+    :param option_count: Total number of options to return.
+    :param rng: Optional random generator.
+    """
+    if option_count < 2:
         msg = "Suggestion count must be at least 2"
         raise ValueError(msg)
 
-    selected = _select_distractors(correct, distractors, suggestion_count - 1)
-    # suggestion IDs are sent to guests while the answer is still secret: they
+    selected = _select_distractors(correct, distractors, option_count - 1)
+    # option IDs are sent to guests while the answer is still secret: they
     # must be opaque, never semantic ("correct"/"wrong_x" would leak the answer)
-    suggestions = [
-        MultipleChoiceSuggestion(
-            suggestion_id=secrets.token_hex(8),
+    options = [
+        OpaqueOption(
+            option_id=secrets.token_hex(8),
             label=correct.label,
             uri=correct.uri,
             is_correct=True,
         ),
         *[
-            MultipleChoiceSuggestion(
-                suggestion_id=secrets.token_hex(8),
+            OpaqueOption(
+                option_id=secrets.token_hex(8),
                 label=candidate.label,
                 uri=candidate.uri,
+                is_correct=False,
             )
             for candidate in selected
         ],
     ]
-    (rng or random).shuffle(suggestions)
-    return suggestions
+    (rng or random).shuffle(options)
+    return options
 
 
 def _select_distractors(

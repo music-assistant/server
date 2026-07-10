@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import secrets
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Track
 
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
@@ -17,6 +18,7 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizAnswerType,
     MusicQuizDifficulty,
     MusicQuizRound,
+    TimelineBonusMode,
 )
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
 from music_assistant.providers.music_quiz.suggestions import (
@@ -29,26 +31,65 @@ from music_assistant.providers.music_quiz.suggestions import (
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist, ItemMapping
 
-    from music_assistant.mass import MusicAssistant
     from music_assistant.providers.music_quiz.models import MusicQuizConfig
 
 LOGGER = logging.getLogger(__name__)
+MAX_SUGGESTION_COUNT = 12
 
 
 class GuessTheSongQuizType(QuizType):
     """Quiz type where players guess the currently playing track."""
 
     answer_type = MusicQuizAnswerType.MULTIPLE_CHOICE
+    warm_up_lyrics = True
 
-    def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
+    @classmethod
+    def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
         """
-        Initialize the guess-the-song quiz type for a single game.
+        Remove configuration fields that do not apply to guess-the-song.
 
-        :param mass: MusicAssistant instance.
-        :param config: Config of the game this quiz type generates rounds for.
+        :param config: Raw typed game configuration.
+        :return: Configuration to persist for this quiz type.
         """
-        super().__init__(mass, config)
-        self._source_track_pool: dict[str, Track] | None = None
+        return replace(
+            config,
+            artist_bonus_mode=TimelineBonusMode.OFF.value,
+            title_bonus_mode=TimelineBonusMode.OFF.value,
+        )
+
+    @classmethod
+    def validate_config(cls, config: MusicQuizConfig) -> None:
+        """
+        Validate guess-the-song configuration.
+
+        :param config: Configuration to validate.
+        """
+        super().validate_config(config)
+        if config.difficulty not in {item.value for item in MusicQuizDifficulty}:
+            raise InvalidDataError(
+                f"Unknown difficulty: {config.difficulty}",
+                translation_key="music_quiz_invalid_difficulty",
+                translation_owner=TRANSLATION_OWNER,
+            )
+        if config.suggestion_count < 2:
+            raise InvalidDataError(
+                "Suggestion count must be at least 2",
+                translation_key="music_quiz_suggestion_count_min",
+                translation_owner=TRANSLATION_OWNER,
+            )
+        if config.suggestion_count > MAX_SUGGESTION_COUNT:
+            raise InvalidDataError(
+                f"Suggestion count must be at most {MAX_SUGGESTION_COUNT}",
+                translation_key="music_quiz_suggestion_count_max",
+                translation_owner=TRANSLATION_OWNER,
+                translation_args=[MAX_SUGGESTION_COUNT],
+            )
+        if not config.source_uris:
+            raise InvalidDataError(
+                "At least one source URI is required",
+                translation_key="music_quiz_source_required",
+                translation_owner=TRANSLATION_OWNER,
+            )
 
     async def prepare_round(
         self, round_index: int, previous_rounds: list[MusicQuizRound]
@@ -103,44 +144,6 @@ class GuessTheSongQuizType(QuizType):
                 translation_owner=TRANSLATION_OWNER,
             )
         return secrets.choice(available)
-
-    async def _get_source_track_pool(self) -> dict[str, Track]:
-        """Return all configured source tracks keyed by URI, fetched once per game."""
-        if self._source_track_pool is not None:
-            return self._source_track_pool
-        if not self.config.source_uris:
-            raise InvalidDataError(
-                "At least one source URI is required",
-                translation_key="music_quiz_source_required",
-                translation_owner=TRANSLATION_OWNER,
-            )
-        pool: dict[str, Track] = {}
-        for source_uri in self.config.source_uris:
-            # skip individual unavailable sources so one bad source does not
-            # abort a round that other sources can still populate
-            try:
-                media_item = await self.mass.music.get_item_by_uri(source_uri)
-                if isinstance(media_item, Track):
-                    if media_item.uri:
-                        pool[media_item.uri] = media_item
-                    continue
-                if isinstance(media_item, Playlist):
-                    async for track in self.mass.music.playlists.tracks(
-                        item_id=media_item.item_id,
-                        provider_instance_id_or_domain=media_item.provider,
-                    ):
-                        if isinstance(track, Track) and track.uri:
-                            pool[track.uri] = track
-            except Exception as err:
-                LOGGER.warning("Could not load Music Quiz source %s: %s", source_uri, err)
-        if not pool:
-            raise InvalidDataError(
-                "None of the configured sources could be loaded",
-                translation_key="music_quiz_sources_unavailable",
-                translation_owner=TRANSLATION_OWNER,
-            )
-        self._source_track_pool = pool
-        return pool
 
     async def _gather_distractors(
         self, track: Track, correct: SuggestionCandidate

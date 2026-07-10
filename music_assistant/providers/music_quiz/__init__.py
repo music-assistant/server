@@ -1,9 +1,10 @@
 """
 Music Quiz Plugin Provider for Music Assistant.
 
-Provides the backend game engine for multiplayer music quiz games: guests
-join with a QR code (join URL) on their own device and compete to guess the
-currently playing track.
+Provides the backend game engine for multiplayer music quiz games. Guests
+join with a QR code on their own device and play the selected quiz type:
+guess-the-song uses multiple-choice answers, while Hitster uses a shared
+chronological timeline with optional artist and title bonuses.
 
 Playback is hosted by a SharedPlaybackSession in one of two modes
 (provider config):
@@ -20,31 +21,26 @@ contract (all payloads are JSON objects)::
     {"event": "game_updated", "state": {<public game state>}}
     {"event": "game_removed"}
 
-The public game state is guest-safe by construction and contains:
+The public game state is guest-safe by construction. Common state contains:
 
 - always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``quiz_type``,
-  ``answer_type``, ``mode`` (the configured playback mode: venue/remote), ``round_count``,
-  ``suggestion_count``, ``answer_duration`` and
-  ``players``: a list of ``{name, score, ready, answered}`` entries
-  (players are keyed by their unique display name; private player IDs
-  never appear in broadcast payloads).
-- during the answering phase ``current_round`` holds ``round_index``,
-  ``started_at`` (server timestamp), ``deadline`` (server timestamp when
-  answering closes), an optional ``question`` prompt and ``suggestions``:
-  a list of ``{suggestion_id, label}`` entries. Suggestion IDs are opaque
-  and the payload never contains the track URI, artwork or correctness.
-- during the reveal/finished phases ``current_round`` additionally exposes
-  ``correct_suggestion_id``, ``answer_label``, ``track_uri``, ``image_url``
-  and ``duration``, and each player entry gains ``last_answer``:
-  ``{suggestion_id, correct, points}``. Lyrics are not part of the game
-  state: the frontend fetches them via the standard
-  ``metadata/get_track_lyrics`` API using the revealed ``track_uri``.
+  ``answer_type``, ``mode`` (venue/remote), ``round_count``, ``answer_duration``
+  and public player progress. Private player IDs never appear in broadcasts.
+- answering rounds expose common timing and question fields plus a strategy
+  fragment. Multiple-choice exposes opaque ``suggestions``. Timeline exposes
+  the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
+  current song, year, correct placement and bonus answers remain protected.
+- reveal/finished rounds additionally expose common ``answer_label``,
+  ``track_uri``, ``image_url``, ``duration`` and ``ended_at`` fields. The
+  answer strategy adds the revealed correct option or timeline entry and
+  answer-specific player results.
 
 Guests authenticate through the standard guest access flow (join code in
 the join URL) and register themselves as quiz player via ``music_quiz/join``,
 which returns their private ``player_id``. That ID acts as the player's
-credential for ``music_quiz/answer``, ``music_quiz/ready``,
+credential for ``music_quiz/submit_answer``, ``music_quiz/ready``,
 ``music_quiz/heartbeat`` and ``music_quiz/state`` and must be kept client-side.
+The compatibility ``music_quiz/answer`` command remains multiple-choice only.
 """
 
 from __future__ import annotations
@@ -115,6 +111,7 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizPlayer,
     MusicQuizRound,
     MusicQuizSource,
+    TimelineBonusMode,
 )
 from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
@@ -138,12 +135,7 @@ CONF_USE_AI_DISTRACTORS = "use_ai_distractors"
 MUSIC_QUIZ_GUEST_USER = "music_quiz_guest"
 MUSIC_QUIZ_GUEST_DISPLAY_NAME = "Music Quiz Guest"
 
-# defence-in-depth caps: a leaked join URL or malformed host request must not
-# be able to flood a game with players or background work
-MAX_ROUND_COUNT = 100
-MAX_SUGGESTION_COUNT = 12
-MAX_ANSWER_DURATION = 300
-MAX_SOURCE_COUNT = 200
+# defence-in-depth cap: a leaked join URL must not be able to flood a game
 MAX_PLAYER_COUNT = 100
 # the joined name is broadcast to every client on each state update; bound it
 MAX_PLAYER_NAME_LENGTH = 40
@@ -308,6 +300,8 @@ class MusicQuizPlugin(PluginProvider):
         source_uris: list[str] | None = None,
         name: str | None = None,
         difficulty: str = MusicQuizDifficulty.NORMAL.value,
+        artist_bonus_mode: str = TimelineBonusMode.OFF.value,
+        title_bonus_mode: str = TimelineBonusMode.OFF.value,
     ) -> dict[str, Any]:
         """
         Create a new Music Quiz game, replacing a previous (finished) game.
@@ -319,35 +313,45 @@ class MusicQuizPlugin(PluginProvider):
         :param source_uris: Track or playlist URIs to draw the rounds from.
         :param name: Optional game name.
         :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
+        :param artist_bonus_mode: Hitster artist bonus mode.
+        :param title_bonus_mode: Hitster title bonus mode.
         """
         quiz_type_class = get_quiz_type(quiz_type)
         get_answer_type(quiz_type_class.answer_type)
-        game_config = MusicQuizConfig(
-            round_count=round_count,
-            suggestion_count=suggestion_count,
-            answer_duration=answer_duration,
-            source_uris=source_uris or [],
-            name=_clean_game_name(name),
-            difficulty=difficulty,
-            use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
+        game_config = quiz_type_class.normalize_config(
+            MusicQuizConfig(
+                round_count=round_count,
+                suggestion_count=suggestion_count,
+                answer_duration=answer_duration,
+                source_uris=source_uris or [],
+                name=_clean_game_name(name),
+                difficulty=difficulty,
+                use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
+                artist_bonus_mode=artist_bonus_mode,
+                title_bonus_mode=title_bonus_mode,
+            )
         )
-        _validate_config(game_config)
+        quiz_type_class.validate_config(game_config)
         async with self._game_lock:
             if self._game is not None and self._game.phase in (
                 MusicQuizPhase.ANSWERING,
                 MusicQuizPhase.REVEAL,
             ):
                 raise MusicQuizGameActiveError("A Music Quiz game is already in progress")
-            self._cancel_timers()
-            self._cancel_next_round_task()
-            self._game = MusicQuizGame(
+            game = MusicQuizGame(
                 config=game_config,
                 quiz_type=quiz_type,
                 answer_type=quiz_type_class.answer_type,
                 sources=await self._resolve_sources(game_config.source_uris),
                 created_at=time.time(),
             )
-            self._quiz_type, self._answer_type = self._resolve_game_strategies(self._game)
+            quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
+            await quiz_strategy.initialize()
+            self._cancel_timers()
+            self._cancel_next_round_task()
+            self._game = game
+            self._quiz_type = quiz_strategy
+            self._answer_type = answer_strategy
             self._prefetch_round(0)
             self._signal_game_updated()
             return await self._host_state()
@@ -394,10 +398,14 @@ class MusicQuizPlugin(PluginProvider):
         """Reset the current game for a new run with the same settings and players."""
         async with self._game_lock:
             game = self._require_game()
+            quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
+            await quiz_strategy.initialize()
             self._cancel_timers()
             self._cancel_next_round_task()
             await self._stop_playback()
             reset_game(game)
+            self._quiz_type = quiz_strategy
+            self._answer_type = answer_strategy
             self._prefetch_round(0)
             self._schedule_presence_expiry()
             self._signal_game_updated()
@@ -426,14 +434,15 @@ class MusicQuizPlugin(PluginProvider):
         """Return public metadata of the current game (e.g. for the join screen)."""
         if self._game is None:
             return None
+        game, _, _ = self._require_game_strategies()
         return {
-            "name": self._game.config.name,
-            "quiz_type": self._game.quiz_type,
-            "answer_type": self._game.answer_type.value,
-            "phase": self._game.phase.value,
+            "name": game.config.name,
+            "quiz_type": game.quiz_type,
+            "answer_type": game.answer_type.value,
+            "phase": game.phase.value,
             "mode": self._mode,
-            "player_count": len(self._game.players),
-            "round_count": self._game.config.round_count,
+            "player_count": len(game.players),
+            "round_count": game.config.round_count,
         }
 
     async def join_game(self, name: str) -> dict[str, Any]:
@@ -740,7 +749,7 @@ class MusicQuizPlugin(PluginProvider):
 
     async def _start_next_round(self) -> None:
         """Prepare the next round, start its playback (if any) and open the answering phase."""
-        game, _, answer_type = self._require_game_strategies()
+        game, quiz_type, answer_type = self._require_game_strategies()
         round_index = len(game.rounds)
         next_round = await self._get_prepared_round(round_index)
         if next_round.track_uri:
@@ -753,7 +762,7 @@ class MusicQuizPlugin(PluginProvider):
             round_index,
             task_id=self._reveal_timer_id,
         )
-        if next_round.track_uri:
+        if next_round.track_uri and quiz_type.warm_up_lyrics:
             self._warm_up_lyrics(next_round.track_uri)
         self._prefetch_round(round_index + 1)
         self._signal_game_updated()
@@ -1089,68 +1098,6 @@ class MusicQuizPlugin(PluginProvider):
         self._cancel_presence_expiry(cancel_task=True)
 
 
-def _validate_config(config: MusicQuizConfig) -> None:
-    """Validate game config."""
-    if config.difficulty not in {item.value for item in MusicQuizDifficulty}:
-        raise InvalidDataError(
-            f"Unknown difficulty: {config.difficulty}",
-            translation_key="music_quiz_invalid_difficulty",
-            translation_owner=TRANSLATION_OWNER,
-        )
-    if config.round_count < 1:
-        raise InvalidDataError(
-            "Music Quiz requires at least 1 round",
-            translation_key="music_quiz_round_count_min",
-            translation_owner=TRANSLATION_OWNER,
-        )
-    if config.round_count > MAX_ROUND_COUNT:
-        raise InvalidDataError(
-            f"Music Quiz supports at most {MAX_ROUND_COUNT} rounds",
-            translation_key="music_quiz_round_count_max",
-            translation_owner=TRANSLATION_OWNER,
-            translation_args=[MAX_ROUND_COUNT],
-        )
-    if config.suggestion_count < 2:
-        raise InvalidDataError(
-            "Suggestion count must be at least 2",
-            translation_key="music_quiz_suggestion_count_min",
-            translation_owner=TRANSLATION_OWNER,
-        )
-    if config.suggestion_count > MAX_SUGGESTION_COUNT:
-        raise InvalidDataError(
-            f"Suggestion count must be at most {MAX_SUGGESTION_COUNT}",
-            translation_key="music_quiz_suggestion_count_max",
-            translation_owner=TRANSLATION_OWNER,
-            translation_args=[MAX_SUGGESTION_COUNT],
-        )
-    if config.answer_duration < 1:
-        raise InvalidDataError(
-            "Answer duration must be at least 1 second",
-            translation_key="music_quiz_answer_duration_min",
-            translation_owner=TRANSLATION_OWNER,
-        )
-    if config.answer_duration > MAX_ANSWER_DURATION:
-        raise InvalidDataError(
-            f"Answer duration must be at most {MAX_ANSWER_DURATION} seconds",
-            translation_key="music_quiz_answer_duration_max",
-            translation_owner=TRANSLATION_OWNER,
-            translation_args=[MAX_ANSWER_DURATION],
-        )
-    if not config.source_uris:
-        raise InvalidDataError(
-            "At least one source URI is required",
-            translation_key="music_quiz_source_required",
-            translation_owner=TRANSLATION_OWNER,
-        )
-    if len(config.source_uris) > MAX_SOURCE_COUNT:
-        raise InvalidDataError(
-            f"Music Quiz supports at most {MAX_SOURCE_COUNT} sources",
-            translation_key="music_quiz_source_count_max",
-            translation_owner=TRANSLATION_OWNER,
-            translation_args=[MAX_SOURCE_COUNT],
-        )
-
-
 def _clean_game_name(name: str | None) -> str | None:
     """Return a normalized optional game name."""
     if not name:
@@ -1241,8 +1188,8 @@ def _public_state(game: MusicQuizGame, mode: str, answer_type: QuizAnswerType) -
         "answer_type": game.answer_type.value,
         "mode": mode,
         "round_count": game.config.round_count,
-        "suggestion_count": game.config.suggestion_count,
         "answer_duration": game.config.answer_duration,
+        **answer_type.serialize_game_config(game),
         "players": players,
         "current_round": _public_round(
             game,

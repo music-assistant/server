@@ -177,6 +177,14 @@ class MultipleChoiceAnswerType(QuizAnswerType):
             default=None,
         )
 
+    def serialize_game_config(self, game: MusicQuizGame) -> dict[str, SerializableType]:
+        """
+        Serialize multiple-choice game configuration.
+
+        :param game: Game whose configuration should be serialized.
+        """
+        return {"suggestion_count": game.config.suggestion_count}
+
     def serialize_host_round(self, state: QuizRoundAnswerState) -> dict[str, SerializableType]:
         """
         Serialize multiple-choice state for the host's flat round payload.

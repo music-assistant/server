@@ -17,6 +17,17 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizAnswerType,
     MusicQuizPlayer,
     MusicQuizRound,
+    TimelineAnswerResult,
+    TimelineBonusOption,
+    TimelineBonusResult,
+    TimelineBonusType,
+    TimelineChoiceBonusAnswer,
+    TimelineEntry,
+    TimelineFreeTextBonusDefinition,
+    TimelineMultipleChoiceBonusDefinition,
+    TimelinePlacementAnswer,
+    TimelinePlacementResult,
+    TimelineRoundState,
 )
 
 
@@ -183,6 +194,204 @@ def test_round_rejects_extra_common_data() -> None:
                     "answers": {},
                 },
                 "extra": True,
+            }
+        )
+
+
+def test_timeline_round_state_round_trips_with_strict_nested_variants() -> None:
+    """Round-trip timeline state with typed bonus definitions, answers and results."""
+    state = TimelineRoundState(
+        placement_snapshot=[
+            TimelineEntry(
+                entry_id="anchor",
+                release_year=1990,
+                title="Anchor",
+                artist="Artist",
+                track_uri="library://track/anchor",
+                image_url=None,
+                is_anchor=True,
+            )
+        ],
+        current_entry=TimelineEntry(
+            entry_id="current",
+            release_year=2000,
+            title="Current",
+            artist="Artist",
+            track_uri="library://track/current",
+            image_url="https://img/current",
+        ),
+        bonus_definitions=[
+            TimelineFreeTextBonusDefinition(
+                bonus_type=TimelineBonusType.ARTIST,
+                correct_value="Artist",
+            ),
+            TimelineMultipleChoiceBonusDefinition(
+                bonus_type=TimelineBonusType.TITLE,
+                options=[
+                    TimelineBonusOption("correct", "Current", True),
+                    TimelineBonusOption("wrong-a", "Wrong A"),
+                    TimelineBonusOption("wrong-b", "Wrong B"),
+                    TimelineBonusOption("wrong-c", "Wrong C"),
+                ],
+            ),
+        ],
+        placements={
+            "p1": TimelinePlacementAnswer(
+                previous_entry_id="anchor",
+                next_entry_id=None,
+                answered_at=12,
+            )
+        },
+        bonus_answers={
+            "p1": [
+                TimelineChoiceBonusAnswer(
+                    bonus_type=TimelineBonusType.TITLE,
+                    submitted_at=13,
+                    option_id="correct",
+                )
+            ]
+        },
+        finished_at={"p1": 14},
+        results={
+            "p1": TimelineAnswerResult(
+                placement=TimelinePlacementResult("anchor", None, True, 1000),
+                bonuses=[TimelineBonusResult(TimelineBonusType.TITLE, True, 250)],
+            )
+        },
+        revealed=True,
+    )
+    game_round = MusicQuizRound(
+        round_index=0,
+        answer_label="Artist - Current",
+        answer_state=state,
+        track_uri="library://track/current",
+    )
+
+    restored = MusicQuizRound.from_dict(game_round.to_dict())
+
+    assert restored == game_round
+    assert isinstance(restored.answer_state, TimelineRoundState)
+    assert isinstance(
+        restored.answer_state.bonus_definitions[0],
+        TimelineFreeTextBonusDefinition,
+    )
+    assert isinstance(
+        restored.answer_state.bonus_definitions[1],
+        TimelineMultipleChoiceBonusDefinition,
+    )
+    assert isinstance(restored.answer_state.bonus_answers["p1"][0], TimelineChoiceBonusAnswer)
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("placement_snapshot", 0),
+        ("current_entry", None),
+        ("bonus_definitions", 0),
+        ("bonus_answers", 0),
+        ("results", None),
+    ],
+)
+def test_timeline_round_state_rejects_extra_nested_data(
+    field_path: tuple[str, int | None],
+) -> None:
+    """Reject extra keys in every nested timeline model family."""
+    state = TimelineRoundState(
+        placement_snapshot=[
+            TimelineEntry(
+                "anchor",
+                1990,
+                "Anchor",
+                "Artist",
+                "library://track/anchor",
+                None,
+                True,
+            )
+        ],
+        current_entry=TimelineEntry(
+            "current",
+            2000,
+            "Current",
+            "Artist",
+            "library://track/current",
+            None,
+        ),
+        bonus_definitions=[
+            TimelineFreeTextBonusDefinition(
+                bonus_type=TimelineBonusType.ARTIST,
+                correct_value="Artist",
+            )
+        ],
+        bonus_answers={
+            "p1": [
+                TimelineChoiceBonusAnswer(
+                    bonus_type=TimelineBonusType.TITLE,
+                    submitted_at=13,
+                    option_id="correct",
+                )
+            ]
+        },
+        results={
+            "p1": TimelineAnswerResult(
+                placement=TimelinePlacementResult("anchor", None, True, 1000)
+            )
+        },
+    ).to_dict()
+    field_name, index = field_path
+    target: dict[str, object]
+    if field_name == "placement_snapshot":
+        target = state[field_name][index]
+    elif field_name == "current_entry":
+        target = state[field_name]
+    elif field_name == "bonus_definitions":
+        target = state[field_name][index]
+    elif field_name == "bonus_answers":
+        target = state[field_name]["p1"][index]
+    else:
+        target = state[field_name]["p1"]["placement"]
+    target["extra"] = True
+
+    with pytest.raises(InvalidFieldValue):
+        MusicQuizRound.from_dict(
+            {
+                "round_index": 0,
+                "answer_label": "Artist - Current",
+                "answer_state": state,
+            }
+        )
+
+
+def test_timeline_round_state_rejects_extra_top_level_data() -> None:
+    """Reject unknown fields on the discriminated timeline round state."""
+    state = TimelineRoundState(
+        placement_snapshot=[
+            TimelineEntry(
+                "anchor",
+                1990,
+                "Anchor",
+                "Artist",
+                "library://track/anchor",
+                None,
+                True,
+            )
+        ],
+        current_entry=TimelineEntry(
+            "current",
+            2000,
+            "Current",
+            "Artist",
+            "library://track/current",
+            None,
+        ),
+    ).to_dict()
+    state["extra"] = True
+
+    with pytest.raises(InvalidFieldValue):
+        MusicQuizRound.from_dict(
+            {
+                "round_index": 0,
+                "answer_label": "Artist - Current",
+                "answer_state": state,
             }
         )
 

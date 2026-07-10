@@ -24,6 +24,7 @@ class MusicQuizAnswerType(StrEnum):
     """Supported Music Quiz answer types."""
 
     MULTIPLE_CHOICE = "multiple_choice"
+    TIMELINE = "timeline"
 
 
 class MusicQuizDifficulty(StrEnum):
@@ -32,6 +33,21 @@ class MusicQuizDifficulty(StrEnum):
     EASY = "easy"
     NORMAL = "normal"
     HARD = "hard"
+
+
+class TimelineBonusMode(StrEnum):
+    """Supported timeline bonus answer modes."""
+
+    OFF = "off"
+    FREE_TEXT = "free_text"
+    MULTIPLE_CHOICE = "multiple_choice"
+
+
+class TimelineBonusType(StrEnum):
+    """Supported timeline bonus identities."""
+
+    ARTIST = "artist"
+    TITLE = "title"
 
 
 @dataclass
@@ -46,6 +62,9 @@ class MusicQuizConfig(DataClassDictMixin):
     # guess-the-song specific; other quiz types ignore these
     difficulty: str = MusicQuizDifficulty.NORMAL.value
     use_ai_distractors: bool = False
+    # timeline specific; other answer types ignore these
+    artist_bonus_mode: str = TimelineBonusMode.OFF.value
+    title_bonus_mode: str = TimelineBonusMode.OFF.value
 
 
 @dataclass
@@ -132,6 +151,179 @@ class MultipleChoiceRoundState(QuizRoundAnswerState):
     )
     suggestions: list[MultipleChoiceSuggestion]
     answers: dict[str, MultipleChoiceAnswer] = field(default_factory=dict)
+
+
+@dataclass
+class TimelineEntry(DataClassDictMixin):
+    """A revealed entry on a chronological music timeline."""
+
+    entry_id: str
+    release_year: int
+    title: str
+    artist: str
+    track_uri: str
+    image_url: str | None
+    is_anchor: bool = False
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class TimelinePlacementAnswer(DataClassDictMixin):
+    """A player's locked placement against a timeline snapshot."""
+
+    previous_entry_id: str | None
+    next_entry_id: str | None
+    answered_at: float
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class TimelineBonusOption(DataClassDictMixin):
+    """A possible answer for a multiple-choice timeline bonus."""
+
+    option_id: str
+    label: str
+    is_correct: bool = False
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class TimelineBonusDefinition(DataClassDictMixin):
+    """Protected definition of one enabled timeline bonus."""
+
+    bonus_type: TimelineBonusType
+    mode: TimelineBonusMode
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        discriminator = Discriminator(field="mode", include_subtypes=True)
+        forbid_extra_keys = True
+
+
+@dataclass
+class TimelineFreeTextBonusDefinition(TimelineBonusDefinition):
+    """Definition of a free-text timeline bonus."""
+
+    mode: Literal[TimelineBonusMode.FREE_TEXT] = field(
+        default=TimelineBonusMode.FREE_TEXT,
+        init=False,
+    )
+    correct_value: str
+
+
+@dataclass
+class TimelineMultipleChoiceBonusDefinition(TimelineBonusDefinition):
+    """Definition of a multiple-choice timeline bonus."""
+
+    mode: Literal[TimelineBonusMode.MULTIPLE_CHOICE] = field(
+        default=TimelineBonusMode.MULTIPLE_CHOICE,
+        init=False,
+    )
+    options: list[TimelineBonusOption]
+
+
+@dataclass
+class TimelineBonusAnswer(DataClassDictMixin):
+    """A player's persisted answer to one timeline bonus."""
+
+    bonus_type: TimelineBonusType
+    action: str
+    submitted_at: float
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        discriminator = Discriminator(field="action", include_subtypes=True)
+        forbid_extra_keys = True
+
+
+@dataclass
+class TimelineTextBonusAnswer(TimelineBonusAnswer):
+    """A persisted free-text timeline bonus answer."""
+
+    action: Literal["bonus_text"] = field(default="bonus_text", init=False)
+    value: str
+
+
+@dataclass
+class TimelineChoiceBonusAnswer(TimelineBonusAnswer):
+    """A persisted multiple-choice timeline bonus answer."""
+
+    action: Literal["bonus_choice"] = field(default="bonus_choice", init=False)
+    option_id: str
+
+
+@dataclass
+class TimelinePlacementResult(DataClassDictMixin):
+    """Result of a player's timeline placement."""
+
+    previous_entry_id: str | None
+    next_entry_id: str | None
+    is_correct: bool
+    points: int
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class TimelineBonusResult(DataClassDictMixin):
+    """Result of a player's submitted timeline bonus."""
+
+    bonus_type: TimelineBonusType
+    is_correct: bool
+    points: int
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class TimelineAnswerResult(DataClassDictMixin):
+    """Revealed result of a player's timeline answer."""
+
+    placement: TimelinePlacementResult
+    bonuses: list[TimelineBonusResult] = field(default_factory=list)
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class TimelineRoundState(QuizRoundAnswerState):
+    """Persisted state for a timeline round."""
+
+    answer_type: Literal[MusicQuizAnswerType.TIMELINE] = field(
+        default=MusicQuizAnswerType.TIMELINE,
+        init=False,
+    )
+    placement_snapshot: list[TimelineEntry]
+    current_entry: TimelineEntry
+    bonus_definitions: list[TimelineBonusDefinition] = field(default_factory=list)
+    placements: dict[str, TimelinePlacementAnswer] = field(default_factory=dict)
+    bonus_answers: dict[str, list[TimelineBonusAnswer]] = field(default_factory=dict)
+    finished_at: dict[str, float] = field(default_factory=dict)
+    results: dict[str, TimelineAnswerResult] = field(default_factory=dict)
+    revealed: bool = False
 
 
 @dataclass

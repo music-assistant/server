@@ -6,11 +6,13 @@ from music_assistant.providers.music_quiz.answer_types.base import QuizAnswerTyp
 from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
     MultipleChoiceAnswerType,
 )
+from music_assistant.providers.music_quiz.answer_types.timeline import TimelineAnswerType
 from music_assistant.providers.music_quiz.errors import MusicQuizInvalidAnswerError
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 ANSWER_TYPES: dict[MusicQuizAnswerType, type[QuizAnswerType]] = {
     MusicQuizAnswerType.MULTIPLE_CHOICE: MultipleChoiceAnswerType,
+    MusicQuizAnswerType.TIMELINE: TimelineAnswerType,
 }
 
 
