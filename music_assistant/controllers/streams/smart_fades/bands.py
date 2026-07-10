@@ -11,12 +11,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
-import numpy.typing as npt
-
 from music_assistant.controllers.streams.smart_fades.models import BAND_RMS_BANDS, BandProfile
 
 if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
+
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 # bars quieter than 1/16th of the track's p95 power carry no usable signal
@@ -33,6 +33,9 @@ def build_band_profile(analysis: AudioAnalysisData) -> BandProfile | None:
 
     :param analysis: Stored analysis row (any version).
     """
+    # numpy is imported here to keep it off the server startup path
+    import numpy as np  # noqa: PLC0415
+
     band_rms = (analysis.extra_data or {}).get("band_rms")
     if (
         not band_rms

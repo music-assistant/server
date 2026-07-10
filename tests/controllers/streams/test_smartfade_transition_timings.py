@@ -108,9 +108,9 @@ def _analysis(
     return AudioAnalysisData(
         duration=duration,
         bpm=bpm,
-        beats=beats,
-        downbeats=downbeats,
-        rms_energy=rms_energy,
+        beats=beats.tolist(),
+        downbeats=downbeats.tolist(),
+        rms_energy=rms_energy.tolist() if rms_energy is not None else None,
     )
 
 

@@ -40,9 +40,9 @@ def _analysis(
     return AudioAnalysisData(
         duration=duration,
         bpm=bpm,
-        beats=beats,
-        downbeats=beats[::4],
-        rms_energy=rms_energy,
+        beats=beats.tolist(),
+        downbeats=beats[::4].tolist(),
+        rms_energy=rms_energy.tolist() if rms_energy is not None else None,
     )
 
 
@@ -138,7 +138,7 @@ class TestSmartCrossFadePlanner:
         bins = np.full(1800, 0.5, dtype=np.float32)
         t = np.linspace(0, 240.0, 1800)
         bins[t < 8.0] = 0.05
-        inc.rms_energy = bins
+        inc.rms_energy = bins.tolist()
         plan = _plan(_analysis(120.0, duration=240.0), inc)
         trim = plan.fadein_trim_start or 0.0
         assert plan.eq_plan.swap_at == pytest.approx(8.0 - trim, abs=0.1)
@@ -149,7 +149,7 @@ class TestSmartCrossFadePlanner:
         bins = np.full(1800, 0.5, dtype=np.float32)
         t = np.linspace(0, 240.0, 1800)
         bins[t < 20.0] = 0.05
-        inc.rms_energy = bins
+        inc.rms_energy = bins.tolist()
         plan = _plan(_analysis(120.0, duration=240.0), inc)
         assert plan.eq_plan.low_in is not None
         assert plan.eq_plan.low_out is not None
@@ -440,7 +440,7 @@ class TestHighShelfReciprocalAndWash:
         # B's full-band energy steps in late (14s) so the swap point clamps
         # against the overlap end — the reviewer's overrun reproduction
         t = np.linspace(0, 240.0, 1800)
-        inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32)
+        inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32).tolist()
         planner = SmartCrossFadePlanner(LOGGER)
         plan = planner.plan(out, inc, 45.0)
         eq = plan.eq_plan
@@ -602,7 +602,7 @@ def _wash_mid_stack_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
     out = _analysis_with_bands(*amps, duration=240.0)
     inc = _analysis_with_bands(*amps, duration=240.0)
     t = np.linspace(0, 240.0, 1800)
-    inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32)
+    inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32).tolist()
     return out, inc
 
 
@@ -619,7 +619,7 @@ def _wash_low_stack_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
     out = _analysis_with_bands(*amps, duration=240.0)
     inc = _analysis_with_bands(*amps, duration=240.0)
     t = np.linspace(0, 240.0, 1800)
-    inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32)
+    inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32).tolist()
     return out, inc
 
 
@@ -635,7 +635,7 @@ def _wash_no_low_stack_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
     out = _analysis_with_bands(*amps, duration=240.0)
     inc = _analysis_with_bands(*amps, duration=240.0)
     t = np.linspace(0, 240.0, 1800)
-    inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32)
+    inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32).tolist()
     return out, inc
 
 

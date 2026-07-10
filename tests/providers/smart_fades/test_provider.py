@@ -218,8 +218,8 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     # Energy curve should be 1800 bins, normalized to [0, 1]
     assert analysis.rms_energy is not None
     assert len(analysis.rms_energy) == 1800
-    assert analysis.rms_energy.max() <= 1.0
-    assert analysis.rms_energy.min() >= 0.0
+    assert max(analysis.rms_energy) <= 1.0
+    assert min(analysis.rms_energy) >= 0.0
 
     # Spectral centroid should be 1800 bins with positive Hz values
     assert analysis.spectral_centroid is not None
