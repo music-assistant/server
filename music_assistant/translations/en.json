@@ -1395,6 +1395,7 @@
   "provider.music_quiz.errors.music_quiz_game_active": "A Music Quiz game is already in progress.",
   "provider.music_quiz.errors.music_quiz_game_full": "The Music Quiz game is full.",
   "provider.music_quiz.errors.music_quiz_guest_only": "This action is only available to Music Quiz guests.",
+  "provider.music_quiz.errors.music_quiz_invalid_answer": "This answer is not valid for the current game.",
   "provider.music_quiz.errors.music_quiz_invalid_difficulty": "The selected difficulty is not valid.",
   "provider.music_quiz.errors.music_quiz_name_required": "A player name is required.",
   "provider.music_quiz.errors.music_quiz_name_taken": "This player name is already taken.",

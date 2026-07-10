@@ -23,7 +23,7 @@ contract (all payloads are JSON objects)::
 The public game state is guest-safe by construction and contains:
 
 - always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``quiz_type``,
-  ``mode`` (the configured playback mode: venue/remote), ``round_count``,
+  ``answer_type``, ``mode`` (the configured playback mode: venue/remote), ``round_count``,
   ``suggestion_count``, ``answer_duration`` and
   ``players``: a list of ``{name, score, ready, answered}`` entries
   (players are keyed by their unique display name; private player IDs
@@ -68,12 +68,22 @@ from music_assistant_models.media_items import Track
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers import guest_access
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.music_quiz.answer_types import get_answer_type
+from music_assistant.providers.music_quiz.answer_types.base import (
+    QuizAnswerSubmission,
+    QuizAnswerType,
+)
+from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
+    MultipleChoiceSubmission,
+)
 from music_assistant.providers.music_quiz.errors import (
     TRANSLATION_OWNER,
     MusicQuizGameActiveError,
     MusicQuizGameFullError,
+    MusicQuizInvalidAnswerError,
     MusicQuizNoGameError,
     MusicQuizNoPlaybackTargetError,
     MusicQuizUnknownPlayerError,
@@ -81,7 +91,7 @@ from music_assistant.providers.music_quiz.errors import (
 )
 from music_assistant.providers.music_quiz.game import (
     add_player,
-    all_active_players_answered,
+    all_active_players_complete,
     are_active_players_ready,
     finish_game,
     get_current_round,
@@ -89,9 +99,12 @@ from music_assistant.providers.music_quiz.game import (
     reset_game,
     reveal_round,
     start_round,
-    submit_answer,
+)
+from music_assistant.providers.music_quiz.game import (
+    submit_answer as submit_game_answer,
 )
 from music_assistant.providers.music_quiz.models import (
+    MusicQuizAnswerType,
     MusicQuizConfig,
     MusicQuizDifficulty,
     MusicQuizGame,
@@ -100,8 +113,8 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizRound,
     MusicQuizSource,
 )
+from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
-from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ProviderFeature
@@ -121,10 +134,6 @@ CONF_USE_AI_DISTRACTORS = "use_ai_distractors"
 
 MUSIC_QUIZ_GUEST_USER = "music_quiz_guest"
 MUSIC_QUIZ_GUEST_DISPLAY_NAME = "Music Quiz Guest"
-
-QUIZ_TYPES: dict[str, type[QuizType]] = {
-    "guess_the_song": GuessTheSongQuizType,
-}
 
 # defence-in-depth caps: a leaked join URL or malformed host request must not
 # be able to flood a game with players or background work
@@ -214,6 +223,7 @@ class MusicQuizPlugin(PluginProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._game: MusicQuizGame | None = None
         self._quiz_type: QuizType | None = None
+        self._answer_type: QuizAnswerType | None = None
         self._game_lock = asyncio.Lock()
         self._playback_session: SharedPlaybackSession | None = None
         self._playback_lock = asyncio.Lock()
@@ -241,6 +251,7 @@ class MusicQuizPlugin(PluginProvider):
             ("music_quiz/info", self.get_game_info),
             ("music_quiz/join", self.join_game),
             ("music_quiz/state", self.get_player_state),
+            ("music_quiz/submit_answer", self.submit_answer),
             ("music_quiz/answer", self.answer),
             ("music_quiz/ready", self.ready),
         )
@@ -274,6 +285,7 @@ class MusicQuizPlugin(PluginProvider):
         # racing with unload cannot (re)create or join a session mid-teardown
         self._game = None
         self._quiz_type = None
+        self._answer_type = None
         await self._close_playback_session()
         if is_removed:
             await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
@@ -302,12 +314,8 @@ class MusicQuizPlugin(PluginProvider):
         :param name: Optional game name.
         :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
         """
-        if quiz_type not in QUIZ_TYPES:
-            raise InvalidDataError(
-                f"Unknown quiz type: {quiz_type}",
-                translation_key="music_quiz_unknown_quiz_type",
-                translation_owner=TRANSLATION_OWNER,
-            )
+        quiz_type_class = get_quiz_type(quiz_type)
+        get_answer_type(quiz_type_class.answer_type)
         game_config = MusicQuizConfig(
             round_count=round_count,
             suggestion_count=suggestion_count,
@@ -329,10 +337,11 @@ class MusicQuizPlugin(PluginProvider):
             self._game = MusicQuizGame(
                 config=game_config,
                 quiz_type=quiz_type,
+                answer_type=quiz_type_class.answer_type,
                 sources=await self._resolve_sources(game_config.source_uris),
                 created_at=time.time(),
             )
-            self._quiz_type = QUIZ_TYPES[self._game.quiz_type](self.mass, game_config)
+            self._quiz_type, self._answer_type = self._resolve_game_strategies(self._game)
             self._prefetch_round(0)
             self._signal_game_updated()
             return await self._host_state()
@@ -392,6 +401,7 @@ class MusicQuizPlugin(PluginProvider):
             # racing with delete cannot (re)create or join a session mid-teardown
             self._game = None
             self._quiz_type = None
+            self._answer_type = None
             await self._stop_playback()
             # tear down the shared session so its virtual player / listen-in
             # guests do not linger once the game is gone
@@ -407,6 +417,7 @@ class MusicQuizPlugin(PluginProvider):
         return {
             "name": self._game.config.name,
             "quiz_type": self._game.quiz_type,
+            "answer_type": self._game.answer_type.value,
             "phase": self._game.phase.value,
             "mode": self._mode,
             "player_count": len(self._game.players),
@@ -423,7 +434,7 @@ class MusicQuizPlugin(PluginProvider):
         """
         self._validate_guest_access()
         async with self._game_lock:
-            game = self._require_game()
+            game, _, answer_type = self._require_game_strategies()
             player_name = name.strip()[:MAX_PLAYER_NAME_LENGTH]
             if not player_name:
                 raise InvalidDataError(
@@ -443,7 +454,7 @@ class MusicQuizPlugin(PluginProvider):
             self._signal_game_updated()
             return {
                 "player_id": player.player_id,
-                "state": _player_state(game, player, self._mode),
+                "state": _player_state(game, player, self._mode, answer_type),
             }
 
     async def get_player_state(self, player_id: str) -> dict[str, Any]:
@@ -453,8 +464,34 @@ class MusicQuizPlugin(PluginProvider):
         :param player_id: The player's private player_id.
         """
         self._validate_guest_access()
-        game = self._require_game()
-        return _player_state(game, _get_player(game, player_id), self._mode)
+        game, _, answer_type = self._require_game_strategies()
+        return _player_state(game, _get_player(game, player_id), self._mode, answer_type)
+
+    async def submit_answer(
+        self,
+        player_id: str,
+        submission: dict[str, object],
+    ) -> dict[str, SerializableType]:
+        """
+        Submit a typed answer for the current round.
+
+        :param player_id: The player's private player_id.
+        :param submission: Discriminated answer submission.
+        """
+        self._validate_guest_access()
+        async with self._game_lock:
+            game, _, answer_type = self._require_game_strategies()
+            submission_type = submission.get("answer_type")
+            if not isinstance(submission_type, str):
+                raise MusicQuizInvalidAnswerError(
+                    "Answer submission requires an answer_type string"
+                )
+            submitted_answer_type = get_answer_type(submission_type)
+            if submitted_answer_type.answer_type != game.answer_type:
+                raise MusicQuizInvalidAnswerError("Submission answer type does not match the game")
+            parsed_submission = answer_type.parse_submission(submission)
+            player = _get_player(game, player_id)
+            return self._submit_player_answer(game, player, parsed_submission, answer_type)
 
     async def answer(self, player_id: str, suggestion_id: str) -> dict[str, Any]:
         """
@@ -465,15 +502,14 @@ class MusicQuizPlugin(PluginProvider):
         """
         self._validate_guest_access()
         async with self._game_lock:
-            game = self._require_game()
+            game, _, answer_type = self._require_game_strategies()
+            if game.answer_type != MusicQuizAnswerType.MULTIPLE_CHOICE:
+                raise MusicQuizInvalidAnswerError(
+                    "The compatibility answer command requires multiple_choice"
+                )
             player = _get_player(game, player_id)
-            submit_answer(game, player.player_id, suggestion_id, time.time())
-            # end the round early when every active player has locked an answer
-            if all_active_players_answered(game):
-                self._do_reveal()
-            else:
-                self._signal_game_updated()
-            return _player_state(game, player, self._mode)
+            submission = MultipleChoiceSubmission(suggestion_id=suggestion_id)
+            return self._submit_player_answer(game, player, submission, answer_type)
 
     async def ready(self, player_id: str) -> dict[str, Any]:
         """
@@ -483,19 +519,19 @@ class MusicQuizPlugin(PluginProvider):
         """
         self._validate_guest_access()
         async with self._game_lock:
-            game = self._require_game()
+            game, _, answer_type = self._require_game_strategies()
             player = _get_player(game, player_id)
             # a repeat ready is a no-op: it cannot newly satisfy the all-ready
             # check, so return current state without re-broadcasting
             if game.phase != MusicQuizPhase.REVEAL or player.ready:
-                return _player_state(game, player, self._mode)
+                return _player_state(game, player, self._mode, answer_type)
             mark_player_ready(game, player.player_id)
             # advance early when every player is ready for the next round
             if are_active_players_ready(game):
                 await self._advance_from_reveal()
             else:
                 self._signal_game_updated()
-            return _player_state(game, player, self._mode)
+            return _player_state(game, player, self._mode, answer_type)
 
     async def listen_in(self, web_player_id: str) -> None:
         """
@@ -543,6 +579,35 @@ class MusicQuizPlugin(PluginProvider):
             raise MusicQuizNoGameError("There is no active Music Quiz game")
         return self._game
 
+    def _resolve_game_strategies(self, game: MusicQuizGame) -> tuple[QuizType, QuizAnswerType]:
+        """
+        Resolve the strategies declared by game state.
+
+        :param game: Game whose strategy identities should be resolved.
+        """
+        quiz_type_class = get_quiz_type(game.quiz_type)
+        answer_type_class = get_answer_type(game.answer_type)
+        if quiz_type_class.answer_type != game.answer_type:
+            raise InvalidDataError("Quiz type answer type does not match the game")
+        return quiz_type_class(self.mass, game.config), answer_type_class()
+
+    def _require_game_strategies(
+        self,
+    ) -> tuple[MusicQuizGame, QuizType, QuizAnswerType]:
+        """Return the game and matching cached strategies."""
+        game = self._require_game()
+        if self._quiz_type is None or self._answer_type is None:
+            raise InvalidDataError("Music Quiz game strategies are unavailable")
+        quiz_type_class = get_quiz_type(game.quiz_type)
+        answer_type_class = get_answer_type(game.answer_type)
+        if (
+            quiz_type_class.answer_type != game.answer_type
+            or type(self._quiz_type) is not quiz_type_class
+            or type(self._answer_type) is not answer_type_class
+        ):
+            raise InvalidDataError("Music Quiz game strategy identity mismatch")
+        return game, self._quiz_type, self._answer_type
+
     @property
     def _mode(self) -> str:
         """Return the configured playback mode (venue/remote)."""
@@ -563,11 +628,33 @@ class MusicQuizPlugin(PluginProvider):
                 translation_owner=TRANSLATION_OWNER,
             )
 
+    def _submit_player_answer(
+        self,
+        game: MusicQuizGame,
+        player: MusicQuizPlayer,
+        submission: QuizAnswerSubmission,
+        answer_type: QuizAnswerType,
+    ) -> dict[str, SerializableType]:
+        """
+        Apply a typed submission and return personalized state.
+
+        :param game: Game receiving the submission.
+        :param player: Player submitting the answer.
+        :param submission: Validated answer submission.
+        :param answer_type: Answer strategy for the game.
+        """
+        submit_game_answer(game, player.player_id, submission, time.time(), answer_type)
+        if all_active_players_complete(game, answer_type):
+            self._do_reveal()
+        else:
+            self._signal_game_updated()
+        return _player_state(game, player, self._mode, answer_type)
+
     async def _host_state(self) -> dict[str, Any]:
         """Return the host-visible state of the current game."""
-        game = self._require_game()
+        game, _, answer_type = self._require_game_strategies()
         return {
-            **_public_state(game, self._mode),
+            **_public_state(game, self._mode, answer_type),
             "created_at": game.created_at,
             "sources": [source.to_dict() for source in game.sources],
             "join_url": await self._get_join_url(),
@@ -588,8 +675,9 @@ class MusicQuizPlugin(PluginProvider):
         """Broadcast the public game state to all connected clients."""
         if self._game is None:
             return
+        game, _, answer_type = self._require_game_strategies()
         self.signal_provider_event(
-            {"event": "game_updated", "state": _public_state(self._game, self._mode)}
+            {"event": "game_updated", "state": _public_state(game, self._mode, answer_type)}
         )
 
     async def _resolve_sources(self, source_uris: list[str]) -> list[MusicQuizSource]:
@@ -617,12 +705,12 @@ class MusicQuizPlugin(PluginProvider):
 
     async def _start_next_round(self) -> None:
         """Prepare the next round, start its playback (if any) and open the answering phase."""
-        game = self._require_game()
+        game, _, answer_type = self._require_game_strategies()
         round_index = len(game.rounds)
         next_round = await self._get_prepared_round(round_index)
         if next_round.track_uri:
             await self._play_track(next_round.track_uri)
-        start_round(game, next_round, time.time())
+        start_round(game, next_round, time.time(), answer_type)
         answer_window = _answer_window(game, next_round)
         self.mass.call_later(
             answer_window,
@@ -637,8 +725,8 @@ class MusicQuizPlugin(PluginProvider):
 
     def _do_reveal(self) -> None:
         """Reveal the current round, apply scoring and schedule the auto-advance."""
-        game = self._require_game()
-        reveal_round(game)
+        game, _, answer_type = self._require_game_strategies()
+        reveal_round(game, answer_type)
         self.mass.cancel_timer(self._reveal_timer_id)
         current_round = get_current_round(game)
         # let the revealed track play out before auto-advancing; without a
@@ -695,18 +783,16 @@ class MusicQuizPlugin(PluginProvider):
     def _prefetch_round(self, round_index: int) -> None:
         """Prepare an upcoming round in the background."""
         self._cancel_next_round_task()
-        game, quiz_type = self._game, self._quiz_type
-        if game is None or quiz_type is None or round_index >= game.config.round_count:
+        if self._game is None or round_index >= self._game.config.round_count:
             return
+        game, quiz_type, _ = self._require_game_strategies()
         self._next_round_task = self.mass.create_task(
             quiz_type.prepare_round(round_index, list(game.rounds))
         )
 
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
         """Return the (prefetched) round with the given index."""
-        game = self._require_game()
-        quiz_type = self._quiz_type
-        assert quiz_type is not None  # set together with self._game
+        game, quiz_type, _ = self._require_game_strategies()
         task = self._next_round_task
         self._next_round_task = None
         if task is not None:
@@ -979,7 +1065,7 @@ def _answer_window(game: MusicQuizGame, game_round: MusicQuizRound) -> float:
     return answer_window
 
 
-def _public_state(game: MusicQuizGame, mode: str) -> dict[str, Any]:
+def _public_state(game: MusicQuizGame, mode: str, answer_type: QuizAnswerType) -> dict[str, Any]:
     """Return the guest-safe public game state (see the module docstring)."""
     current_round = (
         game.rounds[game.current_round_index] if game.current_round_index is not None else None
@@ -991,30 +1077,38 @@ def _public_state(game: MusicQuizGame, mode: str) -> dict[str, Any]:
             "name": player.name,
             "score": player.score,
             "ready": player.ready,
-            "answered": bool(current_round and player.player_id in current_round.answers),
+            **answer_type.serialize_public_player(
+                current_round,
+                player.player_id,
+                revealed=revealed,
+            ),
         }
-        if revealed and current_round and (answer := current_round.answers.get(player.player_id)):
-            entry["last_answer"] = {
-                "suggestion_id": answer.suggestion_id,
-                "correct": answer.is_correct,
-                "points": answer.points,
-            }
         players.append(entry)
     return {
         "phase": game.phase.value,
         "name": game.config.name,
         "quiz_type": game.quiz_type,
+        "answer_type": game.answer_type.value,
         "mode": mode,
         "round_count": game.config.round_count,
         "suggestion_count": game.config.suggestion_count,
         "answer_duration": game.config.answer_duration,
         "players": players,
-        "current_round": _public_round(game, current_round, revealed=revealed),
+        "current_round": _public_round(
+            game,
+            current_round,
+            answer_type,
+            revealed=revealed,
+        ),
     }
 
 
 def _public_round(
-    game: MusicQuizGame, game_round: MusicQuizRound | None, *, revealed: bool
+    game: MusicQuizGame,
+    game_round: MusicQuizRound | None,
+    answer_type: QuizAnswerType,
+    *,
+    revealed: bool,
 ) -> dict[str, Any] | None:
     """Return the guest-safe view of a round, redacted while unrevealed."""
     if game_round is None:
@@ -1024,21 +1118,9 @@ def _public_round(
         "started_at": game_round.started_at,
         "deadline": (game_round.started_at or 0) + _answer_window(game, game_round),
         "question": game_round.question,
-        # suggestion IDs are opaque: label + id never identify the answer
-        "suggestions": [
-            {"suggestion_id": suggestion.suggestion_id, "label": suggestion.label}
-            for suggestion in game_round.suggestions
-        ],
+        **answer_type.serialize_round(game_round, revealed=revealed),
     }
     if revealed:
-        state["correct_suggestion_id"] = next(
-            (
-                suggestion.suggestion_id
-                for suggestion in game_round.suggestions
-                if suggestion.is_correct
-            ),
-            None,
-        )
         state["answer_label"] = game_round.answer_label
         state["track_uri"] = game_round.track_uri
         state["image_url"] = game_round.image_url
@@ -1047,7 +1129,12 @@ def _public_round(
     return state
 
 
-def _player_state(game: MusicQuizGame, player: MusicQuizPlayer, mode: str) -> dict[str, Any]:
+def _player_state(
+    game: MusicQuizGame,
+    player: MusicQuizPlayer,
+    mode: str,
+    answer_type: QuizAnswerType,
+) -> dict[str, Any]:
     """Return the personalized (still guest-safe) game state for a player."""
     current_round = (
         game.rounds[game.current_round_index] if game.current_round_index is not None else None
@@ -1058,13 +1145,10 @@ def _player_state(game: MusicQuizGame, player: MusicQuizPlayer, mode: str) -> di
         "score": player.score,
         "ready": player.ready,
         "active_from_round": player.active_from_round,
+        **answer_type.serialize_personal_player(
+            current_round,
+            player.player_id,
+            revealed=revealed,
+        ),
     }
-    if current_round and (answer := current_round.answers.get(player.player_id)):
-        # players see their own locked pick right away, but whether it was
-        # right only after the reveal
-        you["answer"] = {
-            "suggestion_id": answer.suggestion_id,
-            "answered_at": answer.answered_at,
-            **({"correct": answer.is_correct, "points": answer.points} if revealed else {}),
-        }
-    return {**_public_state(game, mode), "you": you}
+    return {**_public_state(game, mode, answer_type), "you": you}

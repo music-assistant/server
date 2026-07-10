@@ -48,6 +48,7 @@
     "music_quiz_guest_only": "This action is only available to Music Quiz guests.",
     "music_quiz_unknown_quiz_type": "This quiz type is not available.",
     "music_quiz_unknown_player": "This Music Quiz player is not in the game.",
-    "music_quiz_unknown_suggestion": "This answer option is not available."
+    "music_quiz_unknown_suggestion": "This answer option is not available.",
+    "music_quiz_invalid_answer": "This answer is not valid for the current game."
   }
 }

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
+
+from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -17,6 +19,8 @@ class QuizType(ABC):
     A quiz type generates the question material (rounds) for a game;
     the plugin itself drives phases, scoring and playback.
     """
+
+    answer_type: ClassVar[MusicQuizAnswerType]
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
         """

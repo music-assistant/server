@@ -17,8 +17,10 @@ from music_assistant.providers.music_quiz import (
     MusicQuizPlugin,
     get_config_entries,
 )
+from music_assistant.providers.music_quiz.answer_types import get_answer_type
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizGameActiveError,
+    MusicQuizInvalidAnswerError,
     MusicQuizNoGameError,
     MusicQuizUnknownPlayerError,
 )
@@ -44,6 +46,7 @@ GUEST_COMMANDS = (
     "music_quiz/info",
     "music_quiz/join",
     "music_quiz/state",
+    "music_quiz/submit_answer",
     "music_quiz/answer",
     "music_quiz/ready",
 )
@@ -97,6 +100,7 @@ def _create_plugin(
     }.__getitem__
     plugin._game = None
     plugin._quiz_type = None
+    plugin._answer_type = None
     plugin._game_lock = asyncio.Lock()
     plugin._playback_session = None
     plugin._playback_lock = asyncio.Lock()
@@ -164,7 +168,8 @@ async def _create_started_game(
 def _deterministic_rounds() -> Any:
     """Patch round preparation to deterministic rounds without music lookups."""
     with patch(
-        "music_assistant.providers.music_quiz.GuessTheSongQuizType.prepare_round",
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song."
+        "GuessTheSongQuizType.prepare_round",
         new=AsyncMock(side_effect=lambda round_index, _used: _make_round(round_index)),
     ):
         yield
@@ -255,6 +260,97 @@ async def test_full_game_flow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generic_submit_answer_uses_discriminated_payload() -> None:
+    """The generic command accepts a strict typed multiple-choice submission."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        state = cast(
+            "dict[str, Any]",
+            await plugin.submit_answer(
+                player_ids["Alice"],
+                {
+                    "answer_type": "multiple_choice",
+                    "suggestion_id": "correct_0",
+                },
+            ),
+        )
+
+    assert state["phase"] == "reveal"
+    assert state["you"]["answer"]["correct"] is True
+    assert state["you"]["answer"]["points"] == 1000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "submission",
+    [
+        {"suggestion_id": "correct_0"},
+        {"answer_type": "unknown", "suggestion_id": "correct_0"},
+        {"answer_type": "multiple_choice", "suggestion_id": 1},
+        {
+            "answer_type": "multiple_choice",
+            "suggestion_id": "correct_0",
+            "extra": True,
+        },
+    ],
+)
+async def test_generic_submit_answer_rejects_invalid_payload(
+    submission: dict[str, object],
+) -> None:
+    """Malformed generic submissions fail without mutating round state."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        pytest.raises(MusicQuizInvalidAnswerError),
+    ):
+        await plugin.submit_answer(player_ids["Alice"], submission)
+
+    game = plugin._game
+    assert game is not None
+    assert game.rounds[0].answers == {}
+    assert game.phase == MusicQuizPhase.ANSWERING
+
+
+@pytest.mark.asyncio
+async def test_generic_submit_answer_rejects_game_type_mismatch() -> None:
+    """Reject a known discriminator that does not match persisted game identity."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+    mismatched_type = SimpleNamespace(answer_type="other")
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.get_answer_type",
+            side_effect=lambda answer_type: (
+                mismatched_type if answer_type == "other" else get_answer_type(answer_type)
+            ),
+        ),
+        pytest.raises(MusicQuizInvalidAnswerError, match="does not match"),
+    ):
+        await plugin.submit_answer(
+            player_ids["Alice"],
+            {
+                "answer_type": "other",
+                "suggestion_id": "correct_0",
+            },
+        )
+
+
+@pytest.mark.asyncio
 async def test_answer_with_unknown_player_is_rejected() -> None:
     """A guest answering with an unknown player_id gets a localized Music Quiz error."""
     plugin = _create_plugin()
@@ -282,6 +378,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     state = payload["state"]
     assert state["phase"] == "answering"
     assert state["quiz_type"] == "guess_the_song"
+    assert state["answer_type"] == "multiple_choice"
     assert state["mode"] == "venue"
     current_round = state["current_round"]
     assert set(current_round) == {
@@ -298,6 +395,22 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         assert player_id not in serialized
     assert "is_correct" not in serialized
     assert "track_uri" not in serialized
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        personal_state = await plugin.answer(player_ids["Alice"], "correct_0")
+
+    own_answer = personal_state["you"]["answer"]
+    assert own_answer["suggestion_id"] == "correct_0"
+    assert "correct" not in own_answer
+    assert "points" not in own_answer
+    assert "track_uri" not in str(personal_state)
+    public_state = signal.call_args[0][0]["state"]
+    alice = next(player for player in public_state["players"] if player["name"] == "Alice")
+    assert alice["answered"] is True
+    assert "last_answer" not in alice
 
     # after the reveal the same payload exposes the answer
     await plugin.reveal()
@@ -319,6 +432,7 @@ async def test_game_info_exposes_game_identity_and_playback_mode() -> None:
     assert info == {
         "name": "Test Quiz",
         "quiz_type": "guess_the_song",
+        "answer_type": "multiple_choice",
         "phase": "lobby",
         "mode": "remote",
         "player_count": 0,
@@ -338,8 +452,22 @@ async def test_create_and_get_expose_persisted_quiz_type() -> None:
     game = plugin._game
     assert game is not None
     assert game.quiz_type == "guess_the_song"
+    assert game.answer_type == "multiple_choice"
     assert created["quiz_type"] == game.quiz_type
+    assert created["answer_type"] == game.answer_type
     assert (await plugin.get_game())["quiz_type"] == game.quiz_type
+    assert (await plugin.get_game())["answer_type"] == game.answer_type
+
+
+@pytest.mark.asyncio
+async def test_cached_strategy_mismatch_is_rejected() -> None:
+    """Strategy caches cannot diverge from persisted game identity."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+    plugin._answer_type = MagicMock()
+
+    with pytest.raises(InvalidDataError, match="identity mismatch"):
+        await plugin.get_game()
 
 
 @pytest.mark.asyncio
@@ -354,9 +482,11 @@ async def test_join_and_player_state_expose_persisted_quiz_type() -> None:
     ):
         joined = await plugin.join_game("Alice")
         assert joined["state"]["quiz_type"] == "guess_the_song"
+        assert joined["state"]["answer_type"] == "multiple_choice"
         state = await plugin.get_player_state(joined["player_id"])
 
     assert state["quiz_type"] == "guess_the_song"
+    assert state["answer_type"] == "multiple_choice"
 
 
 @pytest.mark.asyncio
@@ -369,8 +499,10 @@ async def test_reset_preserves_quiz_type_in_state_and_events() -> None:
 
     assert state["phase"] == "lobby"
     assert state["quiz_type"] == "guess_the_song"
+    assert state["answer_type"] == "multiple_choice"
     payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]
     assert payload["state"]["quiz_type"] == "guess_the_song"
+    assert payload["state"]["answer_type"] == "multiple_choice"
 
 
 @pytest.mark.asyncio
@@ -460,6 +592,8 @@ async def test_delete_game_signals_removal() -> None:
 
     await plugin.delete_game()
     assert plugin._game is None
+    assert plugin._quiz_type is None
+    assert plugin._answer_type is None
     cast("AsyncMock", plugin._stop_playback).assert_awaited()
     session.close.assert_awaited_once()
     payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]

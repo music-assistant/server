@@ -4,22 +4,22 @@ from __future__ import annotations
 
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.providers.music_quiz.answer_types.base import (
+    QuizAnswerSubmission,
+    QuizAnswerType,
+)
 from music_assistant.providers.music_quiz.errors import (
-    MusicQuizAlreadyAnsweredError,
     MusicQuizNameTakenError,
     MusicQuizNotActiveThisRoundError,
     MusicQuizUnknownPlayerError,
-    MusicQuizUnknownSuggestionError,
     MusicQuizWrongPhaseError,
 )
 from music_assistant.providers.music_quiz.models import (
-    MusicQuizAnswer,
     MusicQuizGame,
     MusicQuizPhase,
     MusicQuizPlayer,
     MusicQuizRound,
 )
-from music_assistant.providers.music_quiz.scoring import calculate_linear_scores
 
 
 def add_player(
@@ -43,64 +43,41 @@ def add_player(
 def submit_answer(
     game: MusicQuizGame,
     player_id: str,
-    suggestion_id: str,
-    answered_at: float,
-) -> MusicQuizAnswer:
+    submission: QuizAnswerSubmission,
+    submitted_at: float,
+    answer_type: QuizAnswerType,
+) -> None:
     """
-    Submit and lock a player answer for the current round.
+    Submit a validated player answer for the current round.
 
     :param game: Game to mutate.
     :param player_id: Player submitting the answer.
-    :param suggestion_id: Selected suggestion ID.
-    :param answered_at: Answer timestamp.
+    :param submission: Validated answer submission.
+    :param submitted_at: Server timestamp of the submission.
+    :param answer_type: Answer strategy for the game.
     """
     if game.phase != MusicQuizPhase.ANSWERING:
         raise MusicQuizWrongPhaseError("Answers can only be submitted during the answering phase")
     current_round = get_current_round(game)
-    if player_id in current_round.answers:
-        raise MusicQuizAlreadyAnsweredError("Player already answered this round")
     if player_id not in game.players:
         raise MusicQuizUnknownPlayerError("Unknown player")
-    if game.players[player_id].active_from_round > current_round.round_index:
+    player = game.players[player_id]
+    if player.active_from_round > current_round.round_index:
         raise MusicQuizNotActiveThisRoundError("Player is not active for this round")
-    suggestion = next(
-        (item for item in current_round.suggestions if item.suggestion_id == suggestion_id),
-        None,
-    )
-    if suggestion is None:
-        raise MusicQuizUnknownSuggestionError("Unknown suggestion")
-    answer = MusicQuizAnswer(
-        player_id=player_id,
-        suggestion_id=suggestion_id,
-        answered_at=answered_at,
-        is_correct=suggestion.is_correct,
-    )
-    current_round.answers[player_id] = answer
-    return answer
+    answer_type.submit(game, current_round, player, submission, submitted_at)
 
 
-def reveal_round(game: MusicQuizGame) -> None:
+def reveal_round(game: MusicQuizGame, answer_type: QuizAnswerType) -> None:
     """
     Reveal the current round and apply scores.
 
     :param game: Game to mutate.
+    :param answer_type: Answer strategy for the game.
     """
     current_round = get_current_round(game)
     if game.phase != MusicQuizPhase.ANSWERING:
         raise MusicQuizWrongPhaseError("Round can only be revealed during the answering phase")
-    correct_answer_order = [
-        answer.player_id
-        for answer in sorted(current_round.answers.values(), key=lambda item: item.answered_at)
-        if answer.is_correct
-    ]
-    scores = calculate_linear_scores(correct_answer_order)
-    for answer in current_round.answers.values():
-        answer.points = scores.get(answer.player_id, 0)
-        game.players[answer.player_id].score += answer.points
-    current_round.ended_at = max(
-        [answer.answered_at for answer in current_round.answers.values()],
-        default=current_round.started_at or 0,
-    )
+    answer_type.reveal(game, current_round)
     game.phase = MusicQuizPhase.REVEAL
     for player in game.players.values():
         player.ready = False
@@ -110,6 +87,7 @@ def start_round(
     game: MusicQuizGame,
     music_quiz_round: MusicQuizRound,
     started_at: float,
+    answer_type: QuizAnswerType,
 ) -> None:
     """
     Start a new answering round.
@@ -117,6 +95,7 @@ def start_round(
     :param game: Game to mutate.
     :param music_quiz_round: Round to append and make current.
     :param started_at: Round start timestamp.
+    :param answer_type: Answer strategy for the game.
     """
     if game.phase not in (MusicQuizPhase.LOBBY, MusicQuizPhase.REVEAL):
         raise InvalidDataError("A round cannot be started from the current phase")
@@ -125,10 +104,7 @@ def start_round(
     expected_index = len(game.rounds)
     if music_quiz_round.round_index != expected_index:
         raise InvalidDataError("Round index does not match the game state")
-    if sum(1 for suggestion in music_quiz_round.suggestions if suggestion.is_correct) != 1:
-        raise InvalidDataError("Round requires exactly one correct suggestion")
-    if len(music_quiz_round.suggestions) != game.config.suggestion_count:
-        raise InvalidDataError("Round suggestion count does not match the game config")
+    answer_type.validate_round(game, music_quiz_round)
     music_quiz_round.started_at = started_at
     music_quiz_round.ended_at = None
     game.rounds.append(music_quiz_round)
@@ -167,17 +143,18 @@ def are_active_players_ready(game: MusicQuizGame) -> bool:
     return bool(players) and all(player.ready for player in players)
 
 
-def all_active_players_answered(game: MusicQuizGame) -> bool:
+def all_active_players_complete(game: MusicQuizGame, answer_type: QuizAnswerType) -> bool:
     """
-    Return whether every player of the current round has locked an answer.
+    Return whether every active player completed the current round.
 
     :param game: Game to inspect.
+    :param answer_type: Answer strategy for the game.
     """
     if game.phase != MusicQuizPhase.ANSWERING:
         return False
     current_round = get_current_round(game)
     players = active_players_for_round(game, current_round.round_index)
-    return bool(players) and all(player.player_id in current_round.answers for player in players)
+    return answer_type.is_round_complete(current_round, players)
 
 
 def finish_game(game: MusicQuizGame) -> None:
