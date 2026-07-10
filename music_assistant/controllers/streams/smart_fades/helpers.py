@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-import numpy as np
-import numpy.typing as npt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
 
 # Buffer size in seconds for crossfade analysis
 SMART_CROSSFADE_DURATION = 45
@@ -14,7 +17,7 @@ MIN_EFFECTIVE_FADE_BUFFER = 10.0
 
 
 def detect_effective_audio_end(
-    rms_energy: npt.NDArray[np.float32] | None,
+    rms_energy: npt.NDArray[np.float32] | list[float] | None,
     track_duration: float | None,
     buffer_duration: float,
 ) -> float:
@@ -28,12 +31,13 @@ def detect_effective_audio_end(
     :param track_duration: Full track duration in seconds.
     :param buffer_duration: Length in seconds of the fade-out holdback buffer.
     """
-    if (
-        rms_energy is None
-        or not track_duration
-        or len(rms_energy) < 2
-        or not np.any(np.isfinite(rms_energy))
-    ):
+    # numpy is imported inside the functions here to keep it off the server startup path
+    import numpy as np  # noqa: PLC0415
+
+    if rms_energy is None or not track_duration:
+        return buffer_duration
+    rms_energy = np.asarray(rms_energy, dtype=np.float32)
+    if len(rms_energy) < 2 or not np.any(np.isfinite(rms_energy)):
         return buffer_duration
     bin_duration = track_duration / len(rms_energy)
     start_bin = max(0, int((track_duration - buffer_duration) / bin_duration))
@@ -67,6 +71,8 @@ def extrapolate_downbeats(
     :param buffer_size: Maximum buffer size in seconds.
     :param bpm: Optional BPM for validation when extrapolating with only 2 downbeats.
     """
+    import numpy as np  # noqa: PLC0415
+
     # Handle case with exactly 2 downbeats (with BPM validation)
     if len(downbeats) == 2 and bpm is not None:
         interval = float(downbeats[1] - downbeats[0])
@@ -148,6 +154,8 @@ def compute_gradual_tempo_steps(
     :param max_step_pct: Maximum tempo change per step as a fraction.
     :return: List of (timestamp_seconds, tempo_ratio) tuples.
     """
+    import numpy as np  # noqa: PLC0415
+
     total_change = abs(end_ratio - start_ratio)
     if total_change < 1e-6:
         return []
@@ -211,6 +219,8 @@ def generate_synthetic_timestamps(
     :param bpm: BPM of the track (used to approximate bar-level spacing).
     :param n_min: Minimum number of timing points.
     """
+    import numpy as np  # noqa: PLC0415
+
     bar_duration = 4.0 * (60.0 / bpm)
     n_points = max(n_min, int(stretch_duration / bar_duration))
     return np.linspace(0, stretch_duration, n_points, dtype=np.float32)
@@ -222,12 +232,14 @@ def sustained_energy_floor(rms_energy: npt.NDArray[np.float32]) -> float:
 
     :param rms_energy: Peak-normalized RMS energy bins spanning the full track.
     """
+    import numpy as np  # noqa: PLC0415
+
     active = rms_energy[rms_energy > 0.01]
     return float(np.median(active)) if len(active) else 0.0
 
 
 def detect_groove_entry(
-    rms_energy: npt.NDArray[np.float32] | None,
+    rms_energy: npt.NDArray[np.float32] | list[float] | None,
     track_duration: float | None,
     downbeats: npt.NDArray[np.float32],
     k_sigma: float = 1.5,
@@ -245,8 +257,11 @@ def detect_groove_entry(
     :param downbeats: Downbeat grid in media time.
     :param k_sigma: Step threshold in standard deviations of bar-to-bar changes.
     """
+    import numpy as np  # noqa: PLC0415
+
     if rms_energy is None or not track_duration or len(downbeats) < 12:
         return 0.0
+    rms_energy = np.asarray(rms_energy, dtype=np.float32)
     t = (np.arange(len(rms_energy)) + 0.5) * (track_duration / len(rms_energy))
     bar_rms = np.array(
         [

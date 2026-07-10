@@ -285,11 +285,14 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         analysis = AudioAnalysisData(
             bpm=bpm,
-            beats=beats,
-            downbeats=downbeats,
+            # the model stores plain float lists (numpy-free); convert the analysis arrays
+            beats=beats.tolist(),
+            downbeats=downbeats.tolist(),
             duration=duration,
-            rms_energy=rms_energy,
-            spectral_centroid=spectral_centroid,
+            rms_energy=rms_energy.tolist() if rms_energy is not None else None,
+            spectral_centroid=(
+                spectral_centroid.tolist() if spectral_centroid is not None else None
+            ),
             key=key,
             mode=mode,
             extra_data=extra_data,
