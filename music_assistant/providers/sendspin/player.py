@@ -286,6 +286,7 @@ class SendspinBasePlayer(Player):
         self.logger = self.provider.logger.getChild(player_id)
         self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
+        self._was_playing = False
         self._refresh_client_info(sendspin_client, hello_payload=initial_hello)
         self._subscribe_client_callbacks()
 
@@ -1010,6 +1011,7 @@ class SendspinPlayer(SendspinBasePlayer):
         super().__init__(provider, player_id, initial_hello)
         hello_payload = initial_hello or self.api.info
         self.playback_session = SendspinPlaybackSession(self)
+        self._was_playing = False
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
@@ -1108,7 +1110,7 @@ class SendspinPlayer(SendspinBasePlayer):
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
         super()._subscribe_client_callbacks()
-        self.api.disconnect_behaviour = DisconnectBehaviour.STOP
+        self.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
         if controller_role := self._controller_role:
             controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
 
@@ -1158,6 +1160,29 @@ class SendspinPlayer(SendspinBasePlayer):
         # every web/app player is just a standalone player.
         self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
 
+        # Auto-resume playback when client reconnects after network drop
+        if self._was_playing and self.synced_to is None:
+            self.mass.create_task(self._auto_resume_after_reconnect())
+
+    async def _auto_resume_after_reconnect(self) -> None:
+        """
+        Resume playback queue after client reconnected from network drop.
+
+        _was_playing is kept True until resume completes so that
+        _on_group_stopped still sees it and does not cancel the session
+        during the reconnect window.
+        """
+        queue = self.mass.player_queues.get_active_queue(self.player_id)
+        if queue is None:
+            self._was_playing = False
+            return
+        self.logger.info("Auto-resuming playback after reconnect for %s", self.display_name)
+        try:
+            await self.mass.player_queues.resume(queue.queue_id)
+        except Exception:
+            self.logger.warning("Auto-resume failed for %s", self.display_name, exc_info=True)
+        self._was_playing = False
+
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
         match event:
@@ -1188,6 +1213,8 @@ class SendspinPlayer(SendspinBasePlayer):
     def _on_group_stopped(self) -> None:
         """Cancel playback session when group stops and we are the leader."""
         if self.synced_to is not None:
+            return
+        if self._was_playing:
             return
         # Bind the cancel to the session task that is live right now: by the time
         # the deferred task below runs, play_media may already have started a fresh
@@ -1368,6 +1395,7 @@ class SendspinPlayer(SendspinBasePlayer):
             cast_app_ready = bridge.reset_cast_app_ready()
 
         await self.playback_session.start(media)
+        self._was_playing = True
         self.update_state()
 
         if cast_app_ready is None:
