@@ -22,6 +22,7 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizUnknownPlayerError,
 )
 from music_assistant.providers.music_quiz.models import (
+    MusicQuizGame,
     MusicQuizPhase,
     MusicQuizRound,
     MusicQuizSuggestion,
@@ -108,6 +109,11 @@ def _create_plugin(mode: str = "venue", player: str | None = "venue_player") -> 
     plugin._stop_playback = AsyncMock()  # type: ignore[method-assign]
     plugin._get_join_url = AsyncMock(return_value="http://ma/join")  # type: ignore[method-assign]
     return plugin
+
+
+def _fake_game() -> MusicQuizGame:
+    """Return a minimal active-game stub for playback-session tests."""
+    return cast("MusicQuizGame", SimpleNamespace(config=SimpleNamespace(name=None)))
 
 
 def _guest_user() -> SimpleNamespace:
@@ -443,6 +449,7 @@ async def test_config_validation() -> None:
 async def test_playback_session_remote_mode() -> None:
     """Remote mode creates a virtual-player session keyed to the instance."""
     plugin = _create_plugin(mode="remote")
+    plugin._game = _fake_game()
     cast("MagicMock", plugin.mass).players.get_player.return_value = None
     session = MagicMock()
     with patch(
@@ -462,6 +469,7 @@ async def test_playback_session_remote_mode() -> None:
 async def test_playback_session_recreated_when_player_vanished() -> None:
     """A session whose player disappeared (e.g. sendspin reload) is recreated."""
     plugin = _create_plugin(mode="remote")
+    plugin._game = _fake_game()
     stale_session = MagicMock()
     stale_session.player_id = "gone"
     stale_session.close = AsyncMock()
@@ -480,6 +488,7 @@ async def test_playback_session_recreated_when_player_vanished() -> None:
 async def test_playback_session_venue_mode() -> None:
     """Venue mode creates a session on the configured player."""
     plugin = _create_plugin(mode="venue", player="venue_player")
+    plugin._game = _fake_game()
     session = MagicMock()
     with patch(
         "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
@@ -493,6 +502,7 @@ async def test_playback_session_venue_mode() -> None:
 async def test_playback_session_venue_mode_auto_prefers_playing_player() -> None:
     """Venue mode with the auto player picks a currently playing player."""
     plugin = _create_plugin(mode="venue", player="__auto__")
+    plugin._game = _fake_game()
     paused = SimpleNamespace(player_id="paused_player", playback_state=PlaybackState.PAUSED)
     playing = SimpleNamespace(player_id="playing_player", playback_state=PlaybackState.PLAYING)
     cast("MagicMock", plugin.mass).players.all_players.return_value = [paused, playing]
@@ -509,6 +519,7 @@ async def test_playback_session_venue_mode_auto_prefers_playing_player() -> None
 async def test_playback_session_venue_mode_auto_without_players() -> None:
     """Venue mode with the auto player yields no session when no player is available."""
     plugin = _create_plugin(mode="venue", player="__auto__")
+    plugin._game = _fake_game()
     cast("MagicMock", plugin.mass).players.all_players.return_value = []
     with patch(
         "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
@@ -516,6 +527,39 @@ async def test_playback_session_venue_mode_auto_without_players() -> None:
     ) as create_venue:
         assert await plugin._get_playback_session() is None
     create_venue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_playback_session_requires_active_game() -> None:
+    """No playback session is created without an active game (guards the listen-in race)."""
+    plugin = _create_plugin(mode="remote")
+    plugin._game = None
+    with patch(
+        "music_assistant.providers.music_quiz.SharedPlaybackSession.create_remote",
+        new=AsyncMock(),
+    ) as create_remote:
+        assert await plugin._get_playback_session() is None
+    create_remote.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_listen_in_joins_session_under_playback_lock() -> None:
+    """listen_in joins the guest while holding the playback lock so teardown cannot race it."""
+    plugin = _create_plugin(mode="remote")
+    plugin._game = _fake_game()
+    session = MagicMock()
+
+    async def _assert_locked(_web_player_id: str) -> None:
+        assert plugin._playback_lock.locked()
+
+    session.add_guest_listener = AsyncMock(side_effect=_assert_locked)
+    plugin._playback_session = session
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=SimpleNamespace(username=MUSIC_QUIZ_GUEST_USER),
+    ):
+        await plugin.listen_in("web-1")
+    session.add_guest_listener.assert_awaited_once_with("web-1")
 
 
 @pytest.mark.asyncio

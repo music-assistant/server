@@ -125,7 +125,7 @@ async def test_get_party_player_remote_mode_no_session() -> None:
 async def test_listen_in_without_session_raises() -> None:
     """Listen-in is rejected when no session is available (venue auto mode)."""
     plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value)
-    plugin._get_session = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    plugin._get_or_create_session_locked = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     with (
         patch(
@@ -143,8 +143,12 @@ async def test_listen_in_attaches_guest_player() -> None:
     plugin = _create_session_test_plugin(SharedPlaybackMode.REMOTE.value)
     session = MagicMock()
     session.queue_id = "sendspin_virtual_party"
-    session.add_guest_listener = AsyncMock()
-    plugin._get_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
+
+    async def _assert_locked(_web_player_id: str) -> None:
+        assert plugin._session_lock.locked()
+
+    session.add_guest_listener = AsyncMock(side_effect=_assert_locked)
+    plugin._get_or_create_session_locked = AsyncMock(return_value=session)  # type: ignore[method-assign]
 
     with patch(
         "music_assistant.providers.party.get_current_user",
