@@ -107,6 +107,7 @@ class MusicQuizGame(DataClassDictMixin):
     """A Music Quiz game."""
 
     config: MusicQuizConfig
+    quiz_type: str
     phase: MusicQuizPhase = MusicQuizPhase.LOBBY
     created_at: float = 0
     players: dict[str, MusicQuizPlayer] = field(default_factory=dict)

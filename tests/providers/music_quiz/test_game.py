@@ -45,6 +45,7 @@ def _game() -> MusicQuizGame:
     """Return a test game with one active round."""
     return MusicQuizGame(
         config=MusicQuizConfig(),
+        quiz_type="guess_the_song",
         phase=MusicQuizPhase.ANSWERING,
         current_round_index=0,
         rounds=[
@@ -241,7 +242,7 @@ def test_active_players_for_round_excludes_late_joiners_until_next_round() -> No
 
 
 def test_reset_game_keeps_players_and_config_for_new_game() -> None:
-    """Reset rounds, scores, readiness and late-join state for a fresh game."""
+    """Reset transient state while preserving game settings and identity."""
     game = _game()
     add_player(game, _player("p1", "Alice", active_from_round=0))
     add_player(game, _player("p2", "Bob", active_from_round=1))
@@ -253,6 +254,7 @@ def test_reset_game_keeps_players_and_config_for_new_game() -> None:
     reset_game(game)
 
     assert game.phase == MusicQuizPhase.LOBBY
+    assert game.quiz_type == "guess_the_song"
     assert game.current_round_index is None
     assert game.rounds == []
     assert {player.name for player in game.players.values()} == {"Alice", "Bob"}
