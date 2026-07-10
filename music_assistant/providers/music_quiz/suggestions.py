@@ -9,7 +9,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
-from music_assistant.providers.music_quiz.models import MusicQuizSuggestion
+from music_assistant.providers.music_quiz.models import MultipleChoiceSuggestion
 
 # collapse runs of non-word characters and underscores so filename-style titles
 # ("Foo_Bar") normalize like their spaced form ("Foo Bar"); \W keeps this
@@ -122,7 +122,7 @@ def build_suggestions(
     suggestion_count: int,
     *,
     rng: random.Random | None = None,
-) -> list[MusicQuizSuggestion]:
+) -> list[MultipleChoiceSuggestion]:
     """
     Build shuffled suggestions containing exactly one correct answer.
 
@@ -139,14 +139,14 @@ def build_suggestions(
     # suggestion IDs are sent to guests while the answer is still secret: they
     # must be opaque, never semantic ("correct"/"wrong_x" would leak the answer)
     suggestions = [
-        MusicQuizSuggestion(
+        MultipleChoiceSuggestion(
             suggestion_id=secrets.token_hex(8),
             label=correct.label,
             uri=correct.uri,
             is_correct=True,
         ),
         *[
-            MusicQuizSuggestion(
+            MultipleChoiceSuggestion(
                 suggestion_id=secrets.token_hex(8),
                 label=candidate.label,
                 uri=candidate.uri,

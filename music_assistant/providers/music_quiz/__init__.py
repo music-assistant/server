@@ -658,7 +658,7 @@ class MusicQuizPlugin(PluginProvider):
             "created_at": game.created_at,
             "sources": [source.to_dict() for source in game.sources],
             "join_url": await self._get_join_url(),
-            "rounds": [game_round.to_dict() for game_round in game.rounds],
+            "rounds": [_host_round(game_round, answer_type) for game_round in game.rounds],
         }
 
     async def _get_join_url(self) -> str:
@@ -1065,11 +1065,30 @@ def _answer_window(game: MusicQuizGame, game_round: MusicQuizRound) -> float:
     return answer_window
 
 
+def _host_round(
+    game_round: MusicQuizRound,
+    answer_type: QuizAnswerType,
+) -> dict[str, SerializableType]:
+    """Return the host-visible flat representation of a round."""
+    return {
+        "round_index": game_round.round_index,
+        "answer_label": game_round.answer_label,
+        **answer_type.serialize_host_round(game_round.answer_state),
+        "track_uri": game_round.track_uri,
+        "question": game_round.question,
+        "image_url": game_round.image_url,
+        "duration": game_round.duration,
+        "started_at": game_round.started_at,
+        "ended_at": game_round.ended_at,
+    }
+
+
 def _public_state(game: MusicQuizGame, mode: str, answer_type: QuizAnswerType) -> dict[str, Any]:
     """Return the guest-safe public game state (see the module docstring)."""
     current_round = (
         game.rounds[game.current_round_index] if game.current_round_index is not None else None
     )
+    answer_state = current_round.answer_state if current_round else None
     revealed = game.phase in (MusicQuizPhase.REVEAL, MusicQuizPhase.FINISHED)
     players = []
     for player in sorted(game.players.values(), key=lambda item: item.joined_at):
@@ -1078,7 +1097,7 @@ def _public_state(game: MusicQuizGame, mode: str, answer_type: QuizAnswerType) -
             "score": player.score,
             "ready": player.ready,
             **answer_type.serialize_public_player(
-                current_round,
+                answer_state,
                 player.player_id,
                 revealed=revealed,
             ),
@@ -1118,7 +1137,7 @@ def _public_round(
         "started_at": game_round.started_at,
         "deadline": (game_round.started_at or 0) + _answer_window(game, game_round),
         "question": game_round.question,
-        **answer_type.serialize_round(game_round, revealed=revealed),
+        **answer_type.serialize_round(game_round.answer_state, revealed=revealed),
     }
     if revealed:
         state["answer_label"] = game_round.answer_label
@@ -1139,6 +1158,7 @@ def _player_state(
     current_round = (
         game.rounds[game.current_round_index] if game.current_round_index is not None else None
     )
+    answer_state = current_round.answer_state if current_round else None
     revealed = game.phase in (MusicQuizPhase.REVEAL, MusicQuizPhase.FINISHED)
     you: dict[str, Any] = {
         "name": player.name,
@@ -1146,7 +1166,7 @@ def _player_state(
         "ready": player.ready,
         "active_from_round": player.active_from_round,
         **answer_type.serialize_personal_player(
-            current_round,
+            answer_state,
             player.player_id,
             revealed=revealed,
         ),

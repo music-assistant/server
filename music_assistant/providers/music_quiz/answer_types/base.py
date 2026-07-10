@@ -12,7 +12,7 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizAnswerType,
     MusicQuizGame,
     MusicQuizPlayer,
-    MusicQuizRound,
+    QuizRoundAnswerState,
 )
 
 
@@ -38,19 +38,19 @@ class QuizAnswerType(ABC):
         """
 
     @abstractmethod
-    def validate_round(self, game: MusicQuizGame, game_round: MusicQuizRound) -> None:
+    def validate_round(self, game: MusicQuizGame, state: QuizRoundAnswerState) -> None:
         """
         Validate answer-specific round requirements.
 
         :param game: Game the round belongs to.
-        :param game_round: Prepared round to validate.
+        :param state: Prepared answer state to validate.
         """
 
     @abstractmethod
     def submit(
         self,
         game: MusicQuizGame,
-        game_round: MusicQuizRound,
+        state: QuizRoundAnswerState,
         player: MusicQuizPlayer,
         submission: QuizAnswerSubmission,
         submitted_at: float,
@@ -59,58 +59,67 @@ class QuizAnswerType(ABC):
         Apply one validated player submission.
 
         :param game: Game receiving the submission.
-        :param game_round: Current answering round.
+        :param state: Current round answer state.
         :param player: Player submitting the answer.
         :param submission: Validated answer submission.
         :param submitted_at: Server timestamp of the submission.
         """
 
     @abstractmethod
-    def is_player_complete(self, game_round: MusicQuizRound, player_id: str) -> bool:
+    def is_player_complete(self, state: QuizRoundAnswerState, player_id: str) -> bool:
         """
         Return whether a player completed the answer requirements.
 
-        :param game_round: Round to inspect.
+        :param state: Round answer state to inspect.
         :param player_id: Player to inspect.
         """
 
     @abstractmethod
     def is_round_complete(
         self,
-        game_round: MusicQuizRound,
+        state: QuizRoundAnswerState,
         active_players: Collection[MusicQuizPlayer],
     ) -> bool:
         """
         Return whether every active player completed the round.
 
-        :param game_round: Round to inspect.
+        :param state: Round answer state to inspect.
         :param active_players: Players eligible for the round.
         """
 
     @abstractmethod
-    def reveal(self, game: MusicQuizGame, game_round: MusicQuizRound) -> None:
+    def reveal(self, game: MusicQuizGame, state: QuizRoundAnswerState) -> float | None:
         """
         Finalize answer state and apply scoring.
 
         :param game: Game being revealed.
-        :param game_round: Round being revealed.
+        :param state: Round answer state being revealed.
+        :return: Timestamp of the latest submitted answer, if any.
+        """
+
+    @abstractmethod
+    def serialize_host_round(self, state: QuizRoundAnswerState) -> dict[str, SerializableType]:
+        """
+        Serialize answer state for the host's flat round payload.
+
+        :param state: Round answer state to serialize.
         """
 
     @abstractmethod
     def serialize_round(
-        self, game_round: MusicQuizRound, *, revealed: bool
+        self, state: QuizRoundAnswerState, *, revealed: bool
     ) -> dict[str, SerializableType]:
         """
         Serialize answer-specific round state.
 
-        :param game_round: Round to serialize.
+        :param state: Round answer state to serialize.
         :param revealed: Whether protected answer data may be exposed.
         """
 
     @abstractmethod
     def serialize_public_player(
         self,
-        game_round: MusicQuizRound | None,
+        state: QuizRoundAnswerState | None,
         player_id: str,
         *,
         revealed: bool,
@@ -118,7 +127,7 @@ class QuizAnswerType(ABC):
         """
         Serialize answer progress safe for every guest.
 
-        :param game_round: Current round, if one exists.
+        :param state: Current round answer state, if one exists.
         :param player_id: Player represented by the public entry.
         :param revealed: Whether protected answer data may be exposed.
         """
@@ -126,7 +135,7 @@ class QuizAnswerType(ABC):
     @abstractmethod
     def serialize_personal_player(
         self,
-        game_round: MusicQuizRound | None,
+        state: QuizRoundAnswerState | None,
         player_id: str,
         *,
         revealed: bool,
@@ -134,7 +143,7 @@ class QuizAnswerType(ABC):
         """
         Serialize answer state visible to its submitting player.
 
-        :param game_round: Current round, if one exists.
+        :param state: Current round answer state, if one exists.
         :param player_id: Player receiving the state.
         :param revealed: Whether protected answer data may be exposed.
         """

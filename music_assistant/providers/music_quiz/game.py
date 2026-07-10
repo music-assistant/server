@@ -64,7 +64,7 @@ def submit_answer(
     player = game.players[player_id]
     if player.active_from_round > current_round.round_index:
         raise MusicQuizNotActiveThisRoundError("Player is not active for this round")
-    answer_type.submit(game, current_round, player, submission, submitted_at)
+    answer_type.submit(game, current_round.answer_state, player, submission, submitted_at)
 
 
 def reveal_round(game: MusicQuizGame, answer_type: QuizAnswerType) -> None:
@@ -77,7 +77,10 @@ def reveal_round(game: MusicQuizGame, answer_type: QuizAnswerType) -> None:
     current_round = get_current_round(game)
     if game.phase != MusicQuizPhase.ANSWERING:
         raise MusicQuizWrongPhaseError("Round can only be revealed during the answering phase")
-    answer_type.reveal(game, current_round)
+    answer_timestamp = answer_type.reveal(game, current_round.answer_state)
+    current_round.ended_at = (
+        answer_timestamp if answer_timestamp is not None else current_round.started_at or 0
+    )
     game.phase = MusicQuizPhase.REVEAL
     for player in game.players.values():
         player.ready = False
@@ -104,7 +107,7 @@ def start_round(
     expected_index = len(game.rounds)
     if music_quiz_round.round_index != expected_index:
         raise InvalidDataError("Round index does not match the game state")
-    answer_type.validate_round(game, music_quiz_round)
+    answer_type.validate_round(game, music_quiz_round.answer_state)
     music_quiz_round.started_at = started_at
     music_quiz_round.ended_at = None
     game.rounds.append(music_quiz_round)
@@ -154,7 +157,7 @@ def all_active_players_complete(game: MusicQuizGame, answer_type: QuizAnswerType
         return False
     current_round = get_current_round(game)
     players = active_players_for_round(game, current_round.round_index)
-    return answer_type.is_round_complete(current_round, players)
+    return answer_type.is_round_complete(current_round.answer_state, players)
 
 
 def finish_game(game: MusicQuizGame) -> None:

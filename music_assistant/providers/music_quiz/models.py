@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
 
 from mashumaro import DataClassDictMixin
+from mashumaro.config import BaseConfig
+from mashumaro.types import Discriminator
 
 
 class MusicQuizPhase(StrEnum):
@@ -70,24 +73,59 @@ class MusicQuizPlayer(DataClassDictMixin):
 
 
 @dataclass
-class MusicQuizSuggestion(DataClassDictMixin):
-    """A possible answer for a Music Quiz round."""
+class QuizRoundAnswerState(DataClassDictMixin):
+    """Answer state persisted for a Music Quiz round."""
+
+    answer_type: MusicQuizAnswerType
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        discriminator = Discriminator(field="answer_type", include_subtypes=True)
+        forbid_extra_keys = True
+
+
+@dataclass
+class MultipleChoiceSuggestion(DataClassDictMixin):
+    """A possible answer for a multiple-choice round."""
 
     suggestion_id: str
     label: str
     uri: str | None = None
     is_correct: bool = False
 
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
 
 @dataclass
-class MusicQuizAnswer(DataClassDictMixin):
-    """A locked player answer for a Music Quiz round."""
+class MultipleChoiceAnswer(DataClassDictMixin):
+    """A locked player answer for a multiple-choice round."""
 
     player_id: str
     suggestion_id: str
     answered_at: float
     is_correct: bool
     points: int = 0
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
+class MultipleChoiceRoundState(QuizRoundAnswerState):
+    """Persisted state for a multiple-choice round."""
+
+    answer_type: Literal[MusicQuizAnswerType.MULTIPLE_CHOICE] = field(
+        default=MusicQuizAnswerType.MULTIPLE_CHOICE,
+        init=False,
+    )
+    suggestions: list[MultipleChoiceSuggestion]
+    answers: dict[str, MultipleChoiceAnswer] = field(default_factory=dict)
 
 
 @dataclass
@@ -96,7 +134,7 @@ class MusicQuizRound(DataClassDictMixin):
 
     round_index: int
     answer_label: str
-    suggestions: list[MusicQuizSuggestion]
+    answer_state: QuizRoundAnswerState
     # a round plays a track (audio round) and/or poses a text question;
     # non-audio quiz types leave track_uri unset
     track_uri: str | None = None
@@ -105,7 +143,11 @@ class MusicQuizRound(DataClassDictMixin):
     duration: float | None = None
     started_at: float | None = None
     ended_at: float | None = None
-    answers: dict[str, MusicQuizAnswer] = field(default_factory=dict)
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
 
 
 @dataclass

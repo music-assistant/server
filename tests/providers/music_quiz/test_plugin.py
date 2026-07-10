@@ -25,10 +25,11 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizUnknownPlayerError,
 )
 from music_assistant.providers.music_quiz.models import (
+    MultipleChoiceRoundState,
+    MultipleChoiceSuggestion,
     MusicQuizGame,
     MusicQuizPhase,
     MusicQuizRound,
-    MusicQuizSuggestion,
 )
 
 INSTANCE_ID = "music_quiz--test"
@@ -60,13 +61,13 @@ LISTEN_IN_COMMANDS = (
 def _make_round(round_index: int, suggestion_count: int = 4) -> MusicQuizRound:
     """Return a deterministic prepared round for the given index."""
     suggestions = [
-        MusicQuizSuggestion(
+        MultipleChoiceSuggestion(
             suggestion_id=f"correct_{round_index}",
             label=f"Artist - Correct {round_index}",
             is_correct=True,
         )
     ] + [
-        MusicQuizSuggestion(
+        MultipleChoiceSuggestion(
             suggestion_id=f"wrong_{round_index}_{index}",
             label=f"Artist - Wrong {round_index}.{index}",
         )
@@ -76,7 +77,7 @@ def _make_round(round_index: int, suggestion_count: int = 4) -> MusicQuizRound:
         round_index=round_index,
         track_uri=f"library://track/{round_index}",
         answer_label=f"Artist - Correct {round_index}",
-        suggestions=suggestions,
+        answer_state=MultipleChoiceRoundState(suggestions=suggestions),
         image_url=f"https://img/{round_index}",
         duration=180.0,
     )
@@ -139,6 +140,12 @@ def _phase(plugin: MusicQuizPlugin) -> MusicQuizPhase:
     game = plugin._game
     assert game is not None
     return game.phase
+
+
+def _answer_state(game_round: MusicQuizRound) -> MultipleChoiceRoundState:
+    """Return multiple-choice state from a test round."""
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    return game_round.answer_state
 
 
 async def _create_started_game(
@@ -317,7 +324,7 @@ async def test_generic_submit_answer_rejects_invalid_payload(
 
     game = plugin._game
     assert game is not None
-    assert game.rounds[0].answers == {}
+    assert _answer_state(game.rounds[0]).answers == {}
     assert game.phase == MusicQuizPhase.ANSWERING
 
 
@@ -376,6 +383,18 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     payload = signal.call_args[0][0]
     assert payload["event"] == "game_updated"
     state = payload["state"]
+    assert set(state) == {
+        "phase",
+        "name",
+        "quiz_type",
+        "answer_type",
+        "mode",
+        "round_count",
+        "suggestion_count",
+        "answer_duration",
+        "players",
+        "current_round",
+    }
     assert state["phase"] == "answering"
     assert state["quiz_type"] == "guess_the_song"
     assert state["answer_type"] == "multiple_choice"
@@ -403,6 +422,15 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         personal_state = await plugin.answer(player_ids["Alice"], "correct_0")
 
     own_answer = personal_state["you"]["answer"]
+    assert set(personal_state) == {*state, "you"}
+    assert set(personal_state["you"]) == {
+        "name",
+        "score",
+        "ready",
+        "active_from_round",
+        "answer",
+    }
+    assert set(own_answer) == {"suggestion_id", "answered_at"}
     assert own_answer["suggestion_id"] == "correct_0"
     assert "correct" not in own_answer
     assert "points" not in own_answer
@@ -416,9 +444,25 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     await plugin.reveal()
     state = signal.call_args[0][0]["state"]
     current_round = state["current_round"]
+    assert set(current_round) == {
+        "round_index",
+        "started_at",
+        "deadline",
+        "question",
+        "suggestions",
+        "correct_suggestion_id",
+        "answer_label",
+        "track_uri",
+        "image_url",
+        "duration",
+        "ended_at",
+    }
     assert current_round["correct_suggestion_id"] == "correct_0"
     assert current_round["track_uri"] == "library://track/0"
     assert current_round["answer_label"] == "Artist - Correct 0"
+    alice = next(player for player in state["players"] if player["name"] == "Alice")
+    assert set(alice) == {"name", "score", "ready", "answered", "last_answer"}
+    assert set(alice["last_answer"]) == {"suggestion_id", "correct", "points"}
 
 
 @pytest.mark.asyncio
@@ -457,6 +501,43 @@ async def test_create_and_get_expose_persisted_quiz_type() -> None:
     assert created["answer_type"] == game.answer_type
     assert (await plugin.get_game())["quiz_type"] == game.quiz_type
     assert (await plugin.get_game())["answer_type"] == game.answer_type
+
+
+@pytest.mark.asyncio
+async def test_host_rounds_preserve_flat_wire_shape() -> None:
+    """Keep nested persisted answer state flat in host round payloads."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin, player_names=("Alice",))
+    game = plugin._game
+    assert game is not None
+    game_round = game.rounds[0]
+    answer_state = _answer_state(game_round)
+
+    host_state = await plugin.get_game()
+
+    assert host_state["rounds"] == [
+        {
+            "round_index": game_round.round_index,
+            "answer_label": game_round.answer_label,
+            "suggestions": [
+                {
+                    "suggestion_id": suggestion.suggestion_id,
+                    "label": suggestion.label,
+                    "uri": suggestion.uri,
+                    "is_correct": suggestion.is_correct,
+                }
+                for suggestion in answer_state.suggestions
+            ],
+            "answers": {},
+            "track_uri": game_round.track_uri,
+            "question": game_round.question,
+            "image_url": game_round.image_url,
+            "duration": game_round.duration,
+            "started_at": game_round.started_at,
+            "ended_at": game_round.ended_at,
+        }
+    ]
+    assert "answer_state" not in host_state["rounds"][0]
 
 
 @pytest.mark.asyncio

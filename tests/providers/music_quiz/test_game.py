@@ -26,13 +26,14 @@ from music_assistant.providers.music_quiz.game import (
     submit_answer,
 )
 from music_assistant.providers.music_quiz.models import (
+    MultipleChoiceRoundState,
+    MultipleChoiceSuggestion,
     MusicQuizAnswerType,
     MusicQuizConfig,
     MusicQuizGame,
     MusicQuizPhase,
     MusicQuizPlayer,
     MusicQuizRound,
-    MusicQuizSuggestion,
 )
 
 ANSWER_TYPE = MultipleChoiceAnswerType()
@@ -61,17 +62,19 @@ def _game() -> MusicQuizGame:
                 round_index=0,
                 track_uri="library://track/1",
                 answer_label="Daft Punk - One More Time",
-                suggestions=[
-                    MusicQuizSuggestion(
-                        suggestion_id="correct",
-                        label="Daft Punk - One More Time",
-                        is_correct=True,
-                    ),
-                    MusicQuizSuggestion(
-                        suggestion_id="wrong_1",
-                        label="Justice - D.A.N.C.E.",
-                    ),
-                ],
+                answer_state=MultipleChoiceRoundState(
+                    suggestions=[
+                        MultipleChoiceSuggestion(
+                            suggestion_id="correct",
+                            label="Daft Punk - One More Time",
+                            is_correct=True,
+                        ),
+                        MultipleChoiceSuggestion(
+                            suggestion_id="wrong_1",
+                            label="Justice - D.A.N.C.E.",
+                        ),
+                    ]
+                ),
             )
         ],
     )
@@ -109,14 +112,16 @@ def test_start_round_requires_exactly_one_correct_suggestion() -> None:
             round_index=0,
             track_uri="library://track/1",
             answer_label="Daft Punk - One More Time",
-            suggestions=[
-                MusicQuizSuggestion(
-                    suggestion_id=f"s{index}",
-                    label=f"Suggestion {index}",
-                    is_correct=flag,
-                )
-                for index, flag in enumerate(correct_flags)
-            ],
+            answer_state=MultipleChoiceRoundState(
+                suggestions=[
+                    MultipleChoiceSuggestion(
+                        suggestion_id=f"s{index}",
+                        label=f"Suggestion {index}",
+                        is_correct=flag,
+                    )
+                    for index, flag in enumerate(correct_flags)
+                ]
+            ),
         )
 
     with pytest.raises(InvalidDataError, match="exactly one correct"):
@@ -179,7 +184,7 @@ def test_submit_answer_locks_first_answer() -> None:
         10,
         ANSWER_TYPE,
     )
-    answer = game.rounds[0].answers["p1"]
+    answer = _answer_state(game.rounds[0]).answers["p1"]
 
     assert answer.suggestion_id == "wrong_1"
     assert answer.is_correct is False
@@ -282,10 +287,12 @@ def test_reveal_round_applies_scores_to_correct_answers_in_order() -> None:
     reveal_round(game, ANSWER_TYPE)
 
     current_round = game.rounds[0]
+    answers = _answer_state(current_round).answers
     assert game.phase == MusicQuizPhase.REVEAL
-    assert current_round.answers["p2"].points == 1000
-    assert current_round.answers["p3"].points == 500
-    assert current_round.answers["p1"].points == 0
+    assert answers["p2"].points == 1000
+    assert answers["p3"].points == 500
+    assert answers["p1"].points == 0
+    assert current_round.ended_at == 12
     assert game.players["p2"].score == 1000
     assert game.players["p3"].score == 500
     assert game.players["p1"].score == 0
@@ -325,3 +332,19 @@ def test_reset_game_keeps_players_and_config_for_new_game() -> None:
     assert all(player.score == 0 for player in game.players.values())
     assert all(player.ready is False for player in game.players.values())
     assert all(player.active_from_round == 0 for player in game.players.values())
+
+
+def test_reveal_round_uses_start_time_when_no_answers_exist() -> None:
+    """Use the common round start time when an answer type has no timestamp."""
+    game = _game()
+    game.rounds[0].started_at = 5
+
+    reveal_round(game, ANSWER_TYPE)
+
+    assert game.rounds[0].ended_at == 5
+
+
+def _answer_state(game_round: MusicQuizRound) -> MultipleChoiceRoundState:
+    """Return multiple-choice state from a test round."""
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    return game_round.answer_state
