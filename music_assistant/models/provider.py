@@ -186,7 +186,7 @@ class Provider:
 
     def unload_with_error(self, error: str) -> None:
         """Unload provider with error message."""
-        self.mass.call_later(1, self.mass.unload_provider, self.instance_id, error)
+        self.mass.call_later(1, self.mass.unload_provider_with_error, self.instance_id, error)
 
     def to_dict(self) -> dict[str, Any]:
         """Return Provider(instance) as serializable dict."""

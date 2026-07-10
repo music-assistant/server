@@ -115,3 +115,34 @@ async def test_set_raw_provider_config_value_updates_provider_copy(
         PROVIDER_INSTANCE, "api_secret", "s3cret", encrypted=True
     )
     assert provider.config.get_value("api_secret") == "s3cret"
+
+
+async def test_set_raw_provider_config_value_syncs_unavailable_provider(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A raw write syncs the in-place copy even when the provider is currently unavailable."""
+    provider = MagicMock()
+    provider.config = cast(
+        "ProviderConfig",
+        ProviderConfig.parse(
+            [_entry("api_token", ConfigEntryType.STRING, None)],
+            {
+                "type": ProviderType.MUSIC,
+                "domain": "test",
+                "instance_id": PROVIDER_INSTANCE,
+            },
+        ),
+    )
+
+    # mimic get_provider: an unavailable instance is only returned with return_unavailable=True
+    def _get_provider(
+        _instance: str, return_unavailable: bool = False, **_kwargs: object
+    ) -> object | None:
+        return provider if return_unavailable else None
+
+    mass_minimal.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
+    mass_minimal.config.set(
+        f"{CONF_PROVIDERS}/{PROVIDER_INSTANCE}", {"instance_id": PROVIDER_INSTANCE}
+    )
+    mass_minimal.config.set_raw_provider_config_value(PROVIDER_INSTANCE, "api_token", "abc")
+    assert provider.config.get_value("api_token") == "abc"

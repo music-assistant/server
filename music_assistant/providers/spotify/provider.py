@@ -828,22 +828,23 @@ class SpotifyProvider(MusicProvider):
 
         This uses MA's global client ID which has full API access but heavy rate limits.
         """
-        # return existing token if we have one in memory
+        # return the cached access token while it is still valid (refreshed before expiry)
         if (
             not force_refresh
             and self._auth_info_global
-            and (self._auth_info_global["expires_at"] > (time.time() - 600))
+            and (self._auth_info_global["expires_at"] > (time.time() + 600))
         ):
             return self._auth_info_global
-        # request new access token using the refresh token
-        if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN_GLOBAL)):
+        # read the refresh token from the persisted store rather than the in-memory config copy,
+        # which can lag a rotation and would make us refresh with a stale (revoked) token
+        if not (refresh_token := self._stored_refresh_token(CONF_REFRESH_TOKEN_GLOBAL)):
             raise LoginFailed("Authentication required")
 
         try:
             auth_info = await get_spotify_token(
                 self.mass.http_session,
                 app_var("spotify_client_id"),  # Always use MA's global client ID
-                cast("str", refresh_token),
+                refresh_token,
                 "global",
             )
             self.logger.debug("Successfully refreshed global access token")
@@ -852,9 +853,7 @@ class SpotifyProvider(MusicProvider):
                 # Spotify rotates the refresh token on refresh and revokes the previous one.
                 # If the stored token was rotated while this refresh was in flight, the token
                 # we tried is merely stale, so keep the newer one instead of forcing re-auth.
-                if not self._refresh_token_superseded(
-                    CONF_REFRESH_TOKEN_GLOBAL, cast("str", refresh_token)
-                ):
+                if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_GLOBAL, refresh_token):
                     self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
                     if self.available:
                         self.unload_with_error(str(err))
@@ -899,15 +898,16 @@ class SpotifyProvider(MusicProvider):
 
         This uses the user's custom client ID which has less rate limits but limited API access.
         """
-        # return existing token if we have one in memory
+        # return the cached access token while it is still valid (refreshed before expiry)
         if (
             not force_refresh
             and self._auth_info_dev
-            and (self._auth_info_dev["expires_at"] > (time.time() - 600))
+            and (self._auth_info_dev["expires_at"] > (time.time() + 600))
         ):
             return self._auth_info_dev
-        # request new access token using the refresh token
-        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN_DEV)
+        # read the refresh token from the persisted store rather than the in-memory config copy,
+        # which can lag a rotation and would make us refresh with a stale (revoked) token
+        refresh_token = self._stored_refresh_token(CONF_REFRESH_TOKEN_DEV)
         client_id = self.config.get_value(CONF_CLIENT_ID)
         if not refresh_token or not client_id:
             raise LoginFailed("Developer authentication not configured")
@@ -916,7 +916,7 @@ class SpotifyProvider(MusicProvider):
             auth_info = await get_spotify_token(
                 self.mass.http_session,
                 cast("str", client_id),
-                cast("str", refresh_token),
+                refresh_token,
                 "developer",
             )
             self.logger.debug("Successfully refreshed developer access token")
@@ -925,9 +925,7 @@ class SpotifyProvider(MusicProvider):
                 # Spotify rotates the refresh token on refresh and revokes the previous one.
                 # If the stored token was rotated while this refresh was in flight, the token
                 # we tried is merely stale, so keep the newer one instead of forcing re-auth.
-                if not self._refresh_token_superseded(
-                    CONF_REFRESH_TOKEN_DEV, cast("str", refresh_token)
-                ):
+                if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_DEV, refresh_token):
                     self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
                     self._update_config_value(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
@@ -1510,6 +1508,17 @@ class SpotifyProvider(MusicProvider):
         except MediaNotFoundError, ProviderUnavailableError:
             return False
 
+    def _stored_refresh_token(self, key: str) -> str | None:
+        """
+        Return the currently persisted refresh token, or None if not set.
+
+        :param key: Config key of the refresh token to read.
+        """
+        raw_stored = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
+        if not raw_stored:
+            return None
+        return self.mass.config.decrypt_string(cast("str", raw_stored))
+
     def _refresh_token_superseded(self, key: str, used_token: str) -> bool:
         """
         Return whether the stored refresh token differs from the one just used.
@@ -1517,8 +1526,7 @@ class SpotifyProvider(MusicProvider):
         :param key: Config key of the refresh token to check.
         :param used_token: The refresh token value that was just used to refresh.
         """
-        raw_stored = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
-        if not raw_stored:
+        stored_token = self._stored_refresh_token(key)
+        if not stored_token:
             return False
-        stored_token = self.mass.config.decrypt_string(cast("str", raw_stored))
         return stored_token != used_token

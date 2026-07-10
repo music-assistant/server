@@ -49,3 +49,13 @@ def test_signal_provider_event_with_sub_scope() -> None:
     cast("MagicMock", provider.mass).signal_event.assert_called_once_with(
         EventType.PROVIDER_EVENT, object_id="test_instance/game_state", data={"round": 1}
     )
+
+
+def test_unload_with_error_schedules_error_unload() -> None:
+    """unload_with_error schedules unload_provider_with_error so the error is recorded."""
+    provider = _make_base_provider()
+    provider.unload_with_error("boom")
+    mass = cast("MagicMock", provider.mass)
+    mass.call_later.assert_called_once_with(
+        1, mass.unload_provider_with_error, "test_instance", "boom"
+    )
