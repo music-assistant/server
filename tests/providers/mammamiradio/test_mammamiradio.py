@@ -1724,6 +1724,28 @@ async def test_v1_callback_without_etag_polls_unconditionally(
     assert "If-None-Match" not in second.kwargs.get("headers", {})
 
 
+async def test_v1_callback_drops_stale_etag_when_header_disappears(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A 200 without an ETag clears the stored validator; polling becomes unconditional."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(
+        side_effect=[
+            _make_v1_ctx(_V1_MUSIC, etag='W/"a"'),
+            _make_v1_ctx(_V1_MUSIC),  # ETag header disappears
+            _make_v1_ctx(_V1_MUSIC),
+        ]
+    )
+    await provider._update_stream_metadata(details, 0)
+    await provider._update_stream_metadata(details, 0)
+    second = mass_mock.http_session.get.call_args_list[1]
+    assert second.kwargs["headers"]["If-None-Match"] == 'W/"a"'
+    await provider._update_stream_metadata(details, 0)
+    third = mass_mock.http_session.get.call_args_list[2]
+    assert "If-None-Match" not in third.kwargs.get("headers", {})
+
+
 async def test_v1_callback_unsupported_schema_keeps_prior(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:

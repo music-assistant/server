@@ -742,6 +742,10 @@ class MammamiradioProvider(MusicProvider):
                 new_etag = response.headers.get("ETag")
                 if isinstance(new_etag, str):
                     data["v1_etag"] = new_etag
+                else:
+                    # The server stopped emitting ETags: drop the stored validator
+                    # so polling actually becomes unconditional, as documented.
+                    data.pop("v1_etag", None)
                 data["v1_last"] = payload
                 return payload
         except (aiohttp.ClientError, TimeoutError) as err:
