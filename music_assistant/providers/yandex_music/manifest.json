@@ -7,6 +7,6 @@
   "codeowners": ["@TrudenBoy"],
   "credits": ["[yandex-music-api](https://github.com/MarshalX/yandex-music-api)"],
   "documentation": "https://music-assistant.io/music-providers/yandex-music/",
-  "requirements": ["yandex-music==3.0.0", "ya-passport-auth[ma]==1.6.0"],
+  "requirements": ["yandex-music==3.0.0", "ya-passport-auth[ma]==1.7.0"],
   "multi_instance": true
 }
