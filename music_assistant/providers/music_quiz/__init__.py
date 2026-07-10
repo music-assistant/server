@@ -289,7 +289,7 @@ class MusicQuizPlugin(PluginProvider):
         answer_duration: int = 30,
         source_uris: list[str] | None = None,
         name: str | None = None,
-        difficulty: str = MusicQuizDifficulty.NORMAL,
+        difficulty: str = MusicQuizDifficulty.NORMAL.value,
     ) -> dict[str, Any]:
         """
         Create a new Music Quiz game, replacing a previous (finished) game.

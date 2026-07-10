@@ -35,7 +35,7 @@ class MusicQuizConfig(DataClassDictMixin):
     source_uris: list[str] = field(default_factory=list)
     name: str | None = None
     # guess-the-song specific; other quiz types ignore these
-    difficulty: str = MusicQuizDifficulty.NORMAL
+    difficulty: str = MusicQuizDifficulty.NORMAL.value
     use_ai_distractors: bool = False
 
 
