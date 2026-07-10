@@ -275,6 +275,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # during a sync the update originates from the provider itself,
             # so skip both the event and the write-back to that provider
             return library_item
+        # drop cached artwork for the updated item so replaced art is served fresh
+        for img in library_item.metadata.images or []:
+            await self.mass.metadata.invalidate_image_cache(img.provider, img.path)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED,
             library_item.uri,
@@ -344,6 +347,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
+        # drop cached artwork for the removed item
+        for img in library_item.metadata.images or []:
+            await self.mass.metadata.invalidate_image_cache(img.provider, img.path)
         self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
         self.logger.debug("deleted item with id %s from database", db_id)
 

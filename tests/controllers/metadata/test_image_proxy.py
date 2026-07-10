@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -27,6 +28,8 @@ from music_assistant.controllers.metadata.constants import (
 from music_assistant.controllers.metadata.helpers import (
     _normalize_imageproxy_format,
 )
+from music_assistant.helpers import images as images_helper
+from music_assistant.helpers.colors import get_palette
 from music_assistant.helpers.images import (
     _THUMB_CACHE_VERSION,
     _THUMB_FILENAME_RE,
@@ -35,6 +38,7 @@ from music_assistant.helpers.images import (
     _thumb_cache_filename,
     create_thumb_hash,
     detect_image_content_format,
+    get_image_thumb,
     is_svg_data,
     player_image_url,
 )
@@ -542,6 +546,56 @@ async def test_serve_thumbnail_sets_csp_for_svg(
     jpg_resp = await metadata_controller._serve_thumbnail("p", "builtin", 256, "jpeg")
     assert "Content-Security-Policy" not in jpg_resp.headers
     assert "X-Content-Type-Options" not in jpg_resp.headers
+
+
+async def test_invalidate_image_cache_end_to_end(
+    metadata_controller: MetaDataController, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Invalidation drops thumbs, source bytes and palette; the next request re-fetches.
+
+    This is the retag scenario: a local file's artwork is replaced while its
+    (provider, path) identity stays the same, so every derived artifact keyed
+    on that identity must be regenerated.
+    """
+    image_path = str(tmp_path / "cover.png")
+    Image.new("RGB", (300, 300), (200, 30, 30)).save(image_path, "PNG")
+    mass = metadata_controller.mass
+    fetches = 0
+    real_fetch = images_helper._fetch_source_image
+
+    async def counting_fetch(*args: Any, **kwargs: Any) -> tuple[bytes, bool]:
+        nonlocal fetches
+        fetches += 1
+        return await real_fetch(*args, **kwargs)
+
+    monkeypatch.setattr(images_helper, "_fetch_source_image", counting_fetch)
+
+    # derive two thumb variants and a palette from one single source fetch
+    await get_image_thumb(mass, image_path, 80, "builtin")
+    await get_image_thumb(mass, image_path, 256, "builtin")
+    palette = await get_palette(mass, image_path, "builtin")
+    assert palette is not None
+    assert palette.primary is not None
+    assert fetches == 1
+
+    thumb_hash = create_thumb_hash("builtin", image_path)
+    thumb_dir = Path(mass.cache_path, "thumbnails")
+    assert [f for f in thumb_dir.iterdir() if f.name.startswith(thumb_hash)]
+    assert await mass.cache.get(thumb_hash, provider="palette") is not None
+
+    await metadata_controller.invalidate_image_cache("builtin", image_path)
+
+    assert not [f for f in thumb_dir.iterdir() if f.name.startswith(thumb_hash)]
+    assert thumb_hash not in images_helper._source_memory_cache.entries
+    assert not any(key.startswith(f"{thumb_hash}_") for key in images_helper._thumb_memory_cache)
+    assert await mass.cache.get(thumb_hash, provider="palette") is None
+
+    # replace the artwork on disk: the next request serves the new content
+    Image.new("RGB", (300, 300), (30, 30, 200)).save(image_path, "PNG")
+    new_palette = await get_palette(mass, image_path, "builtin")
+    assert new_palette is not None
+    assert new_palette.primary != palette.primary
 
 
 def test_player_image_url_forces_jpeg_on_imageproxy_urls() -> None:
