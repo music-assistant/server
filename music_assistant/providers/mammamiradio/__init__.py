@@ -580,7 +580,17 @@ class MammamiradioProvider(MusicProvider):
         # mid-segment. ``changed_at`` is also structurally optional in the contract.
         now = payload.get("now_playing")
         now = now if isinstance(now, dict) else {}
-        seg_key = (now.get("segment_type"), now.get("title"), now.get("started_at"))
+        # Key on fields the v1 contract actually emits (segment_type / title /
+        # artist / host); started_at is absent from current payloads but kept so
+        # an addon that later adds it (additive within v1.*) gains true
+        # per-segment identity without a provider change.
+        seg_key = (
+            now.get("segment_type"),
+            now.get("title"),
+            now.get("artist"),
+            now.get("host"),
+            now.get("started_at"),
+        )
         if seg_key != data.get("v1_segment"):
             data["v1_segment"] = seg_key
             data["show_upcoming"] = False

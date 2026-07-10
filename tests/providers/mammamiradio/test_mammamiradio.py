@@ -1724,6 +1724,32 @@ async def test_v1_callback_without_etag_polls_unconditionally(
     assert "If-None-Match" not in second.kwargs.get("headers", {})
 
 
+async def test_v1_callback_resets_on_artist_change_same_title(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """
+    Segment identity includes artist/host, not just type+title.
+
+    The v1 payload carries no ``started_at``, so two consecutive segments sharing
+    type and title (e.g. a same-title cover) must still be told apart by the
+    other contract fields.
+    """
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    cover = {**_V1_MUSIC, "now_playing": {**_V1_MUSIC["now_playing"], "artist": "Cover Band"}}
+    mass_mock.http_session.get = MagicMock(
+        side_effect=[
+            _make_v1_ctx(_V1_MUSIC, etag='W/"a"'),
+            _make_v1_ctx(cover, etag='W/"b"'),
+        ]
+    )
+    await provider._update_stream_metadata(details, 0)  # Now (show_upcoming -> True)
+    await provider._update_stream_metadata(details, 0)  # same title, new artist -> reset
+    desc = details.stream_metadata.description
+    assert desc is None
+    assert details.stream_metadata.artist == "Cover Band"
+
+
 async def test_v1_callback_drops_stale_etag_when_header_disappears(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
