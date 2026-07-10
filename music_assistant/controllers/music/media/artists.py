@@ -102,7 +102,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         SELECT
             {self._summary_base_columns()},
             artists.artist_type,
-            {self._provider_mappings_summary_query()} AS provider_mappings
+            {self._provider_mappings_query()} AS provider_mappings
             FROM artists"""
         return query, {}
 
@@ -141,7 +141,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
         *,
-        summary: bool = False,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Artist]:
         """
@@ -156,8 +156,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param album_artists_only: Only return artists that have albums.
         :param genre: Filter by genre id(s).
         :param artist_type: The artist's type
-        :param summary: Return slim summary items (only the fields needed for a list view)
-            instead of full items.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []

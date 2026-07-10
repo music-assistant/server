@@ -1279,7 +1279,9 @@ class TestRestoreDefaultGenres:
         if not entries_with_aliases:
             pytest.skip("No default genres with aliases configured")
         entry = entries_with_aliases[0]
-        items = await genre_ctrl.library_items(search=entry["genre"], hide_empty=False)
+        items = await genre_ctrl.library_items(
+            search=entry["genre"], hide_empty=False, summary=False
+        )
         assert len(items) > 0
         genre = items[0]
         assert genre.genre_aliases is not None
@@ -1530,8 +1532,8 @@ class TestBaseClassIntegration:
         """genre_aliases column populates genre_aliases on fetched Genre."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("InlineTest"))
         await genre_ctrl.add_alias(genre.item_id, "Inline Alias")
-        # Fetch via library_items (uses base_query)
-        items = await genre_ctrl.library_items(search="InlineTest", hide_empty=False)
+        # Fetch via library_items (uses base_query); request full items so genre_aliases hydrates
+        items = await genre_ctrl.library_items(search="InlineTest", hide_empty=False, summary=False)
         assert len(items) >= 1
         fetched = items[0]
         assert fetched.genre_aliases is not None

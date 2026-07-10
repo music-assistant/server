@@ -8,6 +8,7 @@ import threading
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
+from typing import Any
 
 import pytest
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
@@ -18,6 +19,7 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
     JOIN_CODE_LENGTH,
     TOKEN_ABSOLUTE_MAX_EXPIRATION,
+    TOKEN_ACTIVITY_PERSIST_INTERVAL,
     TOKEN_GUEST_EXPIRATION,
     TOKEN_LONG_LIVED_EXPIRATION,
     TOKEN_SHORT_LIVED_EXPIRATION,
@@ -837,6 +839,150 @@ async def test_long_lived_token_no_auto_renewal(auth_manager: AuthenticationMana
 
     # Expiration should remain the same for long-lived tokens
     assert updated_expires_at == initial_expires_at
+
+
+async def test_token_activity_write_throttled(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that rapid authentications persist the token activity only once.
+
+    The HTTP API authenticates on every request; the activity timestamp must not be
+    written to the database again while the stored one is still fresh.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    user = await auth_manager.create_user(username="throttleuser", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "Throttle Test", is_long_lived=False)
+
+    token_update_count = 0
+    original_update = auth_manager.database.update
+
+    async def counting_update(table: str, match: dict[str, Any], values: dict[str, Any]) -> None:
+        nonlocal token_update_count
+        if table == "auth_tokens":
+            token_update_count += 1
+        await original_update(table, match, values)
+
+    monkeypatch.setattr(auth_manager.database, "update", counting_update)
+
+    # Two rapid authentications: only the first persists the activity timestamp.
+    assert await auth_manager.authenticate_with_token(token) is not None
+    assert await auth_manager.authenticate_with_token(token) is not None
+    assert token_update_count == 1
+
+
+async def test_token_activity_write_resumes_after_interval(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that token activity is persisted again once the stored timestamp is stale.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="throttleresume", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "Throttle Resume Test", is_long_lived=False)
+    assert await auth_manager.authenticate_with_token(token) is not None
+
+    # Age the stored activity timestamp (and sliding expiration) past the persist interval.
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    stale_time = utc() - TOKEN_ACTIVITY_PERSIST_INTERVAL - timedelta(minutes=5)
+    stale_expires = stale_time + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_row["token_id"]},
+        {"last_used_at": stale_time.isoformat(), "expires_at": stale_expires.isoformat()},
+    )
+
+    assert await auth_manager.authenticate_with_token(token) is not None
+
+    # Both the activity timestamp and the sliding expiration must be persisted again.
+    updated_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert updated_row is not None
+    assert datetime.fromisoformat(updated_row["last_used_at"]) > stale_time
+    assert datetime.fromisoformat(updated_row["expires_at"]) > stale_expires
+
+
+async def test_revoked_token_rejected_within_throttle_window(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that revocation takes effect immediately while the activity write is throttled.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="throttlerevoke", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "Throttle Revoke Test", is_long_lived=False)
+    set_current_user(user)
+
+    # First use persists a fresh activity timestamp (entering the throttle window).
+    assert await auth_manager.authenticate_with_token(token) is not None
+
+    token_id = await auth_manager.get_token_id_from_token(token)
+    assert token_id is not None
+    await auth_manager.revoke_token(token_id)
+
+    # The throttle only affects the activity write, never the validation reads.
+    assert await auth_manager.authenticate_with_token(token) is None
+
+
+async def test_expired_token_rejected_despite_fresh_activity(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that expiry validation is not affected by a fresh activity timestamp.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="throttleexpired", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "Throttle Expired Test", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_row["token_id"]},
+        {
+            "expires_at": (utc() - timedelta(days=1)).isoformat(),
+            "last_used_at": utc().isoformat(),
+        },
+    )
+
+    assert await auth_manager.authenticate_with_token(token) is None
+
+
+async def test_token_absolute_max_enforced_despite_fresh_activity(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the absolute lifetime cap is enforced even with a fresh activity timestamp.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="throttleabsmax", role=UserRole.USER)
+    token = await auth_manager.create_token(user, "Throttle Abs Max Test", is_long_lived=False)
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_row = await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash})
+    assert token_row is not None
+    created_at = utc() - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)
+    future_expires = utc() + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_row["token_id"]},
+        {
+            "created_at": created_at.isoformat(),
+            "expires_at": future_expires.isoformat(),
+            "last_used_at": utc().isoformat(),
+        },
+    )
+
+    assert await auth_manager.authenticate_with_token(token) is None
+    assert await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash}) is None
 
 
 async def test_long_lived_token_default_is_one_year() -> None:

@@ -277,7 +277,7 @@ class GenreController(MediaControllerBase[Genre]):
             {self._summary_base_columns()},
             {DB_TABLE_GENRES}.translation_key,
             {DB_TABLE_GENRES}.content_type,
-            {self._provider_mappings_summary_query()} AS provider_mappings
+            {self._provider_mappings_query()} AS provider_mappings
         FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
         return query, {}
 
@@ -295,7 +295,7 @@ class GenreController(MediaControllerBase[Genre]):
         media_type: MediaType | None = None,
         content_type: str | None = None,
         *,
-        summary: bool = False,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Genre]:
         """
@@ -312,8 +312,8 @@ class GenreController(MediaControllerBase[Genre]):
             general/music taxonomy, stored as NULL), "podcast" or "audiobook". Composes with
             hide_empty, so e.g. content_type="podcast" + hide_empty=None returns only the
             default podcast genres.
-        :param summary: Return slim summary items (only the fields needed for a list view)
-            instead of full items.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"

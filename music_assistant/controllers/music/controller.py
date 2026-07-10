@@ -706,7 +706,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     @api_command("music/recently_added_tracks", required_scope=Scope.LIBRARY_READ)
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
-        return await self.tracks.library_items(limit=limit, order_by="timestamp_added_desc")
+        return await self.tracks.library_items(
+            limit=limit, order_by="timestamp_added_desc", summary=False
+        )
 
     @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
     async def in_progress_items(
@@ -2387,7 +2389,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="music-note-plus",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
+                    await self.tracks.library_items(
+                        limit=10, order_by="timestamp_added_desc", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2398,7 +2402,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="music-note-plus",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
+                    await self.albums.library_items(
+                        limit=10, order_by="timestamp_added_desc", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2409,7 +2415,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-account-music",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.artists.library_items(limit=10, order_by="random_play_count"),
+                    await self.artists.library_items(
+                        limit=10, order_by="random_play_count", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2420,7 +2428,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-album",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(limit=10, order_by="random_play_count"),
+                    await self.albums.library_items(
+                        limit=10, order_by="random_play_count", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2432,7 +2442,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
                     await self.tracks.library_items(
-                        favorite=True, limit=10, order_by="timestamp_modified_desc"
+                        favorite=True, limit=10, order_by="timestamp_modified_desc", summary=False
                     ),
                 ),
             ),
@@ -2444,7 +2454,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-playlist-music",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.playlists.library_items(favorite=True, limit=10, order_by="random"),
+                    await self.playlists.library_items(
+                        favorite=True, limit=10, order_by="random", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2456,7 +2468,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
                     await self.radio.library_items(
-                        favorite=True, limit=10, order_by="play_count_desc"
+                        favorite=True, limit=10, order_by="play_count_desc", summary=False
                     ),
                 ),
             ),

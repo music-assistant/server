@@ -142,7 +142,8 @@ class TracksController(MediaControllerBase[Track]):
             tracks.version,
             tracks.duration,
             json_extract(tracks.metadata, '$.explicit') AS explicit,
-            {self._provider_mappings_summary_query()} AS provider_mappings,
+            json_extract(tracks.metadata, '$.release_date') AS release_date,
+            {self._provider_mappings_query()} AS provider_mappings,
             {self._artist_mappings_summary_query(DB_TABLE_TRACK_ARTISTS, "track_id")} AS artists,
             (SELECT
                 json_object(
@@ -243,7 +244,7 @@ class TracksController(MediaControllerBase[Track]):
         played_only: bool = False,
         explicit: bool | None = None,
         *,
-        summary: bool = False,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -258,8 +259,8 @@ class TracksController(MediaControllerBase[Track]):
         :param genre: Filter by genre id(s).
         :param played_only: Filter to only played tracks.
         :param explicit: Filter by explicit content (True=only explicit, False=no explicit, None=all).
-        :param summary: Return slim summary items (only the fields needed for a list view)
-            instead of full items.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
@@ -888,6 +889,8 @@ class TracksController(MediaControllerBase[Track]):
         item.version = db_row["version"] or ""
         item.duration = db_row["duration"] or 0
         item.metadata.explicit = None if db_row["explicit"] is None else bool(db_row["explicit"])
+        if raw_release_date := db_row["release_date"]:
+            item.metadata.release_date = datetime.fromisoformat(raw_release_date)
         item.artists = self._parse_summary_artist_mappings(db_row)
         if raw_album := db_row["track_album"]:
             album: dict[str, Any] = json_loads(raw_album)
