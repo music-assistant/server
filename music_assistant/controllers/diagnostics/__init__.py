@@ -1,12 +1,12 @@
 """
 Diagnostics controller: on-demand, privacy-safe troubleshooting reports.
 
-Serves a single downloadable report (JSON or markdown) combining the always-on
-exception/log capture (see helpers/diagnostics.py) with system info, an install
-census and pluggable sections contributed by core controllers, providers and
-external registrants. All report building happens on request only; every string
-that ends up in the report is sanitized so it can safely be attached to a public
-GitHub issue.
+Builds a single report combining the always-on exception/log capture (see
+helpers/diagnostics.py) with system info, an install census and pluggable
+sections contributed by core controllers, providers and external registrants.
+The report is returned on request via the `diagnostics/get` API command. All
+report building happens on request only; every string that ends up in the
+report is sanitized so it can safely be attached to a public GitHub issue.
 """
 
 from __future__ import annotations
@@ -22,13 +22,8 @@ import time
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import web
 from music_assistant_models.auth import Scope
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    has_scope,
-    require_authentication,
-)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import from_utc_timestamp, utc
 from music_assistant.helpers.diagnostics import (
@@ -131,35 +126,6 @@ class DiagnosticsController(CoreController):
         :param include_log_tail: Include the recent warning/error log excerpt.
         """
         return await self._build_report(include_log_tail=include_log_tail)
-
-    async def handle_http_download(self, request: web.Request) -> web.Response:
-        """
-        Serve the diagnostics report as a downloadable file (webserver route handler).
-
-        Supports query parameters `format` (json|md) and `include_log_tail` (true|false).
-
-        :param request: The incoming aiohttp request.
-        """
-        user = await require_authentication(request)
-        if not has_scope(user, Scope.SYSTEM_MANAGE):
-            raise web.HTTPForbidden(text="Admin privileges required")
-        include_log_tail = request.query.get("include_log_tail", "").lower() in ("1", "true")
-        report = await self._build_report(include_log_tail=include_log_tail)
-        filename = f"music-assistant-diagnostics-{utc().strftime('%Y-%m-%d-%H%M%S')}"
-        if request.query.get("format", "json").lower() in ("md", "markdown"):
-            body = self._render_markdown(report)
-            content_type = "text/markdown"
-            filename += ".md"
-        else:
-            body = json_dumps(report, indent=True)
-            content_type = "application/json"
-            filename += ".json"
-        return web.Response(
-            text=body,
-            content_type=content_type,
-            charset="utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
 
     async def _build_report(self, include_log_tail: bool = False) -> dict[str, Any]:
         """Assemble the full report; every part is isolated so the report never fails."""
@@ -379,47 +345,6 @@ class DiagnosticsController(CoreController):
             "total_mb": usage.total // (1024 * 1024),
         }
         return disk_info, _get_memory_info()
-
-    def _render_markdown(self, report: dict[str, Any]) -> str:
-        """Render the report as markdown for direct pasting into (GitHub) issues."""
-        lines = [
-            "# Music Assistant diagnostics report",
-            "",
-            f"- Generated: {report.get('generated_at')}",
-            f"- Schema version: {report.get('schema_version')}",
-            "",
-            f"> {report.get('redaction_notice')}",
-            "",
-        ]
-        for key, title in (("system", "System"), ("install", "Install")):
-            if (data := report.get(key)) is None:
-                continue
-            lines += [f"## {title}", "", "```json", json_dumps(data, indent=True), "```", ""]
-        exceptions = report.get("exceptions") or []
-        lines += [f"## Exceptions ({len(exceptions)} unique)", ""]
-        for entry in exceptions:
-            lines += [
-                f"### {entry['type']} (seen {entry['count']}x)",
-                "",
-                f"- Logger: `{entry['logger']}` (level {entry['level']})",
-                f"- Origin: `{entry['origin']}`",
-                f"- First seen: {entry['first_seen']} — last seen: {entry['last_seen']}",
-                "",
-                "```",
-                str(entry["traceback"]).rstrip(),
-                "```",
-                "",
-            ]
-        if sections := report.get("sections"):
-            lines += ["## Sections", "", "```json", json_dumps(sections, indent=True), "```", ""]
-        if log_tail := report.get("log_tail"):
-            lines += ["## Log tail", "", "```"]
-            lines += [
-                f"{record['time']} {record['level']} {record['logger']}: {record['message']}"
-                for record in log_tail
-            ]
-            lines += ["```", ""]
-        return "\n".join(lines)
 
 
 def _format_timestamp(timestamp: float) -> str:
