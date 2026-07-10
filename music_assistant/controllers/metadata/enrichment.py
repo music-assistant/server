@@ -13,13 +13,11 @@ from contextlib import suppress
 from dataclasses import replace
 from time import time
 from typing import TYPE_CHECKING, cast
-from uuid import uuid4
 
-from music_assistant_models.enums import AlbumType, ImageType, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
-from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.helpers.compare import compare_strings
@@ -33,6 +31,7 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, Playlist, Podcast
+    from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
@@ -139,7 +138,18 @@ class MetadataEnrichmentMixin:
             for provider in self.providers:
                 if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                     continue
-                if metadata := await provider.get_artist_metadata(artist):
+                try:
+                    metadata = await provider.get_artist_metadata(artist)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Artist %s from provider %s: %s",
+                        artist.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     if metadata.description:
@@ -246,7 +256,18 @@ class MetadataEnrichmentMixin:
             for provider in self.providers:
                 if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                     continue
-                if metadata := await provider.get_album_metadata(album):
+                try:
+                    metadata = await provider.get_album_metadata(album)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Album %s from provider %s: %s",
+                        album.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     album.metadata.update(metadata)
@@ -305,7 +326,18 @@ class MetadataEnrichmentMixin:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
 
-                if metadata := await provider.get_track_metadata(track):
+                try:
+                    metadata = await provider.get_track_metadata(track)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Track %s from provider %s: %s",
+                        track.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     track.metadata.update(metadata)
@@ -323,11 +355,6 @@ class MetadataEnrichmentMixin:
         self, playlist: Playlist, force_refresh: bool = False
     ) -> None:
         """Get/update rich metadata for a playlist."""
-        # dynamic playlists (e.g. Pandora stations, Apple Music stations) are
-        # provider-driven and endless: scanning "all" tracks for aggregate metadata
-        # doesn't make sense
-        if playlist.is_dynamic:
-            return
         # collect metadata + create collage images
         # NOTE: we only do/allow this every REFRESH_INTERVAL
         needs_refresh = (time() - (playlist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
@@ -369,36 +396,33 @@ class MetadataEnrichmentMixin:
         playlist_genres_filtered = {genre for genre, count in playlist_genres.items() if count > 5}
         playlist_genres_filtered = set(list(playlist_genres_filtered)[:8])
         playlist.metadata.genres.update(playlist_genres_filtered)
-        # create collage images
-        cur_images: list[MediaItemImage] = playlist.metadata.images or []
-        new_images = []
-        # thumb image
-        thumb_image = next((x for x in cur_images if x.type == ImageType.THUMB), None)
-        if not thumb_image or self._collage_images_dir in thumb_image.path:
-            img_filename = thumb_image.path if thumb_image else f"{uuid4().hex}_thumb.jpg"
-            if collage_thumb_image := await self.create_collage_image(
-                all_playlist_tracks_images, img_filename
-            ):
-                new_images.append(collage_thumb_image)
-        elif thumb_image:
-            # just use old image
-            new_images.append(thumb_image)
-        # fanart image
-        fanart_image = next((x for x in cur_images if x.type == ImageType.FANART), None)
-        if not fanart_image or self._collage_images_dir in fanart_image.path:
-            img_filename = fanart_image.path if fanart_image else f"{uuid4().hex}_fanart.jpg"
-            if collage_fanart_image := await self.create_collage_image(
-                all_playlist_tracks_images, img_filename, fanart=True
-            ):
-                new_images.append(collage_fanart_image)
-        elif fanart_image:
-            # just use old image
-            new_images.append(fanart_image)
-        playlist.metadata.images = UniqueList(new_images) if new_images else None
+
+        # Collect metadata from metadata providers (e.g. playlist_metadata)
+        for provider in self.providers:
+            if ProviderFeature.PLAYLIST_METADATA not in provider.supported_features:
+                continue
+            try:
+                if prov_metadata := await provider.get_playlist_metadata(playlist):
+                    playlist.metadata.update(prov_metadata)
+                    self.logger.debug(
+                        "Retrieved playlist metadata from provider %s for %s",
+                        provider.name,
+                        playlist.name,
+                    )
+            except MusicAssistantError as err:
+                self.logger.warning(
+                    "Error retrieving playlist metadata from provider %s for %s: %s",
+                    provider.name,
+                    playlist.name,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
         # set timestamp, used to determine when this function was last called
         playlist.metadata.last_refresh = int(time())
         # update final item in library database
-        await self.mass.music.playlists.update_item_in_library(playlist.item_id, playlist)
+        await self.mass.music.playlists.update_item_in_library(
+            playlist.item_id, playlist, overwrite=True
+        )
 
     async def _update_audiobook_metadata(
         self, audiobook: Audiobook, force_refresh: bool = False

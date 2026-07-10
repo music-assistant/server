@@ -49,7 +49,8 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzReleaseGroup
 
 
 class RadioArtworkMixin:

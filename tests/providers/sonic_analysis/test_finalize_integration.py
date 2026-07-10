@@ -11,7 +11,7 @@ import pytest
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.providers.sonic_analysis import SonicAnalysisProvider, SonicSessionData
 
 # ---------------------------------------------------------------------------
@@ -34,6 +34,7 @@ def _make_provider() -> tuple[SonicAnalysisProvider, AsyncMock, AsyncMock]:
     mass = MagicMock()
     mass.streams.audio_analysis.set_audio_analysis = set_aa_mock
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.record_analysis_failure = AsyncMock()
     mass.create_task = MagicMock(side_effect=lambda coro: coro.close() or MagicMock())
 
     manifest = MagicMock()
@@ -218,3 +219,19 @@ async def test_finalize_unknown_session_is_silent() -> None:
     provider.logger.debug.assert_called()  # type: ignore[attr-defined]
     debug_calls = [str(c) for c in provider.logger.debug.call_args_list]  # type: ignore[attr-defined]
     assert any("nonexistent-session-id" in c for c in debug_calls)
+
+
+# ---------------------------------------------------------------------------
+# Test 4: empty accumulated — _finalize raises AudioAnalysisError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_raises_when_no_feature_blocks() -> None:
+    """_finalize must raise AudioAnalysisError when no feature blocks were accumulated."""
+    provider, _set_aa, _post_analysis = _make_provider()
+    session_id = "test-session-empty-raise"
+    _make_session(provider, session_id)
+
+    with pytest.raises(AudioAnalysisError, match="no usable audio"):
+        await provider._finalize(session_id)

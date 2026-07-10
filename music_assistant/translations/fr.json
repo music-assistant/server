@@ -94,7 +94,7 @@
   "common.config_entries.volume_normalization.description": "Activer la normalisation du volume basée sur la norme EBU-R128 sans affecter la plage dynamique",
   "common.config_entries.volume_normalization.label": "Activer la normalisation du volume (basée sur l'EBU-R128)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Ajustement du gain fixe\/repli pour les pistes",
-  "common.config_entries.volume_normalization_target.description": "Ajuster l'intensité sonore moyenne (perçue) à ce niveau cible, la valeur par défaut étant de -17 LUFS.\n\n**AVERTISSEMENT :** Un niveau trop élevé peut entraîner un écrêtage !",
+  "common.config_entries.volume_normalization_target.description": "Ajuster l'intensité sonore moyenne (perçue) à ce niveau cible, la valeur par défaut étant de -14 LUFS.\n\n**AVERTISSEMENT :** Un niveau trop élevé peut entraîner un écrêtage !",
   "common.config_entries.volume_normalization_target.label": "Niveau cible pour la normalisation du volume",
   "common.media.afrobeats.name": "Afrobeats (Musique urbaine\/pop d'Afrique de l'Ouest)",
   "common.media.ambient.name": "Musique d'ambiance",

@@ -1,30 +1,103 @@
 {
   "config_entries": {
-    "access_token": {
-      "label": "Access token",
-      "description": "You need to authenticate on Deezer.",
-      "action_label": "Authenticate with Deezer"
-    },
     "arl_token": {
-      "label": "Arl token",
-      "description": "See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+      "label": "ARL token",
+      "description": "Your Deezer ARL cookie token. See https://www.dumpmedia.com/deezplus/deezer-arl.html"
     }
   },
   "media": {
+    "folder": {
+      "made_for_me": {
+        "name": "Made For You"
+      },
+      "explore": {
+        "name": "Explore"
+      },
+      "recently_played": {
+        "name": "Recently Played"
+      },
+      "shaker": {
+        "name": "Shaker"
+      },
+      "discover_audiobooks": {
+        "name": "Discover Audiobooks"
+      },
+      "moods": {
+        "name": "Moods"
+      },
+      "genres": {
+        "name": "Genres"
+      },
+      "your_top_artists": {
+        "name": "Your Top Artists"
+      },
+      "your_top_albums": {
+        "name": "Your Top Albums"
+      },
+      "mixes": {
+        "name": "Personalized Playlists"
+      },
+      "recommended_playlists": {
+        "name": "Recommended Playlists"
+      },
+      "recommended_artist_playlists": {
+        "name": "Recommended Artist Playlists"
+      },
+      "top_albums": {
+        "name": "Top Albums"
+      },
+      "top_artists": {
+        "name": "Top Artists"
+      },
+      "top_playlists": {
+        "name": "Top Playlists"
+      },
+      "all_flows": {
+        "name": "All Flows"
+      }
+    },
     "recommendations": {
-      "made_for_you": { "name": "Made for you" },
-      "recommended_albums": { "name": "Recommended albums" },
-      "recommended_artists": { "name": "Recommended artists" },
-      "mood_flows": { "name": "Deezer Mood Flows" },
-      "genre_flows": { "name": "Deezer Genre Flows" },
-      "radios": { "name": "Deezer Radios" }
+      "made_for_you": {
+        "name": "Made For You"
+      },
+      "recommended_playlists": {
+        "name": "Recommended Playlists"
+      },
+      "recommended_artist_playlists": {
+        "name": "Recommended Artist Playlists"
+      },
+      "recommended_tracks": {
+        "name": "Hot Tracks"
+      },
+      "new_releases": {
+        "name": "New Releases"
+      },
+      "mood_flows": {
+        "name": "Deezer Mood Flows"
+      },
+      "genre_flows": {
+        "name": "Deezer Genre Flows"
+      },
+      "recently_played": {
+        "name": "Recently Played"
+      }
     },
     "playlist": {
-      "flow": { "name": "Flow" },
-      "top_charts": { "name": "Top Charts" },
-      "radio_station": { "name": "Radio: {0}" },
-      "mood_flow": { "name": "Flow: {0}" },
-      "recommended_tracks": { "name": "Recommended tracks" }
+      "flow": {
+        "name": "Flow"
+      },
+      "recommended_tracks": {
+        "name": "Hot Tracks"
+      },
+      "top_charts": {
+        "name": "Top Charts"
+      },
+      "user_top_tracks": {
+        "name": "Your Top Tracks"
+      },
+      "personal_songs": {
+        "name": "My Uploads"
+      }
     }
   },
   "manifest": {

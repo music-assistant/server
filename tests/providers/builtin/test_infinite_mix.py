@@ -4,8 +4,9 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import ProviderMapping, Track
 
+from music_assistant.helpers.track_filter import track_filter
 from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.builtin.constants import (
     ALL_FAVORITE_TRACKS,
@@ -90,7 +91,9 @@ async def test_infinite_mix_returns_25_tracks_with_positions() -> None:
 
     result = await provider._get_builtin_playlist_infinite_mix()
 
-    provider.mass.music.tracks.library_items.assert_called_once_with(limit=25, order_by="random")
+    provider.mass.music.tracks.library_items.assert_called_once_with(
+        favorite=None, limit=25, order_by="random", summary=False
+    )
     assert len(result) == 25
     for expected_pos, track in enumerate(result, 1):
         assert track.position == expected_pos
@@ -106,7 +109,7 @@ async def test_infinite_mix_favorites_passes_favorite_filter() -> None:
     result = await provider._get_builtin_playlist_infinite_mix_favorites()
 
     provider.mass.music.tracks.library_items.assert_called_once_with(
-        favorite=True, limit=25, order_by="random"
+        favorite=True, limit=25, order_by="random", summary=False
     )
     assert len(result) == 25
     for expected_pos, track in enumerate(result, 1):
@@ -122,3 +125,56 @@ async def test_infinite_mix_empty_library_returns_empty_list() -> None:
     result = await provider._get_builtin_playlist_infinite_mix()
 
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _infinite_mix_tracks — recency track filter
+# ---------------------------------------------------------------------------
+
+
+def _real_tracks(item_ids: list[str]) -> list[Track]:
+    """Return real Track objects so a filter predicate can read item_id."""
+    return [
+        Track(
+            item_id=item_id,
+            provider="test",
+            name=item_id,
+            provider_mappings={
+                ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+            },
+        )
+        for item_id in item_ids
+    ]
+
+
+@pytest.mark.asyncio
+async def test_infinite_mix_over_fetches_and_drops_filtered_tracks() -> None:
+    """With a recency filter active, the mix over-fetches (3x) and drops rejected tracks."""
+    provider = _make_provider()
+    pool = _real_tracks([str(i) for i in range(75)])
+    provider.mass.music.tracks.library_items = AsyncMock(return_value=pool)  # type: ignore[method-assign]
+
+    # reject odd-numbered tracks; the even ones remain and are trimmed back to the mix size
+    with track_filter(lambda track: int(track.item_id) % 2 == 0):
+        result = await provider._get_builtin_playlist_infinite_mix()
+
+    provider.mass.music.tracks.library_items.assert_called_once_with(
+        favorite=None, limit=75, order_by="random", summary=False
+    )
+    assert len(result) == 25
+    assert all(int(track.item_id) % 2 == 0 for track in result)
+    for expected_pos, track in enumerate(result, 1):
+        assert track.position == expected_pos
+
+
+@pytest.mark.asyncio
+async def test_infinite_mix_filter_rejecting_all_falls_back_to_pool() -> None:
+    """If the filter rejects every track, the mix still returns a full batch (never empty)."""
+    provider = _make_provider()
+    pool = _real_tracks([str(i) for i in range(75)])
+    provider.mass.music.tracks.library_items = AsyncMock(return_value=pool)  # type: ignore[method-assign]
+
+    with track_filter(lambda _track: False):
+        result = await provider._get_builtin_playlist_infinite_mix()
+
+    assert len(result) == 25

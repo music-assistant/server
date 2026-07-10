@@ -309,6 +309,23 @@ async def test_get_player_returns_unavailable_player(
     assert result.data.state == "unavailable"
 
 
+async def test_group_player_calls_cmd_group(mock_mass: Any, mounted_players: FastMCP) -> None:
+    """``players_group_player`` forwards to ``mass.players.cmd_group``."""
+    async with Client(mounted_players) as client:
+        await client.call_tool(
+            "players_group_player",
+            {"player_id": "follower", "target_player_id": "leader"},
+        )
+    mock_mass.players.cmd_group.assert_awaited_once_with("follower", "leader")
+
+
+async def test_ungroup_player_calls_cmd_ungroup(mock_mass: Any, mounted_players: FastMCP) -> None:
+    """``players_ungroup_player`` forwards to ``mass.players.cmd_ungroup``."""
+    async with Client(mounted_players) as client:
+        await client.call_tool("players_ungroup_player", {"player_id": "follower"})
+    mock_mass.players.cmd_ungroup.assert_awaited_once_with("follower")
+
+
 async def test_get_player_reports_external_source(mock_mass: Any, mounted_players: FastMCP) -> None:
     """An idle player driven by a Connect source reports playing + provider."""
     player = _player(player_id="lenco", name="Lenco LS-500", state="idle")
@@ -355,4 +372,4 @@ async def test_queue_get_active_queue_external_item_title(mock_mass: Any) -> Non
     async with Client(mcp) as client:
         result = await client.call_tool("queue_get_active_queue", {"player_id": "lenco"})
     assert result.data.items[0].name == "Behind Your Walls"
-    mock_mass.player_queues.items.assert_called_with("lenco", limit=25)
+    mock_mass.player_queues.items.assert_called_with("lenco", limit=25, offset=0)

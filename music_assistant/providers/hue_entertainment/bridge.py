@@ -46,6 +46,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from hue_entertainment import EntertainmentArea
+    from hue_entertainment.api import HueEntertainmentAPI
 
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
@@ -62,6 +63,11 @@ _RENDER_PERIOD_S = 1.0 / _RENDER_RATE_HZ
 # (channel rise/decay, bass baseline) are tuned for ~20 Hz spectrum input; the
 # DTLS render loop runs faster and interpolates.
 _VISUALIZER_RATE_HZ = 20
+
+# Session start retries when the bridge is slow to complete the DTLS handshake.
+_ENTERTAINMENT_START_ATTEMPTS = 6
+_ENTERTAINMENT_START_BACKOFF_S = 1.5
+_ENTERTAINMENT_STALE_COOLDOWN_S = 1.0
 
 
 class HueEntertainmentBridge:
@@ -262,7 +268,8 @@ class HueEntertainmentBridge:
         # entertainment stream active.
         adopted = False
         try:
-            for attempt in range(3):
+            await self._clear_stale_entertainment(hue_api)
+            for attempt in range(_ENTERTAINMENT_START_ATTEMPTS):
                 try:
                     await session.start(self.area.id)
                     self._session = session
@@ -278,11 +285,13 @@ class HueEntertainmentBridge:
                         self.area.name,
                         err,
                     )
-                    if attempt < 2:
-                        await asyncio.sleep(0.5)
+                    if attempt + 1 < _ENTERTAINMENT_START_ATTEMPTS:
+                        await asyncio.sleep(_ENTERTAINMENT_START_BACKOFF_S)
 
             self.logger.error(
-                "Failed to start entertainment for '%s' after 3 attempts", self.area.name
+                "Failed to start entertainment for '%s' after %d attempts",
+                self.area.name,
+                _ENTERTAINMENT_START_ATTEMPTS,
             )
         finally:
             self._entertainment_starting = False
@@ -422,6 +431,25 @@ class HueEntertainmentBridge:
         finally:
             if self._is_streaming:
                 self._render_handle = self.mass.loop.call_later(_RENDER_PERIOD_S, self._render_tick)
+
+    async def _clear_stale_entertainment(self, hue_api: HueEntertainmentAPI) -> None:
+        """
+        Stop entertainment left active on the bridge from a prior failed handshake.
+
+        :param hue_api: Authenticated Hue REST client for this bridge.
+        """
+        try:
+            status, _rid = await hue_api.get_entertainment_status(self.area.id)
+        except Exception:
+            return
+        if status != "active":
+            return
+        self.logger.info(
+            "Entertainment area '%s' still active on bridge, clearing before DTLS",
+            self.area.name,
+        )
+        await hue_api.stop_entertainment(self.area.id)
+        await asyncio.sleep(_ENTERTAINMENT_STALE_COOLDOWN_S)
 
 
 class HueEntertainmentBridgeManager:

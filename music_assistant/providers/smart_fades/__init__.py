@@ -43,7 +43,7 @@ async def setup(
     """Set up the Smart Fades provider."""
     # Gate before importing the provider module so the heavy torch/beat_this stack is
     # never imported on a host that does not meet the minimal requirements.
-    verify_system_meets_requirements(
+    await verify_system_meets_requirements(
         feature_name="Smart Fades",
         min_memory_gb=MIN_RAM_GB,
         min_cpu_cores=MIN_CPU_CORES,

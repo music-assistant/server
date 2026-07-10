@@ -12,6 +12,7 @@ from time import time
 from typing import TYPE_CHECKING, cast
 from uuid import NAMESPACE_URL, uuid5
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, ProviderType
@@ -90,15 +91,22 @@ class MetaDataController(
         )
         self.manifest.icon = "book-information-variant"
         self._throttler = Throttler(1, 30)
-        # image-id LRU: image_id -> (provider, path). Acts as a write-through
-        # hot cache in front of the cache controller so that resolving an image
-        # by id never blocks on sqlite if the URL was generated recently.
+        # image-id bookkeeping, all bounded by _IMAGE_ID_LRU_MAX and sharing the
+        # same key/id string objects so the combined footprint stays small:
+        # - _image_id_forward: (provider, path) -> image_id memo so serializing a
+        #   known image skips the sha256 and the lock entirely. Read lock-free
+        #   (single dict lookup is atomic), mutated only while holding the lock.
+        # - _image_id_lru: image_id -> (provider, path). Write-through hot cache
+        #   in front of the cache controller so that resolving an image by id
+        #   never blocks on sqlite if the URL was generated recently.
+        # - _image_id_persisted: image_id -> epoch of the last persist to the
+        #   cache db, so repeat encounters skip the sqlite write.
         # The lock is needed because compute_image_id() runs from the executor
         # thread during outbound websocket serialization.
+        self._image_id_forward: dict[tuple[str, str], str] = {}
         self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._image_id_persisted: dict[str, float] = {}
         self._image_id_lock = threading.Lock()
-        # per-IP throttle for the legacy /imageproxy deprecation warning
-        self._legacy_imageproxy_warn_at: dict[str, float] = {}
 
     async def get_config_entries(
         self,
@@ -158,15 +166,12 @@ class MetaDataController(
         # and the streams server (the latter is what player metadata URLs hit)
         self.mass.streams.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
         self.mass.webserver.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
-        # deprecated /imageproxy?provider=&path=&size=&fmt= form (kept for back-compat)
-        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_legacy_imageproxy)
         self._register_maintenance_tasks()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
         self.mass.streams.unregister_dynamic_route("/imageproxy/*")
         self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
-        self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
     def providers(self) -> list[MetadataProvider]:
@@ -189,7 +194,7 @@ class MetaDataController(
         )
         return str(value)
 
-    @api_command("metadata/set_default_preferred_language")
+    @api_command("metadata/set_default_preferred_language", required_scope=Scope.CONFIG_CORE_WRITE)
     def set_default_preferred_language(self, lang: str) -> None:
         """
         Set the default preferred language.
@@ -203,7 +208,7 @@ class MetaDataController(
             return  # already set
         self.set_preferred_language(lang)
 
-    @api_command("metadata/set_preferred_language")
+    @api_command("metadata/set_preferred_language", required_scope=Scope.LIBRARY_MANAGE)
     def set_preferred_language(self, lang: str) -> None:
         """
         Set the preferred language.
@@ -233,7 +238,7 @@ class MetaDataController(
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
 
-    @api_command("metadata/update_metadata")
+    @api_command("metadata/update_metadata", required_scope=Scope.LIBRARY_MANAGE)
     async def update_metadata(
         self, item: str | MediaItemType, force_refresh: bool = False
     ) -> MediaItemType:
@@ -298,7 +303,7 @@ class MetaDataController(
             },
         )
 
-    @api_command("metadata/get_track_lyrics")
+    @api_command("metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ)
     async def get_track_lyrics(
         self,
         track: Track,
@@ -329,9 +334,19 @@ class MetaDataController(
         for provider in self.providers:
             if ProviderFeature.LYRICS not in provider.supported_features:
                 continue
-            if (metadata := await provider.get_track_metadata(track)) and (
-                metadata.lyrics or metadata.lrc_lyrics
-            ):
+            try:
+                metadata = await provider.get_track_metadata(track)
+            except Exception as err:
+                # a provider failure must not abort the lookup — skip to the next provider
+                self.logger.warning(
+                    "Error fetching lyrics for %s from provider %s: %s",
+                    track.name,
+                    provider.name,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+                continue
+            if metadata and (metadata.lyrics or metadata.lrc_lyrics):
                 return metadata.lyrics, metadata.lrc_lyrics
         return None, None
 

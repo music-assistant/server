@@ -11,7 +11,7 @@ import urllib.parse
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from xml.parsers.expat import ExpatError
 
 import aiofiles
@@ -27,7 +27,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError, SetupFailedError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -43,6 +48,7 @@ from music_assistant_models.media_items import (
     PodcastEpisode,
     ProviderMapping,
     SearchResults,
+    SoundEffect,
     Track,
     UniqueList,
     is_track,
@@ -67,7 +73,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
 from music_assistant.helpers.util import (
@@ -85,6 +91,7 @@ from .constants import (
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
     CACHE_CATEGORY_FOLDER_IMAGES,
     CACHE_CATEGORY_PODCAST_METADATA,
+    CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -95,13 +102,21 @@ from .constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PATH,
     CONF_ENTRY_PROPAGATE_GENRES,
+    CUE_EXTENSIONS,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
+    SOUND_EFFECT_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
     IsChapterFile,
+)
+from .cue import (
+    CueSheetHandler,
+    cue_referenced_audio_stem,
+    make_cue_track_id,
+    parse_cue_track_id,
 )
 from .helpers import (
     FileSystemItem,
@@ -124,6 +139,7 @@ if TYPE_CHECKING:
 
 isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
+ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
 scandir = wrap(os.scandir)
@@ -180,6 +196,9 @@ class LocalFileSystemProvider(MusicProvider):
     Supports m3u files for playlists.
     """
 
+    # parallel workers per sync; subclasses lower this for slower transports
+    _SYNC_CONCURRENCY: ClassVar[int] = 16
+
     def __init__(
         self,
         mass: MusicAssistant,
@@ -195,6 +214,7 @@ class LocalFileSystemProvider(MusicProvider):
         self._sync_tracks: bool = True
         self._sync_playlists: bool = True
         self.media_content_type = cast("str", config.get_value(CONF_ENTRY_CONTENT_TYPE.key))
+        self._cue = CueSheetHandler(self)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -204,6 +224,9 @@ class LocalFileSystemProvider(MusicProvider):
             return {ProviderFeature.LIBRARY_AUDIOBOOKS, *base_features}
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
+        if self.media_content_type == "sound_effects":
+            # sound effects are live-fetched content, never synced into the library
+            return {ProviderFeature.SOUND_EFFECTS, *base_features}
         music_features = {
             ProviderFeature.LIBRARY_ALBUMS,
             ProviderFeature.LIBRARY_ARTISTS,
@@ -237,6 +260,14 @@ class LocalFileSystemProvider(MusicProvider):
                 translation_args=[self.base_path],
             )
         await self.check_write_access()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "sync_running": self.sync_running,
+            "write_access": self.write_access,
+            "content_type": self.media_content_type,
+        }
 
     async def search(
         self,
@@ -294,14 +325,44 @@ class LocalFileSystemProvider(MusicProvider):
         """
         # for audiobooks and podcasts we just return all library items
         if self.media_content_type == "podcasts":
-            return await self.mass.music.podcasts.library_items(provider=self.instance_id)
+            return await self.mass.music.podcasts.library_items(
+                provider=self.instance_id, summary=False
+            )
         if self.media_content_type == "audiobooks":
-            return await self.mass.music.audiobooks.library_items(provider=self.instance_id)
+            return await self.mass.music.audiobooks.library_items(
+                provider=self.instance_id, summary=False
+            )
         items: list[MediaItemType | ItemMapping | BrowseFolder] = []
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
-        for item in await self._scandir(item_path):
+        scanned = await self._scandir(item_path)
+        # expand CUE sheets into per-track entries and hide the companion audio;
+        # synthetic ids match those minted during sync so get_track resolves them
+        cue_stems: set[str] = set()
+        if self.media_content_type == "music":
+            for item in scanned:
+                if item.ext not in CUE_EXTENSIONS:
+                    continue
+                cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
+                try:
+                    cue_sheet = await self._cue.load_cue_sheet(item)
+                except InvalidDataError as err:
+                    self.logger.warning("Unable to parse CUE sheet %s: %s", item.relative_path, err)
+                    continue
+                # also hide the audio file named in the CUE (may differ from its stem)
+                if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
+                    cue_stems.add(companion_stem)
+                for cue_track in cue_sheet.tracks:
+                    items.append(
+                        ItemMapping(
+                            media_type=MediaType.TRACK,
+                            item_id=make_cue_track_id(item.relative_path, cue_track.number),
+                            provider=self.instance_id,
+                            name=cue_track.title or f"Track {cue_track.number}",
+                        )
+                    )
+        for item in scanned:
             if not item.is_dir and ("." not in item.filename or not item.ext):
                 # skip system files and files without extension
                 continue
@@ -318,15 +379,21 @@ class LocalFileSystemProvider(MusicProvider):
                     )
                 )
             elif item.ext in TRACK_EXTENSIONS:
+                if item.absolute_path.rsplit(".", 1)[0] in cue_stems:
+                    continue
                 items.append(
                     ItemMapping(
-                        media_type=MediaType.TRACK,
+                        media_type=(
+                            MediaType.SOUND_EFFECT
+                            if self.media_content_type == "sound_effects"
+                            else MediaType.TRACK
+                        ),
                         item_id=item.relative_path,
                         provider=self.instance_id,
                         name=item.filename,
                     )
                 )
-            elif item.ext in PLAYLIST_EXTENSIONS:
+            elif item.ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
                 items.append(
                     ItemMapping(
                         media_type=MediaType.PLAYLIST,
@@ -341,6 +408,9 @@ class LocalFileSystemProvider(MusicProvider):
         """Run library sync for this provider."""
         if media_type in (MediaType.ARTIST, MediaType.ALBUM):
             # artists and albums are synced as part of track sync
+            return
+        if self.media_content_type == "sound_effects":
+            # sound effects are live-fetched content, never synced into the library
             return
         # check if any sync options are enabled for this content type
         # the filesystem provider processes all file types in one scan,
@@ -372,52 +442,72 @@ class LocalFileSystemProvider(MusicProvider):
         )
         for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
+        # provider_mappings stores synthetic per-track ids for CUE sheets, not the
+        # CUE path, so derive a path-keyed checksum map for the scan classifier
+        cue_file_checksums: dict[str, str] = {}
+        for prov_item_id, checksum in file_checksums.items():
+            parsed = parse_cue_track_id(prov_item_id)
+            if parsed is not None:
+                cue_file_checksums[parsed[0]] = checksum
         # find all supported files in the base directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_filenames: set[str] = set()
         prev_filenames = set(file_checksums.keys())
 
-        # Phase 1: Enumerate all files in an executor thread.
-        # This is fast (just filesystem metadata) and separates unchanged files
-        # from those that need processing.
         items_to_process: list[tuple[FileSystemItem, str | None]] = []
-        ignore_album_playlists = self.media_content_type == "music" and self.config.get_value(
-            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key
-        )
-        # populated by recursive_iter when the provider's root base path cannot
-        # be scanned; sub-directory failures remain a silent skip as before
+        unchanged_cue_items: list[FileSystemItem] = []
+        # absolute paths of every CUE sheet in this scan with the ".cue" stripped,
+        # used for O(1) companion-CUE lookups per audio file
+        cue_stems: set[str] = set()
+        # populated only when the provider root itself is unreadable;
+        # per-subdirectory failures are logged and skipped
         root_scan_errors: list[OSError] = []
-
-        def enumerate_files() -> None:
-            """Enumerate all files, collecting changed items for processing."""
-            scanned = 0
-            for item in recursive_iter(
-                self.base_path,
-                self.base_path,
-                SUPPORTED_EXTENSIONS,
-                self.logger,
-                scan_errors=root_scan_errors,
-            ):
-                scanned += 1
-                if scanned % 500 == 0:
-                    update_current_task_progress_text(f"Scanning files: {scanned} found")
-                # skip playlists in album directories if configured
-                if (
-                    item.ext in PLAYLIST_EXTENSIONS
-                    and ignore_album_playlists
-                    and len(item.relative_path.split("/")) > 2
-                ):
-                    continue
-                prev_checksum = file_checksums.get(item.relative_path)
-                if item.checksum == prev_checksum:
-                    # unchanged, just record it as still present
-                    cur_filenames.add(item.relative_path)
-                else:
-                    items_to_process.append((item, prev_checksum))
 
         self.sync_running = True
         try:
-            await asyncio.to_thread(enumerate_files)
+            await self._enumerate_files_for_sync(
+                file_checksums=file_checksums,
+                cue_file_checksums=cue_file_checksums,
+                cur_filenames=cur_filenames,
+                items_to_process=items_to_process,
+                unchanged_cue_items=unchanged_cue_items,
+                cue_stems=cue_stems,
+                root_scan_errors=root_scan_errors,
+            )
+            # a CUE may name an audio file other than its own; hide that companion too
+            if self.media_content_type == "music":
+                for cue_item in (
+                    *unchanged_cue_items,
+                    *(item for item, _ in items_to_process if item.ext in CUE_EXTENSIONS),
+                ):
+                    try:
+                        cue_sheet = await self._cue.load_cue_sheet(cue_item)
+                    except InvalidDataError:
+                        continue
+                    if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
+                        cue_stems.add(companion_stem)
+            # drop CUE companion audio: absorbed into CUE tracks and not tracked in
+            # provider_mappings, so they would otherwise flag as changed every sync
+            items_to_process = [
+                (item, prev)
+                for item, prev in items_to_process
+                if not (
+                    item.ext in TRACK_EXTENSIONS
+                    and item.absolute_path.rsplit(".", 1)[0] in cue_stems
+                )
+            ]
+            # register synthetic track IDs for unchanged CUE files so the
+            # deletion pass does not treat them as removed
+            for cue_item in unchanged_cue_items:
+                try:
+                    cue_sheet = await self._cue.load_cue_sheet(cue_item)
+                except InvalidDataError as err:
+                    self.logger.warning(
+                        "Unable to parse CUE sheet %s: %s", cue_item.relative_path, err
+                    )
+                    continue
+                for cue_track in cue_sheet.tracks:
+                    cur_filenames.add(make_cue_track_id(cue_item.relative_path, cue_track.number))
             total_items = len(items_to_process)
             self.logger.info(
                 "Found %d changed/new items to process for %s",
@@ -425,14 +515,12 @@ class LocalFileSystemProvider(MusicProvider):
                 self.name,
             )
 
-            # Phase 2: Process changed items concurrently.
-            # Using TaskManager with a concurrency limit to avoid overwhelming
-            # the filesystem (especially important for NFS/SMB mounts).
+            # _SYNC_CONCURRENCY caps parallelism per provider (NFS/SMB/WebDAV friendly)
             processed_count = 0
 
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
                 nonlocal processed_count
-                if await self._process_item_async(item, prev_checksum):
+                if await self._process_item_async(item, prev_checksum, cur_filenames, cue_stems):
                     cur_filenames.add(item.relative_path)
                 processed_count += 1
                 if processed_count % 50 == 0 or processed_count == total_items:
@@ -442,7 +530,7 @@ class LocalFileSystemProvider(MusicProvider):
                         f"Processed {processed_count}/{total_items} files",
                     )
 
-            async with TaskManager(self.mass, 16) as tm:
+            async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
                 for item, prev_checksum in items_to_process:
                     await tm.create_task_with_limit(_process(item, prev_checksum))
         finally:
@@ -518,20 +606,40 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
+        parsed_cue_paths: set[str] = set()
         for track in await self.get_album_tracks(prov_album_id):
             for prov_mapping in track.provider_mappings:
-                if prov_mapping.provider_instance == self.instance_id:
-                    file_item = await self.resolve(prov_mapping.item_id)
-                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                    full_track = await self._parse_track(file_item, tags)
-                    assert isinstance(full_track.album, Album)
-                    return full_track.album
+                if prov_mapping.provider_instance != self.instance_id:
+                    continue
+                if parsed := parse_cue_track_id(prov_mapping.item_id):
+                    # every track from the same CUE shares the same album; only parse once
+                    if parsed[0] in parsed_cue_paths:
+                        continue
+                    parsed_cue_paths.add(parsed[0])
+                    cue_item = await self.resolve(parsed[0])
+                    for cue_track in await self._cue.parse_tracks(cue_item):
+                        if isinstance(cue_track.album, Album):
+                            return cue_track.album
+                    continue
+                file_item = await self.resolve(prov_mapping.item_id)
+                tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+                full_track = await self._parse_track(file_item, tags)
+                assert isinstance(full_track.album, Album)
+                return full_track.album
         msg = f"Album not found: {prov_album_id}"
         raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         # ruff: noqa: PLR0915
+        if parsed := parse_cue_track_id(prov_track_id):
+            cue_item = await self.resolve(parsed[0])
+            for cue_track in await self._cue.parse_tracks(cue_item):
+                if cue_track.item_id == prov_track_id:
+                    return cue_track
+            msg = f"CUE track not found: {prov_track_id}"
+            raise MediaNotFoundError(msg)
+
         if not await self.exists(prov_track_id):
             msg = f"Track path does not exist: {prov_track_id}"
             raise MediaNotFoundError(msg)
@@ -601,6 +709,28 @@ class LocalFileSystemProvider(MusicProvider):
             return episode.podcast
         msg = f"Podcast not found: {prov_podcast_id}"
         raise MediaNotFoundError(msg)
+
+    async def get_sound_effect(self, prov_sound_effect_id: str) -> SoundEffect:
+        """Get full sound effect details by id."""
+        if not await self.exists(prov_sound_effect_id):
+            msg = f"Sound effect path does not exist: {prov_sound_effect_id}"
+            raise MediaNotFoundError(msg)
+        file_item = await self.resolve(prov_sound_effect_id)
+        return await self._get_or_parse_sound_effect(file_item)
+
+    async def get_sound_effects(self) -> AsyncGenerator[SoundEffect]:
+        """Get all sound effect items this provider offers."""
+
+        def _walk() -> list[FileSystemItem]:
+            return sorted(
+                recursive_iter(
+                    self.base_path, self.base_path, SOUND_EFFECT_EXTENSIONS, self.logger
+                ),
+                key=lambda x: x.relative_path,
+            )
+
+        for file_item in await asyncio.to_thread(_walk):
+            yield await self._get_or_parse_sound_effect(file_item)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
@@ -774,6 +904,8 @@ class LocalFileSystemProvider(MusicProvider):
                 return await self._get_stream_details_for_audiobook(item_id)
             if media_type == MediaType.PODCAST_EPISODE:
                 return await self._get_stream_details_for_podcast_episode(item_id)
+            if media_type == MediaType.SOUND_EFFECT:
+                return await self._get_stream_details_for_sound_effect(item_id)
             return await self._get_stream_details_for_track(item_id)
         except FileNotFoundError:
             self.logger.warning(
@@ -783,6 +915,14 @@ class LocalFileSystemProvider(MusicProvider):
             msg = f"Media file not found: {item_id}"
             raise MediaNotFoundError(msg)
 
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """Return the custom audio stream for the provider item."""
+        # only CUE-derived tracks use StreamType.CUSTOM in this provider
+        async for chunk in self._cue.get_audio_stream(streamdetails, seek_position):
+            yield chunk
+
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
@@ -791,7 +931,12 @@ class LocalFileSystemProvider(MusicProvider):
         a string with an http(s) URL or local path that is accessible from the server.
         """
         # drop the cache-busting suffix appended by _versioned_image_path
-        file_item = await self.resolve(path.split("?cs=", 1)[0])
+        try:
+            file_item = await self.resolve(path.split("?cs=", 1)[0])
+        except FileNotFoundError as err:
+            # the referenced image file was removed from disk; surface a typed
+            # not-found so the image layer treats it as a missing image
+            raise MediaNotFoundError(f"Image not found: {path}") from err
         return file_item.absolute_path
 
     async def check_write_access(self) -> None:
@@ -835,12 +980,119 @@ class LocalFileSystemProvider(MusicProvider):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
             return False
-        abs_path = self.get_absolute_path(file_path)
+        try:
+            abs_path = self.get_absolute_path(file_path)
+        except MediaNotFoundError:
+            # a path that escapes the base directory simply does not exist here
+            return False
         return bool(await exists(abs_path))
 
     def get_absolute_path(self, file_path: str) -> str:
         """Return absolute path for given file path."""
         return get_absolute_path(self.base_path, file_path)
+
+    async def _enumerate_files_for_sync(
+        self,
+        *,
+        file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, str],
+        cur_filenames: set[str],
+        items_to_process: list[tuple[FileSystemItem, str | None]],
+        unchanged_cue_items: list[FileSystemItem],
+        cue_stems: set[str],
+        root_scan_errors: list[OSError],
+    ) -> None:
+        """
+        Walk every supported file under the provider root and populate the sync buckets.
+
+        Override in subclasses that cannot use a local ``os.scandir`` walk.
+        Implementations must route each discovered file through
+        :meth:`_classify_scan_item` and append to ``root_scan_errors`` only
+        when the provider root itself is unreadable.
+
+        :param file_checksums: Previously stored checksum per provider item id.
+        :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
+        :param cur_filenames: Receives the ids/paths present in this scan.
+        :param items_to_process: Receives changed or new items to process.
+        :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
+        :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
+        :param root_scan_errors: Receives errors that indicate the root is unreadable.
+        """
+        ignore_album_playlists = self.media_content_type == "music" and bool(
+            self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
+        )
+
+        def _walk() -> None:
+            for scanned, item in enumerate(
+                recursive_iter(
+                    self.base_path,
+                    self.base_path,
+                    SUPPORTED_EXTENSIONS,
+                    self.logger,
+                    scan_errors=root_scan_errors,
+                ),
+                start=1,
+            ):
+                if scanned % 500 == 0:
+                    update_current_task_progress_text(f"Scanning files: {scanned} found")
+                self._classify_scan_item(
+                    item,
+                    file_checksums=file_checksums,
+                    cue_file_checksums=cue_file_checksums,
+                    cur_filenames=cur_filenames,
+                    items_to_process=items_to_process,
+                    unchanged_cue_items=unchanged_cue_items,
+                    cue_stems=cue_stems,
+                    ignore_album_playlists=ignore_album_playlists,
+                )
+
+        await asyncio.to_thread(_walk)
+
+    def _classify_scan_item(
+        self,
+        item: FileSystemItem,
+        *,
+        file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, str],
+        cur_filenames: set[str],
+        items_to_process: list[tuple[FileSystemItem, str | None]],
+        unchanged_cue_items: list[FileSystemItem],
+        cue_stems: set[str],
+        ignore_album_playlists: bool,
+    ) -> None:
+        """
+        Route a single scanned file into the correct sync bucket.
+
+        :param item: The file to classify.
+        :param file_checksums: Previously stored checksum per provider item id.
+        :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
+        :param cur_filenames: Receives the ids/paths present in this scan.
+        :param items_to_process: Receives changed or new items to process.
+        :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
+        :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
+        :param ignore_album_playlists: When True, skip playlists nested inside
+            album directories.
+        """
+        # skip playlists in album directories if configured
+        if (
+            item.ext in PLAYLIST_EXTENSIONS
+            and ignore_album_playlists
+            and len(item.relative_path.split("/")) > 2
+        ):
+            return
+        is_cue = item.ext in CUE_EXTENSIONS and self.media_content_type == "music"
+        if is_cue:
+            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
+            prev_checksum = cue_file_checksums.get(item.relative_path)
+        else:
+            prev_checksum = file_checksums.get(item.relative_path)
+        if item.checksum == prev_checksum:
+            # unchanged, just record it as still present
+            cur_filenames.add(item.relative_path)
+            if is_cue:
+                unchanged_cue_items.append(item)
+        else:
+            items_to_process.append((item, prev_checksum))
 
     def _set_available(self, available: bool) -> None:
         """Update the provider availability and notify listeners on change."""
@@ -849,18 +1101,52 @@ class LocalFileSystemProvider(MusicProvider):
         self.available = available
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
 
-    async def _process_item_async(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
+    async def _process_item_async(
+        self,
+        item: FileSystemItem,
+        prev_checksum: str | None,
+        cur_filenames: set[str] | None = None,
+        cue_stems: set[str] | None = None,
+    ) -> bool:
         """
         Process a single item asynchronously.
 
         :param item: The filesystem item to process.
         :param prev_checksum: Previous checksum from the database, or None for new items.
+        :param cur_filenames: Set of current filenames being tracked (for CUE track IDs).
+        :param cue_stems: Absolute paths (without extension) of CUE sheets in this scan,
+            used to detect companion-CUE audio files without a filesystem stat.
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
 
+            if prev_checksum is not None:
+                # the file changed on disk: drop cached artwork derived from it
+                # (thumbnails, source bytes, palette) so re-read embedded art is
+                # served fresh, for both reference forms of the image path
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, item.relative_path
+                )
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, self._versioned_image_path(item.relative_path, prev_checksum)
+                )
+
+            if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
+                tracks = await self._cue.parse_tracks(item)
+                for track in tracks:
+                    track.favorite = False
+                    await self.mass.music.tracks.add_item_to_library(
+                        track, overwrite_existing=prev_checksum is not None
+                    )
+                    if cur_filenames is not None:
+                        cur_filenames.add(track.item_id)
+                return True
+
             if item.ext in TRACK_EXTENSIONS and self.media_content_type == "music":
                 if not self._sync_tracks:
+                    return False
+                # skip audio files that have a companion CUE sheet
+                if cue_stems is not None and item.absolute_path.rsplit(".", 1)[0] in cue_stems:
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 track = await self._parse_track(item, tags)
@@ -947,18 +1233,23 @@ class LocalFileSystemProvider(MusicProvider):
         album_ids = set()
         artist_ids = set()
         for file_path in deleted_files:
-            _, ext = file_path.rsplit(".", 1)
-            if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-                controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
-            elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
-                controller = self.mass.music.get_controller(MediaType.AUDIOBOOK)
-            elif ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
-                controller = self.mass.music.get_controller(MediaType.PLAYLIST)
-            elif ext in TRACK_EXTENSIONS and self.media_content_type == "music":
+            if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
-            else:
-                # unsupported file extension?
+            elif "." not in file_path:
                 continue
+            else:
+                _, ext = file_path.rsplit(".", 1)
+                if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
+                    controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
+                elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
+                    controller = self.mass.music.get_controller(MediaType.AUDIOBOOK)
+                elif ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
+                    controller = self.mass.music.get_controller(MediaType.PLAYLIST)
+                elif ext in TRACK_EXTENSIONS and self.media_content_type == "music":
+                    controller = self.mass.music.get_controller(MediaType.TRACK)
+                else:
+                    # unsupported file extension?
+                    continue
 
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
@@ -1663,6 +1954,71 @@ class LocalFileSystemProvider(MusicProvider):
             )
         return episode
 
+    async def _parse_sound_effect(self, file_item: FileSystemItem, tags: AudioTags) -> SoundEffect:
+        """Parse full sound effect details from file tags."""
+        sound_effect = SoundEffect(
+            item_id=file_item.relative_path,
+            provider=self.instance_id,
+            name=tags.title,
+            sort_name=tags.title_sort,
+            duration=int(tags.duration or 0),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=file_item.relative_path,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        sample_rate=tags.sample_rate,
+                        bit_depth=tags.bits_per_sample,
+                        channels=tags.channels,
+                        bit_rate=tags.bit_rate,
+                    ),
+                    details=file_item.checksum,
+                    in_library=True,
+                )
+            },
+        )
+        sound_effect.metadata.description = tags.get("comment")
+        # handle embedded cover image
+        if tags.has_cover_image:
+            # we do not actually embed the image in the metadata because that would consume too
+            # much space and bandwidth. Instead we set the filename as value so the image can
+            # be retrieved later in realtime.
+            sound_effect.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=file_item.relative_path,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
+            )
+        return sound_effect
+
+    async def _get_or_parse_sound_effect(self, file_item: FileSystemItem) -> SoundEffect:
+        """Return the (cached) SoundEffect for the given file, parsing tags when needed."""
+        cache_key = f"sound_effect.{file_item.relative_path}"
+        cached_data: SoundEffect | None = await self.cache.get(
+            cache_key,
+            provider=self.instance_id,
+            checksum=file_item.checksum,
+            category=CACHE_CATEGORY_SOUND_EFFECTS,
+            base_class=SoundEffect,
+        )
+        if cached_data is not None:
+            return cached_data
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        sound_effect = await self._parse_sound_effect(file_item, tags)
+        await self.cache.set(
+            cache_key,
+            sound_effect.to_dict(),
+            expiration=3600 * 24 * 365,  # File timestamp checksum handles invalidation
+            provider=self.instance_id,
+            checksum=file_item.checksum,
+            category=CACHE_CATEGORY_SOUND_EFFECTS,
+        )
+        return sound_effect
+
     async def _parse_album(
         self, track_path: str, track_tags: AudioTags, track_created_at: int | None = None
     ) -> Album:
@@ -1897,6 +2253,9 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _get_stream_details_for_track(self, item_id: str) -> StreamDetails:
         """Return the streamdetails for a track/song."""
+        if parse_cue_track_id(item_id) is not None:
+            return await self._cue.get_stream_details(item_id)
+
         library_item = await self.mass.music.tracks.get_library_item_by_prov_id(
             item_id, self.instance_id
         )
@@ -1943,6 +2302,27 @@ class LocalFileSystemProvider(MusicProvider):
             media_type=MediaType.PODCAST_EPISODE,
             stream_type=StreamType.LOCAL_FILE,
             duration=try_parse_int(tags.duration or 0),
+            size=file_item.file_size,
+            data=file_item,
+            path=file_item.absolute_path,
+            allow_seek=True,
+            can_seek=True,
+        )
+
+    async def _get_stream_details_for_sound_effect(self, item_id: str) -> StreamDetails:
+        """Return the streamdetails for a sound effect."""
+        # sound effects are never stored in the library so we parse the file,
+        # served from cache unless the file changed on disk
+        file_item = await self.resolve(item_id)
+        sound_effect = await self._get_or_parse_sound_effect(file_item)
+        prov_mapping = next(x for x in sound_effect.provider_mappings if x.item_id == item_id)
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=prov_mapping.audio_format,
+            media_type=MediaType.SOUND_EFFECT,
+            stream_type=StreamType.LOCAL_FILE,
+            duration=sound_effect.duration,
             size=file_item.file_size,
             data=file_item,
             path=file_item.absolute_path,

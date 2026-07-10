@@ -1,0 +1,14 @@
+{
+  "type": "plugin",
+  "domain": "radio_playlist",
+  "stage": "experimental",
+  "name": "Radio Playlists",
+  "description": "Generates dynamic 'radio' playlists (a mix of a seed item's own tracks and similar tracks) for any artist, album, track, genre or playlist.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": false,
+  "icon": "radio"
+}

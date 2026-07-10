@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import ProviderMapping, Radio, Track
+from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary
 
 from music_assistant.constants import DB_TABLE_RADIOS
 from music_assistant.helpers.compare import (
@@ -24,6 +25,8 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant import MusicAssistant
     from music_assistant.providers.builtin import BuiltinProvider
 
@@ -34,19 +37,39 @@ class RadioController(MediaControllerBase[Radio]):
     db_table = DB_TABLE_RADIOS
     media_type = MediaType.RADIO
     item_cls = Radio
+    summary_item_cls = RadioSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/radio_versions", self.versions)
-        self.mass.register_api_command(f"music/{api_base}/export_radios", self.export_radios)
-        self.mass.register_api_command(f"music/{api_base}/import_radios", self.import_radios)
+        self.mass.register_api_command(
+            f"music/{api_base}/radio_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/export_radios", self.export_radios, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/import_radios",
+            self.import_radios,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
+
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for radio summary listings."""
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            json_extract({self.db_table}.metadata, '$.description') AS description,
+            {self._provider_mappings_query()} AS provider_mappings
+            FROM {self.db_table}"""
+        return query, {}
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
-        radios = await self.library_items(limit=10000, offset=0)
+        radios = await self.library_items(limit=10000, offset=0, summary=False)
         items = [media_item_to_playlist_item(radio) for radio in radios]
         return generate_m3u("Radio Stations", items)
 
@@ -87,20 +110,6 @@ class RadioController(MediaControllerBase[Radio]):
 
         # return the aggregated result
         return list(all_versions.values())
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Radio,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Radio to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        msg = "Dynamic tracks not supported for Radio MediaItem"
-        raise NotImplementedError(msg)
 
     async def match_provider(
         self, db_radio: Radio, provider: MusicProvider, strict: bool = True
@@ -176,7 +185,6 @@ class RadioController(MediaControllerBase[Radio]):
                 "sort_name": item.sort_name,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(
                     item.sort_name if item.sort_name is not None else "", True, True
@@ -184,6 +192,8 @@ class RadioController(MediaControllerBase[Radio]):
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         # update/set provider_mappings table
         await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -209,15 +219,16 @@ class RadioController(MediaControllerBase[Radio]):
                 "name": name,
                 "sort_name": sort_name,
                 "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,
             },
+        )
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
         provider_mappings = (
@@ -227,3 +238,9 @@ class RadioController(MediaControllerBase[Radio]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> RadioSummary:
+        """Parse a raw summary db row into a RadioSummary object."""
+        item = cast("RadioSummary", super()._parse_summary_row(db_row))
+        item.metadata.description = db_row["description"]
+        return item

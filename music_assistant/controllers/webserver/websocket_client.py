@@ -18,7 +18,7 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.auth import AuthProviderType, User
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -35,9 +35,12 @@ from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEV
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import (
+    has_scope,
     is_request_from_ingress,
+    resolve_command_impersonation,
     set_current_token,
     set_current_user,
+    set_impersonated_user,
     set_sendspin_player_id,
 )
 from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
@@ -177,7 +180,7 @@ class WebsocketClientHandler:
 
     async def _handle_command(self, msg: CommandMessage) -> None:
         """Handle an incoming command from the client."""
-        self._logger.debug("Handling command %s", msg.command)
+        self._logger.log(VERBOSE_LOG_LEVEL, "Handling command %s", msg.command)
 
         # Handle special "auth" command
         if msg.command == "auth":
@@ -205,7 +208,7 @@ class WebsocketClientHandler:
             return
 
         # Check authentication if required
-        if handler.authenticated or handler.required_role:
+        if handler.authenticated or handler.required_scope:
             # For Ingress, user should already be set from _handle_ingress_auth
             # For regular connections, user must be set via auth command
             if self._authenticated_user is None:
@@ -224,18 +227,19 @@ class WebsocketClientHandler:
             set_current_token(self._current_token)
             set_sendspin_player_id(self._sendspin_player_id)
 
-            # Check role if required
-            if handler.required_role == "admin":
-                if self._authenticated_user.role != UserRole.ADMIN:
-                    await self._send_message(
-                        ErrorResultMessage(
-                            msg.message_id,
-                            InsufficientPermissions.error_code,
-                            "Admin access required",
-                            translation_key="insufficient_permissions",
-                        )
+            # Check scope if required
+            if handler.required_scope and not has_scope(
+                self._authenticated_user, handler.required_scope
+            ):
+                await self._send_message(
+                    ErrorResultMessage(
+                        msg.message_id,
+                        InsufficientPermissions.error_code,
+                        f"This command requires the {handler.required_scope} scope",
+                        translation_key="insufficient_permissions",
                     )
-                    return
+                )
+                return
 
         # schedule task to handle the command
         self.mass.create_task(self._run_handler(handler, msg))
@@ -243,6 +247,10 @@ class WebsocketClientHandler:
     async def _run_handler(self, handler: APICommandHandler, msg: CommandMessage) -> None:
         """Run command handler and send response."""
         try:
+            # handle the optional impersonation argument for impersonation-enabled commands
+            if handler.allow_impersonation and msg.args:
+                if impersonation_user := await resolve_command_impersonation(self.mass, msg.args):
+                    set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
@@ -518,6 +526,7 @@ class WebsocketClientHandler:
                     EventType.PLAYER_ADDED,
                     EventType.PLAYER_REMOVED,
                     EventType.PLAYER_UPDATED,
+                    EventType.PLAYER_SLEEP_TIMER_UPDATED,
                     EventType.QUEUE_ADDED,
                     EventType.QUEUE_ITEMS_UPDATED,
                     EventType.QUEUE_TIME_UPDATED,

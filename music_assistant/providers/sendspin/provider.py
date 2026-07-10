@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
 from copy import deepcopy
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
+from uuid import uuid4
 
-from aiosendspin.models.types import PlayerCommand
+from aiosendspin.models.core import ClientHelloPayload
+from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
+from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
+from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientRemovedEvent,
@@ -18,22 +23,36 @@ from aiosendspin.server import (
     SendspinServer,
 )
 from music_assistant_models.enums import (
+    EventType,
     IdentifierType,
     PlayerFeature,
     PlayerType,
     ProviderFeature,
 )
-from music_assistant_models.errors import AlreadyRegisteredError
+from music_assistant_models.errors import AlreadyRegisteredError, SetupFailedError
 
 from music_assistant.constants import (
     CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+    CONF_PLAYERS,
+    CONF_PROVIDERS,
 )
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DELAY
+from music_assistant.providers.sendspin.bridge_role import (
+    BRIDGE_BIT_DEPTH,
+    BRIDGE_CHANNELS,
+    BRIDGE_ROLE_ID,
+    BRIDGE_SAMPLE_RATE,
+    BridgePlayerRole,
+)
+from music_assistant.providers.sendspin.constants import (
+    CONF_SENDSPIN_STATIC_DELAY,
+    CONF_VIRTUAL_PLAYER_OWNER,
+    VIRTUAL_PLAYER_ID_PREFIX,
+)
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
@@ -41,9 +60,10 @@ from music_assistant.providers.sendspin.player import (
 )
 
 if TYPE_CHECKING:
-    from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.server.client import SendspinClient
+    from aiosendspin.server.server import ExternalStreamStartRequest
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.providers.hass import HomeAssistantProvider
@@ -51,6 +71,7 @@ if TYPE_CHECKING:
 
 DEFAULT_SENDSPIN_CLIENT_PORT = 8928
 DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
+VIRTUAL_PLAYER_REGISTER_TIMEOUT = 10.0
 
 
 def _manual_client_url(address: str) -> str:
@@ -90,10 +111,12 @@ class SendspinProvider(PlayerProvider):
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
+    _bridge_underlying_players: dict[str, str]
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
     _manual_ip_config: tuple[str, ...]
+    _virtual_players: dict[str, str]
     _unloading: bool
 
     def __init__(
@@ -113,13 +136,16 @@ class SendspinProvider(PlayerProvider):
         self.server_api.set_visualizer_pitch_enabled(enabled=False)
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
+        self._bridge_underlying_players = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
         self._client_event_task_counts = {}
+        self._virtual_players = {}
         self._unloading = False
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
+            self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
         ]
 
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
@@ -151,6 +177,19 @@ class SendspinProvider(PlayerProvider):
         :param identifiers: Extra identifiers to attach to the SendspinPlayer.
         """
         self._bridge_identifiers[client_id] = identifiers
+
+    def register_bridge_underlying_player(self, client_id: str, underlying_player_id: str) -> None:
+        """
+        Pre-register the underlying player a bridge client runs on top of.
+
+        Called by bridge managers before registering an external player, so that
+        the resulting SendspinPlayer carries the derived-transport edge and the
+        protocol linking layer can resolve its parent deterministically.
+
+        :param client_id: The bridge client_id that will be used for registration.
+        :param underlying_player_id: The player_id of the player the bridge rides on.
+        """
+        self._bridge_underlying_players[client_id] = underlying_player_id
 
     def register_bridge_static_delay_default(self, client_id: str, default_ms: int) -> None:
         """
@@ -189,6 +228,7 @@ class SendspinProvider(PlayerProvider):
         client_id: str,
         identifiers: dict[IdentifierType, str],
         bridge_hello: ClientHelloPayload,
+        underlying_player_id: str | None = None,
     ) -> bool:
         """
         Post-claim an already-registered SendspinPlayer as a bridge client.
@@ -206,6 +246,8 @@ class SendspinProvider(PlayerProvider):
         :param bridge_hello: The bridge's intended ClientHelloPayload. Its
             player_support.supported_commands gates which volume/mute features
             the player is allowed to expose.
+        :param underlying_player_id: The player_id of the player the bridge rides
+            on, establishing the derived-transport edge for protocol linking.
         :return: True if a matching SendspinPlayer was found and updated.
         """
         player = self.mass.players.get_player(client_id)
@@ -213,6 +255,8 @@ class SendspinProvider(PlayerProvider):
             return False
         for id_type, id_value in identifiers.items():
             player.device_info.add_identifier(id_type, id_value)
+        if underlying_player_id is not None:
+            player._attr_underlying_player_id = underlying_player_id
         bridge_supported_commands: list[PlayerCommand] = []
         if bridge_hello.player_support:
             bridge_supported_commands = list(bridge_hello.player_support.supported_commands)
@@ -240,6 +284,101 @@ class SendspinProvider(PlayerProvider):
         await self.mass.players.register_or_update(player)
         return True
 
+    async def create_virtual_player(
+        self,
+        owner_instance_id: str,
+        display_name: str,
+        player_id: str | None = None,
+    ) -> str:
+        """
+        Create a hidden, server-side virtual Sendspin player.
+
+        A virtual player owns its own PlayerQueue and leads a native Sendspin
+        group, but never renders audio itself: the audio stream is delivered to
+        the guest players that are attached to it through standard grouping.
+        It is hidden from the UI and not exposed to Home Assistant by default,
+        and is automatically removed when the owning provider unloads.
+
+        :param owner_instance_id: Instance id of the (loaded) provider that owns
+            the virtual player and controls its lifecycle.
+        :param display_name: Human readable name for the virtual player.
+        :param player_id: Optional stable id for the virtual player; a random id
+            is generated when omitted. The id is always prefixed with
+            ``VIRTUAL_PLAYER_ID_PREFIX``.
+        :return: The player_id of the registered virtual player.
+        :raises SetupFailedError: If the virtual player can not be created.
+        """
+        if (owner := self.mass.get_provider(owner_instance_id)) is None:
+            raise SetupFailedError(f"Owner provider {owner_instance_id} is not loaded")
+        if owner.instance_id != owner_instance_id and (
+            len(self.mass.get_provider_instances(owner.domain)) > 1
+        ):
+            raise SetupFailedError(
+                f"Multiple instances exist for {owner_instance_id}: pass an exact instance id"
+            )
+        # normalize a provider domain to the actual instance id
+        owner_instance_id = owner.instance_id
+        if player_id is None:
+            player_id = uuid4().hex
+        elif not re.fullmatch(r"[a-zA-Z0-9_-]+", player_id):
+            raise SetupFailedError(
+                f"Invalid player_id {player_id}: only alphanumerics, '_' and '-' are allowed"
+            )
+        if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX):
+            player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}{player_id}"
+        if player_id in self._virtual_players or self.server_api.get_client(player_id) is not None:
+            raise SetupFailedError(f"Virtual player {player_id} already exists")
+        # a persisted config may only be reclaimed by the same owner
+        stored_owner = self._get_virtual_player_config_owner(player_id)
+        if stored_owner is not None and stored_owner != owner_instance_id:
+            raise SetupFailedError(f"Virtual player {player_id} is owned by {stored_owner}")
+        self._virtual_players[player_id] = owner_instance_id
+        try:
+            self._register_virtual_player_client(player_id, display_name)
+            await self._wait_for_virtual_player(player_id)
+        except Exception as err:
+            self._virtual_players.pop(player_id, None)
+            # purge any partially registered player and its config
+            await self.mass.players.unregister(player_id, permanent=True)
+            if self.server_api.get_client(player_id) is not None:
+                await self.server_api.remove_client(player_id)
+            self.mass.players.delete_player_config(player_id)
+            if isinstance(err, SetupFailedError):
+                raise
+            raise SetupFailedError(f"Failed to create virtual player {player_id}") from err
+        # persist the owner so orphaned configs can be swept after a restart
+        self.mass.config.set_raw_player_config_value(
+            player_id, CONF_VIRTUAL_PLAYER_OWNER, owner_instance_id
+        )
+        self.logger.info("Virtual player %s created for %s", player_id, owner_instance_id)
+        return player_id
+
+    async def remove_virtual_player(self, player_id: str) -> None:
+        """
+        Remove a virtual Sendspin player and permanently delete its configuration.
+
+        :param player_id: The player_id returned by create_virtual_player.
+        :raises ValueError: If the given player_id is not a (known) virtual player.
+        """
+        if not player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX) or (
+            player_id not in self._virtual_players
+            and self._get_virtual_player_config_owner(player_id) is None
+        ):
+            raise ValueError(f"{player_id} is not a virtual player")
+        self._virtual_players.pop(player_id, None)
+        # unregister the player first so the client removed event handler
+        # can not race us with a non-permanent unregister
+        await self.mass.players.unregister(player_id, permanent=True)
+        if self.server_api.get_client(player_id) is not None:
+            await self.server_api.remove_client(player_id)
+        # the config may linger when the player was never registered
+        self.mass.players.delete_player_config(player_id)
+        self.logger.info("Virtual player %s removed", player_id)
+
+    def is_virtual_player(self, player_id: str) -> bool:
+        """Return whether the given player_id belongs to a registered virtual player."""
+        return player_id in self._virtual_players
+
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
@@ -250,12 +389,13 @@ class SendspinProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
+        self._remove_orphan_virtual_player_configs()
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
         await self.server_api.start_server(
             port=8927,
             host=self.mass.streams.bind_ip,
-            advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
+            advertise_addresses=[self.mass.streams.publish_ip],
         )
         for address in self._manual_ip_config:
             try:
@@ -307,6 +447,7 @@ class SendspinProvider(PlayerProvider):
         self.unregister_cbs = []
         self._client_event_task_counts.clear()
         self._client_event_versions.clear()
+        self._virtual_players.clear()
         await asyncio.gather(
             *(
                 self.mass.players.unregister(player_id, permanent=is_removed)
@@ -362,6 +503,9 @@ class SendspinProvider(PlayerProvider):
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
         bridge_player_type = self._bridge_player_types.pop(client_id, None)
+        underlying_player_id = self._bridge_underlying_players.pop(client_id, None)
+        if underlying_player_id is None and existing_player is not None:
+            underlying_player_id = existing_player.underlying_player_id
         static_delay_default_ms = self._bridge_static_delay_defaults.pop(client_id, None)
         if static_delay_default_ms is None and isinstance(existing_player, SendspinPlayer):
             static_delay_default_ms = existing_player.static_delay_default_ms
@@ -389,6 +533,8 @@ class SendspinProvider(PlayerProvider):
         if extra_ids:
             for id_type, id_value in extra_ids.items():
                 player.device_info.add_identifier(id_type, id_value)
+        if underlying_player_id is not None:
+            player._attr_underlying_player_id = underlying_player_id
         if static_delay_default_ms is not None and isinstance(player, SendspinPlayer):
             player.static_delay_default_ms = static_delay_default_ms
         return player
@@ -520,6 +666,111 @@ class SendspinProvider(PlayerProvider):
                 return
             if previous_type == PlayerType.PROTOCOL and existing_player.type != PlayerType.PROTOCOL:
                 existing_player.set_protocol_parent_id(None)
+                existing_player._attr_underlying_player_id = None
             await self.mass.players.register_or_update(existing_player)
         finally:
             self._finish_client_event(client_id)
+
+    def _get_virtual_player_config_owner(self, player_id: str) -> str | None:
+        """Return the owner instance id from a stored virtual player config, if any."""
+        raw_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+            return None
+        values = raw_conf.get("values")
+        if not isinstance(values, dict):
+            return None
+        return cast("str | None", values.get(CONF_VIRTUAL_PLAYER_OWNER))
+
+    def _register_virtual_player_client(self, player_id: str, display_name: str) -> None:
+        """Register the silent external Sendspin client backing a virtual player."""
+        hello = ClientHelloPayload(
+            client_id=player_id,
+            name=display_name,
+            version=1,
+            supported_roles=[BRIDGE_ROLE_ID],
+            device_info=SendspinDeviceInfo(
+                product_name="Virtual Player",
+                manufacturer="Music Assistant",
+            ),
+            player_support=ClientHelloPlayerSupport(
+                supported_formats=[
+                    SupportedAudioFormat(
+                        codec=AudioCodec.PCM,
+                        channels=BRIDGE_CHANNELS,
+                        sample_rate=BRIDGE_SAMPLE_RATE,
+                        bit_depth=BRIDGE_BIT_DEPTH,
+                    )
+                ],
+                buffer_capacity=1_000,
+                supported_commands=[],
+            ),
+        )
+        sendspin_client = self.server_api.register_external_player(
+            hello, on_stream_start=self._on_virtual_player_stream_start
+        )
+        for role in sendspin_client.roles_by_family("player"):
+            if not isinstance(role, BridgePlayerRole):
+                continue
+            # audio delivered to the role is simply discarded: the virtual player
+            # only anchors the group, the members receive the actual stream
+            role.set_callbacks(
+                on_audio_chunk=_virtual_player_noop,
+                on_volume_change=_virtual_player_noop,
+                on_mute_change=_virtual_player_noop,
+                on_stream_start=_virtual_player_noop,
+                on_stream_end=_virtual_player_noop,
+            )
+            role.setup_audio_requirements()
+            role.set_timing(required_lead_time_ms=0, min_buffer_ms=0)
+            break
+
+    async def _wait_for_virtual_player(self, player_id: str) -> None:
+        """Wait until the virtual player is registered in MA with its queue."""
+        deadline = self.mass.loop.time() + VIRTUAL_PLAYER_REGISTER_TIMEOUT
+        while self.mass.loop.time() < deadline:
+            if (
+                self.mass.players.get_player(player_id) is not None
+                and self.mass.player_queues.get(player_id) is not None
+            ):
+                return
+            await asyncio.sleep(0.1)
+        raise SetupFailedError(f"Virtual player {player_id} was not registered in time")
+
+    def _on_virtual_player_stream_start(self, _request: ExternalStreamStartRequest) -> None:
+        """Accept stream start requests for virtual players (nothing to connect)."""
+
+    async def _on_providers_updated(self, event: MassEvent) -> None:
+        """Remove virtual players whose owning provider is no longer loaded."""
+        # during (server) shutdown all providers unload; the startup sweep
+        # takes care of configs whose owner is really gone
+        if self._unloading or self.mass.closing:
+            return
+        for player_id, owner_instance_id in list(self._virtual_players.items()):
+            if self.mass.get_provider(owner_instance_id) is not None:
+                continue
+            self.logger.debug(
+                "Removing virtual player %s: owner %s unloaded", player_id, owner_instance_id
+            )
+            await self.remove_virtual_player(player_id)
+
+    def _remove_orphan_virtual_player_configs(self) -> None:
+        """Delete stored configs of virtual players whose owner provider is gone."""
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        for player_id, raw_conf in list(all_player_configs.items()):
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            values = raw_conf.get("values")
+            if not isinstance(values, dict):
+                values = {}
+            owner_instance_id = values.get(CONF_VIRTUAL_PLAYER_OWNER)
+            if owner_instance_id is None:
+                continue
+            if self.mass.config.get(f"{CONF_PROVIDERS}/{owner_instance_id}") is not None:
+                # owner still configured; it will recreate its virtual players
+                continue
+            self.logger.debug("Removing orphan virtual player config %s", player_id)
+            self.mass.players.delete_player_config(player_id)
+
+
+def _virtual_player_noop(*_args: object) -> None:
+    """No-op callback for virtual players, which never render audio locally."""

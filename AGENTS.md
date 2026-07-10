@@ -63,3 +63,22 @@ MA stores its data in `$HOME/.musicassistant/`. When debugging locally:
 
 - **Logs:** `$HOME/.musicassistant/musicassistant.log` (current), `musicassistant.log.1`, `.log.2`, etc. for older rotated logs.
 - **Database:** `$HOME/.musicassistant/library.db` — query via `sqlite3`. **Only execute SELECT queries** — never write to a live database.
+
+### Provider Mappings
+
+Every `MediaItem` (track, album, artist, playlist) has a `provider_mappings` attribute containing the exact mappings of the item on (each) provider. For a MediaItem that comes from a musicprovider directly, this will usually contain one single ID-mapping (although it is possible that a provider has multiple mappings). For library items, this will contain all mappings of all providers connected to the item.
+
+The ProviderMapping has this structure:
+
+- `item_id` (str): The music provider's item ID (e.g., `"spotify--track123"`)
+- `provider_domain` (str): The musicprovider's domain (e.g., `"spotify"`, `"apple_music"`, `"tidal"`)
+- `provider_instance` (str): The provider instance ID (to handle multiple instances of the same provider).
+- some more details such as the quality (relevant in case of album or track)
+
+**Important patterns:**
+
+- A media item itself also has an item_id and provider attribute. For an item that comes straight from the musicprovider itself (so not from the MA library) the provider attribute will be set to the instance_id of that provider.
+- Library items are identified by `item.provider == "library"` where `item.item_id` is the library DB ID
+- `provider_domain='library'` **never exists** in provider_mappings — library items don't have mappings to themselves
+- To resolve a provider item to its library equivalent, use: `await mass.music.<mediatype>.get_library_item_by_prov_id(item_id, provider_instance_id_or_domain)`
+- Never assume you can use `mapping.item_id` directly as a library DB ID — always use the resolution method above

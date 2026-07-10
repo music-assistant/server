@@ -182,7 +182,11 @@ class SnapcastMAStream:
             if self._streamer_task and not self._streamer_task.done():
                 if not allow_restart:
                     raise RuntimeError("streamer already running")
-                self._restart_if_running()
+                if self._stop_requested or self._stop_streamer_evt.is_set():
+                    # stop in flight; _on_streamer_done will start the fresh run
+                    self._restart_requested = True
+                else:
+                    self._restart_if_running()
                 return
 
             self._stop_requested = False
@@ -254,9 +258,9 @@ class SnapcastMAStream:
             self._stop_timer_started_at = None
             if self._stop_timer:
                 self._stop_timer.cancel()
-        elif self._stop_timer_started_at is None:
+        elif self._stop_timer_started_at is None and not self._stop_requested:
             self._stop_timer_started_at = self._mass.loop.time()
-            self._stop_timer = self._mass.loop.call_later(60.0, self.request_stop_stream)
+            self._stop_timer = self._mass.loop.call_later(3.0, self.request_stop_stream)
 
     async def wait_for_stopped(self, timeout_sec: float | None = None) -> None:
         """

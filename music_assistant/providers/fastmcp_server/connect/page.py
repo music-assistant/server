@@ -414,9 +414,27 @@ HTML: str = """<!doctype html>
       state.sessionToken = data.session_token;
       SS.setItem("ma_session_token", state.sessionToken);
       $("login-panel").classList.add("hidden");
-      $("wizard-panel").classList.remove("hidden");
+      // Render the client list + perms here too: init() only does so when the
+      // user is already signed in at page-load (bootstrap fragment / cached
+      // session). Without this, a fresh username/password sign-in revealed the
+      // wizard panel with an empty "Pick your AI client" list.
+      showWizard();
       showMsg("Signed in as " + (data.user && data.user.username || "user") + ".", "good");
     });
+  }
+
+  function showWizard() {
+    // Reveal the wizard and populate it. Shared by init() (bootstrap/cached
+    // session) and the login-form handler (interactive sign-in).
+    $("wizard-panel").classList.remove("hidden");
+    renderPerms();
+    renderClients();
+    // Preselect the first client so the user sees the path hint and the
+    // "Generate config" CTA — but do NOT mint a token automatically; that
+    // only happens on an explicit click.
+    if (state.info.clients.length > 0) {
+      selectClient(state.info.clients[0].id);
+    }
   }
 
   async function tryBootstrap() {
@@ -466,18 +484,11 @@ HTML: str = """<!doctype html>
     }
 
     $("loading").classList.add("hidden");
-    renderPerms();
 
     if (signedIn) {
-      $("wizard-panel").classList.remove("hidden");
-      renderClients();
-      // Preselect the first client so the user sees the path hint and the
-      // "Generate config" CTA — but do NOT mint a token automatically; that
-      // only happens on an explicit click.
-      if (state.info.clients.length > 0) {
-        selectClient(state.info.clients[0].id);
-      }
+      showWizard();
     } else {
+      renderPerms();
       $("login-panel").classList.remove("hidden");
     }
   }

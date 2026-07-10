@@ -1,10 +1,17 @@
 """Unit tests for AirPlay player."""
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 
-from music_assistant.providers.airplay.constants import CONF_IGNORE_VOLUME, StreamingProtocol
+from music_assistant.providers.airplay.constants import (
+    CONF_AIRPLAY_PROTOCOL,
+    CONF_IGNORE_VOLUME,
+    CONF_STORED_VOLUME,
+    StreamingProtocol,
+)
 from music_assistant.providers.airplay.player import AirPlayPlayer
 
 
@@ -147,6 +154,46 @@ async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlaye
     assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
 
 
+def _set_discovery_info(player: AirPlayPlayer, *, raop: bool, airplay: bool) -> None:
+    """Attach (empty-property) discovery mocks so the device advertises the given protocols."""
+    for enabled, attr in ((raop, "raop_discovery_info"), (airplay, "airplay_discovery_info")):
+        if enabled:
+            info = MagicMock()
+            info.properties = {}
+            setattr(player, attr, info)
+        else:
+            setattr(player, attr, None)
+
+
+@pytest.mark.asyncio
+async def test_airplay_protocol_options_disabled_when_not_advertised(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol the device does not advertise is offered but disabled, never omitted."""
+    _set_discovery_info(airplay_player, raop=False, airplay=False)
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_AIRPLAY_PROTOCOL)
+    options = {option.value: option for option in entry.options}
+    assert options[StreamingProtocol.RAOP.value].disabled is True
+    assert options[StreamingProtocol.AIRPLAY2.value].disabled is True
+    # the automatic option stays enabled and remains the (safe) default
+    assert options[0].disabled is False
+    assert entry.default_value == 0
+
+
+@pytest.mark.asyncio
+async def test_airplay_protocol_option_enabled_when_advertised(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An advertised protocol is offered as a selectable (enabled) option."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True)
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_AIRPLAY_PROTOCOL)
+    options = {option.value: option for option in entry.options}
+    assert options[StreamingProtocol.RAOP.value].disabled is False
+    assert options[StreamingProtocol.AIRPLAY2.value].disabled is False
+
+
 # --- Volume and Mute tests ---
 
 
@@ -207,3 +254,68 @@ async def test_volume_mute_no_stream(airplay_player: AirPlayPlayer) -> None:
 
         assert airplay_player._attr_volume_muted is True
         mock_update.assert_called_once()
+
+
+def test_sync_volume_level_keeps_stored_volume_for_native_parent(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Keep the child AirPlay volume when the parent uses native volume control."""
+    parent = MagicMock()
+    parent.state.volume_level = 36
+    parent.volume_control = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 48
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_not_called()
+
+
+def test_update_volume_from_device_keeps_native_parent_feedback(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Use DACP feedback to keep the child AirPlay volume current."""
+    parent = MagicMock()
+    parent.state.volume_level = 42
+    parent.volume_control = PLAYER_CONTROL_NATIVE
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 57
+    airplay_player.last_command_sent = time.time()
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.update_volume_from_device(57)
+
+    assert airplay_player._attr_volume_level == 57
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.player_id, CONF_STORED_VOLUME, 57
+    )
+    mock_update.assert_called_once()
+
+
+def test_sync_volume_level_uses_parent_volume_without_native_parent(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Keep existing behavior for protocol parents without native volume control."""
+    parent = MagicMock()
+    parent.state.volume_level = 42
+    parent.volume_control = None
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 42
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.player_id,
+        CONF_STORED_VOLUME,
+        42,
+    )
+    mock_update.assert_called_once()

@@ -33,6 +33,8 @@ from aiosendspin.server.roles import (
     ControllerPlayEvent,
     ControllerPreviousEvent,
     ControllerRepeatEvent,
+    ControllerSeekEvent,
+    ControllerSeekRelativeEvent,
     ControllerShuffleEvent,
     ControllerStopEvent,
     MetadataGroupRole,
@@ -54,7 +56,7 @@ from music_assistant_models.enums import (
     ProviderType,
     RepeatMode,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
@@ -83,6 +85,8 @@ SUPPORTED_GROUP_COMMANDS = [
     MediaCommand.REPEAT_ALL,
     MediaCommand.SHUFFLE,
     MediaCommand.UNSHUFFLE,
+    MediaCommand.SEEK,
+    MediaCommand.SEEK_RELATIVE,
 ]
 
 # Config constants for Sendspin audio format
@@ -142,6 +146,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
 
     from .provider import SendspinProvider
@@ -546,11 +551,17 @@ class SendspinPlayer(SendspinBasePlayer):
                     self._attr_volume_muted = muted
                 if volume is not None or muted is not None:
                     break
-        self._attr_expose_to_ha_by_default = not self.is_web_player
-        self._attr_hidden_by_default = self.is_web_player
+        # virtual players are server-owned anchors that follow the same
+        # hidden/standalone semantics as web players, without relying on the
+        # device-info heuristics above
+        is_standalone = self.is_web_player or cast(
+            "SendspinProvider", self.provider
+        ).is_virtual_player(self.player_id)
+        self._attr_expose_to_ha_by_default = not is_standalone
+        self._attr_hidden_by_default = is_standalone
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
-        self._attr_type = PlayerType.PLAYER if self.is_web_player else PlayerType.PROTOCOL
+        self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
 
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
@@ -616,6 +627,23 @@ class SendspinPlayer(SendspinBasePlayer):
                         self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case ControllerShuffleEvent(shuffle=shuffle) if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
+            case ControllerSeekEvent(position_ms=position_ms) if (
+                queue and queue.current_item and queue.current_item.duration
+            ):
+                # Clamp in case track duration changed after we advertised the seek range.
+                duration_ms = int(queue.current_item.duration * 1000)
+                await self.mass.player_queues.seek(
+                    queue.queue_id, max(0, min(position_ms, duration_ms)) // 1000
+                )
+            case ControllerSeekRelativeEvent(offset_ms=offset_ms) if (
+                queue and queue.current_item and queue.current_item.duration
+            ):
+                # Clamp current position + offset to the 0..duration range.
+                target_ms = int(queue.corrected_elapsed_time * 1000) + offset_ms
+                duration_ms = int(queue.current_item.duration * 1000)
+                await self.mass.player_queues.seek(
+                    queue.queue_id, max(0, min(target_ms, duration_ms)) // 1000
+                )
 
     async def _sync_membership_from_group(self, group: SendspinGroup) -> None:
         """Sync MA/player + playback session membership from authoritative group state."""
@@ -859,7 +887,13 @@ class SendspinPlayer(SendspinBasePlayer):
             if artwork_url is not None:
                 # Fetch from the resolved URL so the bytes match artwork_url, even when
                 # radio now-playing art differs from the queue item's own image.
-                image_data = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
+                try:
+                    image_data = await self.mass.metadata.get_thumbnail(
+                        artwork_url, provider="builtin"
+                    )
+                except MediaNotFoundError:
+                    # artwork file was removed from disk; skip rather than crash the send
+                    image_data = None
                 if isinstance(image_data, bytes):
                     # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
                     image = await self._decode_artwork(image_data)
@@ -893,9 +927,13 @@ class SendspinPlayer(SendspinBasePlayer):
             if artist_artwork_url is not None:
                 # Fetch bytes from the already-resolved URL to avoid the secondary
                 # provider lookup that get_image_data_for_item triggers for ItemMappings.
-                artist_image_data = await self.mass.metadata.get_thumbnail(
-                    artist_artwork_url, provider="builtin"
-                )
+                try:
+                    artist_image_data = await self.mass.metadata.get_thumbnail(
+                        artist_artwork_url, provider="builtin"
+                    )
+                except MediaNotFoundError:
+                    # artwork file was removed from disk; skip rather than crash the send
+                    artist_image_data = None
                 if isinstance(artist_image_data, bytes):
                     artist_image = await self._decode_artwork(artist_image_data)
                     if (
@@ -950,6 +988,8 @@ class SendspinPlayer(SendspinBasePlayer):
             await artwork_role.set_artist_artwork(None)
         if (color_role := self._color_role) is not None:
             color_role.clear()
+        if (controller_role := self._controller_role) is not None:
+            controller_role.set_seek_max_ms(None)
         self.last_sent_artwork_url = None
         self.last_sent_artist_artwork_url = None
         self._last_beat_queue_item_id = None
@@ -1046,6 +1086,8 @@ class SendspinPlayer(SendspinBasePlayer):
                     album_artist = full_album.artist_str
 
         track_duration = current_media.duration or 0
+        if controller_role := self._controller_role:
+            controller_role.set_seek_max_ms(int(track_duration * 1000) if track_duration else None)
         repeat = SendspinRepeatMode.OFF
         if queue and queue.repeat_mode == RepeatMode.ALL:
             repeat = SendspinRepeatMode.ALL
@@ -1103,7 +1145,7 @@ class SendspinPlayer(SendspinBasePlayer):
         )
 
     @staticmethod
-    def _flow_track_offset_us(queue: PlayerQueue | None, queue_item: QueueItem) -> int | None:
+    def _flow_track_offset_us(pq_data: PlayerQueueData | None, queue_item: QueueItem) -> int | None:
         """
         Return the current track's flow-stream start offset (minus file seek), in µs.
 
@@ -1117,9 +1159,9 @@ class SendspinPlayer(SendspinBasePlayer):
         up to the crossfade duration. Exact handling needs a raw-seek field on
         the flow log entry.
         """
-        if queue is None or queue_item.streamdetails is None:
+        if pq_data is None or queue_item.streamdetails is None:
             return None
-        log = queue.flow_mode_stream_log
+        log = pq_data.flow_mode_stream_log
         if not log or log[-1].queue_item_id != queue_item.queue_item_id:
             return None
         track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:-1])
@@ -1161,7 +1203,8 @@ class SendspinPlayer(SendspinBasePlayer):
         # timeline. Falls back to the progress-derived anchor until the first
         # chunk commits or while the flow log hasn't recorded this track yet.
         anchor_us: int | None = None
-        offset_us = self._flow_track_offset_us(queue, queue_item)
+        pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
+        offset_us = self._flow_track_offset_us(pq_data, queue_item)
         if offset_us is not None:
             anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
         if anchor_us is None:

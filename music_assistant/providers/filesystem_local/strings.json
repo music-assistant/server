@@ -2,10 +2,16 @@
   "config_entries": {
     "missing_album_artist_action": {
       "label": "Action when a track is missing the Albumartist ID3 tag",
+      "description": "How to fill in the album artist for tracks with no Albumartist tag. This affects how those albums are grouped in your library.",
       "options": {
         "track_artist": "Use Track artist(s)",
         "various_artists": "Use Various Artists",
         "folder_name": "Use Folder name (if possible)"
+      },
+      "option_descriptions": {
+        "track_artist": "Use the track's own artist(s). Can split an album across artists when its tracks differ.",
+        "various_artists": "Group everything under a single 'Various Artists' album artist. Keeps the album together; best for compilations.",
+        "folder_name": "Use the containing folder's name, falling back to 'Various Artists' when it can't be determined."
       }
     },
     "path": {
@@ -17,7 +23,8 @@
       "options": {
         "music": "[%key:common::config_entries::content_type::options::music%]",
         "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
-        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]",
+        "sound_effects": "[%key:common::config_entries::content_type::options::sound_effects%]"
       }
     },
     "library_sync_tracks": {

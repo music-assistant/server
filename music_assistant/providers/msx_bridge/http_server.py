@@ -16,6 +16,7 @@ from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
 from .constants import (
@@ -255,7 +256,9 @@ class MSXHTTPServer:
     async def _handle_root(self, request: web.Request) -> web.Response:
         """Serve status dashboard."""
         players = self.provider.players
-        base = self._get_prefix(request)
+        # base is derived from the Host header, so escape it before embedding in HTML
+        prefix = self._get_prefix(request)
+        base = html_escape(prefix)
         player_rows = []
         for p in players:
             row = (
@@ -263,7 +266,7 @@ class MSXHTTPServer:
                 f"{html_escape(p.display_name)} — {html_escape(p.playback_state.value)}"
                 f"</span>"
             )
-            row += f'<form method="post" action="{base}/api/quick-stop/{p.player_id}" '
+            row += f'<form method="post" action="{base}/api/quick-stop/{html_escape(p.player_id)}" '
             row += 'style="display:inline">'
             row += '<button type="submit" class="btn">Quick stop</button></form></li>'
             player_rows.append(row)
@@ -276,10 +279,10 @@ class MSXHTTPServer:
         sendspin_port = "8927"
         sendspin_url = f"http://{hostname}:{sendspin_port}"
         kiosk_html5_url = f"{base}/web?kiosk=1"
-        sendspin_web_url = f"{base}/web?sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
-        sendspin_kiosk_url = (
-            f"{base}/web?kiosk=1&sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
-        )
+        # escape the composed URL as a whole: host-derived prefix plus & separators
+        sendspin_query = f"sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
+        sendspin_web_url = html_escape(f"{prefix}/web?{sendspin_query}")
+        sendspin_kiosk_url = html_escape(f"{prefix}/web?kiosk=1&{sendspin_query}")
 
         html = f"""<!DOCTYPE html>
 <html>
@@ -458,7 +461,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         offset = _int_param(request.query, "offset", 0)
         try:
             albums = await asyncio.wait_for(
-                self.provider.mass.music.albums.library_items(limit=limit, offset=offset),
+                self.provider.mass.music.albums.library_items(
+                    limit=limit, offset=offset, summary=False
+                ),
                 timeout=10.0,
             )
         except Exception:
@@ -487,7 +492,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         offset = _int_param(request.query, "offset", 0)
         try:
             artists = await asyncio.wait_for(
-                self.provider.mass.music.artists.library_items(limit=limit, offset=offset),
+                self.provider.mass.music.artists.library_items(
+                    limit=limit, offset=offset, summary=False
+                ),
                 timeout=10.0,
             )
         except Exception:
@@ -514,7 +521,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         offset = _int_param(request.query, "offset", 0)
         try:
             playlists = await asyncio.wait_for(
-                self.provider.mass.music.playlists.library_items(limit=limit, offset=offset),
+                self.provider.mass.music.playlists.library_items(
+                    limit=limit, offset=offset, summary=False
+                ),
                 timeout=10.0,
             )
         except Exception:
@@ -541,7 +550,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         offset = _int_param(request.query, "offset", 0)
         try:
             tracks = await asyncio.wait_for(
-                self.provider.mass.music.tracks.library_items(limit=limit, offset=offset),
+                self.provider.mass.music.tracks.library_items(
+                    limit=limit, offset=offset, summary=False
+                ),
                 timeout=10.0,
             )
         except Exception:
@@ -579,7 +590,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         prefix = self._get_prefix(request)
         try:
             tracks = await asyncio.wait_for(
-                self.provider.mass.music.tracks.library_items(limit=50, order_by="last_played"),
+                self.provider.mass.music.tracks.library_items(
+                    limit=50, order_by="last_played", summary=False
+                ),
                 timeout=10.0,
             )
         except Exception:
@@ -909,7 +922,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
         start = _int_param(request.query, "start", 0)
-        tracks = await self.provider.mass.music.tracks.library_items(limit=limit, offset=offset)
+        tracks = await self.provider.mass.music.tracks.library_items(
+            limit=limit, offset=offset, summary=False
+        )
         playlist = map_tracks_to_msx_playlist(
             list(tracks),
             start,
@@ -926,7 +941,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         prefix = self._get_prefix(request)
         start = _int_param(request.query, "start", 0)
         tracks = await self.provider.mass.music.tracks.library_items(
-            limit=50, order_by="last_played"
+            limit=50, order_by="last_played", summary=False
         )
         playlist = map_tracks_to_msx_playlist(
             list(tracks),
@@ -1035,9 +1050,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 player._skip_ws_notify = True
 
             try:
-                await self.provider.mass.player_queues.play_media(
-                    player_id, uri, username=await self.provider.get_owner_username()
-                )
+                async with ImpersonatedUser(
+                    self.provider.mass, await self.provider.get_owner_username()
+                ):
+                    await self.provider.mass.player_queues.play_media(player_id, uri)
             finally:
                 if from_playlist:
                     player._skip_ws_notify = False
@@ -1788,7 +1804,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """List albums."""
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
-        albums = await self.provider.mass.music.albums.library_items(limit=limit, offset=offset)
+        albums = await self.provider.mass.music.albums.library_items(
+            limit=limit, offset=offset, summary=False
+        )
         return web.json_response(
             {
                 "items": [
@@ -1819,7 +1837,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """List artists."""
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
-        artists = await self.provider.mass.music.artists.library_items(limit=limit, offset=offset)
+        artists = await self.provider.mass.music.artists.library_items(
+            limit=limit, offset=offset, summary=False
+        )
         return web.json_response(
             {
                 "items": [
@@ -1859,7 +1879,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
         playlists = await self.provider.mass.music.playlists.library_items(
-            limit=limit, offset=offset
+            limit=limit, offset=offset, summary=False
         )
         return web.json_response(
             {
@@ -1890,7 +1910,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """List tracks."""
         limit = _int_param(request.query, "limit", 50)
         offset = _int_param(request.query, "offset", 0)
-        tracks = await self.provider.mass.music.tracks.library_items(limit=limit, offset=offset)
+        tracks = await self.provider.mass.music.tracks.library_items(
+            limit=limit, offset=offset, summary=False
+        )
         return web.json_response(
             {
                 "items": [self._format_track(track) for track in tracks],
@@ -1943,7 +1965,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """Return recently played items."""
         limit = _int_param(request.query, "limit", 20)
         tracks = await self.provider.mass.music.tracks.library_items(
-            limit=limit, order_by="last_played"
+            limit=limit, order_by="last_played", summary=False
         )
         return web.json_response(
             {
@@ -2046,9 +2068,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
 
-        await self.provider.mass.player_queues.play_media(
-            player_id, track_uri, username=await self.provider.get_owner_username()
-        )
+        async with ImpersonatedUser(self.provider.mass, await self.provider.get_owner_username()):
+            await self.provider.mass.player_queues.play_media(player_id, track_uri)
         return web.json_response({"status": "ok"})
 
     async def _handle_pause(self, request: web.Request) -> web.Response:

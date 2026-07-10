@@ -82,6 +82,33 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
                     raise KeyError
             else:
                 raise KeyError
+        elif uri.startswith(("https://www.deezer.com/", "https://deezer.com/")):
+            # Deezer share URL
+            # https://www.deezer.com/track/123456
+            # https://www.deezer.com/en/track/123456 (with locale)
+            # https://deezer.com/album/789
+            _deezer_type_map = {
+                "track": MediaType.TRACK,
+                "album": MediaType.ALBUM,
+                "artist": MediaType.ARTIST,
+                "playlist": MediaType.PLAYLIST,
+                "show": MediaType.PODCAST,
+                "episode": MediaType.PODCAST_EPISODE,
+            }
+            parts = uri.rstrip("/").split("?")[0].split("/")
+            # Find the type segment by checking against the known map
+            deezer_type = None
+            deezer_id = None
+            for i, part in enumerate(parts):
+                if part in _deezer_type_map and i + 1 < len(parts):
+                    deezer_type = part
+                    deezer_id = parts[i + 1]
+                    break
+            if deezer_type is None or not deezer_id or not deezer_id.isdigit():
+                raise KeyError
+            provider_instance_id_or_domain = "deezer"
+            media_type = _deezer_type_map[deezer_type]
+            item_id = deezer_id
         elif uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             # Translate a plain URL to the builtin provider
             provider_instance_id_or_domain = "builtin"

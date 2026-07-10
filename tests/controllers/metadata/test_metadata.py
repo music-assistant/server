@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from music_assistant_models.enums import ImageType
-from music_assistant_models.media_items import MediaItemImage, MediaItemPalette
+from music_assistant_models.media_items import MediaItemPalette
 
 from music_assistant.controllers.metadata import MetaDataController
 
@@ -23,10 +22,10 @@ async def metadata_controller(mass_minimal: MusicAssistant) -> MetaDataControlle
     return controller
 
 
-async def test_get_image_palette_dispatches_by_input_type(
+async def test_get_image_palette_resolves_registered_id(
     metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A MediaItemImage resolves by (path, provider); a plain URL goes via get_palette_for_url."""
+    """A registered image id resolves to its (provider, path) and yields its palette."""
     palette = MediaItemPalette(primary=(1, 2, 3))
     calls: dict[str, object] = {}
 
@@ -34,32 +33,60 @@ async def test_get_image_palette_dispatches_by_input_type(
         calls["get_palette"] = (path, provider)
         return palette
 
-    async def fake_get_palette_for_url(_mass: object, url: str) -> MediaItemPalette:
-        calls["get_palette_for_url"] = url
-        return palette
-
     monkeypatch.setattr("music_assistant.controllers.metadata.images.get_palette", fake_get_palette)
-    monkeypatch.setattr(
-        "music_assistant.controllers.metadata.images.get_palette_for_url",
-        fake_get_palette_for_url,
-    )
 
-    image = MediaItemImage(type=ImageType.THUMB, path="cover.jpg", provider="spotify")
-    assert await metadata_controller.get_image_palette(image) is palette
+    image_id = metadata_controller.compute_image_id("spotify", "cover.jpg")
+    assert await metadata_controller.get_image_palette(image_id) is palette
     assert calls["get_palette"] == ("cover.jpg", "spotify")
 
-    assert await metadata_controller.get_image_palette("https://example/cover.jpg") is palette
-    assert calls["get_palette_for_url"] == "https://example/cover.jpg"
+
+async def test_get_image_palette_rejects_imageproxy_url(
+    metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a bare image id is accepted; a full /imageproxy/<id> URL yields None."""
+    fetched = False
+
+    async def fake_get_palette(_mass: object, _path: str, _provider: str) -> MediaItemPalette:
+        nonlocal fetched
+        fetched = True
+        return MediaItemPalette(primary=(4, 5, 6))
+
+    monkeypatch.setattr("music_assistant.controllers.metadata.images.get_palette", fake_get_palette)
+
+    image_id = metadata_controller.compute_image_id("filesystem", "/x.jpg")
+    url = f"http://mass.local/imageproxy/{image_id}?size=256"
+    assert await metadata_controller.get_image_palette(url) is None
+    assert fetched is False
+
+
+async def test_get_image_palette_rejects_unregistered_input(
+    metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unknown ids and arbitrary URLs yield None and never trigger a fetch (no SSRF)."""
+    fetched = False
+
+    async def fake_get_palette(_mass: object, _path: str, _provider: str) -> MediaItemPalette:
+        nonlocal fetched
+        fetched = True
+        return MediaItemPalette(primary=(0, 0, 0))
+
+    monkeypatch.setattr("music_assistant.controllers.metadata.images.get_palette", fake_get_palette)
+
+    # an id that was never registered
+    assert await metadata_controller.get_image_palette("0" * 64) is None
+    # an arbitrary URL must not be resolved or fetched
+    assert await metadata_controller.get_image_palette("http://169.254.169.254/latest") is None
+    assert fetched is False
 
 
 async def test_get_image_palette_returns_none_for_unreadable_image(
     metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An image whose data can't be read yields None instead of raising."""
+    """A registered image whose data can't be read yields None instead of raising."""
 
     async def boom(_mass: object, path: str, _provider: str) -> MediaItemPalette:
         raise FileNotFoundError(path)
 
     monkeypatch.setattr("music_assistant.controllers.metadata.images.get_palette", boom)
-    image = MediaItemImage(type=ImageType.THUMB, path="missing.jpg", provider="filesystem")
-    assert await metadata_controller.get_image_palette(image) is None
+    image_id = metadata_controller.compute_image_id("filesystem", "missing.jpg")
+    assert await metadata_controller.get_image_palette(image_id) is None

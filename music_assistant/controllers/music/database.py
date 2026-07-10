@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sqlite3
 from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import MusicAssistantError
@@ -25,7 +26,10 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -37,6 +41,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
+    MEDIA_ITEM_DB_TABLES,
     VACUUM_MIN_RECLAIM_RATIO,
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
@@ -127,6 +132,12 @@ class MusicDatabaseSetupMixin:
                 f"WHERE media_type = '{ctrl.media_type}')"
             )
             await self.database.delete_where_query(ctrl.db_table, query)
+            # External id lookup rows where the db item is removed
+            query = (
+                f"item_id not in (SELECT item_id from {ctrl.db_table}) "
+                f"AND media_type = '{ctrl.media_type}'"
+            )
+            await self.database.delete_where_query(DB_TABLE_EXTERNAL_ID_LOOKUP, query)
             # Cleanup removed db items from the playlog
             where_clause = (
                 f"media_type = '{ctrl.media_type}' AND provider = 'library' "
@@ -240,6 +251,7 @@ class MusicDatabaseSetupMixin:
                 [media_type] TEXT NOT NULL,
                 [name] TEXT NOT NULL,
                 [image] json,
+                [artists] json,
                 [timestamp] INTEGER DEFAULT 0,
                 [fully_played] BOOLEAN,
                 [seconds_played] INTEGER,
@@ -259,7 +271,6 @@ class MusicDatabaseSetupMixin:
                     [year] INTEGER,
                     [favorite] BOOLEAN NOT NULL DEFAULT 0,
                     [metadata] json NOT NULL,
-                    [external_ids] json NOT NULL,
                     [play_count] INTEGER NOT NULL DEFAULT 0,
                     [last_played] INTEGER NOT NULL DEFAULT 0,
                     [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
@@ -276,13 +287,13 @@ class MusicDatabaseSetupMixin:
             [sort_name] TEXT NOT NULL,
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [artist_type] TEXT NOT NULL
             );"""
         )
         await self.database.execute(
@@ -295,7 +306,6 @@ class MusicDatabaseSetupMixin:
             [duration] INTEGER,
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
@@ -316,7 +326,6 @@ class MusicDatabaseSetupMixin:
             [is_editable] BOOLEAN NOT NULL,
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
@@ -335,7 +344,6 @@ class MusicDatabaseSetupMixin:
             [sort_name] TEXT NOT NULL,
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
@@ -357,7 +365,6 @@ class MusicDatabaseSetupMixin:
             [narrators] json NOT NULL,
             [metadata] json NOT NULL,
             [duration] INTEGER,
-            [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
@@ -377,7 +384,6 @@ class MusicDatabaseSetupMixin:
             [publisher] TEXT,
             [total_episodes] INTEGER NOT NULL,
             [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
             [play_count] INTEGER NOT NULL DEFAULT 0,
             [last_played] INTEGER NOT NULL DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
@@ -396,7 +402,6 @@ class MusicDatabaseSetupMixin:
             [description] TEXT,
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
             [genre_aliases] json NOT NULL DEFAULT '[]',
             [play_count] INTEGER NOT NULL DEFAULT 0,
             [last_played] INTEGER NOT NULL DEFAULT 0,
@@ -405,7 +410,8 @@ class MusicDatabaseSetupMixin:
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
             [is_excluded] BOOLEAN NOT NULL DEFAULT 0,
-            [is_default] BOOLEAN NOT NULL DEFAULT 0
+            [is_default] BOOLEAN NOT NULL DEFAULT 0,
+            [content_type] TEXT
             );"""
         )
         await self.database.execute(
@@ -462,6 +468,16 @@ class MusicDatabaseSetupMixin:
             );"""
         )
         await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_EXTERNAL_ID_LOOKUP}(
+            [media_type] TEXT NOT NULL,
+            [external_id_type] TEXT NOT NULL,
+            [external_id] TEXT NOT NULL COLLATE NOCASE,
+            [item_id] INTEGER NOT NULL,
+            UNIQUE(media_type, external_id, external_id_type, item_id)
+            );"""
+        )
+        await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}(
             [track_id] INTEGER NOT NULL,
             [artist_id] INTEGER NOT NULL,
@@ -479,6 +495,15 @@ class MusicDatabaseSetupMixin:
             UNIQUE(album_id, artist_id)
             );"""
         )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIOBOOK_ARTISTS}(
+            [audiobook_id] INTEGER NOT NULL,
+            [artist_id] INTEGER NOT NULL,
+            FOREIGN KEY([audiobook_id]) REFERENCES [audiobooks]([item_id]),
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+            UNIQUE(audiobook_id, artist_id)
+            );"""
+        )
 
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
@@ -492,6 +517,38 @@ class MusicDatabaseSetupMixin:
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
                     UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
         )
+
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS_FAILURES}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [reason] TEXT NOT NULL,
+                    [analysis_version] INTEGER NOT NULL DEFAULT 1,
+                    [next_retry] INTEGER,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+
+        # full-text search tables (trigram tokenizer for substring matching on search_name)
+        for db_table in MEDIA_ITEM_DB_TABLES:
+            try:
+                await self.database.execute(
+                    f"""CREATE VIRTUAL TABLE IF NOT EXISTS {db_table}_fts USING fts5(
+                        search_name,
+                        content='{db_table}',
+                        content_rowid='item_id',
+                        tokenize='trigram'
+                        );"""
+                )
+            except sqlite3.OperationalError as err:
+                msg = (
+                    "The library database requires SQLite 3.34+ with FTS5 support "
+                    f"(detected version: {sqlite3.sqlite_version})"
+                )
+                raise MusicAssistantError(msg) from err
 
         await self.database.commit()
 
@@ -527,11 +584,6 @@ class MusicDatabaseSetupMixin:
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_search_sort_name_idx "
                 f"ON {db_table}(search_sort_name);"
-            )
-            # index on external_ids
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_external_ids_idx "
-                f"ON {db_table}(external_ids);"
             )
             # index on timestamp_added
             await self.database.execute(
@@ -576,6 +628,14 @@ class MusicDatabaseSetupMixin:
             f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,in_library);"
         )
 
+        # index on external_id_lookup table to serve the per-item delete/rewrite path;
+        # the typed and untyped external id lookups are served by the table's unique
+        # index, which is deliberately ordered (media_type,external_id,...) for that
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_EXTERNAL_ID_LOOKUP}_item_id_idx "
+            f"on {DB_TABLE_EXTERNAL_ID_LOOKUP}(media_type,item_id);"
+        )
+
         # indexes on track_artists table
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_track_id_idx "
@@ -617,21 +677,17 @@ class MusicDatabaseSetupMixin:
             f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_unique_idx "
             f"on {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid);"
         )
+        # speed up recency lookups (smart shuffle / dedup) by user and time window
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_userid_timestamp_idx "
+            f"on {DB_TABLE_PLAYLOG}(userid,timestamp);"
+        )
         await self.database.commit()
 
     async def __create_database_triggers(self) -> None:
         """Create database triggers."""
         # triggers to auto update timestamps
-        for db_table in (
-            "artists",
-            "albums",
-            "tracks",
-            "playlists",
-            "radios",
-            "audiobooks",
-            "podcasts",
-            "genres",
-        ):
+        for db_table in MEDIA_ITEM_DB_TABLES:
             await self.database.execute(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
@@ -639,6 +695,40 @@ class MusicDatabaseSetupMixin:
                 BEGIN
                     UPDATE {db_table} SET timestamp_modified=cast(strftime('%s','now') as int)
                     WHERE rowid = new.rowid;
+                END;
+                """
+            )
+        # triggers to keep the FTS search tables in sync with the content tables
+        for db_table in MEDIA_ITEM_DB_TABLES:
+            await self.database.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {db_table}_fts_insert
+                AFTER INSERT ON {db_table}
+                BEGIN
+                    INSERT INTO {db_table}_fts(rowid, search_name)
+                    VALUES (new.item_id, new.search_name);
+                END;
+                """
+            )
+            await self.database.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {db_table}_fts_delete
+                AFTER DELETE ON {db_table}
+                BEGIN
+                    INSERT INTO {db_table}_fts({db_table}_fts, rowid, search_name)
+                    VALUES ('delete', old.item_id, old.search_name);
+                END;
+                """
+            )
+            await self.database.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {db_table}_fts_update
+                AFTER UPDATE OF search_name ON {db_table}
+                BEGIN
+                    INSERT INTO {db_table}_fts({db_table}_fts, rowid, search_name)
+                    VALUES ('delete', old.item_id, old.search_name);
+                    INSERT INTO {db_table}_fts(rowid, search_name)
+                    VALUES (new.item_id, new.search_name);
                 END;
                 """
             )

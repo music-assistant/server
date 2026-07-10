@@ -1,7 +1,13 @@
-"""Smart Fades - Audio filter implementations."""
+"""
+Smart Fades - the FFmpeg filter toolset.
+
+Each ``Filter`` is one tool a transition can apply to the fade-out/fade-in
+stream pair; the renderer picks and orders them to realize a ``TransitionPlan``.
+"""
 
 import logging
 from abc import ABC, abstractmethod
+from enum import StrEnum
 
 
 class Filter(ABC):
@@ -119,118 +125,126 @@ class FadeOutTrimFilter(Filter):
         return f"FadeOutTrim(end={self.fadeout_end_pos:.2f}s, trimmed={self.trimmed_seconds:.2f}s)"
 
 
-class FrequencySweepFilter(Filter):
-    """Filter that sweeps a lowpass/highpass cutoff frequency over time."""
+class ShelfType(StrEnum):
+    """EQ band for a scheduled-gain filter; values are the ffmpeg filter names."""
 
-    output_fadeout_label: str = "frequency_sweep"
-    output_fadein_label: str = "frequency_sweep"
+    LOW = "lowshelf"
+    HIGH = "highshelf"
+    PEAK = "equalizer"
 
-    # cutoff at which the filter is perceptually transparent
-    lowpass_open_freq: int = 20000
-    highpass_open_freq: int = 20
-    # seconds between cutoff updates; small enough to be perceived as continuous
-    step_interval: float = 0.1
+
+class ShelfFilter(Filter):
+    """Shelving EQ whose gain follows a scheduled ramp (asendcmd-driven)."""
 
     def __init__(
         self,
         logger: logging.Logger,
-        sweep_type: str,
-        target_freq: int,
-        duration: float,
-        start_time: float,
-        sweep_direction: str,
-        poles: int,
-        curve_type: str,
-        stream_type: str = "fadeout",
+        shelf_type: ShelfType,
+        frequency: int,
+        gain_steps: list[tuple[float, float]],
+        stream_type: str,
     ):
         """
-        Initialize frequency sweep filter.
+        Initialize shelf filter.
 
-        :param sweep_type: 'lowpass' or 'highpass'.
-        :param target_freq: Target cutoff frequency for the filter.
-        :param duration: Duration of the sweep in seconds.
-        :param start_time: When to start the sweep.
-        :param sweep_direction: 'fade_in' (open -> target) or 'fade_out' (target -> open).
-        :param poles: Number of poles for the filter.
-        :param curve_type: 'linear', 'exponential', or 'logarithmic'.
+        :param shelf_type: Which shelving band to process.
+        :param frequency: Shelf corner frequency in Hz.
+        :param gain_steps: Schedule of (time_seconds, gain_db); the first step at
+            t=0 sets the initial gain.
         :param stream_type: 'fadeout' or 'fadein' - which stream to process.
         """
-        self.sweep_type = sweep_type
-        self.target_freq = target_freq
-        self.duration = duration
-        self.start_time = start_time
-        self.sweep_direction = sweep_direction
-        self.poles = poles
-        self.curve_type = curve_type
+        self.shelf_type = shelf_type
+        self.frequency = frequency
+        self.gain_steps = gain_steps
         self.stream_type = stream_type
-
-        # Set output labels based on stream type
+        band = "low" if shelf_type is ShelfType.LOW else "high"
         if stream_type == "fadeout":
-            self.output_fadeout_label = f"fadeout_{sweep_type}"
-            self.output_fadein_label = "fadein_passthrough"
+            self.output_fadeout_label = f"fadeout_{band}shelf"
+            self.output_fadein_label = f"fadein_pt_{band}_out"
         else:
-            self.output_fadeout_label = "fadeout_passthrough"
-            self.output_fadein_label = f"fadein_{sweep_type}"
-
+            self.output_fadeout_label = f"fadeout_pt_{band}_in"
+            self.output_fadein_label = f"fadein_{band}shelf"
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
-        """Generate FFmpeg filters for the frequency sweep effect."""
-        # Select the correct input based on stream type
+        """Generate the shelf chain on this filter's stream and passthrough on the other."""
         if self.stream_type == "fadeout":
-            input_label = input_fadeout_label
-            output_label = self.output_fadeout_label
-            passthrough_label = self.output_fadein_label
-            passthrough_input = input_fadein_label
+            input_label, output_label = input_fadeout_label, self.output_fadeout_label
+            pass_in, pass_out = input_fadein_label, self.output_fadein_label
         else:
-            input_label = input_fadein_label
-            output_label = self.output_fadein_label
-            passthrough_label = self.output_fadeout_label
-            passthrough_input = input_fadeout_label
-
-        # instance name is scoped per stream type so both asendcmd command
-        # sequences address their own filter only
-        instance = f"{self.sweep_type}@sweep_{self.stream_type}"
-        steps = self._compute_sweep_steps()
-        cmd_string = "; ".join(f"{ts:.3f} {instance} f {freq:.1f}" for ts, freq in steps)
-        initial_freq = steps[0][1]
-
+            input_label, output_label = input_fadein_label, self.output_fadein_label
+            pass_in, pass_out = input_fadeout_label, self.output_fadeout_label
+        band = "low" if self.shelf_type is ShelfType.LOW else "high"
+        instance = f"{self.shelf_type}@{self.stream_type}_{band}"
+        cmd = "; ".join(f"{t:.3f} {instance} g {g:.2f}" for t, g in self.gain_steps)
+        initial = self.gain_steps[0][1]
         return [
-            # Pass through the other stream unchanged
-            f"{passthrough_input}anull[{passthrough_label}]",  # codespell:ignore anull
-            f"{input_label}asendcmd=c='{cmd_string}',"
-            f"{instance}=f={initial_freq:.1f}:poles={self.poles}[{output_label}]",
+            f"{pass_in}anull[{pass_out}]",  # codespell:ignore anull
+            f"{input_label}asendcmd=c='{cmd}',"
+            f"{instance}=g={initial:.2f}:f={self.frequency}:width_type=q:width=0.707"
+            f"[{output_label}]",
         ]
 
     def __repr__(self) -> str:
-        """Return string representation of FrequencySweepFilter."""
-        return f"FreqSweep({self.sweep_type}@{self.target_freq}Hz, poles={self.poles})"
+        """Return string representation of ShelfFilter."""
+        gains = f"{self.gain_steps[0][1]:.0f}->{self.gain_steps[-1][1]:.0f}dB"
+        return f"Shelf({self.shelf_type}@{self.frequency}Hz {self.stream_type} {gains})"
 
-    def _compute_sweep_steps(self) -> list[tuple[float, float]]:
-        """Compute the (timestamp, cutoff frequency) steps of the sweep."""
-        open_freq = (
-            self.lowpass_open_freq if self.sweep_type == "lowpass" else self.highpass_open_freq
-        )
-        if self.sweep_direction == "fade_in":
-            freq_start, freq_end = float(open_freq), float(self.target_freq)
+
+class PeakFilter(Filter):
+    """Parametric peak EQ (mid swap) whose gain follows a scheduled ramp (asendcmd-driven)."""
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        frequency: int,
+        width_oct: float,
+        gain_steps: list[tuple[float, float]],
+        stream_type: str,
+    ):
+        """
+        Initialize peak filter.
+
+        :param frequency: Peak center frequency in Hz.
+        :param width_oct: Peak bandwidth in octaves.
+        :param gain_steps: Schedule of (time_seconds, gain_db); the first step at
+            t=0 sets the initial gain.
+        :param stream_type: 'fadeout' or 'fadein' - which stream to process.
+        """
+        self.frequency = frequency
+        self.width_oct = width_oct
+        self.gain_steps = gain_steps
+        self.stream_type = stream_type
+        if stream_type == "fadeout":
+            self.output_fadeout_label = "fadeout_midswap"
+            self.output_fadein_label = "fadein_pt_midswap"
         else:
-            freq_start, freq_end = float(self.target_freq), float(open_freq)
+            self.output_fadeout_label = "fadeout_pt_midswap"
+            self.output_fadein_label = "fadein_midswap"
+        super().__init__(logger)
 
-        n_steps = max(2, int(self.duration / self.step_interval))
-        steps: list[tuple[float, float]] = []
-        for i in range(n_steps + 1):
-            progress = i / n_steps
-            # exponential delays the cutoff movement, logarithmic front-loads it
-            # (same perceived pacing as the volume curves this sweep replaced)
-            if self.curve_type == "exponential":
-                progress = progress**2
-            elif self.curve_type == "logarithmic":
-                progress = progress**0.5
-            timestamp = self.start_time + (i / n_steps) * self.duration
-            # interpolate in log-frequency space so the sweep is perceptually linear
-            freq = freq_start * (freq_end / freq_start) ** progress
-            steps.append((timestamp, freq))
-        return steps
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Generate the peak EQ chain on this filter's stream and passthrough on the other."""
+        if self.stream_type == "fadeout":
+            input_label, output_label = input_fadeout_label, self.output_fadeout_label
+            pass_in, pass_out = input_fadein_label, self.output_fadein_label
+        else:
+            input_label, output_label = input_fadein_label, self.output_fadein_label
+            pass_in, pass_out = input_fadeout_label, self.output_fadeout_label
+        instance = f"{ShelfType.PEAK}@{self.stream_type}_mid"
+        cmd = "; ".join(f"{t:.3f} {instance} g {g:.2f}" for t, g in self.gain_steps)
+        initial = self.gain_steps[0][1]
+        return [
+            f"{pass_in}anull[{pass_out}]",  # codespell:ignore anull
+            f"{input_label}asendcmd=c='{cmd}',"
+            f"{instance}=g={initial:.2f}:f={self.frequency}:width_type=o:width={self.width_oct}"
+            f"[{output_label}]",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of PeakFilter."""
+        gains = f"{self.gain_steps[0][1]:.0f}->{self.gain_steps[-1][1]:.0f}dB"
+        return f"Peak({self.frequency}Hz {self.stream_type} {gains})"
 
 
 class CrossfadeFilter(Filter):

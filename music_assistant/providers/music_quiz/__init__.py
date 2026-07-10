@@ -1,0 +1,1067 @@
+"""
+Music Quiz Plugin Provider for Music Assistant.
+
+Provides the backend game engine for multiplayer music quiz games: guests
+join with a QR code (join URL) on their own device and compete to guess the
+currently playing track.
+
+Playback is hosted by a SharedPlaybackSession in one of two modes
+(provider config):
+
+- venue: a configured real player plays the rounds out loud; guests may
+  optionally listen in on their own device when the player supports grouping.
+- remote: a hidden virtual player leads the rounds and every guest listens
+  on their own device (silent-disco style).
+
+Game state changes are pushed to all connected clients as PROVIDER_EVENT
+events with ``object_id`` set to this provider's instance_id. Event payload
+contract (all payloads are JSON objects)::
+
+    {"event": "game_updated", "state": {<public game state>}}
+    {"event": "game_removed"}
+
+The public game state is guest-safe by construction and contains:
+
+- always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``mode``
+  (the configured playback mode: venue/remote), ``round_count``,
+  ``suggestion_count``, ``answer_duration`` and
+  ``players``: a list of ``{name, score, ready, answered}`` entries
+  (players are keyed by their unique display name; private player IDs
+  never appear in broadcast payloads).
+- during the answering phase ``current_round`` holds ``round_index``,
+  ``started_at`` (server timestamp), ``deadline`` (server timestamp when
+  answering closes), an optional ``question`` prompt and ``suggestions``:
+  a list of ``{suggestion_id, label}`` entries. Suggestion IDs are opaque
+  and the payload never contains the track URI, artwork or correctness.
+- during the reveal/finished phases ``current_round`` additionally exposes
+  ``correct_suggestion_id``, ``answer_label``, ``track_uri``, ``image_url``
+  and ``duration``, and each player entry gains ``last_answer``:
+  ``{suggestion_id, correct, points}``. Lyrics are not part of the game
+  state: the frontend fetches them via the standard
+  ``metadata/get_track_lyrics`` API using the revealed ``track_uri``.
+
+Guests authenticate through the standard guest access flow (join code in
+the join URL) and register themselves as quiz player via ``music_quiz/join``,
+which returns their private ``player_id``. That ID acts as the player's
+credential for ``music_quiz/answer``, ``music_quiz/ready`` and
+``music_quiz/state`` and must be kept client-side.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import secrets
+import time
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any, cast
+
+from music_assistant_models.auth import Scope
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+    ProviderConfig,
+)
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, QueueOption
+from music_assistant_models.errors import InvalidDataError, SetupFailedError
+from music_assistant_models.media_items import Track
+
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers import guest_access
+from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
+from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.music_quiz.errors import (
+    TRANSLATION_OWNER,
+    MusicQuizGameActiveError,
+    MusicQuizGameFullError,
+    MusicQuizNoGameError,
+    MusicQuizNoPlaybackTargetError,
+    MusicQuizUnknownPlayerError,
+    MusicQuizWrongPhaseError,
+)
+from music_assistant.providers.music_quiz.game import (
+    add_player,
+    all_active_players_answered,
+    are_active_players_ready,
+    finish_game,
+    get_current_round,
+    mark_player_ready,
+    reset_game,
+    reveal_round,
+    start_round,
+    submit_answer,
+)
+from music_assistant.providers.music_quiz.models import (
+    MusicQuizConfig,
+    MusicQuizDifficulty,
+    MusicQuizGame,
+    MusicQuizPhase,
+    MusicQuizPlayer,
+    MusicQuizRound,
+    MusicQuizSource,
+)
+from music_assistant.providers.music_quiz.quiz_types.base import QuizType
+from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
+
+if TYPE_CHECKING:
+    from music_assistant_models.enums import ProviderFeature
+    from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.models import ProviderInstanceType
+
+SUPPORTED_FEATURES: set[ProviderFeature] = set()
+
+_ApiHandler = Callable[..., Coroutine[Any, Any, Any]]
+
+CONF_MODE = "mode"
+CONF_PLAYER = "player"
+CONF_PLAYER_AUTO = "__auto__"
+CONF_USE_AI_DISTRACTORS = "use_ai_distractors"
+
+MUSIC_QUIZ_GUEST_USER = "music_quiz_guest"
+MUSIC_QUIZ_GUEST_DISPLAY_NAME = "Music Quiz Guest"
+
+QUIZ_TYPES: dict[str, type[QuizType]] = {
+    "guess_the_song": GuessTheSongQuizType,
+}
+
+# defence-in-depth caps: a leaked join URL or malformed host request must not
+# be able to flood a game with players or background work
+MAX_ROUND_COUNT = 100
+MAX_SUGGESTION_COUNT = 12
+MAX_ANSWER_DURATION = 300
+MAX_SOURCE_COUNT = 200
+MAX_PLAYER_COUNT = 100
+# the joined name is broadcast to every client on each state update; bound it
+MAX_PLAYER_NAME_LENGTH = 40
+
+# minimum time players get to see the reveal/scoreboard before the game
+# advances, even when the round track has (almost) finished playing
+MIN_REVEAL_SECONDS = 10.0
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    return MusicQuizPlugin(mass, manifest, config, SUPPORTED_FEATURES)
+
+
+async def get_config_entries(
+    mass: MusicAssistant,
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """
+    Return Config entries to setup this provider.
+
+    :param mass: MusicAssistant instance.
+    :param instance_id: ID of an existing provider instance (None if new instance setup).
+    :param action: Optional action key called from config entries UI.
+    :param values: The (intermediate) raw values for config entries sent with the action.
+    """
+    return (
+        ConfigEntry(
+            key=CONF_MODE,
+            type=ConfigEntryType.STRING,
+            required=True,
+            default_value=SharedPlaybackMode.VENUE.value,
+            options=[
+                ConfigValueOption(SharedPlaybackMode.VENUE.value),
+                ConfigValueOption(SharedPlaybackMode.REMOTE.value),
+            ],
+        ),
+        ConfigEntry(
+            key=CONF_PLAYER,
+            type=ConfigEntryType.STRING,
+            required=True,
+            default_value=CONF_PLAYER_AUTO,
+            depends_on=CONF_MODE,
+            depends_on_value=SharedPlaybackMode.VENUE.value,
+            options=[
+                ConfigValueOption(CONF_PLAYER_AUTO),
+                *[
+                    ConfigValueOption(player.player_id, title=player.display_name)
+                    for player in sorted(
+                        mass.players.all_players(False, False),
+                        key=lambda p: p.display_name.lower(),
+                    )
+                ],
+            ],
+        ),
+        ConfigEntry(
+            key=CONF_USE_AI_DISTRACTORS,
+            type=ConfigEntryType.BOOLEAN,
+            required=False,
+            default_value=False,
+        ),
+    )
+
+
+class MusicQuizPlugin(PluginProvider):
+    """Music Quiz plugin provider for Music Assistant."""
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
+    ) -> None:
+        """Initialize the Music Quiz plugin."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._game: MusicQuizGame | None = None
+        self._quiz_type: QuizType | None = None
+        self._game_lock = asyncio.Lock()
+        self._playback_session: SharedPlaybackSession | None = None
+        self._playback_lock = asyncio.Lock()
+        self._next_round_task: asyncio.Task[MusicQuizRound] | None = None
+        self._unregister_handles: list[Callable[[], None]] = []
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        host_commands: tuple[tuple[str, _ApiHandler], ...] = (
+            ("music_quiz/create", self.create_game),
+            ("music_quiz/get", self.get_game),
+            ("music_quiz/start", self.start_game),
+            ("music_quiz/reveal", self.reveal),
+            ("music_quiz/next", self.next_round),
+            ("music_quiz/reset", self.reset),
+            ("music_quiz/delete", self.delete_game),
+        )
+        for command, handler in host_commands:
+            self._unregister_handles.append(
+                self.mass.register_api_command(command, handler, required_scope=Scope.USERS_INVITE)
+            )
+        # guest game commands: any authenticated user passes the API layer,
+        # the handlers themselves validate the caller is the quiz guest user
+        guest_commands: tuple[tuple[str, _ApiHandler], ...] = (
+            ("music_quiz/info", self.get_game_info),
+            ("music_quiz/join", self.join_game),
+            ("music_quiz/state", self.get_player_state),
+            ("music_quiz/answer", self.answer),
+            ("music_quiz/ready", self.ready),
+        )
+        for command, handler in guest_commands:
+            self._unregister_handles.append(self.mass.register_api_command(command, handler))
+        # listen-in commands control playback on the guest's own device
+        listen_in_commands: tuple[tuple[str, _ApiHandler], ...] = (
+            ("music_quiz/listen_in", self.listen_in),
+            ("music_quiz/stop_listen_in", self.stop_listen_in),
+            ("music_quiz/can_listen_in", self.can_listen_in),
+        )
+        for command, handler in listen_in_commands:
+            self._unregister_handles.append(
+                self.mass.register_api_command(
+                    command, handler, required_scope=Scope.PLAYERS_CONTROL
+                )
+            )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """
+        Call when the provider is being unloaded.
+
+        :param is_removed: Whether the provider is being removed (vs just reloaded).
+        """
+        for unregister in self._unregister_handles:
+            unregister()
+        self._unregister_handles.clear()
+        self._cancel_timers()
+        self._cancel_next_round_task()
+        # clear game state before tearing down the session so a guest listen-in
+        # racing with unload cannot (re)create or join a session mid-teardown
+        self._game = None
+        self._quiz_type = None
+        await self._close_playback_session()
+        if is_removed:
+            await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
+        await super().unload(is_removed)
+
+    # ==================== Host API Commands ====================
+
+    async def create_game(
+        self,
+        quiz_type: str = "guess_the_song",
+        round_count: int = 5,
+        suggestion_count: int = 4,
+        answer_duration: int = 30,
+        source_uris: list[str] | None = None,
+        name: str | None = None,
+        difficulty: str = MusicQuizDifficulty.NORMAL.value,
+    ) -> dict[str, Any]:
+        """
+        Create a new Music Quiz game, replacing a previous (finished) game.
+
+        :param quiz_type: The quiz type to play (e.g. "guess_the_song").
+        :param round_count: Number of rounds to play.
+        :param suggestion_count: Number of answer suggestions per round.
+        :param answer_duration: Answering duration in seconds.
+        :param source_uris: Track or playlist URIs to draw the rounds from.
+        :param name: Optional game name.
+        :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
+        """
+        if quiz_type not in QUIZ_TYPES:
+            raise InvalidDataError(
+                f"Unknown quiz type: {quiz_type}",
+                translation_key="music_quiz_unknown_quiz_type",
+                translation_owner=TRANSLATION_OWNER,
+            )
+        game_config = MusicQuizConfig(
+            round_count=round_count,
+            suggestion_count=suggestion_count,
+            answer_duration=answer_duration,
+            source_uris=source_uris or [],
+            name=_clean_game_name(name),
+            difficulty=difficulty,
+            use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
+        )
+        _validate_config(game_config)
+        async with self._game_lock:
+            if self._game is not None and self._game.phase in (
+                MusicQuizPhase.ANSWERING,
+                MusicQuizPhase.REVEAL,
+            ):
+                raise MusicQuizGameActiveError("A Music Quiz game is already in progress")
+            self._cancel_timers()
+            self._cancel_next_round_task()
+            self._game = MusicQuizGame(
+                config=game_config,
+                sources=await self._resolve_sources(game_config.source_uris),
+                created_at=time.time(),
+            )
+            self._quiz_type = QUIZ_TYPES[quiz_type](self.mass, game_config)
+            self._prefetch_round(0)
+            self._signal_game_updated()
+            return await self._host_state()
+
+    async def get_game(self) -> dict[str, Any]:
+        """Return the host-visible state of the current game."""
+        # take the game lock so the snapshot cannot tear against a concurrent
+        # reveal/reset while _host_state awaits the join URL
+        async with self._game_lock:
+            self._require_game()
+            return await self._host_state()
+
+    async def start_game(self) -> dict[str, Any]:
+        """Start the first round of the current game."""
+        async with self._game_lock:
+            game = self._require_game()
+            if game.phase != MusicQuizPhase.LOBBY:
+                raise MusicQuizWrongPhaseError("The game has already started")
+            await self._start_next_round()
+            return await self._host_state()
+
+    async def reveal(self) -> dict[str, Any]:
+        """Reveal the current round and apply scoring."""
+        async with self._game_lock:
+            self._require_game()
+            self._do_reveal()
+            return await self._host_state()
+
+    async def next_round(self) -> dict[str, Any]:
+        """Advance to the next round or finish the game."""
+        async with self._game_lock:
+            game = self._require_game()
+            if game.phase != MusicQuizPhase.REVEAL:
+                raise MusicQuizWrongPhaseError("Next round can only start after reveal")
+            await self._advance_from_reveal()
+            return await self._host_state()
+
+    async def reset(self) -> dict[str, Any]:
+        """Reset the current game for a new run with the same settings and players."""
+        async with self._game_lock:
+            game = self._require_game()
+            self._cancel_timers()
+            self._cancel_next_round_task()
+            await self._stop_playback()
+            reset_game(game)
+            self._prefetch_round(0)
+            self._signal_game_updated()
+            return await self._host_state()
+
+    async def delete_game(self) -> None:
+        """Delete the current game and stop its playback."""
+        async with self._game_lock:
+            self._require_game()
+            self._cancel_timers()
+            self._cancel_next_round_task()
+            # clear game state before tearing down the session so a guest listen-in
+            # racing with delete cannot (re)create or join a session mid-teardown
+            self._game = None
+            self._quiz_type = None
+            await self._stop_playback()
+            # tear down the shared session so its virtual player / listen-in
+            # guests do not linger once the game is gone
+            await self._close_playback_session()
+            self.signal_provider_event({"event": "game_removed"})
+
+    # ==================== Guest API Commands ====================
+
+    async def get_game_info(self) -> dict[str, Any] | None:
+        """Return public metadata of the current game (e.g. for the join screen)."""
+        if self._game is None:
+            return None
+        return {
+            "name": self._game.config.name,
+            "phase": self._game.phase.value,
+            "mode": self._mode,
+            "player_count": len(self._game.players),
+            "round_count": self._game.config.round_count,
+        }
+
+    async def join_game(self, name: str) -> dict[str, Any]:
+        """
+        Join the current game as a player.
+
+        :param name: Unique player display name.
+        :return: The player's private player_id (their credential for further
+            game commands) and their personalized game state.
+        """
+        self._validate_guest_access()
+        async with self._game_lock:
+            game = self._require_game()
+            player_name = name.strip()[:MAX_PLAYER_NAME_LENGTH]
+            if not player_name:
+                raise InvalidDataError(
+                    "Player name is required",
+                    translation_key="music_quiz_name_required",
+                    translation_owner=TRANSLATION_OWNER,
+                )
+            if len(game.players) >= MAX_PLAYER_COUNT:
+                raise MusicQuizGameFullError("Music Quiz game is full")
+            player = MusicQuizPlayer(
+                player_id=secrets.token_urlsafe(24),
+                name=player_name,
+                joined_at=time.time(),
+                active_from_round=_get_join_round(game),
+            )
+            add_player(game, player)
+            self._signal_game_updated()
+            return {
+                "player_id": player.player_id,
+                "state": _player_state(game, player, self._mode),
+            }
+
+    async def get_player_state(self, player_id: str) -> dict[str, Any]:
+        """
+        Return the personalized game state for a player (initial load/reconnect).
+
+        :param player_id: The player's private player_id.
+        """
+        self._validate_guest_access()
+        game = self._require_game()
+        return _player_state(game, _get_player(game, player_id), self._mode)
+
+    async def answer(self, player_id: str, suggestion_id: str) -> dict[str, Any]:
+        """
+        Submit and lock a player's answer for the current round.
+
+        :param player_id: The player's private player_id.
+        :param suggestion_id: Selected suggestion ID.
+        """
+        self._validate_guest_access()
+        async with self._game_lock:
+            game = self._require_game()
+            player = _get_player(game, player_id)
+            submit_answer(game, player.player_id, suggestion_id, time.time())
+            # end the round early when every active player has locked an answer
+            if all_active_players_answered(game):
+                self._do_reveal()
+            else:
+                self._signal_game_updated()
+            return _player_state(game, player, self._mode)
+
+    async def ready(self, player_id: str) -> dict[str, Any]:
+        """
+        Mark a player ready for the next round during reveal.
+
+        :param player_id: The player's private player_id.
+        """
+        self._validate_guest_access()
+        async with self._game_lock:
+            game = self._require_game()
+            player = _get_player(game, player_id)
+            # a repeat ready is a no-op: it cannot newly satisfy the all-ready
+            # check, so return current state without re-broadcasting
+            if game.phase != MusicQuizPhase.REVEAL or player.ready:
+                return _player_state(game, player, self._mode)
+            mark_player_ready(game, player.player_id)
+            # advance early when every player is ready for the next round
+            if are_active_players_ready(game):
+                await self._advance_from_reveal()
+            else:
+                self._signal_game_updated()
+            return _player_state(game, player, self._mode)
+
+    async def listen_in(self, web_player_id: str) -> None:
+        """
+        Attach a guest's web player to the game audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        """
+        self._validate_guest_access()
+        # hold the playback lock across resolving and joining the session so a
+        # guest can never be attached to a session that is being torn down
+        async with self._playback_lock:
+            self._require_game()
+            session = await self._get_or_create_session_locked()
+            if session is None:
+                raise MusicQuizNoPlaybackTargetError("Listen-in is not available for this game")
+            await session.add_guest_listener(web_player_id)
+
+    async def stop_listen_in(self, web_player_id: str) -> None:
+        """
+        Detach a guest's web player from the game audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        """
+        self._validate_guest_access()
+        async with self._playback_lock:
+            if self._playback_session is not None:
+                await self._playback_session.remove_guest_listener(web_player_id)
+
+    async def can_listen_in(self, web_player_id: str) -> bool:
+        """
+        Return whether the given guest web player can listen in on the game audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        """
+        self._validate_guest_access()
+        async with self._playback_lock:
+            session = await self._get_or_create_session_locked()
+            return session is not None and session.can_listen_in(web_player_id)
+
+    # ==================== Internals ====================
+
+    def _require_game(self) -> MusicQuizGame:
+        """Return the current game or raise when there is none."""
+        if self._game is None:
+            raise MusicQuizNoGameError("There is no active Music Quiz game")
+        return self._game
+
+    @property
+    def _mode(self) -> str:
+        """Return the configured playback mode (venue/remote)."""
+        return cast("str", self.config.get_value(CONF_MODE))
+
+    @staticmethod
+    def _validate_guest_access() -> None:
+        """
+        Validate the current user is an authenticated Music Quiz guest.
+
+        :raises InvalidDataError: If the user is not a Music Quiz guest.
+        """
+        user = get_current_user()
+        if not user or user.username != MUSIC_QUIZ_GUEST_USER:
+            raise InvalidDataError(
+                "This action is only available to Music Quiz guests",
+                translation_key="music_quiz_guest_only",
+                translation_owner=TRANSLATION_OWNER,
+            )
+
+    async def _host_state(self) -> dict[str, Any]:
+        """Return the host-visible state of the current game."""
+        game = self._require_game()
+        return {
+            **_public_state(game, self._mode),
+            "created_at": game.created_at,
+            "sources": [source.to_dict() for source in game.sources],
+            "join_url": await self._get_join_url(),
+            "rounds": [game_round.to_dict() for game_round in game.rounds],
+        }
+
+    async def _get_join_url(self) -> str:
+        """Return the guest join URL, creating the guest user and join code if needed."""
+        guest_user = await guest_access.get_or_create_guest_user(
+            self.mass, MUSIC_QUIZ_GUEST_USER, MUSIC_QUIZ_GUEST_DISPLAY_NAME
+        )
+        code = await guest_access.get_or_create_join_code(
+            self.mass, guest_user, device_name="Music Quiz Guest"
+        )
+        return guest_access.build_join_url(self.mass, code)
+
+    def _signal_game_updated(self) -> None:
+        """Broadcast the public game state to all connected clients."""
+        if self._game is None:
+            return
+        self.signal_provider_event(
+            {"event": "game_updated", "state": _public_state(self._game, self._mode)}
+        )
+
+    async def _resolve_sources(self, source_uris: list[str]) -> list[MusicQuizSource]:
+        """Resolve configured source URIs into host-visible source metadata."""
+        sources: list[MusicQuizSource] = []
+        for source_uri in source_uris:
+            try:
+                media_item = await self.mass.music.get_item_by_uri(source_uri)
+            except Exception as err:
+                # the real failure otherwise only surfaces at round start,
+                # minutes later and far from the cause
+                self.logger.warning("Could not resolve Music Quiz source %s: %s", source_uri, err)
+                sources.append(MusicQuizSource(uri=source_uri, name=source_uri))
+                continue
+            sources.append(
+                MusicQuizSource(
+                    uri=source_uri,
+                    name=media_item.name or source_uri,
+                    media_type=media_item.media_type.value,
+                )
+            )
+        return sources
+
+    # ---------- round/phase progression (call with self._game_lock held) ----------
+
+    async def _start_next_round(self) -> None:
+        """Prepare the next round, start its playback (if any) and open the answering phase."""
+        game = self._require_game()
+        round_index = len(game.rounds)
+        next_round = await self._get_prepared_round(round_index)
+        if next_round.track_uri:
+            await self._play_track(next_round.track_uri)
+        start_round(game, next_round, time.time())
+        answer_window = _answer_window(game, next_round)
+        self.mass.call_later(
+            answer_window,
+            self._on_answer_deadline,
+            round_index,
+            task_id=self._reveal_timer_id,
+        )
+        if next_round.track_uri:
+            self._warm_up_lyrics(next_round.track_uri)
+        self._prefetch_round(round_index + 1)
+        self._signal_game_updated()
+
+    def _do_reveal(self) -> None:
+        """Reveal the current round, apply scoring and schedule the auto-advance."""
+        game = self._require_game()
+        reveal_round(game)
+        self.mass.cancel_timer(self._reveal_timer_id)
+        current_round = get_current_round(game)
+        # let the revealed track play out before auto-advancing; without a
+        # known duration the game advances on all-ready or a host command
+        if current_round.duration and current_round.started_at:
+            remaining = current_round.started_at + current_round.duration - time.time()
+            self.mass.call_later(
+                max(remaining, MIN_REVEAL_SECONDS),
+                self._on_reveal_finished,
+                current_round.round_index,
+                task_id=self._advance_timer_id,
+            )
+        self._signal_game_updated()
+
+    async def _advance_from_reveal(self) -> None:
+        """Advance a revealed game to the next round or finish it."""
+        game = self._require_game()
+        self.mass.cancel_timer(self._advance_timer_id)
+        if len(game.rounds) >= game.config.round_count:
+            await self._stop_playback()
+            finish_game(game)
+            self._signal_game_updated()
+            return
+        await self._start_next_round()
+
+    async def _on_answer_deadline(self, round_index: int) -> None:
+        """Reveal the round when the answering deadline passed."""
+        async with self._game_lock:
+            if not self._is_current_round(round_index, MusicQuizPhase.ANSWERING):
+                return
+            self._do_reveal()
+
+    async def _on_reveal_finished(self, round_index: int) -> None:
+        """Advance the game when the revealed track finished playing."""
+        async with self._game_lock:
+            if not self._is_current_round(round_index, MusicQuizPhase.REVEAL):
+                return
+            try:
+                await self._advance_from_reveal()
+            except Exception as err:
+                # leave the game in reveal so the host can retry via next/reset
+                self.logger.error("Could not advance Music Quiz game: %s", err, exc_info=err)
+
+    def _is_current_round(self, round_index: int, phase: MusicQuizPhase) -> bool:
+        """Return whether the game is still in the given round and phase."""
+        return (
+            self._game is not None
+            and self._game.phase == phase
+            and self._game.current_round_index == round_index
+        )
+
+    # ---------- round preparation ----------
+
+    def _prefetch_round(self, round_index: int) -> None:
+        """Prepare an upcoming round in the background."""
+        self._cancel_next_round_task()
+        game, quiz_type = self._game, self._quiz_type
+        if game is None or quiz_type is None or round_index >= game.config.round_count:
+            return
+        self._next_round_task = self.mass.create_task(
+            quiz_type.prepare_round(round_index, list(game.rounds))
+        )
+
+    async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
+        """Return the (prefetched) round with the given index."""
+        game = self._require_game()
+        quiz_type = self._quiz_type
+        assert quiz_type is not None  # set together with self._game
+        task = self._next_round_task
+        self._next_round_task = None
+        if task is not None:
+            try:
+                prepared = await task
+                if prepared.round_index == round_index:
+                    return prepared
+            except asyncio.CancelledError:
+                pass
+            except Exception as err:
+                self.logger.warning(
+                    "Prefetched Music Quiz round failed, preparing a fresh one: %s", err
+                )
+        return await quiz_type.prepare_round(round_index, list(game.rounds))
+
+    def _cancel_next_round_task(self) -> None:
+        """Cancel a pending round prefetch task."""
+        if self._next_round_task is not None:
+            self._next_round_task.cancel()
+            # retrieve the result/exception once the task settles so a prefetch that
+            # already failed is not reported by asyncio as an unhandled exception
+            self._next_round_task.add_done_callback(_consume_task_exception)
+            self._next_round_task = None
+
+    def _warm_up_lyrics(self, track_uri: str) -> None:
+        """Fetch/caches the track lyrics so they are ready when revealed."""
+        self.mass.create_task(
+            self._fetch_lyrics(track_uri),
+            task_id=f"music_quiz_lyrics_{self.instance_id}",
+            abort_existing=True,
+        )
+
+    async def _fetch_lyrics(self, track_uri: str) -> None:
+        """Best-effort lyrics warm-up for the given track."""
+        try:
+            track = await self.mass.music.get_item_by_uri(track_uri)
+            if isinstance(track, Track):
+                await self.mass.metadata.get_track_lyrics(track)
+        except Exception as err:
+            self.logger.debug("Lyrics warm-up failed for %s: %s", track_uri, err)
+
+    # ---------- playback ----------
+
+    async def _play_track(self, track_uri: str) -> None:
+        """Play the given track on the game's playback session."""
+        session = await self._get_playback_session()
+        if session is None:
+            raise MusicQuizNoPlaybackTargetError(
+                "No playback target is available for the Music Quiz game"
+            )
+        await self.mass.player_queues.play_media(
+            session.queue_id, track_uri, option=QueueOption.REPLACE
+        )
+
+    async def _stop_playback(self) -> None:
+        """Stop playback on the game's playback session, if any."""
+        if self._playback_session is None:
+            return
+        if self.mass.players.get_player(self._playback_session.player_id) is None:
+            return
+        try:
+            await self.mass.player_queues.stop(self._playback_session.queue_id)
+        except Exception as err:
+            self.logger.warning("Could not stop Music Quiz playback: %s", err)
+
+    async def _close_playback_session(self) -> None:
+        """Close and drop the shared playback session under the playback lock."""
+        # use the same lock that guards session creation/refresh so a concurrent
+        # _get_playback_session() cannot resurrect a session we are tearing down
+        async with self._playback_lock:
+            if self._playback_session is not None:
+                await self._playback_session.close()
+                self._playback_session = None
+
+    async def _get_playback_session(self) -> SharedPlaybackSession | None:
+        """
+        Get the shared playback session for the quiz, creating it if needed.
+
+        In remote mode the session is backed by a hidden virtual player; the
+        session is (re)created here when that player does not exist (e.g.
+        after a Sendspin provider reload). In venue mode a session only exists
+        when a configured or auto-selected venue player is available.
+
+        :return: The session, or None when no session is available.
+        """
+        async with self._playback_lock:
+            return await self._get_or_create_session_locked()
+
+    async def _get_or_create_session_locked(self) -> SharedPlaybackSession | None:
+        """
+        Get or (re)create the shared playback session.
+
+        The caller must hold ``_playback_lock``; guest listen-in and session
+        teardown share the lock so a session is never created or joined while it
+        is being closed.
+
+        :return: The session, or None when no game is active or none is available.
+        """
+        # a session only makes sense while a game is active; without one, never
+        # (re)create it - this also stops a guest listen-in that races with game
+        # teardown from leaking a fresh session / virtual player
+        if self._game is None:
+            return None
+        # drop a stale session whose player no longer exists
+        if self._playback_session is not None and (
+            self.mass.players.get_player(self._playback_session.player_id) is None
+        ):
+            await self._playback_session.close()
+            self._playback_session = None
+
+        if self._playback_session is not None:
+            return self._playback_session
+
+        if self.config.get_value(CONF_MODE) == SharedPlaybackMode.REMOTE.value:
+            game_name = self._game.config.name if self._game else None
+            try:
+                self._playback_session = await SharedPlaybackSession.create_remote(
+                    self.mass,
+                    owner_instance_id=self.instance_id,
+                    display_name=game_name or "Music Quiz",
+                    session_id=self.instance_id,
+                )
+            except SetupFailedError as err:
+                self.logger.warning("Unable to create remote quiz session: %s", err)
+        elif player_id := self._resolve_venue_player_id():
+            try:
+                self._playback_session = await SharedPlaybackSession.create_venue(
+                    self.mass, player_id
+                )
+            except SetupFailedError as err:
+                self.logger.warning("Unable to create venue quiz session: %s", err)
+        return self._playback_session
+
+    def _resolve_venue_player_id(self) -> str | None:
+        """
+        Resolve the venue player, honoring the "auto" fallback.
+
+        :return: The player_id to host venue playback, or None when no player is available.
+        """
+        player_id = cast("str | None", self.config.get_value(CONF_PLAYER))
+        if player_id and player_id != CONF_PLAYER_AUTO:
+            return player_id
+        # auto: prefer a player that is already playing, then paused, then any available
+        fallback: str | None = None
+        fallback_priority = -1
+        for player in self.mass.players.all_players(False, False):
+            if player.playback_state == PlaybackState.PLAYING:
+                return player.player_id
+            if player.playback_state == PlaybackState.PAUSED and fallback_priority < 1:
+                fallback, fallback_priority = player.player_id, 1
+            elif fallback_priority < 0:
+                fallback, fallback_priority = player.player_id, 0
+        return fallback
+
+    # ---------- timers ----------
+
+    @property
+    def _reveal_timer_id(self) -> str:
+        """Return the task_id of the answering deadline timer."""
+        return f"music_quiz_reveal_{self.instance_id}"
+
+    @property
+    def _advance_timer_id(self) -> str:
+        """Return the task_id of the reveal auto-advance timer."""
+        return f"music_quiz_advance_{self.instance_id}"
+
+    def _cancel_timers(self) -> None:
+        """Cancel all scheduled game progression timers."""
+        self.mass.cancel_timer(self._reveal_timer_id)
+        self.mass.cancel_timer(self._advance_timer_id)
+
+
+def _validate_config(config: MusicQuizConfig) -> None:
+    """Validate game config."""
+    if config.difficulty not in {item.value for item in MusicQuizDifficulty}:
+        raise InvalidDataError(
+            f"Unknown difficulty: {config.difficulty}",
+            translation_key="music_quiz_invalid_difficulty",
+            translation_owner=TRANSLATION_OWNER,
+        )
+    if config.round_count < 1:
+        raise InvalidDataError(
+            "Music Quiz requires at least 1 round",
+            translation_key="music_quiz_round_count_min",
+            translation_owner=TRANSLATION_OWNER,
+        )
+    if config.round_count > MAX_ROUND_COUNT:
+        raise InvalidDataError(
+            f"Music Quiz supports at most {MAX_ROUND_COUNT} rounds",
+            translation_key="music_quiz_round_count_max",
+            translation_owner=TRANSLATION_OWNER,
+            translation_args=[MAX_ROUND_COUNT],
+        )
+    if config.suggestion_count < 2:
+        raise InvalidDataError(
+            "Suggestion count must be at least 2",
+            translation_key="music_quiz_suggestion_count_min",
+            translation_owner=TRANSLATION_OWNER,
+        )
+    if config.suggestion_count > MAX_SUGGESTION_COUNT:
+        raise InvalidDataError(
+            f"Suggestion count must be at most {MAX_SUGGESTION_COUNT}",
+            translation_key="music_quiz_suggestion_count_max",
+            translation_owner=TRANSLATION_OWNER,
+            translation_args=[MAX_SUGGESTION_COUNT],
+        )
+    if config.answer_duration < 1:
+        raise InvalidDataError(
+            "Answer duration must be at least 1 second",
+            translation_key="music_quiz_answer_duration_min",
+            translation_owner=TRANSLATION_OWNER,
+        )
+    if config.answer_duration > MAX_ANSWER_DURATION:
+        raise InvalidDataError(
+            f"Answer duration must be at most {MAX_ANSWER_DURATION} seconds",
+            translation_key="music_quiz_answer_duration_max",
+            translation_owner=TRANSLATION_OWNER,
+            translation_args=[MAX_ANSWER_DURATION],
+        )
+    if not config.source_uris:
+        raise InvalidDataError(
+            "At least one source URI is required",
+            translation_key="music_quiz_source_required",
+            translation_owner=TRANSLATION_OWNER,
+        )
+    if len(config.source_uris) > MAX_SOURCE_COUNT:
+        raise InvalidDataError(
+            f"Music Quiz supports at most {MAX_SOURCE_COUNT} sources",
+            translation_key="music_quiz_source_count_max",
+            translation_owner=TRANSLATION_OWNER,
+            translation_args=[MAX_SOURCE_COUNT],
+        )
+
+
+def _clean_game_name(name: str | None) -> str | None:
+    """Return a normalized optional game name."""
+    if not name:
+        return None
+    return name.strip() or None
+
+
+def _consume_task_exception(task: asyncio.Task[Any]) -> None:
+    """Retrieve a settled task's exception so asyncio does not report it as unhandled."""
+    if not task.cancelled():
+        task.exception()
+
+
+def _get_join_round(game: MusicQuizGame) -> int:
+    """Return the first round a newly joined player may answer."""
+    if game.phase == MusicQuizPhase.LOBBY:
+        return 0
+    if game.current_round_index is None:
+        return len(game.rounds)
+    return game.current_round_index + 1
+
+
+def _get_player(game: MusicQuizGame, player_id: str) -> MusicQuizPlayer:
+    """Return a player by their private player_id."""
+    for player in game.players.values():
+        if secrets.compare_digest(player.player_id, player_id):
+            return player
+    raise MusicQuizUnknownPlayerError("Unknown Music Quiz player")
+
+
+def _answer_window(game: MusicQuizGame, game_round: MusicQuizRound) -> float:
+    """Return the effective answering window of a round in seconds."""
+    answer_window = float(game.config.answer_duration)
+    if game_round.duration and game_round.duration > 0:
+        answer_window = min(answer_window, game_round.duration)
+    return answer_window
+
+
+def _public_state(game: MusicQuizGame, mode: str) -> dict[str, Any]:
+    """Return the guest-safe public game state (see the module docstring)."""
+    current_round = (
+        game.rounds[game.current_round_index] if game.current_round_index is not None else None
+    )
+    revealed = game.phase in (MusicQuizPhase.REVEAL, MusicQuizPhase.FINISHED)
+    players = []
+    for player in sorted(game.players.values(), key=lambda item: item.joined_at):
+        entry: dict[str, Any] = {
+            "name": player.name,
+            "score": player.score,
+            "ready": player.ready,
+            "answered": bool(current_round and player.player_id in current_round.answers),
+        }
+        if revealed and current_round and (answer := current_round.answers.get(player.player_id)):
+            entry["last_answer"] = {
+                "suggestion_id": answer.suggestion_id,
+                "correct": answer.is_correct,
+                "points": answer.points,
+            }
+        players.append(entry)
+    return {
+        "phase": game.phase.value,
+        "name": game.config.name,
+        "mode": mode,
+        "round_count": game.config.round_count,
+        "suggestion_count": game.config.suggestion_count,
+        "answer_duration": game.config.answer_duration,
+        "players": players,
+        "current_round": _public_round(game, current_round, revealed=revealed),
+    }
+
+
+def _public_round(
+    game: MusicQuizGame, game_round: MusicQuizRound | None, *, revealed: bool
+) -> dict[str, Any] | None:
+    """Return the guest-safe view of a round, redacted while unrevealed."""
+    if game_round is None:
+        return None
+    state: dict[str, Any] = {
+        "round_index": game_round.round_index,
+        "started_at": game_round.started_at,
+        "deadline": (game_round.started_at or 0) + _answer_window(game, game_round),
+        "question": game_round.question,
+        # suggestion IDs are opaque: label + id never identify the answer
+        "suggestions": [
+            {"suggestion_id": suggestion.suggestion_id, "label": suggestion.label}
+            for suggestion in game_round.suggestions
+        ],
+    }
+    if revealed:
+        state["correct_suggestion_id"] = next(
+            (
+                suggestion.suggestion_id
+                for suggestion in game_round.suggestions
+                if suggestion.is_correct
+            ),
+            None,
+        )
+        state["answer_label"] = game_round.answer_label
+        state["track_uri"] = game_round.track_uri
+        state["image_url"] = game_round.image_url
+        state["duration"] = game_round.duration
+        state["ended_at"] = game_round.ended_at
+    return state
+
+
+def _player_state(game: MusicQuizGame, player: MusicQuizPlayer, mode: str) -> dict[str, Any]:
+    """Return the personalized (still guest-safe) game state for a player."""
+    current_round = (
+        game.rounds[game.current_round_index] if game.current_round_index is not None else None
+    )
+    revealed = game.phase in (MusicQuizPhase.REVEAL, MusicQuizPhase.FINISHED)
+    you: dict[str, Any] = {
+        "name": player.name,
+        "score": player.score,
+        "ready": player.ready,
+        "active_from_round": player.active_from_round,
+    }
+    if current_round and (answer := current_round.answers.get(player.player_id)):
+        # players see their own locked pick right away, but whether it was
+        # right only after the reveal
+        you["answer"] = {
+            "suggestion_id": answer.suggestion_id,
+            "answered_at": answer.answered_at,
+            **({"correct": answer.is_correct, "points": answer.points} if revealed else {}),
+        }
+    return {**_public_state(game, mode), "you": you}

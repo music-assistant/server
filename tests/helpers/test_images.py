@@ -1,0 +1,385 @@
+"""Tests for the source-image cache in the images helper."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+import time
+from base64 import b64encode
+from io import BytesIO
+from pathlib import Path
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from music_assistant_models.enums import ImageType
+from music_assistant_models.media_items import MediaItemImage
+from PIL import Image
+
+from music_assistant.helpers import images
+from music_assistant.helpers.images import (
+    _SOURCE_CACHE_TTL,
+    create_thumb_hash,
+    get_image_data,
+    get_image_thumb,
+    invalidate_cached_image,
+)
+from music_assistant.models.metadata_provider import MetadataProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from music_assistant.mass import MusicAssistant
+
+
+@pytest.fixture(autouse=True)
+def _reset_image_caches() -> Iterator[None]:
+    """Isolate the module-level image caches between tests."""
+    images._thumb_memory_cache.clear()
+    images._source_memory_cache.clear()
+    yield
+    images._thumb_memory_cache.clear()
+    images._source_memory_cache.clear()
+
+
+@pytest.fixture
+def fetch_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Spy on origin fetches; returns the list of (provider, path) fetch calls."""
+    calls: list[tuple[str, str]] = []
+    real_fetch = images._fetch_source_image
+
+    async def counting_fetch(
+        mass: MusicAssistant, path_or_url: str, provider: str, depth: int
+    ) -> tuple[bytes, bool]:
+        calls.append((provider, path_or_url))
+        return await real_fetch(mass, path_or_url, provider, depth)
+
+    monkeypatch.setattr(images, "_fetch_source_image", counting_fetch)
+    return calls
+
+
+def _make_png_bytes(color: tuple[int, int, int] = (200, 30, 30), size: int = 400) -> bytes:
+    """Create raw PNG bytes of a solid-color square."""
+    img = Image.new("RGB", (size, size), color)
+    buf = BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _make_png_file(tmp_path: Path, name: str = "art.png") -> str:
+    """Create a PNG file on disk and return its absolute path."""
+    filepath = tmp_path / name
+    filepath.write_bytes(_make_png_bytes())
+    return str(filepath)
+
+
+async def test_multiple_thumb_sizes_fetch_source_once(
+    mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
+) -> None:
+    """Generating several thumb variants of one image must fetch the source once."""
+    image_path = _make_png_file(tmp_path)
+    thumb_80 = await get_image_thumb(mass_minimal, image_path, 80, "builtin")
+    thumb_256 = await get_image_thumb(mass_minimal, image_path, 256, "builtin")
+    jpeg_flat = await get_image_thumb(
+        mass_minimal, image_path, 256, "builtin", image_format="JPEG", flatten_transparency=True
+    )
+    assert thumb_80
+    assert thumb_256
+    assert jpeg_flat
+    assert fetch_calls == [("builtin", image_path)]
+
+
+async def test_concurrent_requests_share_one_fetch(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent get_image_data calls for the same source coalesce into one fetch."""
+    gate = asyncio.Event()
+    calls: list[str] = []
+
+    async def gated_fetch(
+        _mass: MusicAssistant, path_or_url: str, _provider: str, _depth: int
+    ) -> tuple[bytes, bool]:
+        calls.append(path_or_url)
+        await gate.wait()
+        return b"image-bytes", False
+
+    monkeypatch.setattr(images, "_fetch_source_image", gated_fetch)
+    tasks = [
+        asyncio.create_task(get_image_data(mass_minimal, "/some/image.png", "builtin"))
+        for _ in range(3)
+    ]
+    await asyncio.sleep(0)
+    gate.set()
+    results = await asyncio.gather(*tasks)
+    assert results == [b"image-bytes"] * 3
+    assert calls == ["/some/image.png"]
+
+
+async def test_data_uri_is_decoded_without_caching(
+    mass_minimal: MusicAssistant, fetch_calls: list[tuple[str, str]]
+) -> None:
+    """Inline base64 data URIs are decoded directly and never enter the cache."""
+    payload = b"\x89PNG\r\n\x1a\nfakepngdata"
+    data_uri = f"data:image/png;base64,{b64encode(payload).decode()}"
+    result = await get_image_data(mass_minimal, data_uri, "builtin")
+    assert result == payload
+    assert fetch_calls == []
+    assert not images._source_memory_cache.entries
+
+
+async def test_provider_bytes_use_disk_cache_across_restart(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """An expensive fetch is persisted on disk and reused after a (simulated) restart."""
+    fake_provider = MagicMock(spec=MetadataProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=b"expensive-image-bytes")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    data = await get_image_data(mass_minimal, "some/prov/path.jpg", "fake--1")
+    assert data == b"expensive-image-bytes"
+    assert len(fetch_calls) == 1
+    cache_key = create_thumb_hash("fake--1", "some/prov/path.jpg")
+    src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
+    assert os.path.isfile(src_file)
+
+    # simulate a restart: memory tier gone, disk entry remains
+    images._source_memory_cache.clear()
+    data = await get_image_data(mass_minimal, "some/prov/path.jpg", "fake--1")
+    assert data == b"expensive-image-bytes"
+    assert len(fetch_calls) == 1
+
+
+async def test_local_file_read_cached_on_disk(
+    mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
+) -> None:
+    """A local file read lands in both cache tiers and is served from disk after restart."""
+    image_path = _make_png_file(tmp_path)
+    data = await get_image_data(mass_minimal, image_path, "builtin")
+    assert len(fetch_calls) == 1
+    cache_key = create_thumb_hash("builtin", image_path)
+    assert cache_key in images._source_memory_cache.entries
+    src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
+    assert os.path.isfile(src_file)
+
+    # after a restart the disk entry serves the bytes without touching the origin
+    # (which may live on a network mount) - local entries have no TTL
+    images._source_memory_cache.clear()
+    assert await get_image_data(mass_minimal, image_path, "builtin") == data
+    assert len(fetch_calls) == 1
+
+
+async def test_remote_disk_entry_expires_after_ttl(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A stale on-disk entry for a remote url is refetched after the TTL."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    remote_url = "http://cdn.example.com/artwork.jpg"
+
+    async def fake_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+        return b"remote-image-bytes"
+
+    monkeypatch.setattr(images, "_fetch_remote_image", fake_remote_fetch)
+    await get_image_data(mass_minimal, remote_url, "builtin")
+    assert len(fetch_calls) == 1
+    cache_key = create_thumb_hash("builtin", remote_url)
+    src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
+    assert os.path.isfile(src_file)
+
+    # a fresh disk entry is used after a restart...
+    images._source_memory_cache.clear()
+    await get_image_data(mass_minimal, remote_url, "builtin")
+    assert len(fetch_calls) == 1
+    # ...but an expired one is not
+    images._source_memory_cache.clear()
+    expired = time.time() - _SOURCE_CACHE_TTL - 10
+    os.utime(src_file, (expired, expired))
+    await get_image_data(mass_minimal, remote_url, "builtin")
+    assert len(fetch_calls) == 2
+
+
+async def test_own_imageproxy_url_cached_under_resolved_key_only(
+    mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
+) -> None:
+    """Imageproxy URLs to our own server never create an alias cache entry."""
+    image_path = _make_png_file(tmp_path)
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    image_id = create_thumb_hash("builtin", image_path)
+    mass_minimal.metadata = MagicMock(
+        resolve_image_id=AsyncMock(return_value=("builtin", image_path))
+    )
+    proxy_url = f"http://127.0.0.1:8095/imageproxy/{image_id}?size=256"
+
+    await get_image_data(mass_minimal, proxy_url, "builtin")
+    assert fetch_calls == [("builtin", image_path)]
+    assert create_thumb_hash("builtin", image_path) in images._source_memory_cache.entries
+    assert create_thumb_hash("builtin", proxy_url) not in images._source_memory_cache.entries
+    # a repeated request through the proxy url form hits the resolved cache entry
+    await get_image_data(mass_minimal, proxy_url, "builtin")
+    assert len(fetch_calls) == 1
+
+
+async def test_invalidate_cached_image_clears_all_tiers(
+    mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
+) -> None:
+    """Invalidation removes every thumb variant plus source bytes, then refetches."""
+    image_path = _make_png_file(tmp_path, "target.png")
+    other_path = _make_png_file(tmp_path, "other.png")
+    for path in (image_path, other_path):
+        await get_image_thumb(mass_minimal, path, 80, "builtin")
+        await get_image_thumb(mass_minimal, path, 256, "builtin")
+    assert len(fetch_calls) == 2
+
+    thumb_dir = Path(mass_minimal.cache_path, "thumbnails")
+    target_hash = create_thumb_hash("builtin", image_path)
+    other_hash = create_thumb_hash("builtin", other_path)
+    # two thumb variants plus the source entry per image
+    assert len([f for f in thumb_dir.iterdir() if f.name.startswith(target_hash)]) == 3
+
+    await invalidate_cached_image(mass_minimal, "builtin", image_path)
+
+    # all artifacts of the target image are gone, the other image is untouched
+    assert not [f for f in thumb_dir.iterdir() if f.name.startswith(target_hash)]
+    assert len([f for f in thumb_dir.iterdir() if f.name.startswith(other_hash)]) == 3
+    assert target_hash not in images._source_memory_cache.entries
+    assert not any(key.startswith(f"{target_hash}_") for key in images._thumb_memory_cache)
+    assert any(key.startswith(f"{other_hash}_") for key in images._thumb_memory_cache)
+
+    # the next request must hit the origin again
+    await get_image_thumb(mass_minimal, image_path, 80, "builtin")
+    assert len(fetch_calls) == 3
+
+
+async def test_source_memory_cache_respects_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The memory tier evicts oldest entries once the byte budget is exceeded."""
+    monkeypatch.setattr(images, "_SOURCE_MEMORY_MAX_BYTES", 1000)
+    monkeypatch.setattr(images, "_SOURCE_MEMORY_ENTRY_MAX_BYTES", 600)
+    cache = images._source_memory_cache
+    cache.put("aa", b"x" * 400)
+    cache.put("bb", b"y" * 400)
+    assert cache.get("aa") is not None
+    # third entry pushes total over budget: oldest entry is evicted
+    cache.put("cc", b"z" * 400)
+    assert cache.get("bb") is None
+    assert cache.get("aa") is not None  # refreshed by the get above
+    assert cache.get("cc") is not None
+    # an entry larger than the per-entry cap is not stored at all
+    cache.put("dd", b"w" * 601)
+    assert cache.get("dd") is None
+    assert cache.total_bytes == 800
+
+
+async def test_source_memory_cache_entries_expire(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Memory entries older than the TTL are treated as a miss."""
+    cache = images._source_memory_cache
+    cache.put("aa", b"payload")
+    assert cache.get("aa") == b"payload"
+    # shrink the TTL so the stored entry is immediately considered expired
+    monkeypatch.setattr(images, "_SOURCE_CACHE_TTL", -1)
+    assert cache.get("aa") is None
+    assert cache.total_bytes == 0
+
+
+def _create_mp3_with_cover(track_path: str, cover_path: str) -> None:
+    """Create a short mp3 file with the given image embedded as cover art."""
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-t",
+            "0.1",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-i",
+            cover_path,
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:a",
+            "libmp3lame",
+            "-c:v",
+            "mjpeg",
+            "-id3v2_version",
+            "3",
+            track_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+async def test_embedded_art_retag_flow(
+    mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
+) -> None:
+    """
+    The full retag scenario against a real audio file.
+
+    Embedded art (an expensive ffmpeg extraction) is cached in memory and on
+    disk; replacing the artwork in the file goes unnoticed until the cache is
+    invalidated, after which the new artwork is extracted and served.
+    """
+    red_cover = str(tmp_path / "red.png")
+    blue_cover = str(tmp_path / "blue.png")
+    Image.new("RGB", (64, 64), (255, 0, 0)).save(red_cover, "PNG")
+    Image.new("RGB", (64, 64), (0, 0, 255)).save(blue_cover, "PNG")
+    track_path = str(tmp_path / "track.mp3")
+    _create_mp3_with_cover(track_path, red_cover)
+
+    original_art = await get_image_data(mass_minimal, track_path, "builtin")
+    assert original_art.startswith(b"\xff\xd8")  # extracted as JPEG
+    assert len(fetch_calls) == 1
+    cache_key = create_thumb_hash("builtin", track_path)
+    src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
+    assert os.path.isfile(src_file)  # ffmpeg extraction is disk-cache worthy
+
+    # a restart later, the disk entry avoids re-running ffmpeg
+    images._source_memory_cache.clear()
+    assert await get_image_data(mass_minimal, track_path, "builtin") == original_art
+    assert len(fetch_calls) == 1
+
+    # "retag" the file with new artwork: the cache still serves the old art...
+    _create_mp3_with_cover(track_path, blue_cover)
+    assert await get_image_data(mass_minimal, track_path, "builtin") == original_art
+    assert len(fetch_calls) == 1
+    # ...until it is invalidated, after which the new art is extracted
+    await invalidate_cached_image(mass_minimal, "builtin", track_path)
+    assert not os.path.exists(src_file)
+    new_art = await get_image_data(mass_minimal, track_path, "builtin")
+    assert len(fetch_calls) == 2
+    assert new_art != original_art
+
+
+async def test_create_collage_fetches_each_unique_image_once(
+    mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
+) -> None:
+    """A collage fetches each unique image once and skips unfetchable ones."""
+    paths = [
+        str((tmp_path / name).absolute())
+        for name in ("one.png", "two.png", "three.png", "missing.png")
+    ]
+    for path, color in zip(paths[:3], ((200, 30, 30), (30, 200, 30), (30, 30, 200)), strict=True):
+        Image.new("RGB", (300, 300), color).save(path, "PNG")
+    collage_images = [
+        MediaItemImage(
+            type=ImageType.THUMB, path=path, provider="builtin", remotely_accessible=False
+        )
+        for path in paths
+    ]
+    collage = await images.create_collage(mass_minimal, collage_images, dimensions=(500, 500))
+    assert collage.startswith(b"\xff\xd8")  # JPEG magic
+    # each unique image was fetched exactly once (incl. the one failed attempt)
+    assert sorted(path for _prov, path in fetch_calls) == sorted(paths)

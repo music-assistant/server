@@ -7,17 +7,33 @@ import contextlib
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature, ProviderType
+from music_assistant_models.auth import Scope
+from music_assistant_models.enums import (
+    AlbumType,
+    ArtistType,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ArtistSummary,
+    Audiobook,
+    ItemMapping,
+    ProviderMapping,
+    Track,
+)
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
@@ -36,6 +52,8 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -46,6 +64,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     db_table = DB_TABLE_ARTISTS
     media_type = MediaType.ARTIST
     item_cls = Artist
+    summary_item_cls = ArtistSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -53,18 +72,51 @@ class ArtistsController(MediaControllerBase[Artist]):
         self._db_add_lock = asyncio.Lock()
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/artist_albums", self.albums)
-        self.mass.register_api_command(f"music/{api_base}/artist_tracks", self.tracks)
-        self.mass.register_api_command(f"music/{api_base}/top_tracks", self.top_tracks)
-        self.mass.register_api_command(f"music/{api_base}/top_albums", self.top_albums)
-        self.mass.register_api_command(f"music/{api_base}/similar_artists", self.similar_artists)
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_albums", self.albums, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/top_tracks", self.top_tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/top_albums", self.top_albums, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_audiobooks",
+            self.audiobooks,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/similar_artists",
+            self.similar_artists,
+            required_scope=Scope.LIBRARY_READ,
+        )
+
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for artist summary listings."""
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            artists.artist_type,
+            {self._provider_mappings_query()} AS provider_mappings
+            FROM artists"""
+        return query, {}
 
     async def library_count(
-        self, favorite_only: bool = False, album_artists_only: bool = False
+        self,
+        favorite_only: bool = False,
+        album_artists_only: bool = False,
+        artist_type: ArtistType | None = None,
     ) -> int:
         """Return the total number of items in the library."""
         sql_query = f"SELECT item_id FROM {self.db_table}"
-        query_parts: list[str] = []
+        query_parts = []
+        if artist_type:
+            query_parts.append(f"artist_type = '{artist_type}'")
         if favorite_only:
             query_parts.append("favorite = 1")
         if album_artists_only:
@@ -76,7 +128,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sql_query += f" WHERE {' AND '.join(query_parts)}"
         return await self.mass.music.database.get_count_from_query(sql_query)
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -85,7 +137,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         album_artists_only: bool = False,
+        artist_type: ArtistType | None = None,
+        *,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Artist]:
         """
@@ -99,10 +155,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param provider: Filter by provider instance ID (single string or list).
         :param album_artists_only: Only return artists that have albums.
         :param genre: Filter by genre id(s).
+        :param artist_type: The artist's type
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
-        if album_artists_only:
+        if artist_type:
+            extra_query_parts = [f"artist_type = '{artist_type}'"]
+        if album_artists_only and artist_type in (None, ArtistType.SINGER):
             extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"from {DB_TABLE_ALBUM_ARTISTS})"
@@ -117,7 +178,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            played_only=played_only,
             in_library_only=True,
+            summary=summary,
         )
 
     async def tracks(
@@ -127,7 +190,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_filter: str | None = None,
     ) -> list[Track]:
         """
-        Return the tracks for an artist.
+        Return the tracks for a artist.
 
         For a library item, the in-library tracks are returned, optionally limited to a single
         provider instance with the provider_filter. For a provider item, that provider's
@@ -235,6 +298,135 @@ class ArtistsController(MediaControllerBase[Artist]):
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_similar_artists(
             item_id, provider_instance_id_or_domain, limit=limit
+        )
+
+    async def audiobooks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        artist_type: ArtistType = ArtistType.AUTHOR,
+        in_library_only: bool = False,
+    ) -> list[Audiobook]:
+        """
+        Return audiobooks for an artist.
+
+        Artist_type can be omitted for in-library artists.
+        """
+        if artist_type == ArtistType.SINGER:
+            self.logger.warning("Audiobooks not supported for artist_type SINGER.")
+            return []
+        # always check if we have a library item for this artist
+        library_artist = await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
+        )
+        if library_artist and library_artist.artist_type == ArtistType.SINGER:
+            self.logger.debug(
+                "Ignoring audiobook request for artist of type %s", library_artist.artist_type
+            )
+            return []
+        if not library_artist:
+            if artist_type == ArtistType.AUTHOR:
+                return await self.get_provider_author_audiobooks(
+                    item_id, provider_instance_id_or_domain
+                )
+            if artist_type == ArtistType.NARRATOR:
+                return await self.get_provider_narrator_audiobooks(
+                    item_id, provider_instance_id_or_domain
+                )
+            return []
+
+        db_items = await self.get_library_author_narrator_audiobooks(
+            library_artist.item_id, artist_type=library_artist.artist_type
+        )
+        result: list[Audiobook] = db_items
+        if in_library_only:
+            # return in-library items only
+            return result
+        # return all (unique) items from all providers
+        # initialize unique_ids with db_items to prevent duplicates
+        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
+        unique_providers = self.mass.music.get_unique_providers()
+        audiobook_method = (
+            self.get_provider_author_audiobooks
+            if artist_type == ArtistType.AUTHOR
+            else self.get_provider_narrator_audiobooks
+        )
+        for provider_mapping in library_artist.provider_mappings:
+            if provider_mapping.provider_instance not in unique_providers:
+                continue
+            provider_audiobooks = await audiobook_method(
+                provider_mapping.item_id, provider_mapping.provider_instance
+            )
+            for provider_audiobook in provider_audiobooks:
+                unique_id = f"{provider_audiobook.name}.{provider_audiobook.version}"
+                if unique_id in unique_ids:
+                    continue
+                unique_ids.add(unique_id)
+                # prefer db item
+                if db_item := await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                    provider_audiobook.item_id, provider_audiobook.provider
+                ):
+                    result.append(db_item)
+                elif not in_library_only:
+                    result.append(provider_audiobook)
+        return result
+
+    async def get_library_author_narrator_audiobooks(
+        self,
+        item_id: str | int,
+        artist_type: ArtistType,
+    ) -> list[Audiobook]:
+        """Return all in-library audiobooks for an author/ narrator."""
+        db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != artist_type:
+            self.logger.debug("Audiobooks only available for artists of type %s", artist_type)
+            return []
+        subquery = (
+            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
+        )
+        query = f"audiobooks.item_id in ({subquery})"
+        return await self.mass.music.audiobooks.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"artist_id": db_id},
+        )
+
+    async def get_provider_author_audiobooks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Audiobook]:
+        """Return audiobooks for an author on given provider."""
+        assert provider_instance_id_or_domain != "library"
+        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+            return []
+        prov = cast("MusicProvider", prov)
+        if ProviderFeature.AUTHOR_AUDIOBOOKS in prov.supported_features:
+            return await prov.get_author_audiobooks(item_id)
+        # fallback implementation using the db
+        return await self._get_db_author_narrator_audiobooks(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            artist_type=ArtistType.AUTHOR,
+        )
+
+    async def get_provider_narrator_audiobooks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Audiobook]:
+        """Return audiobooks for an author on given provider."""
+        assert provider_instance_id_or_domain != "library"
+        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+            return []
+        prov = cast("MusicProvider", prov)
+        if ProviderFeature.NARRATOR_AUDIOBOOKS in prov.supported_features:
+            return await prov.get_narrator_audiobooks(item_id)
+        # fallback implementation using the db
+        return await self._get_db_author_narrator_audiobooks(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            artist_type=ArtistType.NARRATOR,
         )
 
     async def get_provider_artist_toptracks(
@@ -471,6 +663,10 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Track]:
         """Return all in-library tracks for an artist, optionally limited to a single provider."""
         db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != ArtistType.SINGER:
+            self.logger.debug("Tracks only available for artists of type ARTIST")
+            return []
         subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
         query = f"tracks.item_id in ({subquery})"
         return await self.mass.music.tracks.get_library_items_by_query(
@@ -506,6 +702,10 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return all in-library albums for an artist, optionally limited to a single provider."""
         db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != ArtistType.SINGER:
+            self.logger.debug("Albums only available for artists of type ARTIST")
+            return []
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
         query = f"albums.item_id in ({subquery})"
         return await self.mass.music.albums.get_library_items_by_query(
@@ -625,47 +825,18 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""
         db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
 
-        # recursively also remove artist albums
-        for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id",
-            {"artist_id": db_id},
-            limit=5000,
-        ):
-            if not recursive:
-                raise MusicAssistantError("Artist still has albums linked")
-            with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.remove_item_from_library(db_row["album_id"])
-        # recursively also remove artist tracks
-        for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id",
-            {"artist_id": db_id},
-            limit=5000,
-        ):
-            if not recursive:
-                raise MusicAssistantError("Artist still has tracks linked")
-            with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
+        if library_item.artist_type == ArtistType.SINGER:
+            await self._remove_music_artist_from_library(db_id=db_id, recursive=recursive)
+        elif library_item.artist_type in (ArtistType.AUTHOR, ArtistType.NARRATOR):
+            await self._remove_author_narrator_from_library(db_id=db_id, recursive=recursive)
+        else:
+            raise MusicAssistantError(f"Unknown artist_type {library_item.artist_type}.")
 
         # delete the artist itself from db
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Artist,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Artist to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        # prefer the (top) tracks listing as radio seed, falling back to all tracks
-        if result := await self.top_tracks(item.item_id, item.provider):
-            return result
-        return await self.tracks(item.item_id, item.provider)
 
     async def match_provider(
         self, db_artist: Artist, provider: MusicProvider, strict: bool = True
@@ -827,13 +998,15 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "favorite": item.favorite,
-                "external_ids": serialize_to_json(item.external_ids),
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+                "artist_type": item.artist_type,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         # update/set provider_mappings table
         await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -869,18 +1042,20 @@ class ArtistsController(MediaControllerBase[Artist]):
             {
                 "name": name,
                 "sort_name": sort_name,
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "metadata": serialize_to_json(metadata),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,
+                "artist_type": update.artist_type,
             },
         )
         self.logger.debug("updated %s in database: %s", update.name, db_id)
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
+        )
         # update/set provider_mappings table
         provider_mappings = (
             update.provider_mappings
@@ -889,3 +1064,63 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
+    async def _remove_music_artist_from_library(self, db_id: int, recursive: bool) -> None:
+        # recursively also remove artist albums
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id",
+            {"artist_id": db_id},
+            limit=5000,
+        ):
+            if not recursive:
+                raise MusicAssistantError("Artist still has albums linked")
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.albums.remove_item_from_library(db_row["album_id"])
+        # recursively also remove artist tracks
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id",
+            {"artist_id": db_id},
+            limit=5000,
+        ):
+            if not recursive:
+                raise MusicAssistantError("Artist still has tracks linked")
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
+
+    async def _remove_author_narrator_from_library(self, db_id: int, recursive: bool) -> None:
+        # recursively also remove author/ narrator audiobooks
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id",
+            {"artist_id": db_id},
+            limit=5000,
+        ):
+            if not recursive:
+                raise MusicAssistantError("Artist still has audiobooks linked")
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.audiobooks.remove_item_from_library(db_row["audiobook_id"])
+
+    async def _get_db_author_narrator_audiobooks(
+        self, item_id: str, provider_instance_id_or_domain: str, artist_type: ArtistType
+    ) -> list[Audiobook]:
+        if db_author_narrator := await self.mass.music.artists.get_library_item_by_prov_id(
+            item_id,
+            provider_instance_id_or_domain,
+        ):
+            if db_author_narrator.artist_type != artist_type:
+                self.logger.debug("Artist type must be %s.", artist_type)
+                return []
+            db_artist_id = int(db_author_narrator.item_id)  # ensure integer
+            subquery = f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
+            query = f"audiobooks.item_id in ({subquery})"
+            return await self.mass.music.audiobooks.get_library_items_by_query(
+                extra_query_parts=[query],
+                extra_query_params={"artist_id": db_artist_id},
+                provider_filter=[provider_instance_id_or_domain],
+            )
+        return []
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> ArtistSummary:
+        """Parse a raw summary db row into an ArtistSummary object."""
+        item = cast("ArtistSummary", super()._parse_summary_row(db_row))
+        item.artist_type = ArtistType(db_row["artist_type"])
+        return item

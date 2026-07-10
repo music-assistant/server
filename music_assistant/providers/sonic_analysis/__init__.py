@@ -16,8 +16,9 @@ from music_assistant.helpers.util import (
     system_meets_requirements,
     verify_system_meets_requirements,
 )
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
+    ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS,
     AnalysisSessionData,
     AudioAnalysisProvider,
 )
@@ -103,6 +104,15 @@ class SonicSessionData(AnalysisSessionData):
     clap_sum_embedding: np.ndarray | None = None
     clap_sum_similarities: np.ndarray | None = None
     clap_completed_count: int = 0
+    # Timing accumulators for the finalize diagnostic breakdown. feature_seconds
+    # sums the inline librosa decode/extract/collapse work; clap_seconds sums each
+    # per-window CLAP await-to-completion span (timer starts before the offload
+    # hop, so it folds in scheduling/queue wait — and since windows run concurrently
+    # it is cumulative and can exceed wall-clock). clap_preset records the configured
+    # sampling preset for the same line.
+    feature_seconds: float = 0.0
+    clap_seconds: float = 0.0
+    clap_preset: str = ""
 
 
 async def setup(
@@ -316,6 +326,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider running librosa scalars + CLAP zero-shot per track."""
 
     analysis_version: int = 1
+    max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
+    has_unloadable_models = True
 
     def __init__(
         self,
@@ -337,9 +349,9 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         Blocks the provider's setup until the model is loaded (first-run downloads
         ~500MB). On failure the exception propagates and the provider stays
         available=False, which the AudioAnalysisController already honors when
-        scheduling work.
+        scheduling work. While idle the model is later unloaded and reloaded on demand.
         """
-        verify_system_meets_requirements(
+        await verify_system_meets_requirements(
             feature_name="Sonic Analysis",
             min_memory_gb=MIN_RAM_GB,
             min_cpu_cores=MIN_CPU_CORES,
@@ -347,21 +359,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
         # Configure the inference runtime before loading the model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
-        (
-            self._clap_model,
-            self._clap_text_embeddings,
-            self._clap_prompt_order,
-        ) = await asyncio.to_thread(self._load_clap)
-        self.logger.info(
-            "CLAP model loaded; %d prompt pairs ready",
-            len(self._clap_prompt_order),
-        )
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Release the CLAP model."""
-        self._clap_model = None
-        self._clap_text_embeddings = None
-        await super().unload(is_removed)
+        await self._load_models()
+        self._models_loaded = True
 
     async def cancel(self, session_id: str) -> None:
         """Cancel pending CLAP inferences and free per-window buffers."""
@@ -393,6 +392,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if len(session.pcm_buffer) >= session.block_bytes:
             block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
             del session.pcm_buffer[: session.block_bytes]
+            t0 = time.monotonic()
             pre_audio, post_audio, bf = await self._run_offloaded(
                 _decode_resample_extract,
                 af,
@@ -401,12 +401,30 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 ANALYSIS_SAMPLE_RATE,
                 session.resampler,
             )
+            session.feature_seconds += time.monotonic() - t0
             session.total_samples += len(pre_audio)
             session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(pre_audio))))
             self._dispatch_clap_to_targets(session, pre_audio, af.sample_rate)
             session.overlap = post_audio[-OVERLAP_SAMPLES:].copy()
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
+
+    async def _load_models(self) -> None:
+        """Load the CLAP model and prompt embeddings into memory."""
+        (
+            self._clap_model,
+            self._clap_text_embeddings,
+            self._clap_prompt_order,
+        ) = await asyncio.to_thread(self._load_clap)
+        self.logger.info(
+            "CLAP model loaded; %d prompt pairs ready",
+            len(self._clap_prompt_order),
+        )
+
+    def _free_models(self) -> None:
+        """Release the CLAP model and prompt embeddings."""
+        self._clap_model = None
+        self._clap_text_embeddings = None
 
     def _load_clap(
         self,
@@ -519,11 +537,13 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             clap_target_starts=target_starts,
             clap_target_buffers=[[] for _ in target_starts],
             clap_target_complete=[False] * len(target_starts),
+            clap_preset=preset,
         )
         self.logger.debug(
-            "Started sonic analysis for %s/%s (%d CLAP target windows)",
+            "Started sonic analysis for %s/%s (preset=%s, %d CLAP target windows)",
             streamdetails.provider,
             streamdetails.item_id,
+            preset,
             len(target_starts),
         )
         return True
@@ -595,6 +615,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         af = session.audio_format
 
         if session.pcm_buffer:
+            t0 = time.monotonic()
             pre_audio, _post_audio, bf = await self._run_offloaded(
                 _decode_resample_extract,
                 af,
@@ -604,6 +625,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 session.resampler,
                 is_last=True,
             )
+            session.feature_seconds += time.monotonic() - t0
             session.total_samples += len(pre_audio)
             session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(pre_audio))))
             self._dispatch_clap_to_targets(session, pre_audio, af.sample_rate)
@@ -612,12 +634,13 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             session.pcm_buffer.clear()
 
         if not session.accumulated.rms_frames:
-            self.logger.debug("No feature blocks for session %s, skipping", session_id)
-            return None
+            raise AudioAnalysisError("no usable audio frames extracted")
 
+        t0 = time.monotonic()
         analysis = await self._run_offloaded(
             collapse_to_analysis, session.accumulated, ANALYSIS_SAMPLE_RATE
         )
+        session.feature_seconds += time.monotonic() - t0
 
         analysis.duration = session.total_samples / af.sample_rate
         if session.peak_absolute > 0:
@@ -629,10 +652,16 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
         elapsed = time.monotonic() - session.start_time
         self.logger.debug(
-            "Stored analysis for %s/%s (%.1fs elapsed)",
+            "Stored analysis for %s/%s (%.1fs elapsed: feature=%.1fs, "
+            "clap=%.1fs cumulative over %d/%d windows, preset=%s)",
             sd.provider,
             sd.item_id,
             elapsed,
+            session.feature_seconds,
+            session.clap_seconds,
+            session.clap_completed_count,
+            len(session.clap_target_starts),
+            session.clap_preset,
         )
         return analysis
 
@@ -670,13 +699,20 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         """Run CLAP on a single window off-thread and accumulate running sums."""
         if self._clap_model is None:
             return
+        t0 = time.monotonic()
         try:
             result = await self._run_offloaded(
                 self._single_window_inference_sync, window_audio, source_sr
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
+            # CLAP inference runs torch ops off-thread; the failure surface is broad and
+            # version-dependent, so any failure just drops this window's contribution.
             self.logger.debug("CLAP single-window inference failed: %s", err)
             return
+        finally:
+            session.clap_seconds += time.monotonic() - t0
         if result is None:
             self.logger.debug("CLAP inference skipped — model unloaded mid-flight")
             return

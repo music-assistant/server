@@ -26,6 +26,7 @@ from music_assistant_models.provider import ProviderManifest
 import music_assistant.controllers.music.media.playlists as playlists_module
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.config.migrations import _migrate_metadata_maintenance_schedule
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
     MISSING_ARTIST_METADATA_SCAN_TASK_ID,
@@ -644,7 +645,7 @@ async def test_metadata_maintenance_schedule_migration_drops_legacy_state(
     config = ConfigController(mass_minimal)
     config._data = {"core": _legacy_maintenance_schedule_state()}
 
-    assert config._migrate_metadata_maintenance_schedule() is True
+    assert _migrate_metadata_maintenance_schedule(config._data) is True
 
     task_states = config._data["core"]["tasks"]["scheduled_task_states"]
     assert "metadata_missing_artist_metadata_scan" not in task_states
@@ -654,7 +655,7 @@ async def test_metadata_maintenance_schedule_migration_drops_legacy_state(
     assert "music_database_cleanup" in task_states
 
     # Migration is idempotent: a second pass finds nothing left to remove.
-    assert config._migrate_metadata_maintenance_schedule() is False
+    assert _migrate_metadata_maintenance_schedule(config._data) is False
 
 
 async def test_metadata_maintenance_schedule_migration_noop_without_state(
@@ -663,4 +664,4 @@ async def test_metadata_maintenance_schedule_migration_noop_without_state(
     """The migration should be a no-op when no persisted task state exists."""
     config = ConfigController(mass_minimal)
     config._data = {}
-    assert config._migrate_metadata_maintenance_schedule() is False
+    assert _migrate_metadata_maintenance_schedule(config._data) is False

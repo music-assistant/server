@@ -25,6 +25,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import enrich_episode_chapters
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -290,19 +291,16 @@ class PodcastIndexProvider(MusicProvider):
 
         Uses the efficient episodes/byid endpoint for direct episode retrieval.
         """
+        episode_data: dict[str, Any] | None = None
+        episode: PodcastEpisode | None = None
         try:
             podcast_id, episode_id = prov_episode_id.split("|", 1)
-
             response = await self._api_request("episodes/byid", params={"id": episode_id})
             episode_data = response.get("episode")
-
             if episode_data:
                 episode = parse_episode_from_data(
                     episode_data, podcast_id, 0, self.instance_id, self.domain
                 )
-                if episode:
-                    return episode
-
         except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
@@ -312,7 +310,19 @@ class PodcastIndexProvider(MusicProvider):
         except Exception as err:
             self.logger.warning("Unexpected error getting episode %s: %s", prov_episode_id, err)
 
-        raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
+        if episode is None or episode_data is None:
+            raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
+
+        # single-episode path only: fetch external podcast:chapters JSON (Podcasting 2.0)
+        # when present, to avoid a request per episode during full-podcast listing. Runs
+        # outside the resolution try so a best-effort chapter failure can never surface as
+        # the episode itself being not found.
+        await enrich_episode_chapters(
+            session=self.mass.http_session,
+            chapters_json_url=episode_data.get("chaptersUrl"),
+            mass_episode=episode,
+        )
+        return episode
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """

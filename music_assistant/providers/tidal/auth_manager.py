@@ -13,7 +13,7 @@ import pkce
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 
 from .constants import AUTH_URL, LOGIN_URL, REDIRECT_URI, SESSIONS_URL
 
@@ -141,7 +141,7 @@ class TidalAuthManager:
         if not refresh_token:
             return False
 
-        client_id = self._auth_info.get("client_id", app_var(9))
+        client_id = self._auth_info.get("client_id", app_var("tidal_client_id"))
 
         data = {
             "refresh_token": refresh_token,
@@ -197,8 +197,8 @@ class TidalAuthManager:
         auth_params = {
             "code_verifier": code_verifier,
             "client_unique_key": client_unique_key,
-            "client_id": app_var(9),
-            "client_secret": app_var(10),
+            "client_id": app_var("tidal_client_id"),
+            "client_secret": app_var("tidal_client_secret"),
             "quality": quality,
         }
 

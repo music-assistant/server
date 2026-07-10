@@ -280,10 +280,16 @@ class AirPlay2Stream(AirPlayProtocol):
         # ensure we're cleaned up afterwards (this also logs the returncode)
         if not self._stopped:
             self._stopped = True
-            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             if not expected_eof:
                 # CLI process died without reaching EOF — unsolicited stop.
-                # Ungroup so the player controller can handle leader switches
-                # and dissolve manual sync groups cleanly.
                 logger.warning("CLIap2 process stopped unexpectedly for %s", player.display_name)
+                # Hand off to the player controller so it drops just this member, or
+                # transfers leadership to a healthy member, instead of dissolving the
+                # whole group over a single dead transport. A sync leader is left in
+                # its current state here on purpose: the controller only transfers
+                # leadership while the queue still looks active, and transfer_queue or
+                # dissolve sets the final state.
                 self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
+                if player.group_members:
+                    return
+            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)

@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.media_items import AudioFormat, ProviderMapping, Track
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
@@ -28,7 +30,10 @@ from music_assistant.controllers.streams.audio_analysis import (
 )
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis_provider import (
+    AudioAnalysisProvider,
+    InstrumentedSemaphore,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 
@@ -63,6 +68,35 @@ def test_ensure_inference_runtime_configured_is_idempotent() -> None:
         controller.ensure_inference_runtime_configured()
     set_threads.assert_called_once()
     blas_limits.assert_called_once()
+    if controller.analysis_executor is not None:
+        controller.analysis_executor.shutdown(wait=False)
+
+
+def test_ensure_inference_runtime_creates_solo_lock_and_executor() -> None:
+    """Runtime config creates the playback-priority solo lock and a dedicated worker pool."""
+    controller = _make_controller()
+    with (
+        patch("torch.set_num_threads"),
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits"),
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+    try:
+        assert isinstance(controller.analysis_solo_lock, asyncio.Lock)
+        assert isinstance(controller.analysis_executor, ThreadPoolExecutor)
+    finally:
+        if controller.analysis_executor is not None:
+            controller.analysis_executor.shutdown(wait=False)
+
+
+def test_playback_active_delegates_to_streams() -> None:
+    """playback_active reflects the streams controller's active-output-stream gauge."""
+    controller = _make_controller()
+    controller.streams.output_stream_active = MagicMock(return_value=True)  # type: ignore[method-assign]
+    assert controller.playback_active() is True
+    controller.streams.output_stream_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+    assert controller.playback_active() is False
 
 
 @pytest.mark.parametrize(
@@ -92,6 +126,34 @@ async def test_analysis_concurrency_capped_at_half_cores(
     for _ in range(expected_permits):
         await semaphore.acquire()
     assert semaphore.locked()
+
+
+@pytest.mark.asyncio
+async def test_instrumented_semaphore_tracks_in_flight_and_waiters() -> None:
+    """InstrumentedSemaphore exposes live permit-in-use and queued-acquirer counts."""
+    sem = InstrumentedSemaphore(2)
+    assert (sem.capacity, sem.in_flight, sem.waiters) == (2, 0, 0)
+
+    await sem.acquire()
+    await sem.acquire()
+    assert sem.in_flight == 2
+    assert sem.locked()
+
+    # A third acquire blocks behind the cap and registers as a waiter.
+    blocked = asyncio.ensure_future(sem.acquire())
+    await asyncio.sleep(0)
+    assert sem.waiters == 1
+    assert sem.in_flight == 2
+
+    # Freeing a permit lets the queued acquirer through; the queue drains.
+    sem.release()
+    await blocked
+    assert sem.waiters == 0
+    assert sem.in_flight == 2
+
+    sem.release()
+    sem.release()
+    assert sem.in_flight == 0
 
 
 @pytest.mark.asyncio
@@ -183,7 +245,7 @@ def _make_stream_mock(chunks: list[bytes]) -> object:
 
 
 @pytest.mark.asyncio
-async def test_background_streaming_happy_path() -> None:
+async def test_background_streaming_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """PCM chunks reach providers; session is cleaned up on clean EOF."""
     controller = _make_controller()
     streamdetails = _make_streamdetails(path="/music/test.flac")
@@ -194,6 +256,7 @@ async def test_background_streaming_happy_path() -> None:
 
     fake_chunks = [b"\x00\x01" * 512 for _ in range(5)]
     controller.mass.streams.audio.get_media_stream = _make_stream_mock(fake_chunks)  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(audio_analysis_mod, "BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR", 0.0)
 
     await controller._run_background_streaming_for_track(streamdetails, [p])
 
@@ -201,6 +264,31 @@ async def test_background_streaming_happy_path() -> None:
     assert p.process_pcm_chunk.await_count == len(fake_chunks)
     # _finalize_providers pops the session key before dispatching — key must be gone
     assert streamdetails.uri not in controller._active_sessions
+
+
+@pytest.mark.asyncio
+async def test_background_streaming_paces_chunk_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Background dispatch enforces the pacing floor between consecutive chunks."""
+    controller = _make_controller()
+    streamdetails = _make_streamdetails(path="/music/test.flac")
+    p = _make_aa_provider("p1", available=True)
+    p.start_analysis = AsyncMock(return_value=True)
+    p.finalize = AsyncMock(return_value=None)
+    controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+
+    fake_chunks = [b"\x00\x01" * 512 for _ in range(4)]
+    controller.mass.streams.audio.get_media_stream = _make_stream_mock(fake_chunks)  # type: ignore[method-assign,assignment]
+    monkeypatch.setattr(audio_analysis_mod, "BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR", 0.05)
+
+    started = asyncio.get_running_loop().time()
+    await controller._run_background_streaming_for_track(streamdetails, [p])
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert p.process_pcm_chunk.await_count == len(fake_chunks)
+    # First chunk dispatches immediately; each of the remaining 3 waits out the floor.
+    assert elapsed >= 3 * 0.05
 
 
 @pytest.mark.asyncio
@@ -388,6 +476,7 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     controller = _make_controller()
     p1 = _make_aa_provider("prov-1", available=True)
     p1.domain = "loudness_analysis"
+    p1.analysis_version = 1
     p1.available = True
     monkeypatch.setattr(
         controller.__class__,
@@ -1155,11 +1244,12 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     assert "aa.analysis_version IS NOT NULL" in sql
     assert "aa.analysis_version >= :current_version" in sql
     assert f"'{domain}'" in sql
-    assert params == {
-        "media_type": MediaType.TRACK.value,
-        "aa_domain": "sonic_analysis",
-        "current_version": 2,
-    }
+    assert params["media_type"] == MediaType.TRACK.value
+    assert params["aa_domain"] == "sonic_analysis"
+    assert params["current_version"] == 2
+    assert "now" in params
+    assert "aa.analysis_version IS NOT NULL" in sql
+    assert "aa.analysis_version >= :current_version" in sql
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:
@@ -1170,3 +1260,93 @@ def test_controller_has_no_provider_specific_extra_data_keys() -> None:
     # do not weaken this to an import/attribute check.
     assert "_EXPORT_STRIP_EXTRA_DATA_KEYS" not in source
     assert "clap_embedding" not in source
+
+
+# --- track audio metadata & waveform export ---
+
+
+def _track_with_mapping(item_id: str = "track-1", provider: str = "test-provider") -> Track:
+    """Build a Track with a single provider mapping."""
+    return Track(
+        item_id=item_id,
+        provider="library",
+        name="Test Track",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
+            )
+        },
+    )
+
+
+def _analysis_controller_with_rows(rows: list[dict[str, Any]]) -> AudioAnalysisController:
+    """Build a stub controller whose DB returns the given analysis rows for any track."""
+    c, db = _stub_controller()
+    db.get_rows = AsyncMock(return_value=rows)
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = True
+    music_prov.domain = "test-provider"
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    c.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            _aa_provider_stub(SMART_FADES_ANALYSIS_DOMAIN),
+            _aa_provider_stub(SONIC_ANALYSIS_DOMAIN),
+        ]
+    )
+    return c
+
+
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_prefers_smart_fades() -> None:
+    """bpm/key come from smart_fades even when another AA provider wrote them later."""
+    c = _analysis_controller_with_rows(
+        [
+            _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=128.0, key="F#", mode="minor"),
+            _aa_row(SONIC_ANALYSIS_DOMAIN, 2, bpm=100.0),
+        ]
+    )
+    result = await c.get_track_audio_metadata(_track_with_mapping())
+    assert result is not None
+    assert result.bpm == 128.0
+    assert result.musical_key == "F# minor"
+
+
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_key_without_mode() -> None:
+    """musical_key falls back to the bare pitch class when no mode was detected."""
+    c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, key="C")])
+    result = await c.get_track_audio_metadata(_track_with_mapping())
+    assert result is not None
+    assert result.bpm is None
+    assert result.musical_key == "C"
+
+
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_none_without_relevant_analysis() -> None:
+    """No AudioMetadata when stored analysis has neither bpm nor key."""
+    c = _analysis_controller_with_rows(
+        [_aa_row(SONIC_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5)]
+    )
+    assert await c.get_track_audio_metadata(_track_with_mapping()) is None
+
+
+@pytest.mark.asyncio
+async def test_get_wave_form_returns_rms_bins() -> None:
+    """wave_form returns the stored RMS energy bins as a plain list of floats."""
+    rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32).tolist()
+    c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, rms_energy=rms)])
+    result = await c.get_wave_form("track-1", "test-provider")
+    assert result is not None
+    assert len(result) == 1800
+    assert result[0] == pytest.approx(0.0)
+    assert result[-1] == pytest.approx(1.0)
+    assert all(isinstance(v, float) for v in result)
+
+
+@pytest.mark.asyncio
+async def test_get_wave_form_none_without_rms() -> None:
+    """wave_form returns None when no AA provider stored RMS energy."""
+    c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, bpm=120.0)])
+    assert await c.get_wave_form("track-1", "test-provider") is None

@@ -4,6 +4,33 @@
     "description": "Configuration of the core player queue management module"
   },
   "config_entries": {
+    "autoplay_label": {
+      "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist, regardless of this setting."
+    },
+    "autoplay_mode": {
+      "label": "Autoplay source",
+      "description": "How Autoplay picks new tracks once your queue runs out.",
+      "options": {
+        "auto": "Automatic — similar tracks, falling back to your library",
+        "similar": "Similar to what you played",
+        "library": "Infinite mix from your library",
+        "playlist": "Tracks from a playlist",
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
+      },
+      "disabled_reasons": {
+        "similar": "No music or metadata provider that can supply similar tracks is currently available."
+      }
+    },
+    "autoplay_playlist": {
+      "label": "Autoplay playlist",
+      "description": "The playlist Autoplay pulls tracks from to keep the music going."
+    },
+    "crossfade_label": {
+      "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. Turn crossfade on or off per queue from the player controls; choose the crossfade mode below (on more powerful systems a 'Smart crossfade' option beat-matches the two tracks for even smoother, DJ-style transitions)."
+    },
     "crossfade_duration": {
       "label": "Standard crossfade duration",
       "description": "Duration in seconds for the standard crossfade between tracks."
@@ -13,15 +40,84 @@
       "description": "The crossfade type to use when crossfade is enabled. Smart crossfade beat-matches tracks and needs the smart fades analysis provider on a capable system; it falls back to standard when unavailable.",
       "options": {
         "standard_crossfade": "Standard crossfade",
-        "smart_crossfade": "Smart crossfade (beat-matched)"
+        "smart_crossfade": "Smart crossfade (beat-matched)",
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
       },
       "disabled_reasons": {
         "smart_crossfade": "Not available on this server: smart crossfade needs the smart fades analysis provider and a larger audio buffer (balanced or higher)."
       }
     },
+    "smart_shuffle_label": {
+      "label": "Smart shuffle adds a bit of intelligence to shuffle: instead of pure random, it pushes songs and artists you've heard recently toward the back and spreads things out, so a playlist you keep re-adding stops repeating the same tracks.\n\nNOTE: Smart shuffle is always active when you're playing a dynamic playlist, regardless of this setting."
+    },
+    "smart_shuffle_enabled": {
+      "label": "Smart shuffle",
+      "description": "When enabled, the shuffle button uses smart shuffle (recency-aware and well-spaced) instead of a plain random shuffle.\n\nNOTE: Smart shuffle is always active when you're playing a dynamic playlist, regardless of this setting.",
+      "options": {
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
+      }
+    },
+    "smart_shuffle_song_recency": {
+      "label": "Avoid replaying the same song heard within",
+      "description": "How long a song you've already heard is pushed toward the back of the queue. Applies to songs added once; deliberately duplicated songs use the repeat gap instead.",
+      "options": {
+        "0": "Off",
+        "3600": "1 hour",
+        "14400": "4 hours",
+        "43200": "12 hours",
+        "86400": "1 day",
+        "259200": "3 days",
+        "604800": "1 week",
+        "1209600": "2 weeks",
+        "2419200": "4 weeks"
+      }
+    },
+    "smart_shuffle_artist_recency": {
+      "label": "Avoid replaying the same artist heard within",
+      "description": "How long an artist you've already heard is pushed back. Kept short, since hearing an artist again sooner is usually fine.",
+      "options": {
+        "0": "Off",
+        "300": "5 minutes",
+        "900": "15 minutes",
+        "1800": "30 minutes",
+        "3600": "1 hour",
+        "7200": "2 hours"
+      }
+    },
+    "smart_shuffle_duplicate_gap": {
+      "label": "Minimum gap before repeating a deliberately-duplicated song",
+      "description": "When you add the same song to the queue more than once to hear it more often, this is the shortest time before it may play again, instead of the long song window above.",
+      "options": {
+        "0": "Off",
+        "3600": "1 hour",
+        "7200": "2 hours",
+        "10800": "3 hours",
+        "14400": "4 hours",
+        "21600": "6 hours",
+        "28800": "8 hours",
+        "43200": "12 hours",
+        "86400": "24 hours"
+      }
+    },
     "volume_normalization": {
-      "label": "Enable volume normalization (EBU-R128 based)",
-      "description": "Enable volume normalization based on the EBU-R128 standard without affecting dynamic range"
+      "label": "Volume normalization (EBU-R128 based)",
+      "description": "Even out the perceived loudness across tracks using the EBU-R128 standard, without affecting dynamic range.",
+      "options": {
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
+      }
     },
     "default_enqueue_select_artist": {
       "label": "Items to select when you play a (in-library) artist.",

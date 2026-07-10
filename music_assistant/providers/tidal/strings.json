@@ -24,10 +24,14 @@
     },
     "quality": {
       "label": "Quality setting for Tidal:",
-      "description": "High = 16bit 44.1kHz\n\nMax = Up to 24bit 192kHz",
+      "description": "The maximum streaming quality to request from Tidal.",
       "options": {
         "LOSSLESS": "High",
         "HI_RES_LOSSLESS": "Max"
+      },
+      "option_descriptions": {
+        "LOSSLESS": "16-bit / 44.1 kHz — CD quality, plays on any device.",
+        "HI_RES_LOSSLESS": "Up to 24-bit / 192 kHz — hi-res; needs a player/DAC that supports it."
       }
     },
     "start_pkce_login_label": {

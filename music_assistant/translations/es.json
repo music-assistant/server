@@ -51,7 +51,7 @@
   "common.config_entries.username.label": "Usuario",
   "common.config_entries.volume_normalization.description": "Habilite la normalización de volumen basada en el estándar EBU-R128 sin afectar el rango dinámico",
   "common.config_entries.volume_normalization.label": "Activar la normalización del volumen (basado en EBU-R128)",
-  "common.config_entries.volume_normalization_target.description": "Ajuste el volumen promedio (percibido) a este nivel objetivo, el valor predeterminado es -17 LUFS \n\n **ADVERTENCIA:** ¡Ajustar el nivel demasiado alto puede provocar recortes!",
+  "common.config_entries.volume_normalization_target.description": "Ajuste el volumen promedio (percibido) a este nivel objetivo, el valor predeterminado es -14 LUFS \n\n **ADVERTENCIA:** ¡Ajustar el nivel demasiado alto puede provocar recortes!",
   "common.config_entries.volume_normalization_target.label": "Nivel objetivo para la normalización del volumen",
   "common.media.albums.name": "Álbumes",
   "common.media.artists.name": "Artistas",

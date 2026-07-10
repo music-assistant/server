@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
@@ -34,16 +36,22 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     AudioFormat,
     ItemMapping,
     MediaItem,
+    MediaItemChapter,
+    MediaItemType,
     Playlist,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
 from plexapi.audio import Track as PlexTrack
@@ -52,7 +60,7 @@ from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
@@ -65,7 +73,6 @@ from music_assistant.providers.plex.constants import (
     CONF_ACTION_AUTH_MYPLEX,
     CONF_ACTION_CLEAR_AUTH,
     CONF_ACTION_GDM,
-    CONF_ACTION_LIBRARY,
     CONF_AUTH_TOKEN,
     CONF_COLLECTION_PREFIX,
     CONF_HUB_ITEMS_LIMIT,
@@ -86,16 +93,37 @@ from music_assistant.providers.plex.constants import (
     ERR_MYPLEX_AUTH_FAILED,
     ERR_MYPLEX_TOKEN_NOT_RECEIVED,
     ERR_NO_ARTIST_FOR_TRACK,
-    ERR_NO_LIBRARIES,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
 )
 from music_assistant.providers.plex.helpers import (
+    AUDIOBOOK_FEATURES,
+    CONF_LIBRARY_TYPE,
+    LIBRARY_TYPE_AUDIOBOOKS,
+    LIBRARY_TYPE_MUSIC,
+    LIBRARY_TYPE_PODCASTS,
+    LIBRARY_TYPE_TO_MEDIA_TYPES,
+    PODCAST_FEATURES,
+    SUPPORTED_FEATURES,
     discover_local_servers,
+    extract_library_name,
+    get_explicit,
     get_favorite_from_rating,
-    get_libraries,
+    get_musicbrainz_id,
+    get_section_info,
     get_thumbnail_images,
+    parse_plex_lyrics_payload,
 )
+
+# Public surface of the provider package. With mypy's no_implicit_reexport,
+# names imported into this module (e.g. CONF_LIBRARY_ID from .constants) are
+# only re-exported when listed here.
+__all__ = [
+    "CONF_LIBRARY_ID",
+    "PlexProvider",
+    "get_config_entries",
+    "setup",
+]
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -110,20 +138,14 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.FAVORITE_ALBUMS_EDIT,
-    ProviderFeature.FAVORITE_TRACKS_EDIT,
-    ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_TOPTRACKS,
-    ProviderFeature.SIMILAR_TRACKS,
-    ProviderFeature.RECOMMENDATIONS,
-}
+_LOGGER = logging.getLogger(__name__)
+
+UNKNOWN_NAME = "[Unknown]"
+PODCAST_PREFIX = "podcast:"
+PODCAST_EPISODE_PREFIX = "podcast_episode:"
+AUDIOBOOK_PREFIX = "audiobook:"
+CHAPTER_PREFIX = "Chapter"
+EPISODE_PREFIX = "Episode"
 
 
 async def setup(
@@ -265,40 +287,116 @@ async def get_config_entries(  # noqa: PLR0915
             type=ConfigEntryType.STRING,
             required=True,
             depends_on=CONF_AUTH_TOKEN,
-            action=CONF_ACTION_LIBRARY,
         )
-        if action in (
-            CONF_ACTION_LIBRARY,
-            CONF_ACTION_AUTH_MYPLEX,
-            CONF_ACTION_AUTH_LOCAL,
-        ):
-            token = mass.config.decrypt_string(str(values.get(CONF_AUTH_TOKEN)))
-            server_http_ip = str(values.get(CONF_LOCAL_SERVER_IP))
-            server_http_port = str(values.get(CONF_LOCAL_SERVER_PORT))
-            server_http_ssl = bool(values.get(CONF_LOCAL_SERVER_SSL))
-            server_http_verify_cert = bool(values.get(CONF_LOCAL_SERVER_VERIFY_CERT))
-            if not (
-                libraries := await get_libraries(
-                    mass,
-                    token,
-                    server_http_ssl,
-                    server_http_ip,
-                    server_http_port,
-                    server_http_verify_cert,
-                    instance_id,
+        conf_library_type = ConfigEntry(
+            key=CONF_LIBRARY_TYPE,
+            type=ConfigEntryType.STRING,
+            required=True,
+            depends_on=CONF_AUTH_TOKEN,
+            options=[
+                ConfigValueOption(LIBRARY_TYPE_MUSIC),
+                ConfigValueOption(LIBRARY_TYPE_AUDIOBOOKS),
+                ConfigValueOption(LIBRARY_TYPE_PODCASTS),
+            ],
+            default_value=LIBRARY_TYPE_MUSIC,
+        )
+
+        token = mass.config.decrypt_string(str(values.get(CONF_AUTH_TOKEN)))
+        server_http_ip = str(values.get(CONF_LOCAL_SERVER_IP))
+        server_http_port = str(values.get(CONF_LOCAL_SERVER_PORT, 32400))
+        server_http_ssl = bool(values.get(CONF_LOCAL_SERVER_SSL))
+        server_http_verify_cert = bool(values.get(CONF_LOCAL_SERVER_VERIFY_CERT))
+        sections = await get_section_info(
+            mass,
+            token,
+            server_http_ssl,
+            server_http_ip,
+            server_http_port,
+            server_http_verify_cert,
+            instance_id,
+        )
+        if not sections:
+            msg = (
+                "Unable to retrieve Servers and/or Music Libraries. "
+                "Please verify the local server IP and port are correct and the Plex server is running."
+            )
+            _LOGGER.warning(msg)
+        library_options = [
+            ConfigValueOption(title=s.display_name, value=s.display_name) for s in sections
+        ]
+        conf_libraries.options = library_options
+
+        # Determine which libraries are already claimed by other plex provider instances.
+        # We read raw stored config values directly (without include_values=True) to avoid
+        # recursively triggering get_config_entries for every plex instance.
+        used_libraries: set[str] = set()
+        has_audiobook_provider = False
+        raw_provs = mass.config.get("providers", {})
+        for prov_id, prov_conf in raw_provs.items():
+            if prov_conf.get("domain") != "plex":
+                continue
+            # Skip the current instance when editing so its own library isn't "used"
+            if prov_id == instance_id:
+                continue
+            prov_values = prov_conf.get("values", {})
+            if lib_val := prov_values.get(CONF_LIBRARY_ID):
+                used_libraries.add(str(lib_val))
+            if prov_values.get(CONF_LIBRARY_TYPE) == LIBRARY_TYPE_AUDIOBOOKS:
+                has_audiobook_provider = True
+
+        available_sections = [s for s in sections if s.display_name not in used_libraries]
+
+        # Only auto-select defaults if the user has not yet manually picked a library.
+        if not values.get(CONF_LIBRARY_ID):
+            # Sort: non-tracking first, then A-Z
+            sorted_available = sorted(
+                available_sections,
+                key=lambda s: (s.is_tracking_progress, s.display_name),
+            )
+            default_library = (
+                sorted_available[0].display_name
+                if sorted_available
+                else (
+                    available_sections[0].display_name
+                    if available_sections
+                    else (sections[0].display_name if sections else "")
                 )
-            ):
-                raise LoginFailed(ERR_NO_LIBRARIES)
-            conf_libraries.options = [
-                # use the same value for both the value and the title
-                # until we find out what plex uses as stable identifiers
-                ConfigValueOption(x, title=x)
-                for x in libraries
-            ]
-            # select first library as (default) value
-            conf_libraries.default_value = libraries[0]
-            conf_libraries.value = libraries[0]
+            )
+
+            # Determine default type from the selected library's tracking setting
+            selected_section = next(
+                (s for s in sections if s.display_name == default_library), None
+            )
+            if selected_section and selected_section.is_tracking_progress:
+                default_type = (
+                    LIBRARY_TYPE_PODCASTS if has_audiobook_provider else LIBRARY_TYPE_AUDIOBOOKS
+                )
+            else:
+                default_type = LIBRARY_TYPE_MUSIC
+
+            conf_library_type.default_value = default_type
+            conf_library_type.value = default_type
+            conf_libraries.default_value = default_library
+            conf_libraries.value = default_library
+        else:
+            # Type may need updating if user changed the library
+            current_library = str(values.get(CONF_LIBRARY_ID, ""))
+            selected_section = next(
+                (s for s in sections if s.display_name == current_library), None
+            )
+            if selected_section and selected_section.is_tracking_progress:
+                suggested_type = (
+                    LIBRARY_TYPE_PODCASTS if has_audiobook_provider else LIBRARY_TYPE_AUDIOBOOKS
+                )
+            else:
+                suggested_type = LIBRARY_TYPE_MUSIC
+            current_type = values.get(CONF_LIBRARY_TYPE, suggested_type)
+            conf_library_type.default_value = suggested_type
+            conf_library_type.value = current_type
+            conf_libraries.value = current_library
+
         entries.append(conf_libraries)
+        entries.append(conf_library_type)
 
     # show authentication options
     if values is None or not values.get(CONF_AUTH_TOKEN):
@@ -403,11 +501,27 @@ class PlexProvider(MusicProvider):
     _myplex_account: MyPlexAccount = None
     _baseurl: str
 
+    @property
+    def instance_name_postfix(self) -> str | None:
+        """Return a postfix with the library name and type."""
+        library_name = extract_library_name(str(self.config.get_value(CONF_LIBRARY_ID) or ""))
+        library_type = self._get_library_type()
+        if library_type in (LIBRARY_TYPE_AUDIOBOOKS, LIBRARY_TYPE_PODCASTS):
+            type_label = library_type.title()
+            # Avoid duplication when the library name already indicates its type
+            if library_name.lower() == type_label.lower():
+                return library_name
+            return f"{library_name} - {type_label}"
+        if library_name:
+            return library_name
+        return None
+
     async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
-        _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
+
+        library_name = extract_library_name(str(self.config.get_value(CONF_LIBRARY_ID)))
 
         def connect() -> PlexServer:
             try:
@@ -476,6 +590,67 @@ class PlexProvider(MusicProvider):
         except requests.exceptions.ConnectionError as err:
             raise SetupFailedError from err
 
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle library type changes by cleaning up old media type entries."""
+        old_library_type = self._get_library_type()
+
+        await super().update_config(config, changed_keys)
+
+        if f"values/{CONF_LIBRARY_TYPE}" not in changed_keys:
+            return
+
+        new_library_type = self._get_library_type()
+        if old_library_type == new_library_type:
+            return
+
+        old_types = LIBRARY_TYPE_TO_MEDIA_TYPES.get(old_library_type, ())
+        new_types = LIBRARY_TYPE_TO_MEDIA_TYPES.get(new_library_type, ())
+        stale_types = tuple(t for t in old_types if t not in new_types)
+
+        if not stale_types:
+            return
+
+        self.logger.info(
+            "Library type changed from %s to %s, cleaning up %s entries",
+            old_library_type,
+            new_library_type,
+            ", ".join(t.value for t in stale_types),
+        )
+
+        # Remove provider mappings for stale media types
+        for media_type in stale_types:
+            controller = self.mass.music.get_controller(media_type)
+            query = (
+                f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                f"WHERE media_type = '{media_type.value}' "
+                f"AND provider_instance = '{self.instance_id}'"
+            )
+            for db_row in await self.mass.music.database.get_rows_from_query(query, limit=100000):
+                try:
+                    await controller.remove_provider_mappings(db_row["item_id"], self.instance_id)
+                except Exception as err:
+                    self.logger.warning(
+                        "Failed to remove provider mapping for %s item %s: %s",
+                        media_type.value,
+                        db_row["item_id"],
+                        err,
+                    )
+
+        # Remove stale sync config values so they don't leak back on future form renders
+        sync_key_map: dict[MediaType, str] = {
+            MediaType.ARTIST: "library_sync_artists",
+            MediaType.ALBUM: "library_sync_albums",
+            MediaType.TRACK: "library_sync_tracks",
+            MediaType.PLAYLIST: "library_sync_playlists",
+            MediaType.AUDIOBOOK: "library_sync_audiobooks",
+            MediaType.PODCAST: "library_sync_podcasts",
+            MediaType.RADIO: "library_sync_radios",
+        }
+        for media_type in stale_types:
+            if sync_key := sync_key_map.get(media_type):
+                with contextlib.suppress(Exception):
+                    await self.mass.config.remove_provider_config_value(self.instance_id, sync_key)
+
     @property
     def is_streaming_provider(self) -> bool:
         """
@@ -491,303 +666,19 @@ class PlexProvider(MusicProvider):
         """
         return False
 
+    @property
+    def supported_features(self) -> set[ProviderFeature]:
+        """Return the features supported by this Provider."""
+        library_type = self._get_library_type()
+        if library_type == LIBRARY_TYPE_AUDIOBOOKS:
+            return AUDIOBOOK_FEATURES.copy()
+        if library_type == LIBRARY_TYPE_PODCASTS:
+            return PODCAST_FEATURES.copy()
+        return self._supported_features.copy()
+
     async def resolve_image(self, path: str) -> str | bytes:
         """Return the full image URL including the auth token."""
         return str(self._plex_server.url(path, True))
-
-    async def _run_async(
-        self, call: Callable[Param, RetType], *args: Param.args, **kwargs: Param.kwargs
-    ) -> RetType:
-        await self.get_myplex_account_and_refresh_token(str(self.config.get_value(CONF_AUTH_TOKEN)))
-        return await asyncio.to_thread(call, *args, **kwargs)
-
-    async def _get_data(self, key: str, cls: type[PlexObjectT] | None = None) -> PlexObjectT:
-        try:
-            results = await self._run_async(self._plex_library.fetchItem, key, cls)
-        except plexapi.exceptions.NotFound as err:
-            raise MediaNotFoundError(ERR_ITEM_NOT_FOUND.format(item_id=key)) from err
-        return cast("PlexObjectT", results)
-
-    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
-        """Get item mapping for a given media type, key, and name."""
-        if not name:
-            self.logger.info(
-                "Received None or empty name for media item. Media type: %s, Key: %s",
-                media_type,
-                key,
-            )
-            name = "[Unknown]"
-
-        mapped_name, mapped_version = parse_title_and_version(name)
-
-        if not mapped_name:
-            self.logger.info(
-                "Failed to map name for media item. Media type: %s, Key: %s, Original name: %s",
-                media_type,
-                key,
-                name,
-            )
-            mapped_name = "[Unknown]"
-        if not mapped_version and media_type not in (MediaType.ALBUM, MediaType.TRACK):
-            mapped_version = ""
-
-        return ItemMapping(
-            media_type=media_type,
-            item_id=key,
-            provider=self.instance_id,
-            name=mapped_name,
-            version=mapped_version,
-        )
-
-    async def _get_or_create_artist_by_name(self, artist_name: str) -> Artist | ItemMapping:
-        if library_items := await self.mass.music.artists.get_library_items_by_query(
-            search=artist_name, provider_filter=[self.instance_id]
-        ):
-            return ItemMapping.from_item(library_items[0])
-
-        artist_id = FAKE_ARTIST_PREFIX + artist_name
-        return Artist(
-            item_id=artist_id,
-            name=artist_name or UNKNOWN_ARTIST,
-            provider=self.instance_id,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=str(artist_id),
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-
-    async def _parse(self, plex_media: PlexObject) -> MediaItem | None:
-        if plex_media.type == "artist":
-            return await self._parse_artist(plex_media)
-        if plex_media.type == "album":
-            return await self._parse_album(plex_media)
-        if plex_media.type == "track":
-            return await self._parse_track(plex_media)
-        if plex_media.type == "playlist":
-            return await self._parse_playlist(plex_media)
-        return None
-
-    async def _search_track(self, search_query: str, limit: int) -> list[PlexTrack]:
-        return cast(
-            "list[PlexTrack]",
-            await self._run_async(self._plex_library.searchTracks, title=search_query, limit=limit),
-        )
-
-    async def _search_album(self, search_query: str, limit: int) -> list[PlexAlbum]:
-        return cast(
-            "list[PlexAlbum]",
-            await self._run_async(self._plex_library.searchAlbums, title=search_query, limit=limit),
-        )
-
-    async def _search_artist(self, search_query: str, limit: int) -> list[PlexArtist]:
-        return cast(
-            "list[PlexArtist]",
-            await self._run_async(
-                self._plex_library.searchArtists, title=search_query, limit=limit
-            ),
-        )
-
-    async def _search_playlist(self, search_query: str, limit: int) -> list[PlexPlaylist]:
-        return cast(
-            "list[PlexPlaylist]",
-            await self._run_async(self._plex_library.playlists, title=search_query, limit=limit),
-        )
-
-    async def _search_and_parse(
-        self,
-        search_coro: Awaitable[list[PlexObjectT]],
-        parse_coro: Callable[[PlexObjectT], Coroutine[Any, Any, MediaItemT]],
-    ) -> list[MediaItemT]:
-        task_results: list[Task[MediaItemT]] = []
-        async with TaskGroup() as tg:
-            for item in await search_coro:
-                task_results.append(tg.create_task(parse_coro(item)))
-
-        results: list[MediaItemT] = []
-        for task in task_results:
-            results.append(task.result())
-
-        return results
-
-    async def _parse_album(self, plex_album: PlexAlbum) -> Album:
-        """Parse a Plex Album response to an Album model object."""
-        album_id = plex_album.key
-        album = Album(
-            item_id=album_id,
-            provider=self.instance_id,
-            name=plex_album.title or "[Unknown]",
-            provider_mappings={
-                ProviderMapping(
-                    item_id=str(album_id),
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=plex_album.getWebURL(self._baseurl),
-                )
-            },
-        )
-        # Check if album rating meets the configured threshold for favorites
-        favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        if (favorite := get_favorite_from_rating(plex_album, favorite_threshold)) is not None:
-            album.favorite = favorite
-
-        if plex_album.year:
-            album.year = plex_album.year
-        if images := get_thumbnail_images(plex_album, self.instance_id):
-            album.metadata.images = images
-        if plex_album.summary:
-            album.metadata.description = plex_album.summary
-        if plex_album.genres:
-            album.metadata.genres = {genre.tag for genre in plex_album.genres if genre.tag}
-
-        album.artists.append(
-            self._get_item_mapping(
-                MediaType.ARTIST,
-                plex_album.parentKey,
-                plex_album.parentTitle or UNKNOWN_ARTIST,
-            )
-        )
-        return album
-
-    async def _parse_artist(self, plex_artist: PlexArtist) -> Artist:
-        """Parse a Plex Artist response to Artist model object."""
-        artist_id = plex_artist.key
-        if not artist_id:
-            raise InvalidDataError(ERR_ARTIST_INVALID_ID)
-        artist = Artist(
-            item_id=artist_id,
-            name=plex_artist.title or UNKNOWN_ARTIST,
-            provider=self.instance_id,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=str(artist_id),
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=plex_artist.getWebURL(self._baseurl),
-                )
-            },
-        )
-        if plex_artist.summary:
-            artist.metadata.description = plex_artist.summary
-        if images := get_thumbnail_images(plex_artist, self.instance_id):
-            artist.metadata.images = images
-        if plex_artist.genres:
-            artist.metadata.genres = {genre.tag for genre in plex_artist.genres if genre.tag}
-        return artist
-
-    async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
-        """Parse a Plex Playlist response to a Playlist object."""
-        playlist = Playlist(
-            item_id=plex_playlist.key,
-            provider=self.instance_id,
-            name=plex_playlist.title or "[Unknown]",
-            provider_mappings={
-                ProviderMapping(
-                    item_id=plex_playlist.key,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=plex_playlist.getWebURL(self._baseurl),
-                )
-            },
-        )
-        if plex_playlist.summary:
-            playlist.metadata.description = plex_playlist.summary
-        if images := get_thumbnail_images(plex_playlist, self.instance_id):
-            playlist.metadata.images = images
-        playlist.is_editable = not plex_playlist.smart
-        return playlist
-
-    async def _parse_collection(self, plex_collection: PlexCollection) -> Playlist:
-        """Parse a Plex Collection response to a Playlist object."""
-        # Get the configured collection prefix
-        collection_prefix = str(self.config.get_value(CONF_COLLECTION_PREFIX) or "")
-
-        # Collections are imported as playlists with the configured prefix
-        playlist = Playlist(
-            item_id=f"{COLLECTION_ID_PREFIX}{plex_collection.key}",
-            provider=self.instance_id,
-            name=f"{collection_prefix}{plex_collection.title}",
-            provider_mappings={
-                ProviderMapping(
-                    item_id=f"{COLLECTION_ID_PREFIX}{plex_collection.key}",
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        # Add collection poster/thumbnail if available
-        if images := get_thumbnail_images(
-            plex_collection, self.instance_id, ("thumb", "composite")
-        ):
-            playlist.metadata.images = images
-        # Collections are not editable in Music Assistant
-        playlist.is_editable = False
-        return playlist
-
-    async def _parse_track(self, plex_track: PlexTrack) -> Track:
-        """Parse a Plex Track response to a Track model object."""
-        content = plex_track.media[0].container if plex_track.media else None
-        track = Track(
-            item_id=plex_track.key,
-            provider=self.instance_id,
-            name=plex_track.title or "[Unknown]",
-            provider_mappings={
-                ProviderMapping(
-                    item_id=plex_track.key,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    # For Plex (local library provider), assume tracks are available by default
-                    # even if media attribute is not populated in the initial response.
-                    # This prevents tracks from being skipped during library sync.
-                    available=True,
-                    audio_format=AudioFormat(
-                        content_type=(
-                            ContentType.try_parse(content) if content else ContentType.UNKNOWN
-                        ),
-                    ),
-                    url=plex_track.getWebURL(self._baseurl),
-                )
-            },
-            disc_number=plex_track.parentIndex or 0,
-            track_number=plex_track.trackNumber or 0,
-        )
-        # Check if track rating meets the configured threshold for favorites
-        favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        if (favorite := get_favorite_from_rating(plex_track, favorite_threshold)) is not None:
-            track.favorite = favorite
-
-        if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
-            # The artist of the track if different from the album's artist.
-            # For this kind of artist, we just know the name, so we create a fake artist,
-            # if it does not already exist.
-            track.artists.append(
-                await self._get_or_create_artist_by_name(plex_track.originalTitle or UNKNOWN_ARTIST)
-            )
-        elif plex_track.grandparentKey:
-            track.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    plex_track.grandparentKey,
-                    plex_track.grandparentTitle or UNKNOWN_ARTIST,
-                )
-            )
-        else:
-            raise InvalidDataError(ERR_NO_ARTIST_FOR_TRACK)
-
-        if images := get_thumbnail_images(plex_track, self.instance_id):
-            track.metadata.images = images
-        if plex_track.genres:
-            track.metadata.genres = {genre.tag for genre in plex_track.genres if genre.tag}
-        if plex_track.parentKey:
-            track.album = self._get_item_mapping(
-                MediaType.ALBUM, plex_track.parentKey, plex_track.parentTitle
-            )
-        if plex_track.duration:
-            track.duration = int(plex_track.duration / 1000)
-
-        return track
 
     @use_cache(3600)  # Cache for 1 hour
     async def search(
@@ -902,6 +793,274 @@ class PlexProvider(MusicProvider):
                 yield await self._parse_track(plex_track)
             offset += page_size
 
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
+        """Retrieve all library audiobooks from the configured Plex audiobook section."""
+        if self._get_library_type() != LIBRARY_TYPE_AUDIOBOOKS:
+            return
+        try:
+            albums_obj = await self._run_async(self._plex_library.albums)
+        except Exception:
+            self.logger.exception("Failed to list albums from audiobook library")
+            return
+        self.logger.debug(
+            "Found %d albums in audiobook library '%s'",
+            len(albums_obj),
+            self._plex_library.title,
+        )
+        for album in albums_obj:
+            try:
+                yield await self._parse_audiobook(album, include_chapters=False)
+            except Exception:
+                self.logger.warning(
+                    "Failed to parse audiobook album '%s' (key=%s); skipping",
+                    getattr(album, "title", "[unknown]"),
+                    getattr(album, "key", "[no key]"),
+                    exc_info=True,
+                )
+
+    @use_cache(3600 * 3)  # Cache for 3 hours
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details (including chapters) by id."""
+        if self._get_library_type() != LIBRARY_TYPE_AUDIOBOOKS:
+            msg = "Audiobook library not configured"
+            raise MediaNotFoundError(msg)
+        album_key = prov_audiobook_id.removeprefix(AUDIOBOOK_PREFIX)
+        try:
+            plex_album = cast(
+                "PlexAlbum",
+                await self._run_async(self._plex_library.fetchItem, album_key, PlexAlbum),
+            )
+        except plexapi.exceptions.NotFound:
+            msg = f"Audiobook {prov_audiobook_id} not found"
+            raise MediaNotFoundError(msg)
+        return await self._parse_audiobook(plex_album, include_chapters=True)
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
+        """Retrieve all library podcasts from the configured Plex podcast section."""
+        if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
+            return
+        try:
+            albums_obj = await self._run_async(self._plex_library.albums)
+        except Exception:
+            self.logger.exception("Failed to list albums from podcast library")
+            return
+        for album in albums_obj:
+            try:
+                yield await self._parse_podcast(album, include_episodes=False)
+            except Exception:
+                self.logger.warning(
+                    "Failed to parse podcast album '%s' (key=%s); skipping",
+                    getattr(album, "title", "[unknown]"),
+                    getattr(album, "key", "[no key]"),
+                    exc_info=True,
+                )
+
+    @use_cache(3600 * 3)  # Cache for 3 hours
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get full podcast details (including episodes) by id."""
+        if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
+            msg = "Podcast library not configured"
+            raise MediaNotFoundError(msg)
+        album_key = prov_podcast_id.removeprefix(PODCAST_PREFIX)
+        try:
+            plex_album = cast(
+                "PlexAlbum",
+                await self._run_async(self._plex_library.fetchItem, album_key, PlexAlbum),
+            )
+        except plexapi.exceptions.NotFound:
+            msg = f"Podcast {prov_podcast_id} not found"
+            raise MediaNotFoundError(msg)
+        return await self._parse_podcast(plex_album, include_episodes=True)
+
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
+        """Get all PodcastEpisodes for given podcast id."""
+        if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
+            return
+        album_key = prov_podcast_id.removeprefix(PODCAST_PREFIX)
+        try:
+            plex_album = cast(
+                "PlexAlbum",
+                await self._run_async(self._plex_library.fetchItem, album_key, PlexAlbum),
+            )
+        except plexapi.exceptions.NotFound:
+            msg = f"Podcast {prov_podcast_id} not found"
+            raise MediaNotFoundError(msg)
+        for episode in await self._build_podcast_episodes(plex_album):
+            yield episode
+
+    @use_cache(3600 * 3)  # Cache for 3 hours
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get full podcast episode details by id."""
+        if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
+            msg = "Podcast library not configured"
+            raise MediaNotFoundError(msg)
+        track_key = prov_episode_id.removeprefix(PODCAST_EPISODE_PREFIX)
+        try:
+            plex_track = cast(
+                "PlexTrack",
+                await self._run_async(self._plex_library.fetchItem, track_key, PlexTrack),
+            )
+        except plexapi.exceptions.NotFound:
+            msg = f"Podcast episode {prov_episode_id} not found"
+            raise MediaNotFoundError(msg)
+        return await self._parse_podcast_episode(plex_track)
+
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
+        """
+        Get progress (resume point) details for the given audiobook or podcast.
+
+        :param item_id: provider item id (e.g. "audiobook:<plex_key>").
+        :param media_type: the media type (AUDIOBOOK or PODCAST).
+        :return: (fully_played, position_ms, timestamp)
+        """
+        library_type = self._get_library_type()
+        if media_type == MediaType.AUDIOBOOK and library_type == LIBRARY_TYPE_AUDIOBOOKS:
+            album_key = item_id.removeprefix(AUDIOBOOK_PREFIX)
+        elif media_type == MediaType.PODCAST and library_type == LIBRARY_TYPE_PODCASTS:
+            album_key = item_id.removeprefix(PODCAST_PREFIX)
+        elif media_type == MediaType.PODCAST_EPISODE and library_type == LIBRARY_TYPE_PODCASTS:
+            episode_key = item_id.removeprefix(PODCAST_EPISODE_PREFIX)
+            try:
+                plex_track = cast(
+                    "PlexTrack",
+                    await self._run_async(self._plex_library.fetchItem, episode_key, PlexTrack),
+                )
+            except plexapi.exceptions.NotFound:
+                msg = f"Podcast episode {episode_key} not found"
+                raise MediaNotFoundError(msg)
+            # For podcast episodes, progress lives on each individual track.
+            # lastViewedAt may be on the parent album; fall back to the track.
+            fully_played = bool(getattr(plex_track, "viewCount", 0) > 0)
+            timestamp = getattr(plex_track, "lastViewedAt", None)
+            if timestamp is not None and timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            resume_position_ms = getattr(plex_track, "viewOffset", 0) or 0
+            return fully_played, resume_position_ms, timestamp
+        else:
+            raise NotImplementedError
+        try:
+            plex_album = cast(
+                "PlexAlbum",
+                await self._run_async(self._plex_library.fetchItem, album_key, PlexAlbum),
+            )
+        except plexapi.exceptions.NotFound:
+            msg = f"Item {item_id} not found"
+            raise MediaNotFoundError(msg)
+
+        try:
+            await self._run_async(plex_album.reload)
+        except plexapi.exceptions.PlexApiException, requests.exceptions.RequestException:
+            self.logger.warning(
+                "Failed to reload metadata for position check (%s), using cached metadata",
+                item_id,
+            )
+
+        fully_played = bool(getattr(plex_album, "viewCount", 0) > 0)
+        timestamp = getattr(plex_album, "lastViewedAt", None)
+        if timestamp is not None and timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+
+        resume_position_ms = await self._calc_resume_position_ms(plex_album, fully_played)
+        return fully_played, resume_position_ms, timestamp
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Handle callback when an audiobook or podcast has been played.
+
+        Syncs progress back to the Plex server using the timeline/progress API.
+
+        :param media_type: The media type (AUDIOBOOK or PODCAST).
+        :param prov_item_id: The provider-specific item id.
+        :param fully_played: True when the item has been played to the end.
+        :param position: Last known position in seconds.
+        :param media_item: The full media item details.
+        :param is_playing: True when currently playing.
+        """
+        library_type = self._get_library_type()
+        if media_type == MediaType.AUDIOBOOK and library_type == LIBRARY_TYPE_AUDIOBOOKS:
+            album_key = prov_item_id.removeprefix(AUDIOBOOK_PREFIX)
+        elif media_type == MediaType.PODCAST and library_type == LIBRARY_TYPE_PODCASTS:
+            album_key = prov_item_id.removeprefix(PODCAST_PREFIX)
+        elif media_type == MediaType.PODCAST_EPISODE and library_type == LIBRARY_TYPE_PODCASTS:
+            episode_key = prov_item_id.removeprefix(PODCAST_EPISODE_PREFIX)
+            plex_track = cast(
+                "PlexTrack",
+                await self._run_async(self._plex_library.fetchItem, episode_key, PlexTrack),
+            )
+            album_key = str(plex_track.parentKey)
+        else:
+            return
+
+        try:
+            plex_album = cast(
+                "PlexAlbum",
+                await self._run_async(self._plex_library.fetchItem, album_key, PlexAlbum),
+            )
+        except plexapi.exceptions.NotFound:
+            self.logger.warning(
+                "Failed to fetch %s %s for played sync", media_type.value, prov_item_id
+            )
+            return
+        except Exception:
+            self.logger.warning(
+                "Failed to fetch %s %s for played sync",
+                media_type.value,
+                prov_item_id,
+                exc_info=True,
+            )
+            return
+
+        if fully_played:
+            await self._run_async(plex_album.markPlayed)
+            self.logger.debug("Marked %s %s as played in Plex", media_type.value, prov_item_id)
+            return
+
+        if position <= 0:
+            await self._run_async(plex_album.markUnplayed)
+            self.logger.debug("Marked %s %s as unplayed in Plex", media_type.value, prov_item_id)
+            return
+
+        try:
+            target_track, target_offset_ms = await self._find_track_for_position(
+                plex_album, position
+            )
+            if target_track is None:
+                return
+
+            state = "playing" if is_playing else "paused"
+            # updateTimeline expects time in milliseconds (Plex native unit)
+            await self._run_async(
+                target_track.updateTimeline,
+                target_offset_ms,
+                state=state,
+                duration=getattr(target_track, "duration", None),
+            )
+            self.logger.debug(
+                "Synced %s %s progress to Plex: track %s at %dms (%s)",
+                media_type.value,
+                prov_item_id,
+                target_track.title,
+                target_offset_ms,
+                state,
+            )
+        except Exception:
+            self.logger.warning(
+                "Failed to sync %s %s progress to Plex",
+                media_type.value,
+                prov_item_id,
+                exc_info=True,
+            )
+
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
@@ -939,7 +1098,9 @@ class PlexProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         plex_track = await self._get_data(prov_track_id, PlexTrack)
-        return await self._parse_track(plex_track)
+        track = await self._parse_track(plex_track)
+        await self._add_track_lyrics(plex_track, track)
+        return track
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -995,7 +1156,18 @@ class PlexProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             plex_artist = await self._get_data(prov_artist_id, PlexArtist)
-            plex_albums = cast("list[PlexAlbum]", await self._run_async(plex_artist.albums))
+            try:
+                plex_albums = cast("list[PlexAlbum]", await self._run_async(plex_artist.albums))
+            except plexapi.exceptions.NotFound:
+                # PlexArtist.albums() relies on Plex's advanced filters API.
+                # Some Plex servers return no filtering metadata, making plexapi
+                # raise 'Unknown libtype "artist"'. Fall back to the artist's
+                # /children endpoint, which does not depend on the filters API.
+                albums_key = f"{plex_artist.key}/children"
+                plex_albums = cast(
+                    "list[PlexAlbum]",
+                    await self._run_async(plex_artist.fetchItems, albums_key, PlexAlbum),
+                )
             if plex_albums:
                 albums = []
                 for album_obj in plex_albums:
@@ -1143,7 +1315,12 @@ class PlexProvider(MusicProvider):
             return []
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a track."""
+        """Get streamdetails for a track/audiobook/podcast episode."""
+        if media_type == MediaType.AUDIOBOOK:
+            return await self._get_audiobook_stream_details(item_id)
+        if media_type == MediaType.PODCAST_EPISODE:
+            return await self._get_podcast_episode_stream_details(item_id)
+
         plex_track = await self._get_data(item_id, PlexTrack)
         if not plex_track.media:
             raise MediaNotFoundError(ERR_TRACK_NOT_FOUND.format(item_id=item_id))
@@ -1227,4 +1404,727 @@ class PlexProvider(MusicProvider):
             media_type.value,
             prov_item_id,
             plex_item.ratingKey,
+        )
+
+    def _get_library_type(self) -> str:
+        """Return the configured library type, defaulting to music."""
+        return str(self.config.get_value(CONF_LIBRARY_TYPE) or LIBRARY_TYPE_MUSIC)
+
+    async def _run_async(
+        self, call: Callable[Param, RetType], *args: Param.args, **kwargs: Param.kwargs
+    ) -> RetType:
+        await self.get_myplex_account_and_refresh_token(str(self.config.get_value(CONF_AUTH_TOKEN)))
+        return await asyncio.to_thread(call, *args, **kwargs)
+
+    async def _get_data(self, key: str, cls: type[PlexObjectT] | None = None) -> PlexObjectT:
+        try:
+            results = await self._run_async(self._plex_library.fetchItem, key, cls)
+        except plexapi.exceptions.NotFound as err:
+            raise MediaNotFoundError(ERR_ITEM_NOT_FOUND.format(item_id=key)) from err
+        return cast("PlexObjectT", results)
+
+    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+        """Get item mapping for a given media type, key, and name."""
+        if not name:
+            self.logger.info(
+                "Received None or empty name for media item. Media type: %s, Key: %s",
+                media_type,
+                key,
+            )
+            name = UNKNOWN_NAME
+
+        mapped_name, mapped_version = parse_title_and_version(name)
+
+        if not mapped_name:
+            self.logger.info(
+                "Failed to map name for media item. Media type: %s, Key: %s, Original name: %s",
+                media_type,
+                key,
+                name,
+            )
+            mapped_name = UNKNOWN_NAME
+        if not mapped_version and media_type not in (MediaType.ALBUM, MediaType.TRACK):
+            mapped_version = ""
+
+        return ItemMapping(
+            media_type=media_type,
+            item_id=key,
+            provider=self.instance_id,
+            name=mapped_name,
+            version=mapped_version,
+        )
+
+    async def _get_or_create_artist_by_name(self, artist_name: str) -> Artist | ItemMapping:
+        if library_items := await self.mass.music.artists.get_library_items_by_query(
+            search=artist_name, provider_filter=[self.instance_id]
+        ):
+            return ItemMapping.from_item(library_items[0])
+
+        artist_id = FAKE_ARTIST_PREFIX + artist_name
+        return Artist(
+            item_id=artist_id,
+            name=artist_name or UNKNOWN_ARTIST,
+            provider=self.instance_id,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+
+    async def _parse(self, plex_media: PlexObject) -> MediaItem | None:
+        if plex_media.type == "artist":
+            return await self._parse_artist(plex_media)
+        if plex_media.type == "album":
+            return await self._parse_album(plex_media)
+        if plex_media.type == "track":
+            return await self._parse_track(plex_media)
+        if plex_media.type == "playlist":
+            return await self._parse_playlist(plex_media)
+        return None
+
+    async def _search_track(self, search_query: str, limit: int) -> list[PlexTrack]:
+        return cast(
+            "list[PlexTrack]",
+            await self._run_async(self._plex_library.searchTracks, title=search_query, limit=limit),
+        )
+
+    async def _search_album(self, search_query: str, limit: int) -> list[PlexAlbum]:
+        return cast(
+            "list[PlexAlbum]",
+            await self._run_async(self._plex_library.searchAlbums, title=search_query, limit=limit),
+        )
+
+    async def _search_artist(self, search_query: str, limit: int) -> list[PlexArtist]:
+        return cast(
+            "list[PlexArtist]",
+            await self._run_async(
+                self._plex_library.searchArtists, title=search_query, limit=limit
+            ),
+        )
+
+    async def _search_playlist(self, search_query: str, limit: int) -> list[PlexPlaylist]:
+        return cast(
+            "list[PlexPlaylist]",
+            await self._run_async(self._plex_library.playlists, title=search_query, limit=limit),
+        )
+
+    async def _search_and_parse(
+        self,
+        search_coro: Awaitable[list[PlexObjectT]],
+        parse_coro: Callable[[PlexObjectT], Coroutine[Any, Any, MediaItemT]],
+    ) -> list[MediaItemT]:
+        task_results: list[Task[MediaItemT]] = []
+        async with TaskGroup() as tg:
+            for item in await search_coro:
+                task_results.append(tg.create_task(parse_coro(item)))
+
+        results: list[MediaItemT] = []
+        for task in task_results:
+            results.append(task.result())
+
+        return results
+
+    async def _parse_album(self, plex_album: PlexAlbum) -> Album:
+        """Parse a Plex Album response to an Album model object."""
+        album_id = plex_album.key
+        album = Album(
+            item_id=album_id,
+            provider=self.instance_id,
+            name=plex_album.title or UNKNOWN_NAME,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(album_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_album.getWebURL(self._baseurl),
+                )
+            },
+        )
+        # Check if album rating meets the configured threshold for favorites
+        favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
+        if (favorite := get_favorite_from_rating(plex_album, favorite_threshold)) is not None:
+            album.favorite = favorite
+
+        if plex_album.year:
+            album.year = plex_album.year
+        if images := get_thumbnail_images(plex_album, self.instance_id):
+            album.metadata.images = images
+        if plex_album.summary:
+            album.metadata.description = plex_album.summary
+        if plex_album.genres:
+            album.metadata.genres = {genre.tag for genre in plex_album.genres if genre.tag}
+        if plex_album.moods:
+            album.metadata.mood = next((mood.tag for mood in plex_album.moods if mood.tag), None)
+        if plex_album.styles:
+            album.metadata.style = next(
+                (style.tag for style in plex_album.styles if style.tag), None
+            )
+        if plex_album.originallyAvailableAt:
+            album.metadata.release_date = plex_album.originallyAvailableAt
+        if (explicit := get_explicit(plex_album)) is not None:
+            album.metadata.explicit = explicit
+        if mbid := get_musicbrainz_id(plex_album):
+            with contextlib.suppress(InvalidDataError):
+                album.mbid = mbid
+
+        album.artists.append(
+            self._get_item_mapping(
+                MediaType.ARTIST,
+                plex_album.parentKey,
+                plex_album.parentTitle or UNKNOWN_ARTIST,
+            )
+        )
+        return album
+
+    async def _parse_artist(self, plex_artist: PlexArtist) -> Artist:
+        """Parse a Plex Artist response to Artist model object."""
+        artist_id = plex_artist.key
+        if not artist_id:
+            raise InvalidDataError(ERR_ARTIST_INVALID_ID)
+        artist = Artist(
+            item_id=artist_id,
+            name=plex_artist.title or UNKNOWN_ARTIST,
+            provider=self.instance_id,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_artist.getWebURL(self._baseurl),
+                )
+            },
+        )
+        if plex_artist.summary:
+            artist.metadata.description = plex_artist.summary
+        if images := get_thumbnail_images(plex_artist, self.instance_id):
+            artist.metadata.images = images
+        if plex_artist.genres:
+            artist.metadata.genres = {genre.tag for genre in plex_artist.genres if genre.tag}
+        if plex_artist.moods:
+            artist.metadata.mood = next((mood.tag for mood in plex_artist.moods if mood.tag), None)
+        if plex_artist.styles:
+            artist.metadata.style = next(
+                (style.tag for style in plex_artist.styles if style.tag), None
+            )
+        if mbid := get_musicbrainz_id(plex_artist):
+            with contextlib.suppress(InvalidDataError):
+                artist.mbid = mbid
+        return artist
+
+    async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
+        """Parse a Plex Playlist response to a Playlist object."""
+        playlist = Playlist(
+            item_id=plex_playlist.key,
+            provider=self.instance_id,
+            name=plex_playlist.title or UNKNOWN_NAME,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=plex_playlist.key,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_playlist.getWebURL(self._baseurl),
+                )
+            },
+        )
+        if plex_playlist.summary:
+            playlist.metadata.description = plex_playlist.summary
+        if images := get_thumbnail_images(plex_playlist, self.instance_id):
+            playlist.metadata.images = images
+        playlist.is_editable = not plex_playlist.smart
+        return playlist
+
+    async def _parse_collection(self, plex_collection: PlexCollection) -> Playlist:
+        """Parse a Plex Collection response to a Playlist object."""
+        # Get the configured collection prefix
+        collection_prefix = str(self.config.get_value(CONF_COLLECTION_PREFIX) or "")
+
+        # Collections are imported as playlists with the configured prefix
+        playlist = Playlist(
+            item_id=f"{COLLECTION_ID_PREFIX}{plex_collection.key}",
+            provider=self.instance_id,
+            name=f"{collection_prefix}{plex_collection.title}",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=f"{COLLECTION_ID_PREFIX}{plex_collection.key}",
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        # Add collection poster/thumbnail if available
+        if images := get_thumbnail_images(
+            plex_collection, self.instance_id, ("thumb", "composite")
+        ):
+            playlist.metadata.images = images
+        # Collections are not editable in Music Assistant
+        playlist.is_editable = False
+        return playlist
+
+    async def _parse_track(self, plex_track: PlexTrack) -> Track:
+        """Parse a Plex Track response to a Track model object."""
+        content = plex_track.media[0].container if plex_track.media else None
+        track = Track(
+            item_id=plex_track.key,
+            provider=self.instance_id,
+            name=plex_track.title or UNKNOWN_NAME,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=plex_track.key,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    # For Plex (local library provider), assume tracks are available by default
+                    # even if media attribute is not populated in the initial response.
+                    # This prevents tracks from being skipped during library sync.
+                    available=True,
+                    audio_format=AudioFormat(
+                        content_type=(
+                            ContentType.try_parse(content) if content else ContentType.UNKNOWN
+                        ),
+                    ),
+                    url=plex_track.getWebURL(self._baseurl),
+                )
+            },
+            disc_number=plex_track.parentIndex or 0,
+            track_number=plex_track.trackNumber or 0,
+        )
+        # Check if track rating meets the configured threshold for favorites
+        favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
+        if (favorite := get_favorite_from_rating(plex_track, favorite_threshold)) is not None:
+            track.favorite = favorite
+
+        if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
+            # The artist of the track if different from the album's artist.
+            # For this kind of artist, we just know the name, so we create a fake artist,
+            # if it does not already exist.
+            track.artists.append(
+                await self._get_or_create_artist_by_name(plex_track.originalTitle or UNKNOWN_ARTIST)
+            )
+        elif plex_track.grandparentKey:
+            track.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST,
+                    plex_track.grandparentKey,
+                    plex_track.grandparentTitle or UNKNOWN_ARTIST,
+                )
+            )
+        else:
+            raise InvalidDataError(ERR_NO_ARTIST_FOR_TRACK)
+
+        if images := get_thumbnail_images(plex_track, self.instance_id):
+            track.metadata.images = images
+        if plex_track.genres:
+            track.metadata.genres = {genre.tag for genre in plex_track.genres if genre.tag}
+        if plex_track.moods:
+            track.metadata.mood = next((mood.tag for mood in plex_track.moods if mood.tag), None)
+        if (explicit := get_explicit(plex_track)) is not None:
+            track.metadata.explicit = explicit
+        if mbid := get_musicbrainz_id(plex_track):
+            with contextlib.suppress(InvalidDataError):
+                track.mbid = mbid
+        if plex_track.parentKey:
+            track.album = self._get_item_mapping(
+                MediaType.ALBUM, plex_track.parentKey, plex_track.parentTitle
+            )
+        if plex_track.duration:
+            track.duration = int(plex_track.duration / 1000)
+
+        return track
+
+    async def _add_track_lyrics(self, plex_track: PlexTrack, track: Track) -> None:
+        """
+        Fetch the track's lyric stream from Plex and attach it to the metadata.
+
+        :param plex_track: The fully loaded Plex track to read lyric streams from.
+        :param track: The Music Assistant track to populate with lyrics.
+        """
+
+        def _fetch() -> str | None:
+            stream = next((stream for stream in plex_track.lyricStreams() if stream.key), None)
+            if stream is None:
+                return None
+            url = plex_track._server.url(stream.key, includeToken=True)
+            response: requests.Response = plex_track._server._session.get(
+                url, headers={"Accept": "application/json"}, timeout=30
+            )
+            response.raise_for_status()
+            # plexapi's untyped session makes the response Any for mypy; force str
+            return str(response.text)
+
+        try:
+            content = await self._run_async(_fetch)
+        except (requests.RequestException, plexapi.exceptions.PlexApiException) as err:
+            self.logger.debug("Failed to fetch lyrics for %s: %s", plex_track.key, err)
+            return
+        if not content or (parsed := parse_plex_lyrics_payload(content)) is None:
+            return
+        lyrics, synced = parsed
+        if synced:
+            track.metadata.lrc_lyrics = lyrics
+        else:
+            track.metadata.lyrics = lyrics
+
+    async def _parse_audiobook(
+        self, plex_album: PlexAlbum, *, include_chapters: bool = False
+    ) -> Audiobook:
+        """Parse a Plex Album from the audiobook library into an Audiobook model."""
+        audiobook_id = f"{AUDIOBOOK_PREFIX}{plex_album.key}"
+        audiobook = Audiobook(
+            item_id=audiobook_id,
+            provider=self.instance_id,
+            name=plex_album.title or UNKNOWN_NAME,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=audiobook_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_album.getWebURL(self._baseurl),
+                )
+            },
+        )
+        # Author: parentTitle is the album artist; grandparentTitle is the album
+        # artist parent (for multi-level nesting in Plex). Some setups vary.
+        if author_name := plex_album.parentTitle or plex_album.grandparentTitle:
+            audiobook.authors = UniqueList([author_name])
+        if plex_album.summary:
+            audiobook.metadata.description = plex_album.summary
+        if plex_album.year:
+            audiobook.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
+        if images := get_thumbnail_images(plex_album, self.instance_id):
+            audiobook.metadata.images = images
+        # minified path: use album-level duration if Plex exposes it
+        if album_duration := getattr(plex_album, "duration", None):
+            audiobook.duration = int(album_duration / 1000)
+
+        if include_chapters:
+            chapters = await self._build_audiobook_chapters(plex_album)
+            audiobook.metadata.chapters = chapters
+            if chapters and chapters[-1].end is not None:
+                audiobook.duration = int(chapters[-1].end)
+
+        return audiobook
+
+    async def _build_audiobook_chapters(self, plex_album: PlexAlbum) -> list[MediaItemChapter]:
+        """Build chapter list from Plex tracks, skipping tracks without playable media."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
+        chapters: list[MediaItemChapter] = []
+        cumulative = 0.0
+        chapter_num = 0
+        for plex_track in plex_tracks:
+            if not plex_track.media or not plex_track.media[0].parts:
+                continue
+            chapter_num += 1
+            # plex_track.duration is in milliseconds (Plex native unit)
+            duration_s = (plex_track.duration or 0) / 1000.0
+            chapters.append(
+                MediaItemChapter(
+                    position=chapter_num,
+                    name=plex_track.title or f"{CHAPTER_PREFIX} {chapter_num}",
+                    start=cumulative,
+                    end=cumulative + duration_s,
+                )
+            )
+            cumulative += duration_s
+        return chapters
+
+    async def _parse_podcast(
+        self, plex_album: PlexAlbum, *, include_episodes: bool = False
+    ) -> Podcast:
+        """Parse a Plex Album from the podcast library into a Podcast model."""
+        podcast_id = f"{PODCAST_PREFIX}{plex_album.key}"
+        podcast = Podcast(
+            item_id=podcast_id,
+            provider=self.instance_id,
+            name=plex_album.title or UNKNOWN_NAME,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=podcast_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_album.getWebURL(self._baseurl),
+                )
+            },
+        )
+        publisher = plex_album.studio or plex_album.parentTitle or plex_album.grandparentTitle
+        if publisher:
+            podcast.publisher = publisher
+        if plex_album.summary:
+            podcast.metadata.description = plex_album.summary
+        if plex_album.year:
+            podcast.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
+        if images := get_thumbnail_images(plex_album, self.instance_id):
+            podcast.metadata.images = images
+        if include_episodes:
+            podcast.total_episodes = await self._count_podcast_episodes(plex_album)
+        return podcast
+
+    async def _count_podcast_episodes(self, plex_album: PlexAlbum) -> int:
+        """Count playable tracks without building full PodcastEpisode objects."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        return sum(1 for t in plex_tracks if t.media and t.media[0].parts)
+
+    async def _build_podcast_episodes(self, plex_album: PlexAlbum) -> list[PodcastEpisode]:
+        """Build episode list from Plex tracks, skipping tracks without playable media."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
+        episodes: list[PodcastEpisode] = []
+        episode_num = 0
+        for plex_track in plex_tracks:
+            if not plex_track.media or not plex_track.media[0].parts:
+                continue
+            episode_num += 1
+            duration_s = (plex_track.duration or 0) / 1000.0
+            episode = PodcastEpisode(
+                item_id=f"{PODCAST_EPISODE_PREFIX}{plex_track.key}",
+                provider=self.instance_id,
+                name=plex_track.title or f"{EPISODE_PREFIX} {episode_num}",
+                position=episode_num,
+                duration=int(duration_s),
+                podcast=ItemMapping(
+                    media_type=MediaType.PODCAST,
+                    item_id=f"{PODCAST_PREFIX}{plex_album.key}",
+                    provider=self.instance_id,
+                    name=plex_album.title or UNKNOWN_NAME,
+                ),
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=f"{PODCAST_EPISODE_PREFIX}{plex_track.key}",
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        url=plex_track.getWebURL(self._baseurl),
+                        audio_format=AudioFormat(
+                            content_type=(
+                                ContentType.try_parse(plex_track.media[0].container)
+                                if plex_track.media[0].container
+                                else ContentType.UNKNOWN
+                            )
+                        ),
+                    )
+                },
+            )
+            if images := get_thumbnail_images(plex_track, self.instance_id):
+                episode.metadata.images = images
+            episodes.append(episode)
+        return episodes
+
+    async def _parse_podcast_episode(self, plex_track: PlexTrack) -> PodcastEpisode:
+        """Parse a Plex Track from the podcast library into a PodcastEpisode model."""
+        duration_s = (plex_track.duration or 0) / 1000.0
+        content_type = ContentType.UNKNOWN
+        if plex_track.media and plex_track.media[0].container:
+            content_type = ContentType.try_parse(plex_track.media[0].container)
+        episode = PodcastEpisode(
+            item_id=f"{PODCAST_EPISODE_PREFIX}{plex_track.key}",
+            provider=self.instance_id,
+            name=plex_track.title or UNKNOWN_NAME,
+            position=plex_track.trackNumber or 0,
+            duration=int(duration_s),
+            podcast=ItemMapping(
+                media_type=MediaType.PODCAST,
+                item_id=f"{PODCAST_PREFIX}{plex_track.parentKey}",
+                provider=self.instance_id,
+                name=plex_track.parentTitle or UNKNOWN_NAME,
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=f"{PODCAST_EPISODE_PREFIX}{plex_track.key}",
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_track.getWebURL(self._baseurl),
+                    audio_format=AudioFormat(content_type=content_type),
+                )
+            },
+        )
+        if images := get_thumbnail_images(plex_track, self.instance_id):
+            episode.metadata.images = images
+        return episode
+
+    async def _calc_resume_position_ms(self, plex_album: PlexAlbum, fully_played: bool) -> int:
+        """Calculate resume position from per-track viewOffset values."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
+
+        # Per-track durations and viewOffset are in milliseconds (Plex native).
+        resume_position_ms = 0
+        cumulative_ms = 0
+        for plex_track in plex_tracks:
+            track_offset = getattr(plex_track, "viewOffset", 0) or 0
+            if track_offset > 0:
+                # Use the last non-zero offset — for sequential listening this
+                # is the final playback position; it also handles non-linear
+                # skipping better than first-match.
+                resume_position_ms = cumulative_ms + track_offset
+            cumulative_ms += getattr(plex_track, "duration", 0) or 0
+
+        if resume_position_ms == 0 and fully_played:
+            album_duration = getattr(plex_album, "duration", 0) or 0
+            resume_position_ms = int(album_duration)
+
+        return resume_position_ms
+
+    async def _find_track_for_position(
+        self, plex_album: PlexAlbum, position: int
+    ) -> tuple[PlexTrack | None, int]:
+        """Find the track and offset (ms) corresponding to the given position (s)."""
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
+
+        position_ms = position * 1000
+        cumulative_ms = 0
+        for plex_track in plex_tracks:
+            track_duration = getattr(plex_track, "duration", 0) or 0
+            if cumulative_ms + track_duration > position_ms:
+                return plex_track, position_ms - cumulative_ms
+            cumulative_ms += track_duration
+
+        if plex_tracks:
+            # Position is past all tracks — clamp to end of the last track.
+            last_track = plex_tracks[-1]
+            last_duration = getattr(last_track, "duration", 0) or 0
+            return last_track, last_duration
+
+        return None, 0
+
+    async def _get_audiobook_stream_details(self, item_id: str) -> StreamDetails:
+        """Build multi-part StreamDetails for an audiobook (one part per Plex track)."""
+        if self._get_library_type() != LIBRARY_TYPE_AUDIOBOOKS:
+            msg = "Library not configured for audiobooks"
+            raise MediaNotFoundError(msg)
+        album_key = item_id.removeprefix(AUDIOBOOK_PREFIX)
+        try:
+            plex_album = cast(
+                "PlexAlbum",
+                await self._run_async(self._plex_library.fetchItem, album_key, PlexAlbum),
+            )
+        except plexapi.exceptions.NotFound:
+            msg = f"Audiobook {item_id} not found"
+            raise MediaNotFoundError(msg)
+
+        plex_tracks = cast("list[PlexTrack]", await self._run_async(plex_album.tracks))
+        plex_tracks.sort(key=lambda t: (t.parentIndex or 0, t.trackNumber or 0))
+
+        parts, total_duration, first_container = self._build_stream_parts(plex_tracks, item_id)
+        if not parts:
+            self.logger.error(
+                "Audiobook %s (%s) has no playable parts (%d tracks checked)",
+                item_id,
+                plex_album.title,
+                len(plex_tracks),
+            )
+            msg = f"Audiobook {item_id} has no playable parts"
+            raise MediaNotFoundError(msg)
+
+        self.logger.debug(
+            "Built StreamDetails for audiobook %s with %d parts, total_duration=%.1fs",
+            item_id,
+            len(parts),
+            total_duration,
+        )
+
+        content_type = (
+            ContentType.try_parse(first_container) if first_container else ContentType.UNKNOWN
+        )
+
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            media_type=MediaType.AUDIOBOOK,
+            audio_format=AudioFormat(content_type=content_type),
+            stream_type=StreamType.HTTP,
+            duration=int(total_duration),
+            path=parts[0].path if len(parts) == 1 else parts,
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    def _build_stream_parts(
+        self, plex_tracks: list[PlexTrack], item_id: str
+    ) -> tuple[list[MultiPartPath], float, str | None]:
+        """Convert Plex tracks to MultiPartPath entries for streaming."""
+        parts: list[MultiPartPath] = []
+        total_duration = 0.0
+        first_container: str | None = None
+        for plex_track in plex_tracks:
+            media = self._track_media_or_log(plex_track, item_id)
+            if media is None:
+                continue
+            if first_container is None and media.container:
+                first_container = media.container
+            media_part: PlexMediaPart = media.parts[0]
+            url = self._plex_server.url(f"{media_part.key}?download=1", True)
+            duration_s = (plex_track.duration or 0) / 1000.0
+            parts.append(MultiPartPath(path=url, duration=duration_s))
+            total_duration += duration_s
+            self.logger.debug(
+                "Added audiobook part: track '%s' (%s) duration=%.1fs url=%s",
+                plex_track.title,
+                plex_track.key,
+                duration_s,
+                url,
+            )
+        return parts, total_duration, first_container
+
+    def _track_media_or_log(self, plex_track: PlexTrack, item_id: str) -> PlexMedia | None:
+        """Return the first PlexMedia for a track, or log and return None if unavailable."""
+        if not plex_track.media:
+            self.logger.debug(
+                "Skipping track '%s' (key=%s) in audiobook %s: no media",
+                plex_track.title,
+                plex_track.key,
+                item_id,
+            )
+            return None
+        media: PlexMedia = plex_track.media[0]
+        if not media.parts:
+            self.logger.debug(
+                "Skipping track '%s' (key=%s) in audiobook %s: media has no parts",
+                plex_track.title,
+                plex_track.key,
+                item_id,
+            )
+            return None
+        return media
+
+    async def _get_podcast_episode_stream_details(self, item_id: str) -> StreamDetails:
+        """Build streamdetails for a single podcast episode from a Plex track."""
+        if self._get_library_type() != LIBRARY_TYPE_PODCASTS:
+            msg = "Library not configured for podcasts"
+            raise MediaNotFoundError(msg)
+        track_key = item_id.removeprefix(PODCAST_EPISODE_PREFIX)
+        try:
+            plex_track = cast(
+                "PlexTrack",
+                await self._run_async(self._plex_library.fetchItem, track_key, PlexTrack),
+            )
+        except plexapi.exceptions.NotFound:
+            msg = f"Podcast episode {item_id} not found"
+            raise MediaNotFoundError(msg)
+
+        if not plex_track.media:
+            msg = f"Podcast episode {item_id} has no media"
+            raise MediaNotFoundError(msg)
+
+        media: PlexMedia = plex_track.media[0]
+        if not media.parts:
+            msg = f"Podcast episode {item_id} has no playable media parts"
+            raise MediaNotFoundError(msg)
+        content_type = (
+            ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
+        )
+        media_part: PlexMediaPart = media.parts[0]
+        download_url = self._plex_server.url(f"{media_part.key}?download=1", True)
+
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            media_type=MediaType.PODCAST_EPISODE,
+            audio_format=AudioFormat(content_type=content_type),
+            stream_type=StreamType.HTTP,
+            duration=plex_track.duration,
+            path=download_url,
+            can_seek=True,
+            allow_seek=True,
         )

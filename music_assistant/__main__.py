@@ -20,6 +20,7 @@ from typing import Any, Final
 from colorlog import ColoredFormatter
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.logging import activate_log_queue_handler
 from music_assistant.mass import MusicAssistant
@@ -108,6 +109,10 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     # This way they're where other messages are, and can be filtered as usual.
     logging.captureWarnings(True)
 
+    # install the always-on diagnostics capture handler as early as possible
+    # so boot-time warnings/errors end up in the diagnostics report
+    install_diagnostics_log_handler()
+
     # setup file handler
     log_filename = os.path.join(data_path, "musicassistant.log")
     file_handler = RotatingFileHandler(log_filename, maxBytes=MAX_LOG_FILESIZE, backupCount=1)
@@ -135,6 +140,8 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
     logging.getLogger("numba").setLevel(logging.WARNING)
     logging.getLogger("torio._extension.utils").setLevel(logging.WARNING)
+    logging.getLogger("quic").setLevel(logging.WARNING)
+    logging.getLogger("http3").setLevel(logging.WARNING)
 
     # Add a filter to suppress slow callback warnings from buffered audio streaming
     # These warnings are expected when audio buffers fill up and producers wait for consumers

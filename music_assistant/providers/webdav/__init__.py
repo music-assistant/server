@@ -10,7 +10,12 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
 )
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
@@ -82,4 +87,9 @@ async def get_config_entries(
         ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
         CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+        CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+        CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+        CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+        CONF_ENTRY_PROPAGATE_GENRES,
     )

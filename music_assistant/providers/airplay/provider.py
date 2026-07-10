@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import socket
 from contextlib import suppress
 from ipaddress import ip_address
@@ -12,7 +14,9 @@ from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.util import (
     get_ip_pton,
     get_primary_ip_address_from_zeroconf,
@@ -31,6 +35,7 @@ from .constants import (
 )
 from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
+from .protocols.airplay2 import AirPlay2Stream
 from .sendspin_bridge import SendspinBridgeManager
 
 # TODO: AirPlay provider
@@ -122,13 +127,27 @@ class AirPlayProvider(PlayerProvider):
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
-            await bridge_manager.stop_all()
+            await bridge_manager.close()
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
         # shutdown DACP zeroconf service
         if self._dacp_info:
             await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        streams_by_type: dict[str, int] = {}
+        for player in self.get_players():
+            if not (player.stream and player.stream.running):
+                continue
+            stream_type = "airplay2" if isinstance(player.stream, AirPlay2Stream) else "raop"
+            streams_by_type[stream_type] = streams_by_type.get(stream_type, 0) + 1
+        return {
+            "dacp_server_running": self._dacp_server.is_serving(),
+            "active_streams": sum(streams_by_type.values()),
+            "streams_by_type": streams_by_type,
+        }
 
     def get_players(self) -> list[AirPlayPlayer]:
         """Return all airplay players belonging to this instance."""
@@ -234,7 +253,7 @@ class AirPlayProvider(PlayerProvider):
         await self.mass.players.register(player)
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
-        await self._bridge_manager.setup_bridge(player)
+        await self._bridge_manager.evaluate_bridge(player)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -283,6 +302,18 @@ class AirPlayProvider(PlayerProvider):
                 path,
                 body,
             )
+            # machine-parseable capture of raw DACP traffic for building replay test fixtures
+            if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                capture = {
+                    "player": player.name if player else None,
+                    "active_remote": active_remote,
+                    "method": headers_split[0].split(" ", 1)[0],
+                    "path": path,
+                    "headers": headers,
+                    "body": body,
+                    "raw_b64": base64.b64encode(raw_request).decode("ascii"),
+                }
+                self.logger.log(VERBOSE_LOG_LEVEL, "AIRPLAY_DACP_CAPTURE %s", json.dumps(capture))
             if not player:
                 return
             if player.protocol_parent_id and (

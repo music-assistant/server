@@ -19,7 +19,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
-from music_assistant.controllers.config import _with_translation_owner
+from music_assistant.controllers.config.helpers import _with_translation_owner
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks.controller import _namespaced_translation_key
 from music_assistant.controllers.translations import (

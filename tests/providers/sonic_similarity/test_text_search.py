@@ -26,11 +26,24 @@ def _make_tensor_chain(vector: np.ndarray) -> MagicMock:
     return chain
 
 
-def _make_mock_encoder(vector: np.ndarray) -> MagicMock:
-    """Build a CLAP-like encoder whose get_text_embeddings([q]) yields [tensor_chain]."""
+def _make_mock_encoder(*vectors: np.ndarray) -> MagicMock:
+    """
+    Build a CLAP-like encoder returning one tensor chain per prompt.
+
+    get_text_embeddings(prompts) yields a chain for each prompt, drawn in order
+    from the supplied vectors, so multi-prompt calls (query + exclude) work.
+    """
+    chains = [_make_tensor_chain(v) for v in vectors]
     encoder = MagicMock()
-    encoder.get_text_embeddings.return_value = [_make_tensor_chain(vector)]
+    encoder.get_text_embeddings.side_effect = lambda prompts: chains[: len(prompts)]
     return encoder
+
+
+def _unit_vector(*components: float) -> np.ndarray:
+    """Return a 1024-dim float32 vector with the leading components set, rest zero."""
+    vec = np.zeros((1024,), dtype=np.float32)
+    vec[: len(components)] = components
+    return vec
 
 
 class TestGetTextEncoder:
@@ -64,8 +77,106 @@ class TestGetTextEncoder:
         assert plugin._text_encoder is None
 
 
+class TestEmbedTextQuery:
+    """Tests for SonicSimilarityPlugin._embed_text_query (template + exclusion math)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_unit_vector(self, make_plugin: Callable[..., Any]) -> None:
+        """A plain query yields the unit-normalised encoder embedding."""
+        plugin = make_plugin(clap_enabled=True)
+        plugin._load_text_encoder = lambda: _make_mock_encoder(_unit_vector(3.0, 4.0))
+
+        result = await plugin._embed_text_query("disco")
+
+        assert result is not None
+        np.testing.assert_allclose(result[:2], [0.6, 0.8], atol=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_exclude_subtracts_normalised_direction(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
+        """Exclude subtracts the unit exclude direction: [1,0]-[0,1] -> [.707,-.707]."""
+        plugin = make_plugin(clap_enabled=True)
+        keep, excl = _unit_vector(1.0), _unit_vector(0.0, 1.0)
+        plugin._load_text_encoder = lambda: _make_mock_encoder(keep, excl)
+
+        result = await plugin._embed_text_query("loud", exclude="fast", exclude_weight=1.0)
+
+        assert result is not None
+        np.testing.assert_allclose(result[:2], [0.70710677, -0.70710677], atol=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_exclude_weight_zero_returns_keep(self, make_plugin: Callable[..., Any]) -> None:
+        """weight=0 leaves the query embedding unchanged."""
+        plugin = make_plugin(clap_enabled=True)
+        keep, excl = _unit_vector(1.0), _unit_vector(0.0, 1.0)
+        plugin._load_text_encoder = lambda: _make_mock_encoder(keep, excl)
+
+        result = await plugin._embed_text_query("loud", exclude="fast", exclude_weight=0.0)
+
+        assert result is not None
+        np.testing.assert_allclose(result[:2], [1.0, 0.0], atol=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_query_equals_exclude_returns_none(self, make_plugin: Callable[..., Any]) -> None:
+        """Identical keep/exclude cancel to a zero vector -> None (cosine-unsafe)."""
+        plugin = make_plugin(clap_enabled=True)
+        same = _unit_vector(1.0)
+        plugin._load_text_encoder = lambda: _make_mock_encoder(same, same)
+
+        result = await plugin._embed_text_query("loud", exclude="loud", exclude_weight=1.0)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_empty_query_returns_none_without_encoding(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
+        """A whitespace-only query short-circuits to None and never encodes."""
+        plugin = make_plugin(clap_enabled=True)
+        encoder = _make_mock_encoder(_unit_vector(1.0))
+        plugin._load_text_encoder = lambda: encoder
+
+        result = await plugin._embed_text_query("   ")
+
+        assert result is None
+        encoder.get_text_embeddings.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_zero_norm_embedding_returns_none(self, make_plugin: Callable[..., Any]) -> None:
+        """A zero-norm embedding cannot be ranked by cosine -> None."""
+        plugin = make_plugin(clap_enabled=True)
+        plugin._load_text_encoder = lambda: _make_mock_encoder(np.zeros((1024,), dtype=np.float32))
+
+        result = await plugin._embed_text_query("disco")
+
+        assert result is None
+
+
 class TestHandleTextSearch:
     """Tests for SonicSimilarityPlugin._handle_text_search."""
+
+    @pytest.mark.asyncio
+    async def test_empty_query_reports_empty_query(self, make_plugin: Callable[..., Any]) -> None:
+        """A whitespace-only query is rejected with the empty_query reason."""
+        plugin = make_plugin(clap_enabled=True)
+        plugin._clap_index.__len__ = MagicMock(return_value=5)
+
+        result = await plugin._handle_text_search("   ")
+
+        assert result["analyzed"] is False
+        assert result["reason"] == "empty_query"
+
+    @pytest.mark.asyncio
+    async def test_exclude_weight_clamped_to_range(self, make_plugin: Callable[..., Any]) -> None:
+        """exclude_weight is clamped to [0, 2] before reaching the embedder."""
+        plugin = make_plugin(clap_enabled=True)
+        plugin._clap_index.__len__ = MagicMock(return_value=5)
+        plugin._embed_text_query = AsyncMock(return_value=None)
+
+        await plugin._handle_text_search("disco", exclude="vocals", exclude_weight=9.0)
+
+        assert plugin._embed_text_query.await_args.kwargs["exclude_weight"] == 2.0
 
     @pytest.mark.asyncio
     async def test_returns_clap_index_empty_when_no_index(
@@ -114,7 +225,7 @@ class TestHandleTextSearch:
         """resolve=False returns ranked (provider, item_id, distance) entries."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = _unit_vector(1.0)
         plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
@@ -139,7 +250,7 @@ class TestHandleTextSearch:
         """resolve=True augments each entry with name + comma-joined artist string."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = _unit_vector(1.0)
         plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
@@ -168,7 +279,7 @@ class TestHandleTextSearch:
         """A failed resolve falls back to '(unknown)'/'' but still returns the entry."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = _unit_vector(1.0)
         plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[

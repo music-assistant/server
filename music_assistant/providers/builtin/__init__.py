@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
 import aiofiles
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import (
     ContentType,
@@ -69,8 +70,9 @@ from music_assistant.helpers.playlists import (
     parse_m3u_playlist_image,
     parse_m3u_playlist_name,
 )
-from music_assistant.helpers.security import is_safe_name
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
+from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
@@ -181,8 +183,12 @@ class BuiltinProvider(MusicProvider):
             initial_delay=60,
         )
         # register API commands for manual item management
-        self.mass.register_api_command("builtin/add_radio", self.add_radio)
-        self.mass.register_api_command("builtin/add_track", self.add_track)
+        self.mass.register_api_command(
+            "builtin/add_radio", self.add_radio, required_scope=Scope.LIBRARY_WRITE
+        )
+        self.mass.register_api_command(
+            "builtin/add_track", self.add_track, required_scope=Scope.LIBRARY_WRITE
+        )
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -798,9 +804,10 @@ class BuiltinProvider(MusicProvider):
             return VARIOUS_ARTISTS_FANART
         if path.startswith(f"{GENRE_ICONS_DIR_NAME}/"):
             icon_name = path[len(GENRE_ICONS_DIR_NAME) + 1 :]
-            if not is_safe_name(icon_name):
+            icons_base = RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME)
+            if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
-            return str(RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, icon_name))
+            return str(icons_base.joinpath(icon_name))
         return path
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -1079,7 +1086,7 @@ class BuiltinProvider(MusicProvider):
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
-            favorite=True, limit=250000, order_by="random_play_count"
+            favorite=True, limit=250000, order_by="random_play_count", summary=False
         )
         for idx, item in enumerate(res, 1):
             item.position = idx
@@ -1089,7 +1096,9 @@ class BuiltinProvider(MusicProvider):
     @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_tracks(self) -> list[Track]:
         result: list[Track] = []
-        res = await self.mass.music.tracks.library_items(limit=500, order_by="random_play_count")
+        res = await self.mass.music.tracks.library_items(
+            limit=500, order_by="random_play_count", summary=False
+        )
         for idx, item in enumerate(res, 1):
             item.position = idx
             result.append(item)
@@ -1116,7 +1125,7 @@ class BuiltinProvider(MusicProvider):
         for source in ("library", "top"):
             for min_tracks_required in (25, 10, 5, 1):
                 for random_artist in await self.mass.music.artists.library_items(
-                    limit=25, order_by="random"
+                    limit=25, order_by="random", summary=False
                 ):
                     if source == "library":
                         tracks = await self.mass.music.artists.tracks(
@@ -1169,24 +1178,30 @@ class BuiltinProvider(MusicProvider):
 
     async def _get_builtin_playlist_infinite_mix(self) -> list[Track]:
         """Return 25 random library tracks for the Infinite Mix dynamic playlist."""
-        result: list[Track] = []
-        for idx, track in enumerate(
-            await self.mass.music.tracks.library_items(limit=25, order_by="random"), 1
-        ):
-            track.position = idx
-            result.append(track)
-        return result
+        return await self._infinite_mix_tracks(favorite=None)
 
     async def _get_builtin_playlist_infinite_mix_favorites(self) -> list[Track]:
         """Return 25 random favorited tracks for the Infinite Mix (favorites) dynamic playlist."""
-        result: list[Track] = []
-        for idx, track in enumerate(
-            await self.mass.music.tracks.library_items(favorite=True, limit=25, order_by="random"),
-            1,
-        ):
+        return await self._infinite_mix_tracks(favorite=True)
+
+    async def _infinite_mix_tracks(self, *, favorite: bool | None) -> list[Track]:
+        """
+        Return up to 25 random (optionally favorited) library tracks for an Infinite Mix.
+
+        :param favorite: Restrict to favorited tracks when True; all library tracks when None.
+        """
+        # over-fetch when a recency filter is published so dropping recently-played tracks still
+        # leaves a full mix; the pool is trimmed back to the mix size after filtering
+        limit = 25 * 3 if get_track_filter() is not None else 25
+        candidates = list(
+            await self.mass.music.tracks.library_items(
+                favorite=favorite, limit=limit, order_by="random", summary=False
+            )
+        )
+        tracks = filter_tracks(candidates)[:25]
+        for idx, track in enumerate(tracks, 1):
             track.position = idx
-            result.append(track)
-        return result
+        return tracks
 
     async def _get_builtin_playlist_tracks(
         self, builtin_playlist_id: str

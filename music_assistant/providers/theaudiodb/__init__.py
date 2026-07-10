@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
@@ -428,10 +428,11 @@ class AudioDbMetadataProvider(MetadataProvider):
             return value, "en"
         return None, None
 
-    @use_cache(86400 * 90, persistent=True)  # Cache for 90 days
+    # None here only signals a failed request (a miss still returns a body), so don't cache it
+    @use_cache(86400 * 90, persistent=True, cache_none=False)  # Cache for 90 days
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
-        url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
+        url = f"https://theaudiodb.com/api/v1/json/{app_var('theaudiodb_api_key')}/{endpoint}"
         async with (
             self.throttler,
             self.mass.http_session.get(url, params=kwargs, ssl=False) as response,

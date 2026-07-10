@@ -56,7 +56,7 @@
   "common.config_entries.volume_normalization.description": "Aktiver lydstyrkenormalisering baseret på EBU-R128-standarden uden at påvirke dynamikområdet",
   "common.config_entries.volume_normalization.label": "Aktiver normalisering af lydstyrke (EBU-R128-baseret)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Fast\/standard gain-justering for musiknumre",
-  "common.config_entries.volume_normalization_target.description": "Juster gennemsnitlig (opfattet) lydniveau til dette målniveau, standard er -17 LUFS \n\n **ADVARSEL:** Hvis niveauet indstilles for højt, kan det resultere i klipning!",
+  "common.config_entries.volume_normalization_target.description": "Juster gennemsnitlig (opfattet) lydniveau til dette målniveau, standard er -14 LUFS \n\n **ADVARSEL:** Hvis niveauet indstilles for højt, kan det resultere i klipning!",
   "common.config_entries.volume_normalization_target.label": "Målniveau for volumenormalisering",
   "common.media.albums.name": "Album",
   "common.media.artists.name": "Kunstnere",

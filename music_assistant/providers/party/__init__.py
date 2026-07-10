@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -21,20 +21,24 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
-from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
+from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers import guest_access
+from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 # Configuration keys
 CONF_ENABLE_GUEST_ACCESS = "enable_guest_access"
+CONF_PARTY_MODE = "mode"
 CONF_PARTY_PLAYER = "player"
 CONF_PARTY_PLAYER_AUTO = "__auto__"
 CONF_ENABLE_RATE_LIMITING = "enable_rate_limiting"
@@ -130,6 +134,9 @@ class PartyConfig(DataClassDictMixin):
     hide_back_button: bool
     show_progress_bar: bool
     prevent_duplicate_tracks: bool
+    # Shared playback mode: "venue" (a real player plays out loud) or "remote"
+    # (silent disco; every guest device is its own receiver). Drives the listen-in default.
+    mode: str
 
 
 async def setup(
@@ -166,10 +173,22 @@ async def get_config_entries(
 
     return (
         ConfigEntry(
+            key=CONF_PARTY_MODE,
+            type=ConfigEntryType.STRING,
+            required=True,
+            default_value=SharedPlaybackMode.VENUE.value,
+            options=[
+                ConfigValueOption(SharedPlaybackMode.VENUE.value),
+                ConfigValueOption(SharedPlaybackMode.REMOTE.value),
+            ],
+        ),
+        ConfigEntry(
             key=CONF_PARTY_PLAYER,
             type=ConfigEntryType.STRING,
             required=False,
             default_value=CONF_PARTY_PLAYER_AUTO,
+            depends_on=CONF_PARTY_MODE,
+            depends_on_value=SharedPlaybackMode.VENUE.value,
             options=[
                 ConfigValueOption(CONF_PARTY_PLAYER_AUTO),
                 *[
@@ -394,28 +413,59 @@ class PartyPlugin(PluginProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._unregister_handles: list[Callable[[], None]] = []
         self._queue_lock = asyncio.Lock()
+        self._session: SharedPlaybackSession | None = None
+        self._session_lock = asyncio.Lock()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         # Register API commands and store unregister handles
+        # PROVIDERS_READ (held by guests) lets a guest fetch the join URL to display/share
+        # the QR; get_party_url returns None when guest access is disabled, so nothing leaks.
         self._unregister_handles.append(
-            self.mass.register_api_command("party/url", self.get_party_url, required_role="user")
+            self.mass.register_api_command(
+                "party/url", self.get_party_url, required_scope=Scope.PROVIDERS_READ
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/player", self.get_party_player)
+            self.mass.register_api_command(
+                "party/player", self.get_party_player, required_scope=Scope.PLAYERS_READ
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/config", self.get_party_config)
+            self.mass.register_api_command(
+                "party/config", self.get_party_config, required_scope=Scope.PROVIDERS_READ
+            )
         )
         # Guest action commands - these are called by the guest frontend
         self._unregister_handles.append(
-            self.mass.register_api_command("party/add_to_queue", self.add_to_queue)
+            self.mass.register_api_command(
+                "party/add_to_queue", self.add_to_queue, required_scope=Scope.QUEUES_CONTROL
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/boost_queue_item", self.boost_queue_item)
+            self.mass.register_api_command(
+                "party/boost_queue_item", self.boost_queue_item, required_scope=Scope.QUEUES_CONTROL
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/skip", self.skip_current)
+            self.mass.register_api_command(
+                "party/skip", self.skip_current, required_scope=Scope.QUEUES_CONTROL
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "party/listen_in", self.listen_in, required_scope=Scope.QUEUES_CONTROL
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "party/stop_listen_in", self.stop_listen_in, required_scope=Scope.QUEUES_CONTROL
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "party/can_listen_in", self.can_listen_in, required_scope=Scope.QUEUES_CONTROL
+            )
         )
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -430,6 +480,13 @@ class PartyPlugin(PluginProvider):
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
+
+        # Tear down the shared playback session (detaches guest listeners and,
+        # in remote mode, removes the virtual player)
+        async with self._session_lock:
+            if self._session is not None:
+                await self._session.close()
+                self._session = None
 
         # Revoke all guest tokens when:
         # 1. The plugin is being removed entirely (is_removed=True)
@@ -447,52 +504,6 @@ class PartyPlugin(PluginProvider):
 
     # ==================== Configuration API Commands ====================
 
-    async def _get_or_create_party_guest_user(self) -> User:
-        """
-        Get or create the party guest user.
-
-        :returns: The party guest User.
-        """
-        auth = self.mass.webserver.auth
-        user = await auth.get_user_by_username(PARTY_GUEST_USER)
-        if user:
-            return user
-
-        # Create the party guest user
-        user = await auth.create_user(
-            username=PARTY_GUEST_USER,
-            role=UserRole.GUEST,
-            display_name=PARTY_GUEST_DISPLAY_NAME,
-        )
-        self.logger.info("Created party guest user account")
-        return user
-
-    async def _get_join_code(self) -> str:
-        """
-        Get an active join code for party, creating one if needed.
-
-        Looks up an existing non-expired join code via the auth controller.
-        If none exists, generates a new one.
-
-        :returns: The active join code string.
-        """
-        auth = self.mass.webserver.auth
-        guest_user = await self._get_or_create_party_guest_user()
-
-        # Check for an existing active join code
-        existing_code = await auth.get_active_join_code(guest_user)
-        if existing_code:
-            return existing_code
-
-        # No active code found, generate a new one
-        code, _expires_at = await auth.generate_join_code(
-            user=guest_user,
-            expires_in_hours=8,
-            max_uses=0,
-            device_name="Party Guest",
-        )
-        return code
-
     async def get_party_url(self) -> str | None:
         """
         Get the guest access URL for party.
@@ -505,22 +516,19 @@ class PartyPlugin(PluginProvider):
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return None
 
-        code = await self._get_join_code()
-
-        remote_access = self.mass.webserver.remote_access
-        if remote_access.is_enabled and remote_access.remote_id:
-            return (
-                f"https://app.music-assistant.io/?remote_id={remote_access.remote_id}&join={code}"
-            )
-
-        base_url = self.mass.webserver.base_url
-        assert base_url  # for type-checker only
-        return f"{base_url}/?join={code}"
+        guest_user = await guest_access.get_or_create_guest_user(
+            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
+        )
+        code = await guest_access.get_or_create_join_code(
+            self.mass, guest_user, device_name="Party Guest"
+        )
+        return guest_access.build_join_url(self.mass, code)
 
     async def get_party_player(self) -> str | None:
         """
         Get the configured party player/queue ID.
 
+        In remote mode, returns the queue of the session's virtual player.
         When configured to auto, returns the first active playing queue,
         falling back to any paused queue, then any available queue.
 
@@ -528,6 +536,10 @@ class PartyPlugin(PluginProvider):
         """
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return None
+
+        if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            session = await self._get_session()
+            return session.queue_id if session else None
 
         player_id = self.config.get_value(CONF_PARTY_PLAYER)
         if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
@@ -584,6 +596,7 @@ class PartyPlugin(PluginProvider):
             prevent_duplicate_tracks=cast(
                 "bool", self.config.get_value(CONF_PREVENT_DUPLICATE_TRACKS)
             ),
+            mode=cast("str", self.config.get_value(CONF_PARTY_MODE)),
         )
 
     # ==================== Guest Action API Commands ====================
@@ -647,7 +660,7 @@ class PartyPlugin(PluginProvider):
                     MediaType.RADIO,
                 ):
                     raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-                queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+                queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
                 queue_item.extra_attributes[ATTR_PARTY_GUEST] = True
                 if boost:
                     queue_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
@@ -802,7 +815,7 @@ class PartyPlugin(PluginProvider):
             raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
 
         # Create a QueueItem from the media item
-        queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+        queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
         queue_item.extra_attributes.update(extra_attributes)
 
         # Determine the attribute to scan for when finding the section boundary.
@@ -926,7 +939,120 @@ class PartyPlugin(PluginProvider):
             "queue_id": queue_id,
         }
 
+    async def listen_in(self, web_player_id: str) -> dict[str, Any]:
+        """
+        Attach a guest's web player to the party audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        :returns: Result dict with success status and the party queue ID.
+        """
+        self._validate_guest_access()
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            raise InvalidDataError("Party guest access is disabled")
+
+        # hold the session lock across resolving and joining the session so a
+        # guest can never be attached to a session that is being torn down
+        async with self._session_lock:
+            session = await self._get_or_create_session_locked()
+            if not session:
+                raise InvalidDataError("Listen-in is not available for this party")
+            await session.add_guest_listener(web_player_id)
+            queue_id = session.queue_id
+
+        self.logger.info("Guest player %s is now listening in", web_player_id)
+        return {
+            "success": True,
+            "queue_id": queue_id,
+        }
+
+    async def stop_listen_in(self, web_player_id: str) -> dict[str, Any]:
+        """
+        Detach a guest's web player from the party audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        :returns: Result dict with success status.
+        """
+        self._validate_guest_access()
+
+        async with self._session_lock:
+            if self._session is not None:
+                await self._session.remove_guest_listener(web_player_id)
+
+        self.logger.info("Guest player %s stopped listening in", web_player_id)
+        return {"success": True}
+
+    async def can_listen_in(self, web_player_id: str) -> bool:
+        """
+        Return whether the given guest web player can listen in on the party audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        """
+        self._validate_guest_access()
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            return False
+
+        async with self._session_lock:
+            session = await self._get_or_create_session_locked()
+            return session is not None and session.can_listen_in(web_player_id)
+
     # ==================== Helper Methods ====================
+
+    async def _get_session(self) -> SharedPlaybackSession | None:
+        """
+        Get the shared playback session for this party, creating it if needed.
+
+        In remote mode the session is backed by a Sendspin virtual player; the
+        session is (re)created here when the virtual player does not exist
+        (e.g. after a Sendspin provider reload). In venue mode a session only
+        exists when a fixed player is configured; with auto player selection
+        there is no session (and thus no listen-in support).
+
+        :returns: The session, or None when no session is available.
+        """
+        async with self._session_lock:
+            return await self._get_or_create_session_locked()
+
+    async def _get_or_create_session_locked(self) -> SharedPlaybackSession | None:
+        """
+        Get or (re)create the shared playback session.
+
+        The caller must hold ``_session_lock``; guest listen-in and session
+        teardown share the lock so a session is never created or joined while it
+        is being closed.
+
+        :returns: The session, or None when no session is available.
+        """
+        # drop a stale session whose player no longer exists
+        if self._session is not None and (
+            self.mass.players.get_player(self._session.player_id) is None
+        ):
+            await self._session.close()
+            self._session = None
+
+        if self._session is not None:
+            return self._session
+
+        if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            party_name = cast("str | None", self.config.get_value(CONF_PARTY_NAME))
+            try:
+                self._session = await SharedPlaybackSession.create_remote(
+                    self.mass,
+                    owner_instance_id=self.instance_id,
+                    display_name=party_name or "Party",
+                    session_id=self.instance_id,
+                )
+            except SetupFailedError as err:
+                self.logger.warning("Unable to create remote party session: %s", err)
+        else:
+            player_id = self.config.get_value(CONF_PARTY_PLAYER)
+            if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
+                try:
+                    self._session = await SharedPlaybackSession.create_venue(
+                        self.mass, str(player_id)
+                    )
+                except SetupFailedError as err:
+                    self.logger.warning("Unable to create venue party session: %s", err)
+        return self._session
 
     async def _revoke_guest_tokens(self) -> None:
         """
@@ -936,24 +1062,14 @@ class PartyPlugin(PluginProvider):
         We disconnect WebSocket connections to force the frontend to redirect to login,
         revoke tokens so they can't reconnect, and invalidate pending join codes.
         """
-        auth = self.mass.webserver.auth
-
-        # Find the party guest user
-        guest_user = await auth.get_user_by_username(PARTY_GUEST_USER)
-        if not guest_user:
-            self.logger.debug("No party guest user found, nothing to revoke")
-            return
-
-        # Revoke pending join codes for the guest user
-        codes_revoked = await auth.revoke_join_codes(guest_user)
+        codes_revoked, tokens_revoked = await guest_access.revoke_guest_access(
+            self.mass, PARTY_GUEST_USER
+        )
         if codes_revoked > 0:
             self.logger.info("Revoked %d pending join codes", codes_revoked)
-
-        # Revoke all tokens and disconnect WebSocket connections for the guest user
-        revoked_count = await auth.revoke_tokens_for_user(guest_user)
-        if revoked_count > 0:
+        if tokens_revoked > 0:
             self.logger.info(
                 "Revoked %d guest access tokens for user '%s'",
-                revoked_count,
-                guest_user.username,
+                tokens_revoked,
+                PARTY_GUEST_USER,
             )

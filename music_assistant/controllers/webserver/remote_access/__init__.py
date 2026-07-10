@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from awesomeversion import AwesomeVersion
 from mashumaro import DataClassDictMixin
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_CORE
@@ -288,11 +289,13 @@ class RemoteAccessManager:
 
         self._on_unload_callbacks.append(
             self.mass.register_api_command(
-                "remote_access/info", get_remote_access_info, required_role="admin"
+                "remote_access/info", get_remote_access_info, required_scope=Scope.SYSTEM_MANAGE
             )
         )
         self._on_unload_callbacks.append(
             self.mass.register_api_command(
-                "remote_access/configure", configure_remote_access, required_role="admin"
+                "remote_access/configure",
+                configure_remote_access,
+                required_scope=Scope.SYSTEM_MANAGE,
             )
         )

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import aiofiles
+import aiofiles.os
 import aiohttp
 import shortuuid
 from aiohttp import ClientConnectorSSLError, ClientResponseError, ClientTimeout
@@ -46,7 +47,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import AudioFormat, Track
 from music_assistant_models.player_queue import PlayLogEntry
-from music_assistant_models.streamdetails import StreamMetadata
+from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
@@ -55,9 +56,15 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_FLOW_MODE_SAMPLE_RATE,
     CONF_OUTPUT_CHANNELS,
+    CONF_PLAYER_QUEUES,
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+    CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
+    CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
+    CONF_VOLUME_NORMALIZATION_TRACKS,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -65,6 +72,8 @@ from music_assistant.constants import (
     FLOW_MODE_SAMPLE_RATE_SMART,
     INTERNAL_PCM_FORMAT,
     MASS_LOGGER_NAME,
+    STREAM_STALL_TIMEOUT,
+    STREAM_START_TIMEOUT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.streams.audio_analysis import (
@@ -97,7 +106,7 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
 )
 from music_assistant.helpers.dsp import filter_to_ffmpeg_params
-from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_stream
+from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_overlay_stream, get_ffmpeg_stream
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
@@ -130,6 +139,16 @@ WARMUP_DURATION = 8
 # Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
 # latency below ~50 ms while still amortising per-chunk overhead.
 AUDIO_SOURCE_CHUNK_SECONDS = 0.02
+
+# Terminal errors get_icy_radio_stream raises once a single mirror is exhausted; the
+# multi-mirror reader treats these as the signal to fail over to the next URL.
+RADIO_MIRROR_FAILOVER_ERRORS = (
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+    ProviderUnavailableError,
+    RetriesExhausted,
+    InvalidDataError,
+)
 
 
 @dataclass
@@ -171,6 +190,11 @@ def _pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
         and a.bit_depth == b.bit_depth
         and a.channels == b.channels
     )
+
+
+def overlay_active(queue: PlayerQueue) -> bool:
+    """Return True if the given queue has an audio overlay enabled and a source selected."""
+    return queue.overlay_enabled and queue.overlay_source is not None
 
 
 class StreamsAudio:
@@ -243,9 +267,9 @@ class StreamsAudio:
             assert media_item is not None  # for type checking
             preferred_providers: list[str] = []
             if (
-                (queue := mass.player_queues.get(queue_item.queue_id))
-                and queue.userid
-                and (playback_user := await mass.webserver.auth.get_user(queue.userid))
+                (pq_data := mass.player_queues.queue_data_or_none(queue_item.queue_id))
+                and pq_data.userid
+                and (playback_user := await mass.webserver.auth.get_user(pq_data.userid))
                 and playback_user.provider_filter
             ):
                 # handle steering into user preferred providerinstance
@@ -341,10 +365,8 @@ class StreamsAudio:
         streamdetails.fade_in = fade_in
 
         streamdetails.prefer_album_loudness = prefer_album_loudness
-        queue_settings = mass.config.get_player_queue_config(streamdetails.queue_id)
-        core_config = await mass.config.get_core_config("streams")
         conf_volume_normalization_target = float(
-            str(core_config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
+            mass.streams.get_config_value(CONF_VOLUME_NORMALIZATION_TARGET, return_type=int)
         )
         # guard against invalid volume normalization values
         # range and default_value are guaranteed to be set for this constant
@@ -362,8 +384,16 @@ class StreamsAudio:
                 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value,
             )
         streamdetails.target_loudness = conf_volume_normalization_target
+        volume_normalization_enabled = (
+            mass.config.get_effective_player_queue_config_value(
+                streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
+            )
+            != CONF_VALUE_DISABLED
+        )
         streamdetails.volume_normalization_mode = get_normalization_mode(
-            core_config, queue_settings, streamdetails
+            self._get_volume_normalization_preference(streamdetails),
+            volume_normalization_enabled,
+            streamdetails,
         )
 
         # attach the DSP details of all group members
@@ -418,8 +448,9 @@ class StreamsAudio:
             )
             seek_position = 0 if streamdetails.can_seek else seek_position
         elif stream_type == StreamType.ICY:
-            assert isinstance(streamdetails.path, str)
-            audio_source = self.get_icy_radio_stream(streamdetails.path, streamdetails)
+            assert streamdetails.path is not None
+            assert isinstance(streamdetails.path, (str, list))
+            audio_source = self.get_reconnecting_icy_radio_stream(streamdetails.path, streamdetails)
             seek_position = 0
         elif stream_type == StreamType.SHOUTCAST:
             assert isinstance(streamdetails.path, str)
@@ -533,7 +564,19 @@ class StreamsAudio:
                 )
             stream_start = mass.loop.time()
             chunk_size = calculate_content_length(pcm_format, chunk_seconds)
-            async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
+            chunk_iter = ffmpeg_proc.iter_chunked(chunk_size)
+            while True:
+                # Time the read, not the yield: catches a stalled source, ignores backpressure.
+                read_timeout = (
+                    STREAM_START_TIMEOUT if not first_chunk_received else STREAM_STALL_TIMEOUT
+                )
+                try:
+                    async with asyncio.timeout(read_timeout):
+                        chunk = await anext(chunk_iter)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError as err:
+                    raise AudioError(f"Source stalled: no audio for {read_timeout}s") from err
                 if not first_chunk_received:
                     # At this point ffmpeg has started and should now know the codec used
                     # for encoding the audio.
@@ -683,7 +726,7 @@ class StreamsAudio:
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
         """
-        Stream radio audio with ICY metadata support.
+        Stream radio audio with ICY metadata support, reconnecting on disconnect.
 
         Requires icy-metaint header support. Stream type should be validated
         by resolve_radio_stream() before calling this function.
@@ -693,24 +736,131 @@ class StreamsAudio:
         """
         self.logger.debug("Start streaming radio with ICY metadata from url %s", url)
         timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+        # Budget for *consecutive* reconnects that delivered no audio. A connection
+        # that actually streamed data resets it, so a healthy long-running stream can
+        # reconnect indefinitely while a dead/looping one bails out instead of spinning.
+        failed_reconnects = 0
+        max_failed_reconnects = 25
 
-        async with self._connect_radio_stream(
-            url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
-        ) as resp:
-            headers = resp.headers
-            meta_int = int(headers["icy-metaint"])
+        while True:
+            streamed_data = False
+            try:
+                async with self._connect_radio_stream(
+                    url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
+                ) as resp:
+                    # surface a non-200 (e.g. on reconnect) as a ClientResponseError so the
+                    # terminal/HTTP handling below applies instead of failing on the header
+                    resp.raise_for_status()
+                    meta_int_str = resp.headers.get("icy-metaint")
+                    if not meta_int_str:
+                        raise InvalidDataError(f"No icy-metaint header for radio stream: {url}")
+                    try:
+                        meta_int = int(meta_int_str)
+                    except ValueError as err:
+                        raise InvalidDataError(
+                            f"Invalid icy-metaint value for radio stream: {url}"
+                        ) from err
+                    if meta_int <= 0:
+                        raise InvalidDataError(f"Invalid icy-metaint value for radio stream: {url}")
+                    # readexactly raises IncompleteReadError when the server closes the
+                    # connection mid-frame; that (and the network errors below) drops us
+                    # out to the reconnect handler so a live stream survives the blip.
+                    while True:
+                        chunk = await resp.content.readexactly(meta_int)
+                        streamed_data = True
+                        yield chunk
+                        meta_byte = await resp.content.readexactly(1)
+                        if meta_byte == b"\x00":
+                            continue
+                        meta_length = ord(meta_byte) * 16
+                        meta_data = await resp.content.readexactly(meta_length)
+                        self._parse_icy_metadata(meta_data, streamdetails)
+            except asyncio.CancelledError:
+                self.logger.debug("ICY radio stream cancelled for %s", url)
+                raise
+            except aiohttp.ClientResponseError as err:
+                if err.status == 404:
+                    raise MediaNotFoundError(f"Radio stream not found: {url}") from err
+                if err.status == 403:
+                    raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
+                raise ProviderUnavailableError(
+                    f"Radio stream returned HTTP {err.status}: {err}"
+                ) from err
+            except (
+                asyncio.IncompleteReadError,
+                aiohttp.ClientConnectionError,
+                aiohttp.ClientPayloadError,
+                aiohttp.ServerDisconnectedError,
+            ) as err:
+                if streamed_data:
+                    # a healthy session that dropped - reconnect without spending budget
+                    failed_reconnects = 0
+                    self.logger.debug("ICY radio stream dropped, reconnecting: %s", err)
+                else:
+                    failed_reconnects += 1
+                    if failed_reconnects > max_failed_reconnects:
+                        raise RetriesExhausted(
+                            f"ICY radio stream failed after {max_failed_reconnects} "
+                            f"reconnects without data: {err}"
+                        ) from err
+                    self.logger.warning(
+                        "ICY radio stream reconnect produced no data (%d/%d): %s",
+                        failed_reconnects,
+                        max_failed_reconnects,
+                        err,
+                    )
+                await asyncio.sleep(0.5)
 
-            while True:
-                try:
-                    yield await resp.content.readexactly(meta_int)
-                    meta_byte = await resp.content.readexactly(1)
-                    if meta_byte == b"\x00":
-                        continue
-                    meta_length = ord(meta_byte) * 16
-                    meta_data = await resp.content.readexactly(meta_length)
-                    self._parse_icy_metadata(meta_data, streamdetails)
-                except asyncio.exceptions.IncompleteReadError:
-                    break
+    async def get_reconnecting_icy_radio_stream(
+        self, url: str | list[MultiPartPath], streamdetails: StreamDetails
+    ) -> AsyncGenerator[bytes]:
+        """
+        Yield ICY radio audio with metadata, failing over across mirror URLs.
+
+        A single URL is delegated to :meth:`get_icy_radio_stream`, which already reconnects
+        on disconnect. Multiple URLs are treated as interchangeable mirrors and tried in turn;
+        a mirror that delivers audio resets the failover budget, so a healthy mirror keeps
+        streaming while a set of unreachable mirrors raises the last error instead of spinning.
+
+        :param url: One stream URL, or a list of mirror URLs to fail over between.
+        :param streamdetails: StreamDetails to update with metadata.
+        """
+        urls = self._normalize_reconnecting_urls(url)
+        if len(urls) == 1:
+            async for chunk in self.get_icy_radio_stream(urls[0], streamdetails):
+                yield chunk
+            return
+
+        url_index = 0
+        failed_rotations = 0
+        max_failed_rotations = len(urls) * 2
+        last_err: MusicAssistantError | None = None
+        while failed_rotations <= max_failed_rotations:
+            current_url = urls[url_index % len(urls)]
+            url_index += 1
+            delivered_audio = False
+            try:
+                async for chunk in self.get_icy_radio_stream(current_url, streamdetails):
+                    delivered_audio = True
+                    failed_rotations = 0
+                    # release the previous failure while healthy: it pins the full
+                    # exception traceback (with frames) for the lifetime of the stream
+                    last_err = None
+                    yield chunk
+                return
+            except RADIO_MIRROR_FAILOVER_ERRORS as err:
+                last_err = err
+                if not delivered_audio:
+                    failed_rotations += 1
+                self.logger.warning(
+                    "ICY radio mirror %s failed, trying next url (%d/%d): %s",
+                    current_url,
+                    failed_rotations,
+                    max_failed_rotations,
+                    err,
+                )
+        if last_err is not None:
+            raise last_err
 
     async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes]:
         """
@@ -1190,6 +1340,7 @@ class StreamsAudio:
         player: Player,
         start_streamdetails: StreamDetails | None = None,
         crossfade_enabled: bool = False,
+        overlay_active: bool = False,
     ) -> AudioFormat:
         """
         Select the internal PCM format for a Queue Flow Mode stream.
@@ -1211,6 +1362,7 @@ class StreamsAudio:
             bit-depth optimization. May be omitted for the fixed-rate modes — when
             omitted the bit depth defaults to F32.
         :param crossfade_enabled: Whether the queue will use crossfade transitions.
+        :param overlay_active: Whether an audio overlay will be mixed into the stream.
         """
         if start_streamdetails is not None and (
             start_streamdetails.media_type == MediaType.AUDIO_SOURCE
@@ -1242,7 +1394,7 @@ class StreamsAudio:
             output_sample_rate = _snap_supported_rate_up(target_rate, supported_sample_rates)
 
         content_type, bit_depth = self._pick_pcm_bit_depth(
-            player, start_streamdetails, crossfade_enabled
+            player, start_streamdetails, crossfade_enabled, overlay_active
         )
         return AudioFormat(
             content_type=content_type,
@@ -1286,7 +1438,9 @@ class StreamsAudio:
                 yield chunk
         except AudioError as err:
             streamdetails.stream_error = True
-            queue_item.available = False
+            # revoke availability when the stream never produced any audio
+            if bytes_received == 0:
+                queue_item.available = False
             if raise_on_error:
                 raise
             logger.error(
@@ -1372,10 +1526,16 @@ class StreamsAudio:
             # re-evaluate normalization mode: the background loudness analyzer may have
             # updated streamdetails.loudness since get_stream_details was called
             if streamdetails.queue_id:
-                core_config = await self.mass.config.get_core_config("streams")
-                queue_settings = self.mass.config.get_player_queue_config(streamdetails.queue_id)
+                volume_normalization_enabled = (
+                    self.mass.config.get_effective_player_queue_config_value(
+                        streamdetails.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
+                    )
+                    != CONF_VALUE_DISABLED
+                )
                 streamdetails.volume_normalization_mode = get_normalization_mode(
-                    core_config, queue_settings, streamdetails
+                    self._get_volume_normalization_preference(streamdetails),
+                    volume_normalization_enabled,
+                    streamdetails,
                 )
 
         # handle volume normalization
@@ -1392,9 +1552,7 @@ class StreamsAudio:
                 if streamdetails.media_type == MediaType.TRACK
                 else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO
             )
-            gain_value = await self.mass.config.get_core_config_value(
-                "streams", config_key, default=0.0, return_type=float
-            )
+            gain_value = self.mass.streams.get_config_value(config_key, return_type=float)
             gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
@@ -1483,7 +1641,7 @@ class StreamsAudio:
                     >= streamdetails.duration - 60
                 ):
                     next_buffer_triggered = True
-                    self.mass.player_queues._prepare_next_audio_buffer(queue_item.queue_id)
+                    self.mass.player_queues.prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
             # if we received no audio and the buffer has a producer error,
@@ -1493,7 +1651,9 @@ class StreamsAudio:
             finished = True
         except AudioError as err:
             streamdetails.stream_error = True
-            queue_item.available = False
+            # revoke availability when the stream never produced any audio
+            if bytes_received == 0:
+                queue_item.available = False
             if raise_on_error:
                 raise
             logger.error(
@@ -1888,10 +2048,11 @@ class StreamsAudio:
         # (rapid track switch, sync-group reform, dynamic leader handoff) the
         # snapshot will no longer match and we exit cleanly on the next yield or
         # playlog append — preventing two producers from writing to the same
-        # queue.flow_mode_stream_log.
-        flow_session_id = queue.session_id
+        # pq_data.flow_mode_stream_log.
+        pq_data = self.mass.player_queues.queue_data(queue.queue_id)
+        flow_session_id = pq_data.session_id
         queue.flow_mode = True
-        queue.flow_mode_stream_log = []
+        pq_data.flow_mode_stream_log = []
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
             return
@@ -1902,9 +2063,10 @@ class StreamsAudio:
             standard_crossfade_duration = 0
         else:
             crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
-            # fallback matches CONF_ENTRY_CROSSFADE_DURATION's default
-            standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 8
+            # crossfade duration is a global (queue controller) setting; fallback matches
+            # CONF_ENTRY_CROSSFADE_DURATION's default
+            standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
         flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
@@ -1929,7 +2091,7 @@ class StreamsAudio:
 
         def _superseded() -> bool:
             """Return True if a newer stream session has taken over this queue."""
-            return queue.session_id != flow_session_id
+            return pq_data.session_id != flow_session_id
 
         while True:
             # bail out early if a newer producer has taken over this queue,
@@ -1940,7 +2102,7 @@ class StreamsAudio:
                     "- exiting before next track",
                     queue.display_name,
                     flow_session_id,
-                    queue.session_id,
+                    pq_data.session_id,
                 )
                 return
             # get (next) queue item to stream
@@ -2042,7 +2204,7 @@ class StreamsAudio:
                 )
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
-            queue.flow_mode_stream_log.append(play_log_entry)
+            pq_data.flow_mode_stream_log.append(play_log_entry)
 
             bytes_written = 0
             crossfade_buffer = bytearray()
@@ -2272,6 +2434,38 @@ class StreamsAudio:
             # so it can handle the case where new items were added after the flow stream ended
             self.mass.player_queues.queue_buffer_completed(queue.queue_id)
 
+    async def get_overlay_mixed_stream(
+        self,
+        queue: PlayerQueue,
+        audio_input: AsyncGenerator[bytes],
+        pcm_format: AudioFormat,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Mix the queue's audio overlay (looping sound effect) into the given PCM stream.
+
+        The mixed output has the exact same PCM format, duration and chunking as the
+        input stream. If the overlay source can not be resolved, the original stream
+        is passed through unchanged so playback is never interrupted.
+
+        :param queue: The PlayerQueue holding the overlay source and volume.
+        :param audio_input: The audio stream (raw PCM in ``pcm_format``) to mix into.
+        :param pcm_format: PCM format of both the input and the mixed output.
+        """
+        overlay_input = await self._resolve_overlay_input(queue)
+        if overlay_input is None:
+            # overlay source unavailable: degrade gracefully to music-only
+            async for chunk in audio_input:
+                yield chunk
+            return
+        async for chunk in get_ffmpeg_overlay_stream(
+            audio_input=audio_input,
+            overlay_input=overlay_input,
+            pcm_format=pcm_format,
+            overlay_volume=queue.overlay_volume,
+            chunk_size=pcm_format.pcm_sample_size,
+        ):
+            yield chunk
+
     def crossfade_allowed(
         self,
         queue_item: QueueItem,
@@ -2452,6 +2646,19 @@ class StreamsAudio:
             await writer.wait_closed()
 
     # --- Private methods ---
+
+    def _get_volume_normalization_preference(
+        self, streamdetails: StreamDetails
+    ) -> VolumeNormalizationMode:
+        """Return the configured normalization preference for the stream's media type."""
+        conf_key = (
+            CONF_VOLUME_NORMALIZATION_RADIO
+            if streamdetails.media_type == MediaType.RADIO
+            else CONF_VOLUME_NORMALIZATION_TRACKS
+        )
+        return VolumeNormalizationMode(
+            self.mass.streams.get_config_value(conf_key, return_type=str)
+        )
 
     def _update_radio_stream_metadata(
         self,
@@ -2765,21 +2972,23 @@ class StreamsAudio:
         player: Player,
         streamdetails: StreamDetails | None,
         crossfade_enabled: bool,
+        overlay_active: bool = False,
     ) -> tuple[ContentType, int]:
         """
         Return ``(content_type, bit_depth)`` for an internal PCM stream.
 
-        F32 is chosen when audio processing (crossfade, volume normalization, DSP)
-        will run on the stream — those need the extra headroom to avoid clipping
-        and precision loss. Otherwise the source's native bit depth is reused so
-        we don't waste memory upcasting a 16-bit stream to 32-bit just to pass it
-        through. When the source is unknown (no streamdetails) we fall back to
-        F32 conservatively.
+        F32 is chosen when audio processing (crossfade, audio overlay, volume
+        normalization, DSP) will run on the stream — those need the extra
+        headroom to avoid clipping and precision loss. Otherwise the source's
+        native bit depth is reused so we don't waste memory upcasting a 16-bit
+        stream to 32-bit just to pass it through. When the source is unknown
+        (no streamdetails) we fall back to F32 conservatively.
         """
         if streamdetails is None:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
         needs_headroom = (
             crossfade_enabled
+            or overlay_active
             or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
             or self._resolve_player_dsp_config(player).enabled
         )
@@ -3017,3 +3226,59 @@ class StreamsAudio:
 
         except Exception as err:
             self.logger.debug("Error fetching HLS metadata: %s", err)
+
+    @staticmethod
+    def _normalize_reconnecting_urls(url: str | list[MultiPartPath]) -> list[str]:
+        """Normalize a single URL or a sequence into a non-empty list."""
+        if isinstance(url, str):
+            return [url]
+        if not url:
+            msg = "Radio stream requires at least one URL"
+            raise InvalidDataError(msg)
+        return [part.path for part in url]
+
+    async def _resolve_overlay_input(self, queue: PlayerQueue) -> str | None:
+        """
+        Resolve the queue's overlay source to a file path or URL for ffmpeg.
+
+        Returns None (with a warning logged) when the source can not be resolved,
+        so the caller can degrade to music-only playback.
+        """
+        if not (mapping := queue.overlay_source):
+            return None
+        try:
+            provider = self.mass.get_provider(mapping.provider)
+            if provider is None:
+                raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
+            provider = cast("MusicProvider", provider)
+            streamdetails = await provider.get_stream_details(
+                mapping.item_id, MediaType.SOUND_EFFECT
+            )
+        except Exception as err:
+            self.logger.warning(
+                "Audio overlay source %s is unavailable (%s) - continuing without overlay",
+                mapping.uri,
+                str(err) or err.__class__.__name__,
+            )
+            return None
+        if streamdetails.stream_type not in (StreamType.LOCAL_FILE, StreamType.HTTP) or not (
+            isinstance(streamdetails.path, str)
+        ):
+            self.logger.warning(
+                "Audio overlay source %s uses unsupported stream type %s "
+                "- continuing without overlay",
+                mapping.uri,
+                streamdetails.stream_type,
+            )
+            return None
+        if streamdetails.stream_type == StreamType.LOCAL_FILE and not await aiofiles.os.path.isfile(
+            streamdetails.path
+        ):
+            # guard against stale sources: feeding a missing file to the mixer would
+            # kill the whole (music) stream instead of just the overlay
+            self.logger.warning(
+                "Audio overlay source %s does not exist - continuing without overlay",
+                streamdetails.path,
+            )
+            return None
+        return streamdetails.path

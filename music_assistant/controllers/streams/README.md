@@ -12,6 +12,7 @@ This document provides an overview of the Music Assistant Streams Controller arc
 - [Streaming Pipeline](#streaming-pipeline)
 - [Analyze Callbacks](#analyze-callbacks)
 - [Smart Fades](#smart-fades)
+- [Audio Overlay](#audio-overlay)
 - [Stream Types](#stream-types)
 - [Configuration](#configuration)
 
@@ -23,6 +24,7 @@ The Streams Controller is a core controller that manages all audio streaming to 
 - Volume normalization (dynamic, measurement-based, and fixed gain)
 - Smart crossfading between tracks
 - Flow mode for continuous queue playback
+- Audio overlay: a looping sound effect (e.g. rain) mixed into queue playback
 - Announcement and plugin source streaming
 - Ahead-of-time audio analysis (loudness, beat detection) via buffer callbacks
 
@@ -73,11 +75,11 @@ Supporting modules in `helpers/`:
 
 ### Key Methods
 
-- `AudioBuffer.get_buffer()` - Static factory that creates or reuses a buffer. Reads config, determines mode, attaches analyze callbacks, starts filling
+- `AudioBuffer.get_buffer()` - Static factory that creates or reuses a buffer. Reads config, determines mode, starts the analysis reader, starts filling
 - `AudioBuffer.get_stream()` - Get processed audio with optional filters/resampling applied
-- `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio
+- `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio (playback consumer)
+- `AudioBuffer.read_chunk_for_analysis()` - Read one chunk for a passive analysis reader without mutating the buffer; raises when the chunk has been evicted (reader fell behind)
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
-- `AudioBuffer.register_chunk_callback()` - Register a callback to observe chunks as they are buffered
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
 
 ### Buffer Lifecycle
@@ -85,9 +87,9 @@ Supporting modules in `helpers/`:
 ```
 1. _load_item() fetches stream details, creates buffer with wait_ready=True
 2. Buffer starts filling from get_media_stream() in background
-3. Analyze callbacks (loudness, smart fades) process chunks as they arrive
+3. Analysis (loudness, smart fades) reads the same buffer in parallel, at lower priority
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
-5. ~30s before track end: _prepare_next_audio_buffer() pre-fills next track
+5. ~30s before track end: prepare_next_audio_buffer() pre-fills next track
 6. _cleanup_stale_queue_buffers() clears old buffers to free memory
 ```
 
@@ -148,6 +150,25 @@ The smart fades system provides intelligent crossfading between tracks:
 - **Smart Crossfade**: Analyzes audio beats to detect natural fade points
 - **Standard Crossfade**: Fixed-duration overlap crossfade with silence stripping
 - Operates in both flow mode (continuous stream) and per-item mode (gapless playback)
+
+## Audio Overlay
+
+The audio overlay is a per-queue feature (configured via `player_queues/overlay`) that mixes a
+looping sound effect — any `sound_effect` media item offered by a provider — into the queue's
+audio stream:
+
+- Mixing happens once per queue stream (ffmpeg `amix`, overlay looped via `-stream_loop -1`),
+  so all (synced) players consuming the stream hear the identical mix.
+- An active overlay forces flow mode: the overlay must play continuously across track
+  boundaries, which is impossible with per-item stream requests. Radio is the exception —
+  it always plays as a single long-lived stream and is wrapped per-request instead.
+- The internal PCM format is upgraded to F32 (like crossfade/DSP) for clipping-free headroom.
+- Failures degrade gracefully: when the overlay source can not be resolved, playback simply
+  continues without overlay; when the overlay input dies mid-stream, ffmpeg keeps passing
+  the main audio. Music playback is never interrupted by the overlay.
+- Note: audio already sitting in a player's (pre)buffer is unaffected by overlay changes,
+  which is why the queue controller restarts playback on an audible change. For the same
+  reason a seek can momentarily shift the overlay position — acceptable for ambient content.
 
 ## Stream Types
 

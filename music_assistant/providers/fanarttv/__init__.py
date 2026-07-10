@@ -11,7 +11,7 @@ from music_assistant_models.enums import ConfigEntryType, ExternalID, ImageType,
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -181,15 +181,16 @@ class FanartTvMetadataProvider(MetadataProvider):
                     return metadata
         return None
 
-    @use_cache(86400 * 60)  # Cache for 60 days
+    # None here only signals a failed or rate-limited request, so don't cache it
+    @use_cache(86400 * 60, cache_none=False)  # Cache for 60 days
     async def _get_data(self, endpoint: str, **kwargs: str) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
         headers = {
-            "api-key": app_var(4),
+            "api-key": app_var("fanarttv_api_key"),
         }
         if client_key := self.config.get_value(CONF_CLIENT_KEY):
-            headers["client_key"] = client_key
+            headers["client_key"] = str(client_key)
         async with (
             self.throttler,
             self.mass.http_session_no_ssl.get(

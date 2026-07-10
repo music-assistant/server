@@ -8,6 +8,10 @@ music_assistant/testrun.sh
 build/
 dist/
 venv/
+
+# Bundled app credentials - injected at build time, or a maintainer's local copy. Never commit.
+music_assistant/helpers/app_secrets.json
+app_vars.json
 .venv
 .venv*
 .mypy_cache/
@@ -28,3 +32,6 @@ docs/superpowers
 .devenv*
 devenv.local.nix
 devenv.local.yaml
+
+# VS Code
+.vscode/launch.json

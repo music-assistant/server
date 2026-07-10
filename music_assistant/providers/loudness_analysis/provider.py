@@ -13,7 +13,7 @@ from music_assistant_models.enums import VolumeNormalizationMode
 from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.tags import write_replaygain_track_gain
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 if TYPE_CHECKING:
@@ -79,7 +79,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         """Abort an in-progress loudness analysis session."""
         data = self._data.pop(session_id, None)
         if data:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 await data.ffmpeg.close()
         await super().cancel(session_id)
 
@@ -139,6 +139,9 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         try:
             await data.ffmpeg.wait()
         except Exception as err:
+            # ffmpeg.wait() can surface process/pipe errors plus anything the ebur128
+            # subprocess raises; broad so a failed measurement degrades to "no result"
+            # rather than crashing finalize.
             self.logger.debug("Loudness analysis ffmpeg failed: %s", err)
             await data.ffmpeg.close()
             return None
@@ -151,14 +154,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             return None
 
         if data.chunks_received < MIN_DURATION_SECONDS:
-            self.logger.debug(
-                "Loudness analysis for %s skipped: "
-                "insufficient audio data (%s/%s seconds analyzed)",
-                session.streamdetails.uri,
-                data.chunks_received,
-                MIN_DURATION_SECONDS,
-            )
-            return None
+            raise AudioAnalysisError("track too short for loudness measurement")
 
         loudness, loudness_range, true_peak = metrics
         if loudness is None:
@@ -169,16 +165,9 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             return None
 
         if loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
-            # ebur128 reports ~-70 LUFS on near-silence / cancelled streams,
-            # which would cause huge gain corrections on subsequent plays.
-            self.logger.debug(
-                "Loudness measurement for %s discarded: "
-                "%s LUFS is below the reliability threshold (%s LUFS)",
-                session.streamdetails.uri,
-                loudness,
-                LOUDNESS_MEASUREMENT_MIN_LUFS,
-            )
-            return None
+            # ebur128 reports ~-70 LUFS on a near-silent track; below the reliability floor
+            # it would cause huge gain corrections, and the reading is deterministic per file.
+            raise AudioAnalysisError("track too quiet to measure loudness")
 
         analysis = AudioAnalysisData(
             loudness_integrated=round(loudness, 2),
@@ -202,7 +191,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         if data.eof_sent:
             return
         data.eof_sent = True
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             await data.ffmpeg.write_eof()
 
 

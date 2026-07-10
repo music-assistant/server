@@ -41,6 +41,7 @@ CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
         ConfigValueOption("music"),
         ConfigValueOption("audiobooks"),
         ConfigValueOption("podcasts"),
+        ConfigValueOption("sound_effects"),
     ],
 )
 CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
@@ -134,15 +135,17 @@ TRACK_EXTENSIONS = {
     "mp+",
 }
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
+CUE_EXTENSIONS = {"cue"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
 AUDIOBOOK_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
 PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
-PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
+SOUND_EFFECT_EXTENSIONS = TRACK_EXTENSIONS
 SUPPORTED_EXTENSIONS = {
     *TRACK_EXTENSIONS,
     *AUDIOBOOK_EXTENSIONS,
     *PODCAST_EPISODE_EXTENSIONS,
     *PLAYLIST_EXTENSIONS,
+    *CUE_EXTENSIONS,
 }
 
 
@@ -155,5 +158,7 @@ CACHE_CATEGORY_ALBUM_INFO: Final[int] = 2
 CACHE_CATEGORY_FOLDER_IMAGES: Final[int] = 3
 CACHE_CATEGORY_AUDIOBOOK_CHAPTERS: Final[int] = 4
 CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
+CACHE_CATEGORY_CUE_SHEETS: Final[int] = 6
+CACHE_CATEGORY_SOUND_EFFECTS: Final[int] = 7
 
 DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"

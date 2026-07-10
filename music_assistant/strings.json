@@ -40,6 +40,12 @@
         "relative": "Relative volume increase",
         "percentual": "Volume increase by fixed percentage",
         "none": "Do not adjust volume"
+      },
+      "option_descriptions": {
+        "absolute": "Play announcements at the fixed volume set below, ignoring the player's current volume.",
+        "relative": "Raise the current volume by the amount set below while the announcement plays.",
+        "percentual": "Raise the current volume by the percentage set below while the announcement plays.",
+        "none": "Leave the volume unchanged; play the announcement at the player's current volume."
       }
     },
     "auto_play": {
@@ -57,6 +63,11 @@
         "disabled": "Disabled - do not send ICY metadata",
         "basic": "Profile 1 - basic info",
         "full": "Profile 2 - full info (including image)"
+      },
+      "option_descriptions": {
+        "disabled": "Don't inject metadata; the player won't show track info during flow mode.",
+        "basic": "Send title and artist only. Lightweight and widely compatible.",
+        "full": "Also send album name and cover art. Richer, but some players mishandle it — use Basic if you see playback issues."
       }
     },
     "flow_mode": {
@@ -65,13 +76,20 @@
     },
     "flow_mode_sample_rate": {
       "label": "Flow Mode sample rate",
-      "description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.\n\n- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first track. Subsequent tracks with an equal or lower sample rate are upsampled to match; if the next track has a higher sample rate, the flow stream is restarted at that higher rate. This is the best balance between quality and seamless playback.\n- 'Bit-perfect (no resampling)': Never resamples audio (unless the player does not support the track's sample rate). Playback is restarted between queue tracks when their sample rates differ, which disables gapless and crossfade between those tracks.\n- '48 kHz': Resamples all audio to a fixed 48 kHz (or the closest rate supported by the player) using a high quality resampler. A good compromise of quality and bandwidth.\n- '96 kHz': Resamples all audio to a fixed 96 kHz (or the closest rate supported by the player) using a high quality resampler.\n- 'Highest supported by player': Resamples all audio to the highest sample rate the player supports. Note that this can waste a lot of bandwidth.",
+      "description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.",
       "options": {
-        "smart": "Smart (upsample only)",
-        "bit_perfect": "Bit-perfect (no resampling)",
-        "48000": "48 kHz (balanced quality and bandwidth)",
-        "96000": "96 kHz (high quality)",
+        "smart": "Smart",
+        "bit_perfect": "Bit-perfect",
+        "48000": "48 kHz",
+        "96000": "96 kHz",
         "highest": "Highest supported by player"
+      },
+      "option_descriptions": {
+        "smart": "Starts at the first track's rate; upsamples lower-rate tracks to match, and restarts the stream only when a track has a higher rate. Best balance of quality and seamless playback.",
+        "bit_perfect": "Never resamples. Playback restarts between tracks of differing sample rates, which disables gapless and crossfade across those transitions.",
+        "48000": "Resamples everything to a fixed 48 kHz (or the closest rate the player supports). A good compromise of quality and bandwidth.",
+        "96000": "Resamples everything to a fixed 96 kHz (or the closest rate the player supports).",
+        "highest": "Resamples everything to the highest rate the player supports. Best quality, but can waste a lot of bandwidth."
       }
     },
     "http_profile": {
@@ -81,6 +99,11 @@
         "chunked": "Profile 1 - chunked",
         "no_content_length": "Profile 2 - no content length",
         "forced_content_length": "Profile 3 - forced content length"
+      },
+      "option_descriptions": {
+        "chunked": "Send audio using chunked transfer encoding, without a fixed length up front.",
+        "no_content_length": "Stream without a Content-Length header. Works for most players (the default).",
+        "forced_content_length": "Send an estimated Content-Length header. Some players need this to start playback or to seek."
       }
     },
     "icon": {
@@ -173,6 +196,12 @@
         "mp3": "MP3 (lossy)",
         "aac": "AAC (lossy)",
         "wav": "WAV (lossless, uncompressed)"
+      },
+      "option_descriptions": {
+        "flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
+        "mp3": "Lossy — smaller bitrate at some quality cost. Use for players that can't play FLAC, or to save bandwidth.",
+        "aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
+        "wav": "Lossless but uncompressed — highest bandwidth. Only needed for players that can't handle FLAC."
       }
     },
     "output_limiter": {
@@ -235,6 +264,10 @@
       "label": "Enable",
       "description": "Enable or disable this output protocol for the player."
     },
+    "protocol_enable_via": {
+      "label": "Enable",
+      "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled."
+    },
     "pre_announcement_chime_url": {
       "label": "Custom (pre)announcement chime URL",
       "description": "URL to a custom audio file to play before announcements.\nLeave empty to use the default chime.\nSupports http:// and https:// URLs pointing to audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\nExample: http://homeassistant.local:8123/local/audio/custom_chime.mp3"
@@ -253,6 +286,9 @@
         "native": "Native power control",
         "none": "None",
         "fake": "Fake power control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native power control."
       }
     },
     "volume_control": {
@@ -261,6 +297,9 @@
         "native": "Native volume control",
         "follow_protocol": "Auto-select (based on active/preferred protocol)",
         "none": "None"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native volume control."
       }
     },
     "mute_control": {
@@ -270,6 +309,9 @@
         "follow_protocol": "Auto-select (based on active/preferred protocol)",
         "none": "None",
         "fake": "Fake mute control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native mute control."
       }
     },
     "preferred_output_protocol": {
@@ -291,7 +333,8 @@
       "options": {
         "audiobooks": "Audiobooks",
         "music": "Music",
-        "podcasts": "Podcasts"
+        "podcasts": "Podcasts",
+        "sound_effects": "Sound Effects"
       }
     },
     "mass_player_id": {
@@ -319,8 +362,14 @@
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
     "playback": "Queue Playback",
+    "items_to_select": "Items to select",
+    "default_enqueue_option": "Default enqueue option",
+    "autoplay": "Autoplay",
+    "crossfade": "Crossfade",
+    "smart_shuffle": "Smart shuffle",
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
+    "protocol_output_settings_via": "Enable {0} support (over {1})",
     "dsp": "Digital Signal Processing (DSP)",
     "options": "Player options",
     "audio": "Audio",
@@ -578,6 +627,170 @@
         "description": "Meditation music is music performed to aid in the practice of meditation. It can have a specific religious content, but also more recently has been associated with modern composers who use meditation techniques in their process of composition, or who compose such music with no particular religious group as a focus. The concept also includes music performed as an act of meditation."
       }
     },
+    "podcast_genre": {
+      "arts": {
+        "name": "Arts",
+        "description": "Podcasts about the arts — books and literature, design, fashion and beauty, food, and the performing and visual arts."
+      },
+      "business": {
+        "name": "Business",
+        "description": "Podcasts on business and the world of work, from careers and entrepreneurship to investing, management and marketing."
+      },
+      "comedy": {
+        "name": "Comedy",
+        "description": "Comedy podcasts, including stand-up, improv and comedic interviews made to entertain and make listeners laugh."
+      },
+      "education": {
+        "name": "Education",
+        "description": "Educational podcasts covering courses, how-to guides, language learning and self-improvement."
+      },
+      "fiction": {
+        "name": "Fiction",
+        "description": "Scripted and storytelling podcasts, including audio drama, comedy fiction and science fiction."
+      },
+      "government": {
+        "name": "Government",
+        "description": "Podcasts about government, public policy and the workings of the state."
+      },
+      "health_and_fitness": {
+        "name": "Health & Fitness",
+        "description": "Podcasts on health and fitness, covering nutrition, exercise, medicine, mental health and wellbeing."
+      },
+      "history": {
+        "name": "History",
+        "description": "Podcasts exploring history — events, people and eras from the ancient world to recent times."
+      },
+      "kids_and_family": {
+        "name": "Kids & Family",
+        "description": "Family-friendly podcasts for children and parents, including stories for kids, parenting and education."
+      },
+      "leisure": {
+        "name": "Leisure",
+        "description": "Podcasts about hobbies and pastimes, from games and crafts to automotive, aviation and home & garden."
+      },
+      "music": {
+        "name": "Music",
+        "description": "Podcasts about music — commentary, interviews and the history behind artists, songs and genres."
+      },
+      "news": {
+        "name": "News",
+        "description": "News podcasts covering daily headlines, politics, business, technology, sports and entertainment."
+      },
+      "religion_and_spirituality": {
+        "name": "Religion & Spirituality",
+        "description": "Podcasts on religion and spirituality across faiths and traditions, and on personal spiritual practice."
+      },
+      "science": {
+        "name": "Science",
+        "description": "Science podcasts spanning astronomy, physics, chemistry, the life and earth sciences, nature and more."
+      },
+      "society_and_culture": {
+        "name": "Society & Culture",
+        "description": "Podcasts about society and culture, including documentaries, personal journals, philosophy, travel and relationships."
+      },
+      "sports": {
+        "name": "Sports",
+        "description": "Sports podcasts covering teams, athletes and competitions across the world's games and pastimes."
+      },
+      "technology": {
+        "name": "Technology",
+        "description": "Podcasts about technology, gadgets, software and the people and ideas shaping the digital world."
+      },
+      "true_crime": {
+        "name": "True Crime",
+        "description": "Podcasts investigating real crimes, cases and the people behind them."
+      },
+      "tv_and_film": {
+        "name": "TV & Film",
+        "description": "Podcasts about television and film, including reviews, interviews, after-shows and screen history."
+      }
+    },
+    "audiobook_genre": {
+      "arts_and_entertainment": {
+        "name": "Arts & Entertainment",
+        "description": "Audiobooks on the arts, media and entertainment, from film and music to the performing and visual arts."
+      },
+      "biography_and_memoir": {
+        "name": "Biography & Memoir",
+        "description": "Life stories — biographies and memoirs of notable people and personal accounts of lived experience."
+      },
+      "business": {
+        "name": "Business",
+        "description": "Audiobooks on business, careers, money and finance, management, marketing and economics."
+      },
+      "classics": {
+        "name": "Classics",
+        "description": "Classic works of literature that have stood the test of time."
+      },
+      "comedy_and_humor": {
+        "name": "Comedy & Humor",
+        "description": "Humorous and comedic audiobooks written to entertain and amuse."
+      },
+      "drama_and_poetry": {
+        "name": "Drama & Poetry",
+        "description": "Dramatic works and poetry, including plays, verse and performance pieces."
+      },
+      "fantasy_and_science_fiction": {
+        "name": "Fantasy & Science Fiction",
+        "description": "Speculative fiction — fantasy, science fiction and imagined worlds."
+      },
+      "fiction": {
+        "name": "Fiction",
+        "description": "Fiction and literature — novels and stories spanning every style and genre."
+      },
+      "foreign_language": {
+        "name": "Foreign Language",
+        "description": "Language-learning audiobooks and works in or about foreign languages."
+      },
+      "history": {
+        "name": "History",
+        "description": "Audiobooks exploring history — events, people and eras across the ages."
+      },
+      "kids_and_young_adult": {
+        "name": "Kids & Young Adult",
+        "description": "Audiobooks for children, teens and young adults, from picture-book stories to young-adult fiction."
+      },
+      "mystery": {
+        "name": "Mystery",
+        "description": "Mystery, thriller and suspense — crime stories, whodunits and page-turners."
+      },
+      "nonfiction": {
+        "name": "Nonfiction",
+        "description": "Nonfiction across every subject — real events, ideas, people and knowledge."
+      },
+      "religion_and_spirituality": {
+        "name": "Religion & Spirituality",
+        "description": "Audiobooks on religion, faith and spirituality across traditions and personal practice."
+      },
+      "romance": {
+        "name": "Romance",
+        "description": "Romance audiobooks, from contemporary love stories to historical and steamy reads."
+      },
+      "science": {
+        "name": "Science",
+        "description": "Science and nature audiobooks spanning the natural world, discovery and how things work."
+      },
+      "self_help": {
+        "name": "Self Help",
+        "description": "Self-help and personal development — guidance for growth, habits, wellbeing and success."
+      },
+      "speakers_and_storytellers": {
+        "name": "Speakers & Storytellers",
+        "description": "Lectures, talks and storytelling performances by notable speakers and storytellers."
+      },
+      "sports": {
+        "name": "Sports",
+        "description": "Audiobooks about sport and recreation — athletes, teams, games and the outdoors."
+      },
+      "technology": {
+        "name": "Technology",
+        "description": "Audiobooks about technology, computing and the ideas shaping the digital world."
+      },
+      "travel_and_adventure": {
+        "name": "Travel & Adventure",
+        "description": "Travel writing and adventure — journeys, places and tales of exploration."
+      }
+    },
     "folder": {
       "artists": {
         "name": "Artists"
@@ -602,6 +815,9 @@
       },
       "podcasts": {
         "name": "Podcasts"
+      },
+      "sound_effects": {
+        "name": "Sound Effects"
       },
       "library": {
         "name": "Library"
@@ -868,6 +1084,7 @@
     "unsupported_system_cpu_cores": "This system does not meet the minimal requirements for {0}: at least {1} CPU cores are required ({2} detected).",
     "unsupported_system_memory": "This system does not meet the minimal requirements for {0}: at least {1}GB of RAM is required ({2}GB detected).",
     "unsupported_system_avx2": "On-device audio analysis requires a CPU with AVX2 support (Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. If you are running in a virtual machine (e.g. Proxmox), changing the CPU type to 'host' may expose AVX2 to the guest.",
+    "unsupported_system_ml_inference_failed": "On-device audio analysis cannot run on this CPU: it reports AVX2 support but fails to execute the required instructions. This is common on virtual machines without host CPU passthrough -- if you are running in a VM (e.g. Proxmox or TrueNAS), set the CPU type to 'host'.",
     "player_unavailable": "The player is not available.",
     "player_command_failed": "The command to the player failed.",
     "invalid_command": "Invalid or unsupported command.",
