@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.json import SerializableType
 
 
 class TasksController(CoreController):
@@ -96,6 +97,20 @@ class TasksController(CoreController):
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        by_status: dict[str, int] = {}
+        for managed in self._tasks.values():
+            status = managed.task_info.status.value
+            by_status[status] = by_status.get(status, 0) + 1
+        return {
+            "total": len(self._tasks),
+            "by_status": by_status,
+            "scheduled": sum(managed.is_scheduled for managed in self._tasks.values()),
+            "pending_queue": len(self._pending_task_ids),
+            "max_concurrent": self._max_concurrent_tasks,
+        }
 
     @api_command("tasks/list", required_scope=Scope.SYSTEM_READ)
     def list_tasks(self) -> list[BackgroundTask]:

@@ -59,6 +59,7 @@ from music_assistant.controllers.music.constants import (
     CONF_DELETED_PROVIDERS,
     CONF_RESET_DB,
     DATABASE_CLEANUP_TASK_ID,
+    DB_SCHEMA_VERSION,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RECOMMENDATIONS_PROVIDER_TIMEOUT,
@@ -105,6 +106,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
@@ -196,6 +198,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Cleanup on exit."""
         if self._database:
             await self._database.close()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        return {
+            "db_schema_version": DB_SCHEMA_VERSION,
+            "sync_tasks_active": len(self.active_sync_tasks),
+        }
 
     async def on_provider_loaded(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is loaded."""
@@ -697,7 +706,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     @api_command("music/recently_added_tracks", required_scope=Scope.LIBRARY_READ)
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
-        return await self.tracks.library_items(limit=limit, order_by="timestamp_added_desc")
+        return await self.tracks.library_items(
+            limit=limit, order_by="timestamp_added_desc", summary=False
+        )
 
     @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
     async def in_progress_items(
@@ -2378,7 +2389,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="music-note-plus",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
+                    await self.tracks.library_items(
+                        limit=10, order_by="timestamp_added_desc", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2389,7 +2402,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="music-note-plus",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
+                    await self.albums.library_items(
+                        limit=10, order_by="timestamp_added_desc", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2400,7 +2415,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-account-music",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.artists.library_items(limit=10, order_by="random_play_count"),
+                    await self.artists.library_items(
+                        limit=10, order_by="random_play_count", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2411,7 +2428,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-album",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(limit=10, order_by="random_play_count"),
+                    await self.albums.library_items(
+                        limit=10, order_by="random_play_count", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2423,7 +2442,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
                     await self.tracks.library_items(
-                        favorite=True, limit=10, order_by="timestamp_modified_desc"
+                        favorite=True, limit=10, order_by="timestamp_modified_desc", summary=False
                     ),
                 ),
             ),
@@ -2435,7 +2454,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-playlist-music",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.playlists.library_items(favorite=True, limit=10, order_by="random"),
+                    await self.playlists.library_items(
+                        favorite=True, limit=10, order_by="random", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2447,7 +2468,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
                     await self.radio.library_items(
-                        favorite=True, limit=10, order_by="play_count_desc"
+                        favorite=True, limit=10, order_by="play_count_desc", summary=False
                     ),
                 ),
             ),

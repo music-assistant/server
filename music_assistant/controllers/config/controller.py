@@ -129,7 +129,7 @@ class ConfigController(
             parent = parent[subkey]
         return default
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, immediate: bool = False) -> None:
         """Set value(s) for a specific key/path in persistent storage."""
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
@@ -142,7 +142,7 @@ class ConfigController(
             else:
                 parent.setdefault(subkey, {})
                 parent = parent[subkey]
-        self.save()
+        self.save(immediate=immediate)
 
     def set_default(self, key: str, default_value: Any) -> None:
         """Set default value(s) for a specific key/path in persistent storage."""

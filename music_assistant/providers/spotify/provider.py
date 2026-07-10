@@ -48,7 +48,7 @@ from orjson import JSONDecodeError
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
@@ -162,6 +162,20 @@ class SpotifyProvider(MusicProvider):
         if self._sp_user:
             return str(self._sp_user["display_name"])
         return None
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "logged_in": self._sp_user is not None,
+            "token_expires_in_sec": (
+                round(self._auth_info_global["expires_at"] - time.time())
+                if self._auth_info_global
+                else None
+            ),
+            "dev_session_active": self.dev_session_active,
+            "librespot_available": self._librespot_bin is not None,
+            "audiobooks_supported": self._audiobooks_supported,
+        }
 
     ## Library retrieval methods (generators)
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
@@ -835,10 +849,15 @@ class SpotifyProvider(MusicProvider):
             self.logger.debug("Successfully refreshed global access token")
         except LoginFailed as err:
             if "revoked" in str(err) or "invalid_grant" in str(err):
-                # clear refresh token if it's revoked or expired
-                self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
-                if self.available:
-                    self.unload_with_error(str(err))
+                # Spotify rotates the refresh token on refresh and revokes the previous one.
+                # If the stored token was rotated while this refresh was in flight, the token
+                # we tried is merely stale, so keep the newer one instead of forcing re-auth.
+                if not self._refresh_token_superseded(
+                    CONF_REFRESH_TOKEN_GLOBAL, cast("str", refresh_token)
+                ):
+                    self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
+                    if self.available:
+                        self.unload_with_error(str(err))
             elif self.available:
                 self.mass.create_task(
                     self.mass.unload_provider_with_error(self.instance_id, str(err))
@@ -847,8 +866,15 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_global = auth_info
+        # Spotify revokes the previous refresh token only when it rotates one, so on rotation
+        # persist immediately to ensure the new token survives a crash within the debounced-save
+        # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
+        token_rotated = auth_info["refresh_token"] != refresh_token
         self._update_config_value(
-            CONF_REFRESH_TOKEN_GLOBAL, auth_info["refresh_token"], encrypted=True
+            CONF_REFRESH_TOKEN_GLOBAL,
+            auth_info["refresh_token"],
+            encrypted=True,
+            immediate=token_rotated,
         )
 
         # Setup librespot with global token only if dev token is not configured
@@ -896,9 +922,14 @@ class SpotifyProvider(MusicProvider):
             self.logger.debug("Successfully refreshed developer access token")
         except LoginFailed as err:
             if "revoked" in str(err) or "invalid_grant" in str(err):
-                # clear refresh token if it's revoked or expired
-                self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
-                self._update_config_value(CONF_CLIENT_ID, None)
+                # Spotify rotates the refresh token on refresh and revokes the previous one.
+                # If the stored token was rotated while this refresh was in flight, the token
+                # we tried is merely stale, so keep the newer one instead of forcing re-auth.
+                if not self._refresh_token_superseded(
+                    CONF_REFRESH_TOKEN_DEV, cast("str", refresh_token)
+                ):
+                    self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
+                    self._update_config_value(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
             self.dev_session_active = False
             self.logger.warning(str(err))
@@ -906,8 +937,15 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_dev = auth_info
+        # Spotify revokes the previous refresh token only when it rotates one, so on rotation
+        # persist immediately to ensure the new token survives a crash within the debounced-save
+        # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
+        token_rotated = auth_info["refresh_token"] != refresh_token
         self._update_config_value(
-            CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True
+            CONF_REFRESH_TOKEN_DEV,
+            auth_info["refresh_token"],
+            encrypted=True,
+            immediate=token_rotated,
         )
 
         # Setup librespot with dev token (preferred over global token)
@@ -1471,3 +1509,16 @@ class SpotifyProvider(MusicProvider):
             raise  # Re-raise other HTTP errors
         except MediaNotFoundError, ProviderUnavailableError:
             return False
+
+    def _refresh_token_superseded(self, key: str, used_token: str) -> bool:
+        """
+        Return whether the stored refresh token differs from the one just used.
+
+        :param key: Config key of the refresh token to check.
+        :param used_token: The refresh token value that was just used to refresh.
+        """
+        raw_stored = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
+        if not raw_stored:
+            return False
+        stored_token = self.mass.config.decrypt_string(cast("str", raw_stored))
+        return stored_token != used_token

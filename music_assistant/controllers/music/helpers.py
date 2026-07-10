@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType, SearchResults
 from music_assistant_models.unique_list import UniqueList
@@ -13,6 +13,35 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from music_assistant_models.enums import MediaType
+
+# the trigram tokenizer of the FTS5 search index cannot match
+# search terms shorter than 3 characters
+MIN_FTS_TERM_LENGTH: Final[int] = 3
+
+
+def search_name_match_clause(
+    db_table: str, search_term: str, param_name: str, query_params: dict[str, Any]
+) -> str:
+    """
+    Return a SQL WHERE fragment matching ``search_term`` as substring of the search_name column.
+
+    :param db_table: The media item table to match against.
+    :param search_term: The (already normalized) search term to match.
+    :param param_name: Name of the query parameter to bind the search term to.
+    :param query_params: Query parameters dict the search term is bound into.
+    """
+    if len(search_term) < MIN_FTS_TERM_LENGTH:
+        # terms too short for the trigram index fall back to a LIKE scan
+        query_params[param_name] = f"%{search_term}%"
+        return f"{db_table}.search_name LIKE :{param_name}"
+    # quote the term so it is interpreted as a plain (sub)string instead of
+    # FTS5 query syntax; normalized search terms are alphanumeric only so
+    # they can never contain quotes themselves
+    query_params[param_name] = f'"{search_term}"'
+    return (
+        f"{db_table}.item_id IN "
+        f"(SELECT rowid FROM {db_table}_fts WHERE {db_table}_fts MATCH :{param_name})"
+    )
 
 
 def sort_search_result[SortItemT: MediaItemType | ItemMapping](

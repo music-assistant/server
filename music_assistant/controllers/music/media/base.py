@@ -16,6 +16,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     EventType,
     ExternalID,
+    ImageType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -25,10 +26,15 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
+    ItemMappingSummary,
+    MediaItemImage,
     MediaItemMetadata,
+    MediaItemMetadataSummary,
+    MediaItemSummaryType,
     MediaItemType,
     ProviderMapping,
     UniqueList,
@@ -43,6 +49,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
 )
+from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
 from music_assistant.helpers.database import UNSET
@@ -147,6 +154,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     media_type: MediaType
     item_cls: type[MediaItemType]
+    summary_item_cls: type[MediaItemSummaryType]
     db_table: str
 
     def __init__(self, mass: MusicAssistant) -> None:
@@ -203,19 +211,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         SELECT
             {self.db_table}.*,
             {self._external_ids_query()} AS external_ids,
-            (SELECT JSON_GROUP_ARRAY(
-                json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library,
-                        'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
-                    AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
+            {self._provider_mappings_query()} AS provider_mappings
+            FROM {self.db_table} """
+        return query, {}
+
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """
+        Return the slim SELECT query used for summary listings and its bound query params.
+
+        Selects only the columns needed to build summary items. Override in a subclass
+        to select additional per-type columns.
+        """
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            {self._provider_mappings_query()} AS provider_mappings
             FROM {self.db_table} """
         return query, {}
 
@@ -353,6 +364,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        *,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[ItemCls]:
         """
@@ -366,6 +379,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param played_only: Only include items that have been played (last_played > 0).
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         items = await self.get_library_items_by_query(
             favorite=favorite,
@@ -377,6 +392,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             genre_ids=genre,
             played_only=played_only,
             in_library_only=True,
+            summary=summary,
         )
         if (
             kwargs.get("_localized_fallback", True)
@@ -392,6 +408,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 order_by=order_by,
                 provider=provider,
                 genre=genre,
+                summary=summary,
             )
         return items
 
@@ -473,7 +490,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
         if provider_instance_id_or_domain == "library":
-            return await self.library_items(search=search_query, limit=limit)
+            return await self.library_items(search=search_query, limit=limit, summary=False)
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
@@ -1101,12 +1118,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         genre_ids: int | list[int] | None = None,
         played_only: bool = False,
         in_library_only: bool = False,
+        summary: bool = False,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
         query_params = dict(extra_query_params) if extra_query_params else {}
         query_parts: list[str] = list(extra_query_parts) if extra_query_parts else []
         join_parts: list[str] = list(extra_join_parts) if extra_join_parts else []
-        search = self._preprocess_search(search, query_params)
+        search = self._preprocess_search(search)
         genre_ids = self._preprocess_genre_ids(genre_ids)
         # create special performant random query
         if order_by and order_by.startswith("random"):
@@ -1135,16 +1153,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 in_library_only=in_library_only,
             )
         # build and execute final query
-        sql_query, base_query_params = self._build_final_query(query_parts, join_parts, order_by)
+        sql_query, base_query_params = self._build_final_query(
+            query_parts, join_parts, order_by, summary=summary
+        )
         # base query params act as defaults: callers may override them via extra_query_params
         for key, value in base_query_params.items():
             query_params.setdefault(key, value)
 
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            sql_query, query_params, limit=limit, offset=offset
+        )
+        if summary:
+            return [cast("ItemCls", self._parse_summary_row(db_row)) for db_row in db_rows]
         return [
             cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
-            for db_row in await self.mass.music.database.get_rows_from_query(
-                sql_query, query_params, limit=limit, offset=offset
-            )
+            for db_row in db_rows
         ]
 
     @final
@@ -1198,6 +1221,60 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.item_id = {table_alias}.item_id)"
         )
 
+    def _provider_mappings_query(self) -> str:
+        """Return a subquery that selects the provider mappings of a media item as a JSON array."""
+        return f"""(SELECT JSON_GROUP_ARRAY(
+            json_object(
+                'item_id', pm.provider_item_id,
+                'provider_domain', pm.provider_domain,
+                'provider_instance', pm.provider_instance,
+                'available', pm.available,
+                'audio_format', json(pm.audio_format),
+                'url', pm.url,
+                'details', pm.details,
+                'in_library', pm.in_library,
+                'is_unique', pm.is_unique
+            )) FROM {DB_TABLE_PROVIDER_MAPPINGS} pm
+            WHERE pm.item_id = {self.db_table}.item_id
+            AND pm.media_type = '{self.media_type.value}')"""
+
+    def _artist_mappings_summary_query(
+        self, m2m_table: str, m2m_key: str, include_artist_type: bool = False
+    ) -> str:
+        """
+        Return a subquery selecting the slim artist mappings JSON of a summary row.
+
+        :param m2m_table: The many-to-many table linking artists to this media type.
+        :param m2m_key: The column in the m2m table referencing this media type's item id.
+        :param include_artist_type: Also select the artist_type of each artist.
+        """
+        artist_type_part = ",\n                'artist_type', artists.artist_type"
+        return f"""(SELECT JSON_GROUP_ARRAY(
+            json_object(
+                'item_id', artists.item_id,
+                'name', artists.name,
+                'sort_name', artists.sort_name{artist_type_part if include_artist_type else ""}
+            )) FROM artists
+            JOIN {m2m_table} ON artists.item_id = {m2m_table}.artist_id
+            WHERE {m2m_table}.{m2m_key} = {self.db_table}.item_id)"""
+
+    def _summary_base_columns(self) -> str:
+        """Return the SELECT columns shared by every summary query."""
+        # the search/sort/statistics columns are selected so ORDER BY (see SORT_KEYS)
+        # resolves them from the result set, like the full query's SELECT * does
+        return f"""
+            {self.db_table}.item_id,
+            {self.db_table}.name,
+            {self.db_table}.sort_name,
+            {self.db_table}.favorite,
+            {self.db_table}.search_name AS search_name,
+            {self.db_table}.search_sort_name AS search_sort_name,
+            {self.db_table}.play_count AS play_count,
+            {self.db_table}.last_played AS last_played,
+            {self.db_table}.timestamp_added AS timestamp_added,
+            {self.db_table}.timestamp_modified AS timestamp_modified,
+            json_extract({self.db_table}.metadata, '$.images') AS images"""
+
     async def _localized_search_fallback(
         self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
     ) -> list[ItemCls]:
@@ -1242,18 +1319,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> None:
         """Update existing library record in the database."""
 
-    @property
-    def _search_filter_clause(self) -> str:
+    def _search_filter_clause(self, search: str, query_params: dict[str, Any]) -> str:
         """Return the SQL WHERE clause fragment used for search filtering."""
-        return f"{self.db_table}.search_name LIKE :search"
+        return search_name_match_clause(self.db_table, search, "search", query_params)
 
     @final
-    def _preprocess_search(self, search: str | None, query_params: dict[str, Any]) -> str | None:
-        """Preprocess search string and add to query params."""
-        if search:
-            search = create_safe_string(search, True, True)
-            query_params["search"] = f"%{search}%"
-        return search
+    def _preprocess_search(self, search: str | None) -> str | None:
+        """Normalize the search string for use in the search filter clauses."""
+        return create_safe_string(search, True, True) if search else search
 
     @final
     @staticmethod
@@ -1334,7 +1407,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Apply search, favorite, and provider filters."""
         # handle search
         if search:
-            query_parts.append(self._search_filter_clause)
+            query_parts.append(self._search_filter_clause(search, query_params))
         # handle favorite filter
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
@@ -1387,9 +1460,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query_parts: list[str],
         join_parts: list[str],
         order_by: str | None,
+        summary: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """Build the final SQL query string and its (base) bound query params."""
-        sql_query, base_query_params = self.base_query
+        sql_query, base_query_params = self.summary_query if summary else self.base_query
 
         # Add joins
         if join_parts:
@@ -1609,3 +1683,77 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
             for raw_mapping in json_loads(db_row["provider_mappings"])
         }
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> MediaItemSummaryType:
+        """
+        Parse a raw summary db row into a summary item of this controller's media type.
+
+        Override in a subclass to fill additional per-type fields (selected by the
+        subclass's summary_query).
+        """
+        provider_mappings = self._parse_summary_provider_mappings(db_row)
+        return self.summary_item_cls(
+            item_id=str(db_row["item_id"]),
+            provider="library",
+            name=db_row["name"],
+            sort_name=db_row["sort_name"],
+            favorite=bool(db_row["favorite"]),
+            provider_mappings=provider_mappings,
+            available=self._summary_available(provider_mappings),
+            metadata=self._parse_summary_metadata(db_row),
+        )
+
+    @final
+    @staticmethod
+    def _parse_summary_provider_mappings(db_row: Mapping[str, Any]) -> set[ProviderMapping]:
+        """Hydrate the provider mappings of a summary row into ProviderMapping objects."""
+        if not (raw_mappings := db_row["provider_mappings"]):
+            return set()
+        return {ProviderMapping.from_dict(x) for x in json_loads(raw_mappings)}
+
+    @final
+    @staticmethod
+    def _summary_available(provider_mappings: set[ProviderMapping]) -> bool:
+        """Compute the availability flag from a summary item's provider mappings."""
+        # same semantics as the MediaItem.available property
+        if not (available_providers := get_global_cache_value("available_providers")):
+            return any(x.available for x in provider_mappings)
+        if TYPE_CHECKING:
+            available_providers = cast("set[str]", available_providers)
+        return any(
+            x.available and x.provider_instance in available_providers for x in provider_mappings
+        )
+
+    @final
+    @staticmethod
+    def _parse_summary_metadata(db_row: Mapping[str, Any]) -> MediaItemMetadataSummary:
+        """Build the slim metadata of a summary row, carrying only the (first) thumb image."""
+        thumb: MediaItemImage | None = None
+        if raw_images := db_row["images"]:
+            for image in json_loads(raw_images):
+                if image["type"] != ImageType.THUMB.value:
+                    continue
+                thumb = MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image["path"],
+                    provider=image["provider"],
+                    remotely_accessible=image.get("remotely_accessible", False),
+                )
+                break
+        return MediaItemMetadataSummary(images=UniqueList([thumb]) if thumb else None)
+
+    @final
+    def _parse_summary_artist_mappings(
+        self, db_row: Mapping[str, Any]
+    ) -> UniqueList[ItemMappingSummary]:
+        """Parse the aggregated slim artist mapping rows of a summary db row."""
+        return UniqueList(
+            ItemMappingSummary(
+                media_type=MediaType.ARTIST,
+                item_id=str(raw_mapping["item_id"]),
+                provider="library",
+                name=raw_mapping["name"],
+                sort_name=raw_mapping["sort_name"],
+            )
+            for raw_mapping in json_loads(db_row["artists"])
+        )

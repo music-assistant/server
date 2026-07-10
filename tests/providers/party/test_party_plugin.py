@@ -8,6 +8,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
@@ -76,7 +77,7 @@ async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None
             "music_assistant.providers.party.get_current_user",
             return_value=SimpleNamespace(username=PARTY_GUEST_USER),
         ),
-        patch("music_assistant.providers.party.QueueItem.from_media_item", return_value=queue_item),
+        patch("music_assistant.providers.party.build_queue_item", return_value=queue_item),
         pytest.raises(InvalidDataError, match="already in the queue"),
     ):
         await plugin.add_to_queue(uri)
@@ -124,7 +125,7 @@ async def test_get_party_player_remote_mode_no_session() -> None:
 async def test_listen_in_without_session_raises() -> None:
     """Listen-in is rejected when no session is available (venue auto mode)."""
     plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value)
-    plugin._get_session = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    plugin._get_or_create_session_locked = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     with (
         patch(
@@ -142,8 +143,12 @@ async def test_listen_in_attaches_guest_player() -> None:
     plugin = _create_session_test_plugin(SharedPlaybackMode.REMOTE.value)
     session = MagicMock()
     session.queue_id = "sendspin_virtual_party"
-    session.add_guest_listener = AsyncMock()
-    plugin._get_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
+
+    async def _assert_locked(_web_player_id: str) -> None:
+        assert plugin._session_lock.locked()
+
+    session.add_guest_listener = AsyncMock(side_effect=_assert_locked)
+    plugin._get_or_create_session_locked = AsyncMock(return_value=session)  # type: ignore[method-assign]
 
     with patch(
         "music_assistant.providers.party.get_current_user",
@@ -153,3 +158,31 @@ async def test_listen_in_attaches_guest_player() -> None:
 
     assert result == {"success": True, "queue_id": "sendspin_virtual_party"}
     session.add_guest_listener.assert_awaited_once_with("web_player_1")
+
+
+@pytest.mark.parametrize("mode", [SharedPlaybackMode.VENUE.value, SharedPlaybackMode.REMOTE.value])
+@pytest.mark.asyncio
+async def test_get_party_config_exposes_mode(mode: str) -> None:
+    """get_party_config surfaces the configured playback mode to the guest frontend."""
+    plugin = _create_party_plugin()
+    cast("MagicMock", plugin.config.get_value).side_effect = {CONF_PARTY_MODE: mode}.get
+
+    config = await plugin.get_party_config()
+
+    assert config.mode == mode
+
+
+@pytest.mark.asyncio
+async def test_guest_readable_commands_use_guest_scope() -> None:
+    """party/url and party/config stay on a guest-readable scope, never a host-only one."""
+    plugin = _create_party_plugin()
+    plugin._unregister_handles = []
+
+    await plugin.loaded_in_mass()
+
+    scopes = {
+        call.args[0]: call.kwargs["required_scope"]
+        for call in cast("MagicMock", plugin.mass.register_api_command).call_args_list
+    }
+    assert scopes["party/url"] == Scope.PROVIDERS_READ
+    assert scopes["party/config"] == Scope.PROVIDERS_READ

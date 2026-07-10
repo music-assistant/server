@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("ffmpeg")
 MINIMAL_FFMPEG_VERSION = 6
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
+CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
@@ -389,6 +390,65 @@ async def get_ffmpeg_stream(
             raise AudioError(log_tail)
 
 
+async def get_ffmpeg_overlay_stream(
+    audio_input: AsyncGenerator[bytes],
+    overlay_input: str,
+    pcm_format: AudioFormat,
+    overlay_volume: int = 100,
+    chunk_size: int | None = None,
+) -> AsyncGenerator[bytes]:
+    """
+    Mix a looping audio overlay into a PCM audio stream.
+
+    The overlay is looped for the full duration of the main stream and the mixed
+    output has the exact same PCM format and duration as the main input. If the
+    overlay input fails mid-stream, the main audio continues unaffected.
+
+    :param audio_input: The main audio stream (raw PCM in ``pcm_format``).
+    :param overlay_input: File path or URL of the overlay audio.
+    :param overlay_volume: Overlay loudness relative to the main audio in
+        percent (100 = equally loud, max 200).
+    :param pcm_format: PCM format of both the main input and the mixed output.
+    :param chunk_size: Optional exact chunk size for the yielded audio.
+    """
+    # the overlay is passed as an extra (first) ffmpeg input, infinitely looped;
+    # the main audio arrives on stdin. amix with duration=first follows the main
+    # input's length, normalize=0 keeps the original levels (no averaging).
+    overlay_input_args = []
+    if overlay_input.startswith("http"):
+        overlay_input_args += [
+            "-reconnect",
+            "1",
+            "-reconnect_delay_max",
+            "10",
+            "-reconnect_streamed",
+            "1",
+        ]
+    overlay_input_args += ["-stream_loop", "-1", "-i", overlay_input]
+    channel_layout = "mono" if pcm_format.channels == 1 else "stereo"
+    filter_complex = (
+        f"[0:a]volume={overlay_volume / 100},"
+        f"aresample={pcm_format.sample_rate},"
+        f"aformat=channel_layouts={channel_layout}[overlay];"
+        "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
+    )
+    async with FFMpeg(
+        audio_input=audio_input,
+        input_format=pcm_format,
+        output_format=pcm_format,
+        extra_input_args=overlay_input_args,
+        extra_output_args=["-filter_complex", filter_complex, "-map", "[mixed]"],
+        collect_log_history=True,
+    ) as ffmpeg_proc:
+        iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
+        async for chunk in iterator:
+            yield chunk
+        if ffmpeg_proc.returncode not in (None, 0):
+            # unclean exit of ffmpeg - raise error with log tail
+            log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
+            raise AudioError(log_tail)
+
+
 def get_ffmpeg_args(  # noqa: PLR0915
     input_format: AudioFormat,
     output_format: AudioFormat,
@@ -599,7 +659,9 @@ async def check_ffmpeg_version() -> None:
         )
     libsoxr_support = "enable-libsoxr" in output.decode()
     # use globals as in-memory cache
-    await set_global_cache_values({CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support})
+    await set_global_cache_values(
+        {CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support, CACHE_ATTR_FFMPEG_VERSION: version}
+    )
 
     major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
     if major_version < MINIMAL_FFMPEG_VERSION:

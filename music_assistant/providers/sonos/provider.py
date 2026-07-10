@@ -22,6 +22,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.audio import get_mime_type
+from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import get_primary_ip_address
@@ -65,6 +66,25 @@ class SonosPlayerProvider(PlayerProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self.mass.streams.unregister_dynamic_route("/sonos_queue/*")
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        sonos_players = [player for player in self.players if isinstance(player, SonosPlayer)]
+        # active_output_protocol holds "native" or the player id of the protocol player in use
+        active_protocols = [
+            player.active_output_protocol
+            for player in sonos_players
+            if player.active_output_protocol
+        ]
+        return {
+            "speakers_total": len(sonos_players),
+            "speakers_connected": sum(player.connected for player in sonos_players),
+            "coordinators": sum(
+                player.client.player.is_coordinator for player in sonos_players if player.connected
+            ),
+            "native_playback": sum(protocol == "native" for protocol in active_protocols),
+            "protocol_playback": sum(protocol != "native" for protocol in active_protocols),
+        }
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None

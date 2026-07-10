@@ -92,7 +92,7 @@ async def test_infinite_mix_returns_25_tracks_with_positions() -> None:
     result = await provider._get_builtin_playlist_infinite_mix()
 
     provider.mass.music.tracks.library_items.assert_called_once_with(
-        favorite=None, limit=25, order_by="random"
+        favorite=None, limit=25, order_by="random", summary=False
     )
     assert len(result) == 25
     for expected_pos, track in enumerate(result, 1):
@@ -109,7 +109,7 @@ async def test_infinite_mix_favorites_passes_favorite_filter() -> None:
     result = await provider._get_builtin_playlist_infinite_mix_favorites()
 
     provider.mass.music.tracks.library_items.assert_called_once_with(
-        favorite=True, limit=25, order_by="random"
+        favorite=True, limit=25, order_by="random", summary=False
     )
     assert len(result) == 25
     for expected_pos, track in enumerate(result, 1):
@@ -159,7 +159,7 @@ async def test_infinite_mix_over_fetches_and_drops_filtered_tracks() -> None:
         result = await provider._get_builtin_playlist_infinite_mix()
 
     provider.mass.music.tracks.library_items.assert_called_once_with(
-        favorite=None, limit=75, order_by="random"
+        favorite=None, limit=75, order_by="random", summary=False
     )
     assert len(result) == 25
     assert all(int(track.item_id) % 2 == 0 for track in result)

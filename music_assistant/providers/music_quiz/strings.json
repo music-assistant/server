@@ -1,0 +1,48 @@
+{
+  "manifest": {
+    "description": "Host a multiplayer music quiz game where guests join with a QR code."
+  },
+  "config_entries": {
+    "mode": {
+      "label": "Playback Mode",
+      "description": "How the quiz rounds are played. In venue mode a configured player plays the music out loud for everyone in the room. In remote mode every guest listens on their own device (silent-disco style).",
+      "options": {
+        "venue": "Venue (play on a real speaker)",
+        "remote": "Remote (guests listen on their own device)"
+      }
+    },
+    "player": {
+      "label": "Quiz Player",
+      "description": "The player that plays the quiz rounds in venue mode. When set to auto, the last active player is used.",
+      "options": {
+        "__auto__": "Auto (last active player)"
+      }
+    }
+  },
+  "errors": {
+    "music_quiz_no_game": "There is no active Music Quiz game.",
+    "music_quiz_game_active": "A Music Quiz game is already in progress.",
+    "music_quiz_name_taken": "This player name is already taken.",
+    "music_quiz_game_full": "The Music Quiz game is full.",
+    "music_quiz_already_answered": "You already answered this round.",
+    "music_quiz_not_active_this_round": "You joined during this round, you can play along from the next round.",
+    "music_quiz_wrong_phase": "This action is not possible in the current game phase.",
+    "music_quiz_no_playback_target": "No playback target is available for the Music Quiz game.",
+    "music_quiz_name_required": "A player name is required.",
+    "music_quiz_round_count_min": "Music Quiz requires at least 1 round.",
+    "music_quiz_round_count_max": "Music Quiz supports at most {0} rounds.",
+    "music_quiz_suggestion_count_min": "The suggestion count must be at least 2.",
+    "music_quiz_suggestion_count_max": "The suggestion count must be at most {0}.",
+    "music_quiz_answer_duration_min": "The answer duration must be at least 1 second.",
+    "music_quiz_answer_duration_max": "The answer duration must be at most {0} seconds.",
+    "music_quiz_source_required": "At least one source is required.",
+    "music_quiz_sources_unavailable": "None of the configured sources could be loaded.",
+    "music_quiz_source_count_max": "Music Quiz supports at most {0} sources.",
+    "music_quiz_no_unused_source_tracks": "No unused source tracks are available.",
+    "music_quiz_not_enough_distractors": "Not enough distinct tracks are available to build answer options.",
+    "music_quiz_guest_only": "This action is only available to Music Quiz guests.",
+    "music_quiz_unknown_quiz_type": "This quiz type is not available.",
+    "music_quiz_unknown_player": "This Music Quiz player is not in the game.",
+    "music_quiz_unknown_suggestion": "This answer option is not available."
+  }
+}

@@ -16,6 +16,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.util import (
     get_ip_pton,
     get_primary_ip_address_from_zeroconf,
@@ -34,6 +35,7 @@ from .constants import (
 )
 from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
+from .protocols.airplay2 import AirPlay2Stream
 from .sendspin_bridge import SendspinBridgeManager
 
 # TODO: AirPlay provider
@@ -132,6 +134,20 @@ class AirPlayProvider(PlayerProvider):
         # shutdown DACP zeroconf service
         if self._dacp_info:
             await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        streams_by_type: dict[str, int] = {}
+        for player in self.get_players():
+            if not (player.stream and player.stream.running):
+                continue
+            stream_type = "airplay2" if isinstance(player.stream, AirPlay2Stream) else "raop"
+            streams_by_type[stream_type] = streams_by_type.get(stream_type, 0) + 1
+        return {
+            "dacp_server_running": self._dacp_server.is_serving(),
+            "active_streams": sum(streams_by_type.values()),
+            "streams_by_type": streams_by_type,
+        }
 
     def get_players(self) -> list[AirPlayPlayer]:
         """Return all airplay players belonging to this instance."""

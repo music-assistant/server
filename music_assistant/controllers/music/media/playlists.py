@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -14,7 +14,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.media_items import Playlist, PlaylistSummary
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
 from music_assistant.controllers.tasks.context import (
@@ -24,7 +24,7 @@ from music_assistant.controllers.tasks.context import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
-from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.playlists import (
     PlaylistItem,
     generate_m3u,
@@ -41,6 +41,8 @@ from .radio import RadioController
 from .tracks import TracksController
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant_models.background_task import BackgroundTask
 
     from music_assistant import MusicAssistant
@@ -68,6 +70,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     db_table = DB_TABLE_PLAYLISTS
     media_type = MediaType.PLAYLIST
     item_cls = Playlist
+    summary_item_cls = PlaylistSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -102,6 +105,23 @@ class PlaylistController(MediaControllerBase[Playlist]):
             self.import_playlist,
             required_scope=Scope.LIBRARY_WRITE,
         )
+
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for playlist summary listings."""
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            playlists.owner,
+            playlists.is_editable,
+            playlists.is_dynamic,
+            playlists.supported_mediatypes,
+            playlists.translation_key,
+            playlists.translation_params,
+            json_extract(playlists.metadata, '$.description') AS description,
+            {self._provider_mappings_query()} AS provider_mappings
+            FROM playlists"""
+        return query, {}
 
     async def tracks(
         self,
@@ -751,3 +771,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # in the next scheduled run of the playlist metadata task
         playlist.metadata.last_refresh = None
         await self.update_item_in_library(db_playlist_id, playlist)
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PlaylistSummary:
+        """Parse a raw summary db row into a PlaylistSummary object."""
+        item = cast("PlaylistSummary", super()._parse_summary_row(db_row))
+        item.owner = db_row["owner"]
+        item.is_editable = bool(db_row["is_editable"])
+        item.is_dynamic = bool(db_row["is_dynamic"])
+        item.metadata.description = db_row["description"]
+        item.supported_mediatypes = {
+            MediaType(x) for x in json_loads(db_row["supported_mediatypes"])
+        }
+        if translation_key := db_row["translation_key"]:
+            item.translation_key = translation_key
+        if translation_params := db_row["translation_params"]:
+            item.translation_params = json_loads(translation_params)
+        return item

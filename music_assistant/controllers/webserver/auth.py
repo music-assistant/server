@@ -65,6 +65,8 @@ TOKEN_ABSOLUTE_MAX_EXPIRATION = 90
 TOKEN_GUEST_EXPIRATION = 1  # Guest sessions: short fixed lifetime, no renewal
 # Days before the absolute cap at which the HA integration token is rotated
 HA_TOKEN_ROTATION_MARGIN = 7
+# Minimum age of a token's stored last_used_at before token activity is persisted again
+TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
 
 HA_TOKEN_SETTING_KEY = "ha_integration_token"
 HA_TOKEN_NAME = "Home Assistant Integration"
@@ -191,12 +193,8 @@ class AuthenticationManager:
             updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
             if updates is None:
                 return None
-
-            await self.database.update(
-                "auth_tokens",
-                {"token_id": token_id},
-                updates,
-            )
+            if updates:
+                await self.database.update("auth_tokens", {"token_id": token_id}, updates)
 
             return user
 
@@ -231,12 +229,10 @@ class AuthenticationManager:
         legacy_updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
         if legacy_updates is None:
             return None
-
-        await self.database.update(
-            "auth_tokens",
-            {"token_id": token_row["token_id"]},
-            legacy_updates,
-        )
+        if legacy_updates:
+            await self.database.update(
+                "auth_tokens", {"token_id": token_row["token_id"]}, legacy_updates
+            )
 
         return user
 
@@ -726,6 +722,9 @@ class AuthenticationManager:
     async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:
         """
         Get current user's auth tokens or another user's tokens (admin only).
+
+        The last_used_at timestamp is persisted at most once per hour, so it may lag
+        actual token usage by up to an hour.
 
         :param user_id: Optional user ID to get tokens for (admin only).
         :return: List of auth tokens.
@@ -1971,21 +1970,31 @@ class AuthenticationManager:
         :param token_row: The auth_tokens row for the token being used.
         :param user: The user owning the token.
         :param is_long_lived: Whether the token is long-lived.
-        :return: Column updates to apply, or None if the token exceeded its max lifetime
-            (in which case the token row is deleted).
+        :return: Column updates to apply (empty when the stored activity timestamp is
+            still fresh, so callers can skip the write), or None if the token exceeded
+            its max lifetime (in which case the token row is deleted).
         """
         now = utc()
-        updates = {"last_used_at": now.isoformat()}
 
         if not is_long_lived:
             created_at = datetime.fromisoformat(token_row["created_at"])
             if now > created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION):
                 await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
                 return None
-            if user.role != UserRole.GUEST:
-                # Short-lived token: extend expiration on each use (sliding window)
-                new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-                updates["expires_at"] = new_expires_at.isoformat()
+
+        # The HTTP API authenticates on every request, so persisting activity per use
+        # would cost an UPDATE+commit (an fsync) per request. Skip the write while the
+        # stored timestamp is fresh; last_used_at and the sliding expiration then lag
+        # by at most this interval, which is negligible against the 30-day idle window.
+        if last_used_at := token_row["last_used_at"]:
+            if now - datetime.fromisoformat(last_used_at) < TOKEN_ACTIVITY_PERSIST_INTERVAL:
+                return {}
+
+        updates = {"last_used_at": now.isoformat()}
+        if not is_long_lived and user.role != UserRole.GUEST:
+            # Short-lived token: extend expiration on each use (sliding window)
+            new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+            updates["expires_at"] = new_expires_at.isoformat()
 
         return updates
 

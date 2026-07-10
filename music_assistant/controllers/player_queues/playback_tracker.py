@@ -32,7 +32,6 @@ from music_assistant_models.media_items import (
     Playlist,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
     PLAYBACK_REPORT_INTERVAL_SECONDS,
@@ -41,6 +40,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
+    build_queue_item,
     get_current_playback_speed,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -51,6 +51,7 @@ from music_assistant.models.player import Player
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.player_queues.state import PlayerQueueData
 
@@ -487,7 +488,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     )
                     if dynamic_tracks:
                         queue_items = [
-                            QueueItem.from_media_item(queue.queue_id, x)
+                            build_queue_item(queue.queue_id, x)
                             for x in dynamic_tracks
                             if x.available
                         ]

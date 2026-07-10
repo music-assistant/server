@@ -44,6 +44,7 @@ from music_assistant_models.media_items import (
     PlayableMediaItemType,
     Playlist,
     PodcastEpisode,
+    SoundEffect,
     Track,
 )
 from music_assistant_models.player_queue import PlayerQueue
@@ -93,6 +94,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.constants import PlaylistPlayableItem
     from music_assistant.controllers.music.recency import RecencyWindows
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.models.player import Player
 
 
@@ -145,6 +147,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         for queue in self.all():
             self.mass.cancel_timer(f"save_queue_cache_{queue.queue_id}")
             await self._save_queue_to_cache(queue.queue_id)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        queues = [queue_data.queue for queue_data in self._queue_data.values()]
+        by_state: dict[str, int] = {}
+        for queue in queues:
+            by_state[queue.state.value] = by_state.get(queue.state.value, 0) + 1
+        return {
+            "total": len(queues),
+            "active": sum(queue.active for queue in queues),
+            "by_state": by_state,
+            "flow_mode_active": sum(queue.flow_mode for queue in queues),
+            "dynamic_mode_active": sum(queue.is_dynamic for queue in queues),
+            "total_items": sum(queue.items for queue in queues),
+        }
 
     async def get_config_entries(
         self,
@@ -343,6 +360,58 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # upcoming transition (only when the player has already loaded the current track)
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
+
+    @api_command("player_queues/overlay", required_scope=Scope.QUEUES_CONTROL)
+    async def set_overlay(
+        self,
+        queue_id: str,
+        enabled: bool | None = None,
+        source: str | None = None,
+        volume: int | None = None,
+    ) -> None:
+        """
+        Configure the audio overlay for the given queue.
+
+        The audio overlay mixes a looping sound effect (e.g. rain or white noise)
+        into the queue's audio stream. Changes take effect immediately: if the
+        queue is playing, playback is restarted from the current position.
+
+        :param queue_id: queue_id of the queue to configure.
+        :param enabled: Enable or disable the audio overlay. Omit to leave unchanged.
+        :param source: URI of the sound effect item to mix in. Omit to leave unchanged.
+        :param volume: Overlay loudness relative to the music in percent
+            (0-200, 100 = equally loud). Omit to leave unchanged.
+        """
+        queue = self._queue_data[queue_id].queue
+        changed = audible_change = False
+        if source is not None:
+            item = await self.mass.music.get_item_by_uri(source)
+            if item.media_type != MediaType.SOUND_EFFECT:
+                raise InvalidDataError("Audio overlay source must be a sound effect item")
+            mapping = ItemMapping.from_item(cast("SoundEffect", item))
+            if queue.overlay_source != mapping:
+                queue.overlay_source = mapping
+                changed = True
+                audible_change = queue.overlay_enabled
+        if volume is not None:
+            if not (0 <= volume <= 200):
+                raise InvalidDataError(f"Overlay volume must be between 0 and 200, got {volume}")
+            if queue.overlay_volume != volume:
+                queue.overlay_volume = volume
+                changed = True
+                audible_change |= queue.overlay_enabled
+        if enabled is not None and queue.overlay_enabled != enabled:
+            if enabled and queue.overlay_source is None:
+                raise InvalidCommand("Can not enable audio overlay: no overlay source selected")
+            queue.overlay_enabled = enabled
+            changed = audible_change = True
+        if not changed:
+            return
+        self.signal_update(queue_id)
+        if audible_change and queue.state == PlaybackState.PLAYING:
+            # restart playback from the current position so the change is heard
+            # immediately instead of after the player's audio buffer drains
+            await self.resume(queue_id)
 
     # Two timebases are used in this controller when variable playback speed is in
     # effect (atempo applied server-side):

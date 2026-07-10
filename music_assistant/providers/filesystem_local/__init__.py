@@ -73,7 +73,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
 from music_assistant.helpers.util import (
@@ -139,6 +139,7 @@ if TYPE_CHECKING:
 
 isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
+ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
 scandir = wrap(os.scandir)
@@ -260,6 +261,14 @@ class LocalFileSystemProvider(MusicProvider):
             )
         await self.check_write_access()
 
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "sync_running": self.sync_running,
+            "write_access": self.write_access,
+            "content_type": self.media_content_type,
+        }
+
     async def search(
         self,
         search_query: str,
@@ -316,9 +325,13 @@ class LocalFileSystemProvider(MusicProvider):
         """
         # for audiobooks and podcasts we just return all library items
         if self.media_content_type == "podcasts":
-            return await self.mass.music.podcasts.library_items(provider=self.instance_id)
+            return await self.mass.music.podcasts.library_items(
+                provider=self.instance_id, summary=False
+            )
         if self.media_content_type == "audiobooks":
-            return await self.mass.music.audiobooks.library_items(provider=self.instance_id)
+            return await self.mass.music.audiobooks.library_items(
+                provider=self.instance_id, summary=False
+            )
         items: list[MediaItemType | ItemMapping | BrowseFolder] = []
         item_path = path.split("://", 1)[1]
         if not item_path:

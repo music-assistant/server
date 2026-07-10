@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.json import SerializableType
 
 CACHE_CATEGORY_PLAYER_POWER = 1
 
@@ -276,6 +277,20 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         for player in self._players.values():
             if player.sleep_timer_expires_at is not None:
                 self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        players = list(self._players.values())
+        return {
+            "players_synced": sum(player.state.synced_to is not None for player in players),
+            "players_with_active_group": sum(
+                player.state.active_group is not None for player in players
+            ),
+            "announcements_in_progress": sum(
+                bool(player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)) for player in players
+            ),
+            "pending_protocol_evaluations": len(self._pending_protocol_evaluations),
+        }
 
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""

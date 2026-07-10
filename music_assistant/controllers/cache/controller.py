@@ -95,6 +95,14 @@ class CacheController(CoreController):
         if self.database:
             await self.database.close()
 
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        return {
+            "db_schema_version": DB_SCHEMA_VERSION,
+            "db_size_mb": round(await self._get_cache_db_size_mb(), 1),
+            "entries": await self.database.get_count(DB_TABLE_CACHE) if self.database else None,
+        }
+
     async def get(
         self,
         key: str,
@@ -353,6 +361,16 @@ class CacheController(CoreController):
 
     async def _check_oversized_cache(self) -> None:
         """Warn if the cache database exceeds the recommended max size."""
+        db_size_mb = await self._get_cache_db_size_mb()
+        if db_size_mb > MAX_CACHE_DB_SIZE_MB:
+            self.logger.warning(
+                "Cache database size %.2f MB exceeds recommended maximum of %d MB",
+                db_size_mb,
+                MAX_CACHE_DB_SIZE_MB,
+            )
+
+    async def _get_cache_db_size_mb(self) -> float:
+        """Return the on-disk size of the cache database (in MB)."""
         db_path = os.path.join(self.mass.cache_path, "cache.db")
         # also include the write ahead log and shared memory db files
         db_files = [db_path + suffix for suffix in ("", "-wal", "-shm")]
@@ -364,13 +382,7 @@ class CacheController(CoreController):
                     total += Path(path).stat().st_size
             return total / (1024 * 1024)
 
-        db_size_mb = await asyncio.to_thread(_get_db_size)
-        if db_size_mb > MAX_CACHE_DB_SIZE_MB:
-            self.logger.warning(
-                "Cache database size %.2f MB exceeds recommended maximum of %d MB",
-                db_size_mb,
-                MAX_CACHE_DB_SIZE_MB,
-            )
+        return await asyncio.to_thread(_get_db_size)
 
     async def _setup_database(self) -> None:
         """Initialize database."""

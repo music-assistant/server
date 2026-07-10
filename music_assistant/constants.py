@@ -221,6 +221,19 @@ DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
 
+# all media item tables, each of which has a search_name column
+# backed by a {table}_fts FTS5 index table
+MEDIA_ITEM_DB_TABLES: Final[tuple[str, ...]] = (
+    DB_TABLE_ARTISTS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_TRACKS,
+    DB_TABLE_PLAYLISTS,
+    DB_TABLE_RADIOS,
+    DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_PODCASTS,
+    DB_TABLE_GENRES,
+)
+
 # Min fraction of a database file reclaimable before a startup VACUUM is worth running.
 VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
 
@@ -973,6 +986,9 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("smart_fades", False),
     ("lastfm_recommendations", False),
     ("playlist_metadata", False),
+    # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
+    # audio overlay feature) at zero resource cost until actually used
+    ("ambient_sounds", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {
