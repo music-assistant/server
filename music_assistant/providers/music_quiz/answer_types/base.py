@@ -15,7 +15,7 @@ from music_assistant.providers.music_quiz.models import (
     QuizRoundAnswerState,
 )
 
-QuizAnswerSubmissionValue = str | None
+QuizAnswerSubmissionValue = object | None
 QuizAnswerSubmissionPayload = dict[str, QuizAnswerSubmissionValue]
 
 

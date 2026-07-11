@@ -505,8 +505,8 @@ async def test_hitster_edge_placement_accepts_null_at_api_boundary(
                 "player_id": player_ids["Alice"],
                 "submission": {
                     "answer_type": "timeline",
-                    "action": 1,
-                    "previous_entry_id": None,
+                    "action": "place",
+                    "previous_entry_id": 1,
                     "next_entry_id": "anchor",
                 },
             },
