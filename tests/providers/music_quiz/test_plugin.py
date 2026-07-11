@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope, UserRole
-from music_assistant_models.enums import ConfigEntryType, PlaybackState
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
@@ -181,7 +181,7 @@ def _create_plugin(
     plugin.mass.create_task.side_effect = _create_task
     source_item = MagicMock()
     source_item.name = "Test Playlist"
-    source_item.media_type.value = "playlist"
+    source_item.media_type = MediaType.PLAYLIST
     plugin.mass.music.get_item_by_uri = AsyncMock(return_value=source_item)
     plugin.signal_provider_event = MagicMock()  # type: ignore[method-assign, misc]
     plugin._play_track = AsyncMock()  # type: ignore[method-assign]
