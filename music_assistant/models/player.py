@@ -2323,7 +2323,7 @@ class Player(ABC):
     @final
     def __final_current_media(self) -> PlayerMedia | None:
         """Return the FINAL current media for the player."""
-        if self.mass.players.is_player_audio_only(self.player_id):
+        if self.mass.players.is_player_audio_only(self.player_id) is True:
             return None
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.__final_active_group or self.__final_synced_to):
