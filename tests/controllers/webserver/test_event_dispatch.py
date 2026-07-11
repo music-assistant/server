@@ -125,29 +125,24 @@ async def test_provider_event_delivered_to_guest_clients(
     assert "music_quiz--abcd/game_state" in msg_guest
 
 
-async def test_restricted_guest_events_only_include_own_player(
+async def test_restricted_guest_events_exclude_dynamic_queues(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
 ) -> None:
-    """Restricted guests receive own-player and provider events, but no host queue state."""
-    mass_minimal.players = SimpleNamespace(  # type: ignore[assignment]
-        is_protocol_player=lambda player_id: player_id == "web_player"
-    )
+    """Restricted guests receive own-player and provider events, but no dynamic queues."""
     guest = create_ws_client(
         webserver,
         "guest1",
         role=UserRole.GUEST,
-        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID, "allowed"],
         sendspin_player_id="web_player",
     )
 
     mass_minimal.signal_event(EventType.PLAYER_UPDATED, "host_player", {"name": "Host"})
     mass_minimal.signal_event(EventType.QUEUE_UPDATED, "host_player", {"name": "Host Queue"})
-    await drain_event_callbacks()
-    assert guest._to_write.empty()
-
-    mass_minimal.signal_event(EventType.PLAYER_ADDED, "web_player", {"name": "Web Player"})
     mass_minimal.signal_event(EventType.PLAYER_UPDATED, "web_player", {"name": "Web Player"})
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "web_player", {"name": "Web Queue"})
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "allowed", {"name": "Allowed Queue"})
     mass_minimal.signal_event(
         EventType.PROVIDER_EVENT,
         "music_quiz--abcd/game_state",
@@ -156,28 +151,31 @@ async def test_restricted_guest_events_only_include_own_player(
     await drain_event_callbacks()
 
     messages = [get_written_message(guest) for _ in range(3)]
-    assert any("web_player" in message for message in messages)
+    assert guest._to_write.empty()
+    assert any("Web Player" in message for message in messages)
+    assert any("Allowed Queue" in message for message in messages)
     assert any("game_state" in message for message in messages)
+    assert all("Host Queue" not in message for message in messages)
+    assert all("Web Queue" not in message for message in messages)
 
 
-async def test_restricted_guest_rejects_spoofed_standalone_player_events(
+async def test_filtered_user_receives_own_sendspin_queue_event(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
 ) -> None:
-    """A declared Sendspin ID cannot expose events for a standalone host player."""
-    mass_minimal.players = SimpleNamespace(  # type: ignore[assignment]
-        is_protocol_player=lambda _player_id: False
-    )
-    guest = create_ws_client(
+    """An ordinary filtered user receives queue events for their own Sendspin player."""
+    user = create_ws_client(
         webserver,
-        "guest1",
-        role=UserRole.GUEST,
-        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
-        sendspin_player_id="host_player",
+        "user1",
+        role=UserRole.USER,
+        player_filter=["allowed"],
+        sendspin_player_id="web_player",
     )
 
-    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "host_player", {"name": "Host"})
     mass_minimal.signal_event(EventType.QUEUE_UPDATED, "host_player", {"name": "Host Queue"})
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "web_player", {"name": "Web Queue"})
     await drain_event_callbacks()
 
-    assert guest._to_write.empty()
+    message = get_written_message(user)
+    assert user._to_write.empty()
+    assert "Web Queue" in message

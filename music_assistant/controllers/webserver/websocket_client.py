@@ -31,7 +31,11 @@ from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+    HOMEASSISTANT_SYSTEM_USER,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import (
@@ -517,25 +521,7 @@ class WebsocketClientHandler:
             return
 
         def handle_event(event: MassEvent) -> None:
-            # filter events for objects the user has no access to
-            if (
-                self._authenticated_user
-                and self._authenticated_user.player_filter
-                and event.event
-                in (
-                    EventType.PLAYER_ADDED,
-                    EventType.PLAYER_REMOVED,
-                    EventType.PLAYER_UPDATED,
-                    EventType.PLAYER_SLEEP_TIMER_UPDATED,
-                    EventType.QUEUE_ADDED,
-                    EventType.QUEUE_ITEMS_UPDATED,
-                    EventType.QUEUE_TIME_UPDATED,
-                    EventType.QUEUE_UPDATED,
-                )
-                and event.object_id
-                and event.object_id not in self._authenticated_user.player_filter
-                and not self._is_own_sendspin_protocol_player(event.object_id)
-            ):
+            if not self._can_receive_event(event):
                 return
 
             if event.event == EventType.TASKS_UPDATED:
@@ -556,15 +542,35 @@ class WebsocketClientHandler:
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
 
-    def _is_own_sendspin_protocol_player(self, player_id: str) -> bool:
-        """Return whether this connection owns a registered Sendspin protocol player."""
-        if player_id != self._sendspin_player_id:
-            return False
-        return self.mass.players.is_protocol_player(player_id)
-
     def _cancel(self) -> None:
         """Cancel the connection."""
         if self._handle_task is not None:
             self._handle_task.cancel()
         if self._writer_task is not None:
             self._writer_task.cancel()
+
+    def _can_receive_event(self, event: MassEvent) -> bool:
+        """Return whether the event may be sent to the authenticated user."""
+        current_user = self._authenticated_user
+        if current_user is None or not current_user.player_filter or not event.object_id:
+            return True
+        if event.object_id in current_user.player_filter:
+            return True
+        if event.event in (
+            EventType.PLAYER_ADDED,
+            EventType.PLAYER_REMOVED,
+            EventType.PLAYER_UPDATED,
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+        ):
+            return event.object_id == self._sendspin_player_id
+        if event.event in (
+            EventType.QUEUE_ADDED,
+            EventType.QUEUE_ITEMS_UPDATED,
+            EventType.QUEUE_TIME_UPDATED,
+            EventType.QUEUE_UPDATED,
+        ):
+            return (
+                GUEST_ACCESS_RESTRICTED_PLAYER_ID not in current_user.player_filter
+                and event.object_id == self._sendspin_player_id
+            )
+        return True
