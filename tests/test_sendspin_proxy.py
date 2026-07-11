@@ -1,16 +1,12 @@
 """Tests for the Sendspin WebSocket proxy handler."""
 
 import asyncio
-import json
-from types import SimpleNamespace
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from aiohttp import ClientConnectorError, WSMsgType, web
+from aiohttp import ClientConnectorError, web
 from aiohttp.test_utils import make_mocked_request
-from music_assistant_models.auth import UserRole
 
 from music_assistant.controllers.webserver.sendspin_proxy import SendspinProxyHandler
 
@@ -147,7 +143,7 @@ class TestSendspinProxyMessages:
             patch.object(handler, "_forward_internal_to_client", new=raise_disconnect),
             patch.object(handler, "_forward_client_to_internal", new=wait_forever),
         ):
-            await handler._proxy_messages(MagicMock(), MagicMock(), MagicMock(role=UserRole.USER))
+            await handler._proxy_messages(MagicMock(), MagicMock())
 
     async def test_unexpected_forwarding_error_is_raised(
         self, handler: SendspinProxyHandler
@@ -165,7 +161,7 @@ class TestSendspinProxyMessages:
             patch.object(handler, "_forward_client_to_internal", new=wait_forever),
             pytest.raises(RuntimeError, match="boom"),
         ):
-            await handler._proxy_messages(MagicMock(), MagicMock(), MagicMock(role=UserRole.USER))
+            await handler._proxy_messages(MagicMock(), MagicMock())
 
     async def test_primary_error_is_not_masked_by_peer_cleanup_failure(
         self, handler: SendspinProxyHandler
@@ -186,7 +182,7 @@ class TestSendspinProxyMessages:
             patch.object(handler, "_forward_client_to_internal", new=raise_on_cancel),
             pytest.raises(RuntimeError, match="primary failure"),
         ):
-            await handler._proxy_messages(MagicMock(), MagicMock(), MagicMock(role=UserRole.USER))
+            await handler._proxy_messages(MagicMock(), MagicMock())
 
     @pytest.mark.parametrize(
         "exc",
@@ -210,245 +206,4 @@ class TestSendspinProxyMessages:
             patch.object(handler, "_forward_internal_to_client", new=raise_disconnect),
             patch.object(handler, "_forward_client_to_internal", new=wait_forever),
         ):
-            await handler._proxy_messages(MagicMock(), MagicMock(), MagicMock(role=UserRole.USER))
-
-
-class _MessageStream:
-    """Async iterator over websocket-like messages."""
-
-    def __init__(self, *messages: SimpleNamespace) -> None:
-        self._messages = iter(messages)
-
-    def __aiter__(self) -> _MessageStream:
-        return self
-
-    async def __anext__(self) -> SimpleNamespace:
-        try:
-            return next(self._messages)
-        except StopIteration:
-            raise StopAsyncIteration from None
-
-
-def _hello(*roles: str, include_player_support: bool = True) -> str:
-    """Build a Sendspin client hello with the given roles."""
-    payload: dict[str, object] = {
-        "client_id": "web-player",
-        "name": "Web player",
-        "version": 1,
-        "supported_roles": list(roles),
-    }
-    if include_player_support:
-        payload["player@v1_support"] = {
-            "supported_formats": [],
-            "buffer_capacity": 1024,
-            "supported_commands": [],
-        }
-    return json.dumps({"type": "client/hello", "payload": payload}, indent=2)
-
-
-class TestSendspinGuestRoles:
-    """Tests for authenticated role restriction on client-to-server messages."""
-
-    async def test_guest_first_and_repeated_hello_are_player_only(
-        self, handler: SendspinProxyHandler
-    ) -> None:
-        """Every Guest hello is rewritten while non-hello and binary traffic passes through."""
-        first_hello = _hello("player@v1", "metadata@v1", "controller@v1")
-        second_hello = _hello("metadata@v1")
-        non_hello = '{"type":"client/state","payload":{"volume":50}}'
-        malformed = "{not-json"
-        binary = b"\x00audio"
-        client = _MessageStream(
-            SimpleNamespace(type=WSMsgType.TEXT, data=first_hello),
-            SimpleNamespace(type=WSMsgType.TEXT, data=non_hello),
-            SimpleNamespace(type=WSMsgType.TEXT, data=second_hello),
-            SimpleNamespace(type=WSMsgType.TEXT, data=malformed),
-            SimpleNamespace(type=WSMsgType.BINARY, data=binary),
-        )
-        internal = AsyncMock()
-
-        await handler._forward_client_to_internal(
-            cast("web.WebSocketResponse", client), internal, ("player@v1",)
-        )
-
-        forwarded = [call.args[0] for call in internal.send_str.await_args_list]
-        assert json.loads(forwarded[0])["payload"]["supported_roles"] == ["player@v1"]
-        assert forwarded[1] == non_hello
-        assert json.loads(forwarded[2])["payload"]["supported_roles"] == ["player@v1"]
-        assert forwarded[3] == malformed
-        internal.send_bytes.assert_awaited_once_with(binary)
-
-    @pytest.mark.parametrize("role", [UserRole.USER, UserRole.ADMIN, UserRole.SERVICE])
-    async def test_non_guest_hello_is_byte_identical(
-        self, handler: SendspinProxyHandler, role: UserRole
-    ) -> None:
-        """Regular, admin and service users retain exact client traffic."""
-        raw_hello = _hello("player@v1", "metadata@v1")
-        client = _MessageStream(SimpleNamespace(type=WSMsgType.TEXT, data=raw_hello))
-        internal = AsyncMock()
-
-        await handler._forward_client_to_internal(
-            cast("web.WebSocketResponse", client), internal, None
-        )
-
-        internal.send_str.assert_awaited_once_with(raw_hello)
-
-    @pytest.mark.parametrize(
-        "raw_message",
-        [
-            "{not-json",
-            "[]",
-            '{"type":"client/hello","payload":[]}',
-            '{"type":"client/state","payload":{"supported_roles":["metadata@v1"]}}',
-        ],
-    )
-    def test_malformed_or_non_hello_text_passes_through(
-        self, handler: SendspinProxyHandler, raw_message: str
-    ) -> None:
-        """Messages that are not structurally valid hellos remain parser-visible unchanged."""
-        assert handler._restrict_client_hello_roles(raw_message, ("player@v1",)) == raw_message
-
-    def test_rewrite_preserves_player_support_without_synthesizing_it(
-        self, handler: SendspinProxyHandler
-    ) -> None:
-        """Role rewriting preserves support data and leaves missing support for upstream rejection."""
-        supported = json.loads(
-            handler._restrict_client_hello_roles(
-                _hello("metadata@v1", include_player_support=True),
-                ("player@v1",),
-            )
-        )
-        missing = json.loads(
-            handler._restrict_client_hello_roles(
-                _hello("metadata@v1", include_player_support=False),
-                ("player@v1",),
-            )
-        )
-
-        assert supported["payload"]["supported_roles"] == ["player@v1"]
-        assert supported["payload"]["player@v1_support"]["buffer_capacity"] == 1024
-        assert missing["payload"]["supported_roles"] == ["player@v1"]
-        assert "player@v1_support" not in missing["payload"]
-
-    @pytest.mark.parametrize(
-        ("role", "allowed_roles"),
-        [
-            (UserRole.GUEST, ("player@v1",)),
-            (UserRole.USER, None),
-            (UserRole.ADMIN, None),
-            (UserRole.SERVICE, None),
-        ],
-    )
-    async def test_authenticated_role_selects_forwarding_policy(
-        self,
-        handler: SendspinProxyHandler,
-        role: UserRole,
-        allowed_roles: tuple[str, ...] | None,
-    ) -> None:
-        """The forwarding policy depends only on the authenticated user's role."""
-        user = MagicMock(role=role)
-        client = MagicMock()
-        internal = MagicMock()
-        with (
-            patch.object(
-                handler, "_forward_client_to_internal", new_callable=AsyncMock
-            ) as forward_client,
-            patch.object(handler, "_forward_internal_to_client", new_callable=AsyncMock),
-        ):
-            await handler._proxy_messages(client, internal, user)
-
-        forward_client.assert_awaited_once_with(client, internal, allowed_roles)
-
-    @pytest.mark.parametrize("ingress", [False, True], ids=["token", "ingress"])
-    async def test_guest_auth_paths_reach_proxy_with_authenticated_user(
-        self,
-        handler: SendspinProxyHandler,
-        ingress: bool,
-    ) -> None:
-        """Token and ingress Guest authentication both apply the same role policy."""
-        user = MagicMock(role=UserRole.GUEST, username="guest")
-        client_ws = AsyncMock(spec=web.WebSocketResponse)
-        client_ws.closed = True
-        internal_ws = AsyncMock()
-        internal_ws.closed = True
-        with (
-            patch("aiohttp.web.WebSocketResponse", return_value=client_ws),
-            patch(
-                "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress",
-                return_value=ingress,
-            ),
-            patch(
-                "music_assistant.controllers.webserver.sendspin_proxy.get_authenticated_user",
-                new=AsyncMock(return_value=user),
-            ),
-            patch.object(handler, "_authenticate", new=AsyncMock(return_value=user)),
-            patch.object(handler, "_proxy_messages", new_callable=AsyncMock) as proxy,
-        ):
-            handler.mass.http_session.ws_connect = AsyncMock(  # type: ignore[method-assign]
-                return_value=internal_ws
-            )
-            request = make_mocked_request("GET", "/sendspin")
-            await handler.handle_sendspin_proxy(request)
-
-        proxy.assert_awaited_once_with(client_ws, internal_ws, user)
-
-
-class TestSendspinProxyAuth:
-    """Tests for strict custom proxy authentication payloads."""
-
-    @pytest.mark.parametrize(
-        "auth_data",
-        [
-            [],
-            {"type": "auth", "token": ""},
-            {"type": "auth", "token": 123},
-            {"type": "auth", "token": "token", "client_id": ""},
-            {"type": "auth", "token": "token", "client_id": 123},
-            {"type": "auth", "token": "token", "client_id": None},
-        ],
-    )
-    async def test_invalid_auth_payload_types_are_rejected(
-        self,
-        handler: SendspinProxyHandler,
-        auth_data: object,
-    ) -> None:
-        """Auth payloads require a dict and non-empty string identifiers."""
-        wsock = AsyncMock()
-        wsock.receive.return_value = SimpleNamespace(
-            type=WSMsgType.TEXT,
-            data=json.dumps(auth_data),
-        )
-        handler.webserver.auth.authenticate_with_token = AsyncMock()  # type: ignore[method-assign]
-
-        assert await handler._authenticate(wsock) is None
-
-        wsock.close.assert_awaited_once()
-        handler.webserver.auth.authenticate_with_token.assert_not_awaited()
-
-    async def test_valid_auth_registers_non_empty_client_id(
-        self, handler: SendspinProxyHandler
-    ) -> None:
-        """A valid token and client id authenticate and register normally."""
-        user = MagicMock(user_id="guest-id", username="guest")
-        handler.webserver.auth.authenticate_with_token = AsyncMock(  # type: ignore[method-assign]
-            return_value=user
-        )
-        wsock = AsyncMock()
-        wsock.receive.return_value = SimpleNamespace(
-            type=WSMsgType.TEXT,
-            data=json.dumps(
-                {
-                    "type": "auth",
-                    "token": "token",
-                    "client_id": "web-player",
-                }
-            ),
-        )
-
-        assert await handler._authenticate(wsock) is user
-
-        handler.webserver.auth.authenticate_with_token.assert_awaited_once_with("token")
-        cast("MagicMock", handler.webserver.set_sendspin_player_for_user).assert_called_once_with(
-            "guest-id", "web-player"
-        )
-        wsock.send_str.assert_awaited_once_with('{"type": "auth_ok"}')
+            await handler._proxy_messages(MagicMock(), MagicMock())
