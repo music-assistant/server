@@ -136,7 +136,7 @@ class QuizType(ABC):
             # skip individual unavailable sources so one bad source does not
             # abort a round that other sources can still populate
             try:
-                source_media_type, _, _ = await parse_uri(source_uri)
+                source_media_type, provider_instance, item_id = await parse_uri(source_uri)
                 if source_media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
                     LOGGER.warning(
                         "Ignoring unsupported Music Quiz source %s (%s)",
@@ -144,7 +144,12 @@ class QuizType(ABC):
                         source_media_type,
                     )
                     continue
-                media_item = await self.mass.music.get_item_by_uri(source_uri)
+                media_item = await self.mass.music.get_item(
+                    media_type=source_media_type,
+                    item_id=item_id,
+                    provider_instance_id_or_domain=provider_instance,
+                    allow_update_metadata=False,
+                )
                 if not isinstance(media_item, Track | Playlist | Album | Artist | Genre):
                     LOGGER.warning(
                         "Ignoring unsupported Music Quiz source %s (%s)",

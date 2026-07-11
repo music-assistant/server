@@ -743,7 +743,7 @@ class MusicQuizPlugin(PluginProvider):
         sources: list[MusicQuizSource] = []
         for source_uri in source_uris:
             try:
-                source_media_type, _, _ = await parse_uri(source_uri)
+                source_media_type, provider_instance, item_id = await parse_uri(source_uri)
             except Exception as err:
                 self.logger.warning("Ignoring invalid Music Quiz source %s: %s", source_uri, err)
                 continue
@@ -755,7 +755,12 @@ class MusicQuizPlugin(PluginProvider):
                 )
                 continue
             try:
-                media_item = await self.mass.music.get_item_by_uri(source_uri)
+                media_item = await self.mass.music.get_item(
+                    media_type=source_media_type,
+                    item_id=item_id,
+                    provider_instance_id_or_domain=provider_instance,
+                    allow_update_metadata=False,
+                )
             except Exception as err:
                 # the real failure otherwise only surfaces at round start,
                 # minutes later and far from the cause

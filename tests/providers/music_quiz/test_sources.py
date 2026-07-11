@@ -119,7 +119,19 @@ async def _yield_tracks(tracks: list[Track]) -> AsyncGenerator[Track]:
 def _mass(source_items: Mapping[str, object]) -> MagicMock:
     """Return a Music Assistant mock with empty source controllers."""
     mass = MagicMock()
-    mass.music.get_item_by_uri = AsyncMock(side_effect=source_items.__getitem__)
+
+    async def _get_item(
+        *,
+        media_type: MediaType,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        allow_update_metadata: bool,
+    ) -> object:
+        assert allow_update_metadata is False
+        uri = f"{provider_instance_id_or_domain}://{media_type.value}/{item_id}"
+        return source_items[uri]
+
+    mass.music.get_item = AsyncMock(side_effect=_get_item)
     mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([]))
     mass.music.albums.tracks = AsyncMock(return_value=[])
     mass.music.artists.tracks = AsyncMock(return_value=[])
@@ -276,7 +288,7 @@ async def test_mixed_sources_deduplicate_and_skip_failure() -> None:
     album_uri = _uri(album)
     extra_uri = _uri(extra)
     mass = _mass({direct_uri: direct, album_uri: album})
-    mass.music.get_item_by_uri.side_effect = [
+    mass.music.get_item.side_effect = [
         RuntimeError("unavailable"),
         direct,
         album,
@@ -332,7 +344,7 @@ async def test_empty_or_unsupported_sources_raise_localized_error(source_uris: l
         await _guess_quiz(mass, source_uris)._get_source_track_pool()
 
     assert err.value.translation_key == "music_quiz_sources_unavailable"
-    mass.music.get_item_by_uri.assert_not_awaited()
+    mass.music.get_item.assert_not_awaited()
     mass.music.playlists.tracks.assert_not_called()
     mass.music.albums.tracks.assert_not_awaited()
     mass.music.artists.tracks.assert_not_awaited()
@@ -366,7 +378,12 @@ async def test_host_source_metadata_ignores_unsupported_types() -> None:
             "media_type": MediaType.PLAYLIST.value,
         }
     ]
-    plugin.mass.music.get_item_by_uri.assert_awaited_once_with(playlist_uri)
+    plugin.mass.music.get_item.assert_awaited_once_with(
+        media_type=MediaType.PLAYLIST,
+        item_id=playlist.item_id,
+        provider_instance_id_or_domain=playlist.provider,
+        allow_update_metadata=False,
+    )
 
 
 @pytest.mark.asyncio

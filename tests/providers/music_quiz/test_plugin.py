@@ -182,7 +182,7 @@ def _create_plugin(
     source_item = MagicMock()
     source_item.name = "Test Playlist"
     source_item.media_type = MediaType.PLAYLIST
-    plugin.mass.music.get_item_by_uri = AsyncMock(return_value=source_item)
+    plugin.mass.music.get_item = AsyncMock(return_value=source_item)
     plugin.signal_provider_event = MagicMock()  # type: ignore[method-assign, misc]
     plugin._play_track = AsyncMock()  # type: ignore[method-assign]
     plugin._stop_playback = AsyncMock()  # type: ignore[method-assign]
