@@ -28,7 +28,7 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
     MAX_GENRE_TRACK_COUNT,
 )
 from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
-from music_assistant.providers.music_quiz.quiz_types.hitster import HitsterQuizType
+from music_assistant.providers.music_quiz.quiz_types.music_timeline import MusicTimelineQuizType
 
 SourceItem = Album | Artist | Genre | ItemMapping | Playlist | Track
 
@@ -426,14 +426,14 @@ async def test_guess_the_song_prepares_from_album_source() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hitster_prepares_from_artist_source() -> None:
-    """Prepare Hitster unchanged from an expanded source collection."""
+async def test_music_timeline_prepares_from_artist_source() -> None:
+    """Prepare Music Timeline unchanged from an expanded source collection."""
     artist = _artist()
     tracks = [_track("one", year=1990), _track("two", year=2000)]
     artist_uri = _uri(artist)
     mass = _mass({artist_uri: artist})
     mass.music.artists.tracks.return_value = tracks
-    quiz = HitsterQuizType(
+    quiz = MusicTimelineQuizType(
         mass,
         MusicQuizConfig(round_count=1, source_uris=[artist_uri]),
     )

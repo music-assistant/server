@@ -1,4 +1,4 @@
-"""Hitster quiz type: place the currently playing track on a shared timeline."""
+"""Music Timeline quiz type: place the currently playing track on a shared timeline."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ MAX_AI_PROMPT_BYTES = 8192
 MAX_AI_RESPONSE_BYTES = 4096
 
 
-class HitsterQuizType(QuizType):
+class MusicTimelineQuizType(QuizType):
     """Quiz type where players place songs on a shared chronological timeline."""
 
     answer_type = MusicQuizAnswerType.TIMELINE
@@ -64,7 +64,7 @@ class HitsterQuizType(QuizType):
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
         """
-        Initialize the Hitster quiz type for a single game.
+        Initialize the Music Timeline quiz type for a single game.
 
         :param mass: MusicAssistant instance.
         :param config: Config of the game this quiz type generates rounds for.
@@ -75,7 +75,7 @@ class HitsterQuizType(QuizType):
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
         """
-        Set fixed internal defaults for configuration not exposed by Hitster.
+        Set fixed internal defaults for configuration not exposed by Music Timeline.
 
         :param config: Raw typed game configuration.
         :return: Configuration to persist for this quiz type.
@@ -89,7 +89,7 @@ class HitsterQuizType(QuizType):
     @classmethod
     def validate_config(cls, config: MusicQuizConfig) -> None:
         """
-        Validate Hitster source and bonus-mode requirements.
+        Validate Music Timeline source and bonus-mode requirements.
 
         :param config: Configuration to validate.
         """
@@ -116,7 +116,7 @@ class HitsterQuizType(QuizType):
         required_track_count = self.config.round_count + 1
         if len(eligible_tracks) < required_track_count:
             raise InvalidDataError(
-                f"Hitster requires at least {required_track_count} unique tracks with release years",
+                f"Music Timeline requires at least {required_track_count} unique tracks with release years",
                 translation_key="music_quiz_not_enough_dated_tracks",
                 translation_owner=TRANSLATION_OWNER,
                 translation_args=[required_track_count],
@@ -126,7 +126,7 @@ class HitsterQuizType(QuizType):
         self, round_index: int, previous_rounds: list[MusicQuizRound]
     ) -> MusicQuizRound:
         """
-        Prepare a Hitster round against the timeline guaranteed at reveal.
+        Prepare a Music Timeline round against the timeline guaranteed at reveal.
 
         :param round_index: Index of the round to prepare.
         :param previous_rounds: Rounds already prepared in earlier iterations.
@@ -135,9 +135,11 @@ class HitsterQuizType(QuizType):
         """
         eligible_tracks = await self._get_eligible_tracks()
         if round_index < 0 or round_index >= self.config.round_count:
-            raise InvalidDataError("Hitster round index is outside the configured game")
+            raise InvalidDataError("Music Timeline round index is outside the configured game")
         if len(previous_rounds) != round_index:
-            raise InvalidDataError("Hitster round history does not match the requested round")
+            raise InvalidDataError(
+                "Music Timeline round history does not match the requested round"
+            )
 
         if round_index == 0:
             anchor_track = self._select_unused_track(eligible_tracks, set())
@@ -167,7 +169,7 @@ class HitsterQuizType(QuizType):
 
     def reject_track(self, track_uri: str) -> None:
         """
-        Remove a failed track from future Hitster rounds.
+        Remove a failed track from future Music Timeline rounds.
 
         :param track_uri: URI of the track that failed playback.
         """
@@ -229,7 +231,7 @@ class HitsterQuizType(QuizType):
         """Create a stable timeline entry from an eligible track."""
         release_year = self._release_year(track)
         if release_year is None or not track.uri or not track.artist_str:
-            raise InvalidDataError("Hitster track is missing required timeline metadata")
+            raise InvalidDataError("Music Timeline track is missing required timeline metadata")
         existing_ids = existing_ids or set()
         while (entry_id := secrets.token_hex(8)) in existing_ids:
             continue
@@ -273,7 +275,7 @@ class HitsterQuizType(QuizType):
                 continue
             correct_value = values[bonus_type]
             if not correct_value:
-                raise InvalidDataError("Hitster track is missing required bonus metadata")
+                raise InvalidDataError("Music Timeline track is missing required bonus metadata")
             if mode == TimelineBonusMode.FREE_TEXT:
                 definitions.append(TimelineFreeTextBonusDefinition(bonus_type=bonus_type))
                 continue
@@ -454,7 +456,7 @@ class HitsterQuizType(QuizType):
             ranked_ids = self._parse_ai_ranking(response, set(candidate_map))
         except Exception as err:
             LOGGER.debug(
-                "Hitster bonus ranking failed via %s (%s)",
+                "Music Timeline bonus ranking failed via %s (%s)",
                 provider.instance_id,
                 type(err).__name__,
             )
@@ -491,9 +493,9 @@ class HitsterQuizType(QuizType):
             'object with only this key: {"ranked_ids":["candidate_0", "..."]}. '
             "The array must be a complete permutation of every supplied candidate ID. Return "
             "no markdown, code fences, preamble, or explanation.\n"
-            "BEGIN_UNTRUSTED_HITSTER_CANDIDATES_JSON\n"
+            "BEGIN_UNTRUSTED_MUSIC_TIMELINE_CANDIDATES_JSON\n"
             f"{grounded_data}\n"
-            "END_UNTRUSTED_HITSTER_CANDIDATES_JSON"
+            "END_UNTRUSTED_MUSIC_TIMELINE_CANDIDATES_JSON"
         )
 
     def _parse_ai_ranking(self, response: object, candidate_ids: set[str]) -> list[str]:
@@ -627,21 +629,25 @@ class HitsterQuizType(QuizType):
         timeline: list[TimelineEntry] = []
         for previous_round in previous_rounds:
             if not isinstance(previous_round.answer_state, TimelineRoundState):
-                raise InvalidDataError("Hitster round history contains a different answer type")
+                raise InvalidDataError(
+                    "Music Timeline round history contains a different answer type"
+                )
             state = previous_round.answer_state
             expected_snapshot = sorted(
                 timeline or state.placement_snapshot,
                 key=lambda entry: (entry.release_year, entry.entry_id),
             )
             if state.placement_snapshot != expected_snapshot:
-                raise InvalidDataError("Hitster round history contains a stale timeline snapshot")
+                raise InvalidDataError(
+                    "Music Timeline round history contains a stale timeline snapshot"
+                )
             timeline = sorted(
                 [*state.placement_snapshot, state.candidate.entry],
                 key=lambda entry: (entry.release_year, entry.entry_id),
             )
         track_uris = [entry.track_uri for entry in timeline]
         if len(track_uris) != len(set(track_uris)):
-            raise InvalidDataError("Hitster round history contains duplicate tracks")
+            raise InvalidDataError("Music Timeline round history contains duplicate tracks")
         return timeline
 
     def _bonus_mode(self, bonus_type: TimelineBonusType) -> TimelineBonusMode:
@@ -693,7 +699,7 @@ class HitsterQuizType(QuizType):
 
     @classmethod
     def _track_is_eligible(cls, track: Track) -> bool:
-        """Return whether a track has all metadata required by Hitster."""
+        """Return whether a track has all metadata required by Music Timeline."""
         return bool(
             track.available
             and track.is_playable

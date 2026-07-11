@@ -1,4 +1,4 @@
-"""Tests for the Hitster Music Quiz type."""
+"""Tests for the Music Timeline Music Quiz type."""
 
 from __future__ import annotations
 
@@ -29,11 +29,11 @@ from music_assistant.providers.music_quiz.models import (
     TimelineMultipleChoiceBonusDefinition,
     TimelineRoundState,
 )
-from music_assistant.providers.music_quiz.quiz_types.hitster import (
+from music_assistant.providers.music_quiz.quiz_types.music_timeline import (
     AI_QUERY_TIMEOUT_SECONDS,
     DEFAULT_BONUS_OPTION_COUNT,
     TRACK_ENRICHMENT_CONCURRENCY,
-    HitsterQuizType,
+    MusicTimelineQuizType,
 )
 from music_assistant.providers.music_quiz.suggestions import SuggestionCandidate
 
@@ -109,7 +109,7 @@ def _ai_provider(
 
 
 def _mass() -> MagicMock:
-    """Return a mock MusicAssistant for Hitster tests."""
+    """Return a mock MusicAssistant for Music Timeline tests."""
     mass = MagicMock()
     mass.metadata.get_image_url_for_item = AsyncMock(
         side_effect=lambda track: f"https://img/{track.item_id}"
@@ -130,8 +130,8 @@ def _quiz(
     artist_mode: TimelineBonusMode = TimelineBonusMode.OFF,
     title_mode: TimelineBonusMode = TimelineBonusMode.OFF,
     use_ai: bool = False,
-) -> tuple[HitsterQuizType, MagicMock]:
-    """Return a Hitster type backed by a deterministic source pool."""
+) -> tuple[MusicTimelineQuizType, MagicMock]:
+    """Return a Music Timeline type backed by a deterministic source pool."""
     mass = _mass()
     config = MusicQuizConfig(
         round_count=round_count,
@@ -140,12 +140,12 @@ def _quiz(
         title_bonus_mode=title_mode,
         use_ai_distractors=use_ai,
     )
-    quiz = HitsterQuizType(mass, config)
+    quiz = MusicTimelineQuizType(mass, config)
     quiz._source_track_pool = {track.uri: track for track in tracks if track.uri}
     return quiz, mass
 
 
-def test_config_normalization_and_validation_are_hitster_specific() -> None:
+def test_config_normalization_and_validation_are_music_timeline_specific() -> None:
     """Use fixed option defaults without requiring guess-the-song settings."""
     config = MusicQuizConfig(
         round_count=2,
@@ -157,14 +157,14 @@ def test_config_normalization_and_validation_are_hitster_specific() -> None:
         title_bonus_mode=TimelineBonusMode.MULTIPLE_CHOICE,
     )
 
-    normalized = HitsterQuizType.normalize_config(config)
-    HitsterQuizType.validate_config(normalized)
+    normalized = MusicTimelineQuizType.normalize_config(config)
+    MusicTimelineQuizType.validate_config(normalized)
 
     assert normalized.suggestion_count == DEFAULT_BONUS_OPTION_COUNT
     assert normalized.difficulty == MusicQuizDifficulty.NORMAL.value
     assert normalized.use_ai_distractors is True
     with pytest.raises(InvalidDataError, match="bonus mode"):
-        HitsterQuizType.validate_config(
+        MusicTimelineQuizType.validate_config(
             MusicQuizConfig(
                 source_uris=["prov://playlist/1"],
                 artist_bonus_mode=cast("TimelineBonusMode", "invalid"),
@@ -368,17 +368,17 @@ def test_release_year_uses_earliest_valid_track_or_album_year() -> None:
         release_year=999,
     )
 
-    assert HitsterQuizType._release_year(track_first) == 1999
-    assert HitsterQuizType._release_year(album_first) == 2000
-    assert HitsterQuizType._release_year(album_only) == 2001
-    assert HitsterQuizType._release_year(track_only) == 2003
-    assert HitsterQuizType._release_year(future_album) == 2004
-    assert HitsterQuizType._release_year(too_old_track) == 2006
-    assert HitsterQuizType._release_year(invalid) is None
+    assert MusicTimelineQuizType._release_year(track_first) == 1999
+    assert MusicTimelineQuizType._release_year(album_first) == 2000
+    assert MusicTimelineQuizType._release_year(album_only) == 2001
+    assert MusicTimelineQuizType._release_year(track_only) == 2003
+    assert MusicTimelineQuizType._release_year(future_album) == 2004
+    assert MusicTimelineQuizType._release_year(too_old_track) == 2006
+    assert MusicTimelineQuizType._release_year(invalid) is None
 
 
-def test_reject_track_removes_it_from_hitster_caches() -> None:
-    """Exclude failed playback tracks from future Hitster selection."""
+def test_reject_track_removes_it_from_music_timeline_caches() -> None:
+    """Exclude failed playback tracks from future Music Timeline selection."""
     failed = _track("failed", "Unavailable", "Artist", album_year=2000)
     available = _track("available", "Playable", "Artist", album_year=2001)
     quiz, _ = _quiz([failed, available])
@@ -403,14 +403,14 @@ async def test_prepare_round_seeds_anchor_and_prefetches_guaranteed_future_snaps
     quiz._eligible_tracks = [anchor, first, second]
 
     with patch(
-        "music_assistant.providers.music_quiz.quiz_types.hitster.secrets.choice",
+        "music_assistant.providers.music_quiz.quiz_types.music_timeline.secrets.choice",
         side_effect=[anchor, first],
     ):
         first_round = await quiz.prepare_round(0, [])
     reconnected_quiz, _ = _quiz([anchor, first, second], round_count=2)
     reconnected_quiz._eligible_tracks = [anchor, first, second]
     with patch(
-        "music_assistant.providers.music_quiz.quiz_types.hitster.secrets.choice",
+        "music_assistant.providers.music_quiz.quiz_types.music_timeline.secrets.choice",
         return_value=second,
     ):
         second_round = await reconnected_quiz.prepare_round(1, [first_round])
@@ -458,7 +458,7 @@ async def test_prepare_round_builds_free_text_and_opaque_multiple_choice_bonuses
     quiz._eligible_tracks = tracks
 
     with patch(
-        "music_assistant.providers.music_quiz.quiz_types.hitster.secrets.choice",
+        "music_assistant.providers.music_quiz.quiz_types.music_timeline.secrets.choice",
         side_effect=tracks[:2],
     ):
         game_round = await quiz.prepare_round(0, [])
@@ -755,7 +755,7 @@ async def test_ai_ranking_timeout_falls_back_to_catalog_order() -> None:
     candidates = [SuggestionCandidate("Daft Punk"), SuggestionCandidate("Air")]
 
     with patch(
-        "music_assistant.providers.music_quiz.quiz_types.hitster.AI_QUERY_TIMEOUT_SECONDS",
+        "music_assistant.providers.music_quiz.quiz_types.music_timeline.AI_QUERY_TIMEOUT_SECONDS",
         AI_QUERY_TIMEOUT_SECONDS / 30_000,
     ):
         ranked = await quiz._rank_bonus_candidates(
@@ -785,7 +785,7 @@ async def test_candidate_persists_display_artist_contributors_and_sort_aliases()
     quiz._eligible_tracks = [anchor, current]
 
     with patch(
-        "music_assistant.providers.music_quiz.quiz_types.hitster.secrets.choice",
+        "music_assistant.providers.music_quiz.quiz_types.music_timeline.secrets.choice",
         side_effect=[anchor, current],
     ):
         game_round = await quiz.prepare_round(0, [])
