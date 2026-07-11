@@ -280,8 +280,11 @@ class AudioBuffer:
             except asyncio.CancelledError:
                 status = "cancelled"
                 raise
-            except Exception:
+            except Exception as err:
                 status = "aborted with error"
+                # record the error before the EOF signal below, so readers that
+                # check for a producer error never observe the abort as a clean EOF
+                self._producer_error = err
                 raise
             finally:
                 # signal EOF even on error if we produced valid chunks,
