@@ -319,6 +319,24 @@ async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider)
     assert result is None
 
 
+async def test_digital_silence_yields_finite_spectral_centroid(
+    provider: SmartFadesProvider,
+) -> None:
+    """Digitally-silent audio yields 0 Hz centroid frames instead of non-finite values."""
+    sample_rate = 22050
+    tone = np.sin(2 * np.pi * 440 * np.arange(sample_rate, dtype=np.float32) / sample_rate)
+    pcm = np.concatenate([tone.astype(np.float32), np.zeros(sample_rate, dtype=np.float32)])
+    data = Mock()
+    data.energy_chunks = []
+    data.frequency_band_chunks = {}
+    data.centroid_chunks = []
+
+    provider._compute_energy_and_spectral_centroids(pcm, data)
+
+    assert data.centroid_chunks
+    assert np.isfinite(np.concatenate(data.centroid_chunks)).all()
+
+
 async def test_setup_raises_when_requirements_not_met(
     mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
 ) -> None:

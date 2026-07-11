@@ -6,9 +6,10 @@ import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.enums import ContentType, MediaType, StreamType
@@ -17,6 +18,7 @@ from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     _default_background_scan_concurrency,
 )
@@ -27,6 +29,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,
     _merged_from_rows,
 )
+from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
@@ -690,6 +693,49 @@ async def test_close_drains_sessions_and_workers() -> None:
     p.cancel.assert_called_once_with("track://test/a")
 
 
+async def _run_buffer_reader_worker(
+    chunk_count: int, expected_duration: float | None
+) -> tuple[MagicMock, MagicMock]:
+    """Run the reader worker against a buffer yielding chunk_count 1s chunks, then EOF."""
+    controller = _make_controller()
+    session_key = "track://test/worker"
+    controller._active_sessions[session_key] = {"prov-1"}
+    controller._distribute_chunk = AsyncMock()  # type: ignore[method-assign]
+    controller._finalize_providers = MagicMock()  # type: ignore[method-assign]
+    controller._cancel_providers = MagicMock()  # type: ignore[method-assign]
+    audio_buffer = MagicMock()
+    audio_buffer.first_buffered_chunk = 0
+    audio_buffer.read_chunk_for_analysis = AsyncMock(
+        side_effect=[b"pcm"] * chunk_count + [AudioBufferEOF()]
+    )
+    await controller._buffer_reader_worker(session_key, audio_buffer, expected_duration)
+    return controller._finalize_providers, controller._cancel_providers
+
+
+@pytest.mark.asyncio
+async def test_buffer_reader_worker_finalizes_when_near_expected_duration() -> None:
+    """An EOF within the completeness tolerance finalizes the session."""
+    finalize, cancel = await _run_buffer_reader_worker(9, expected_duration=10)
+    finalize.assert_called_once_with("track://test/worker")
+    cancel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_buffer_reader_worker_discards_incomplete_stream() -> None:
+    """A source that ends far short of the expected duration is cancelled, not finalized."""
+    finalize, cancel = await _run_buffer_reader_worker(8, expected_duration=10)
+    finalize.assert_not_called()
+    cancel.assert_called_once_with("track://test/worker")
+
+
+@pytest.mark.asyncio
+async def test_buffer_reader_worker_finalizes_when_duration_unknown() -> None:
+    """Without an expected duration (e.g. radio), any clean EOF finalizes the session."""
+    finalize, cancel = await _run_buffer_reader_worker(1, expected_duration=None)
+    finalize.assert_called_once_with("track://test/worker")
+    cancel.assert_not_called()
+
+
 def _stub_controller(
     count_result: int = 0,
     iter_rows: list[dict[str, Any]] | None = None,
@@ -699,6 +745,7 @@ def _stub_controller(
     c.logger = MagicMock()
     db = MagicMock()
     db.get_count_from_query = AsyncMock(return_value=count_result)
+    db.delete = AsyncMock()
     rows_to_yield = list(iter_rows or [])
 
     async def _iter_stub(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Mapping[str, Any]]:
@@ -1225,3 +1272,68 @@ def test_controller_has_no_provider_specific_extra_data_keys() -> None:
     # do not weaken this to an import/attribute check.
     assert "_EXPORT_STRIP_EXTRA_DATA_KEYS" not in source
     assert "clap_embedding" not in source
+
+
+def _analysis_controller_with_rows(
+    rows: list[Mapping[str, Any]],
+) -> AudioAnalysisController:
+    """Build a stub controller whose DB returns the given analysis rows for any track."""
+    c, db = _stub_controller()
+    db.get_rows = AsyncMock(return_value=rows)
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = True
+    music_prov.domain = "test-provider"
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    c.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            _aa_provider_stub(SMART_FADES_ANALYSIS_DOMAIN),
+            _aa_provider_stub(SONIC_ANALYSIS_DOMAIN),
+        ]
+    )
+    return c
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_deletes_unparsable_rows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Corrupt rows are deleted, so their stored version no longer blocks re-analysis."""
+    rows: list[Mapping[str, Any]] = [
+        {
+            "id": 7,
+            "aa_provider_domain": SMART_FADES_ANALYSIS_DOMAIN,
+            # a non-list value fails ndarray deserialization; the [100.0, None]
+            # payload used on dev parses fine here (numpy coerces None to nan)
+            "analysis_data": json_dumps({"spectral_centroid": "garbage"}),
+        },
+        _aa_row(SONIC_ANALYSIS_DOMAIN, 8, bpm=101.0),
+    ]
+    controller = _analysis_controller_with_rows(rows)
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        result = await controller.get_audio_analysis("track-1", "test-provider")
+
+    assert result is not None
+    assert result.bpm == 101.0
+    delete_mock = cast("AsyncMock", controller.mass.music.database.delete)
+    delete_mock.assert_awaited_once_with(DB_TABLE_AUDIO_ANALYSIS, {"id": 7})
+    warning = next(r for r in caplog.records if r.name == audio_analysis_mod.LOGGER.name)
+    assert "in field spectral_centroid" in warning.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_set_audio_analysis_rejects_non_finite_values() -> None:
+    """A payload holding non-finite floats is refused before anything reaches the database."""
+    c, db = _stub_controller()
+    list_case = AudioAnalysisData(
+        spectral_centroid=np.array([100.0, float("nan"), 200.0], dtype=np.float32)
+    )
+    with pytest.raises(ValueError, match="spectral_centroid"):
+        await c.set_audio_analysis(
+            "track-1", "test-provider", SMART_FADES_ANALYSIS_DOMAIN, list_case
+        )
+    scalar_case = AudioAnalysisData(bpm=float("inf"))
+    with pytest.raises(ValueError, match="bpm"):
+        await c.set_audio_analysis(
+            "track-1", "test-provider", SMART_FADES_ANALYSIS_DOMAIN, scalar_case
+        )
+    db.insert_or_replace.assert_not_called()

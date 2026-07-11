@@ -207,6 +207,24 @@ async def test_fill_error_propagation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fill_error_surfaces_to_analysis_reader() -> None:
+    """An aborted source raises its error to the analysis reader instead of a clean EOF."""
+
+    async def _failing_source() -> AsyncGenerator[bytes]:
+        yield ONE_SECOND_CHUNK
+        msg = "test error"
+        raise RuntimeError(msg)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf.fill(_failing_source(), source_name="test")
+
+    # buffered chunks are still delivered before the error surfaces
+    assert await buf.read_chunk_for_analysis(0) == ONE_SECOND_CHUNK
+    with pytest.raises(RuntimeError, match="test error"):
+        await buf.read_chunk_for_analysis(1)
+
+
+@pytest.mark.asyncio
 async def test_fill_error_no_data() -> None:
     """When the source errors without producing any data, the error propagates."""
 
