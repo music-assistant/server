@@ -247,3 +247,45 @@ class TestSendspinProxyMessages:
 
         client_ws.send_str.assert_awaited_once_with(metadata)
         client_ws.send_bytes.assert_awaited_once_with(audio)
+
+    async def test_client_cannot_replace_connection_player_id(
+        self, handler: SendspinProxyHandler
+    ) -> None:
+        """Later client messages cannot replace the authenticated player identity."""
+        hello = SimpleNamespace(
+            type=WSMsgType.TEXT,
+            data='{"type":"client/hello","payload":{"client_id":"other_player"}}',
+        )
+
+        async def messages() -> AsyncIterator[SimpleNamespace]:
+            yield hello
+
+        internal_ws = AsyncMock()
+        context = _SendspinConnectionContext("web_player")
+
+        await handler._forward_client_to_internal(
+            cast("web.WebSocketResponse", messages()),
+            internal_ws,
+            context,
+        )
+
+        assert context.player_id == "web_player"
+        internal_ws.send_str.assert_awaited_once_with(hello.data)
+
+
+async def test_authenticate_rejects_non_string_client_id(
+    handler: SendspinProxyHandler,
+) -> None:
+    """Proxy authentication rejects invalid player identifiers."""
+    wsock = AsyncMock(spec=web.WebSocketResponse)
+    wsock.receive.return_value = SimpleNamespace(
+        type=WSMsgType.TEXT,
+        data='{"type":"auth","token":"token","client_id":{"invalid":true}}',
+    )
+    mock_auth = cast("MagicMock", handler.webserver.auth)
+    mock_auth.authenticate_with_token = AsyncMock(return_value=MagicMock())
+
+    result = await handler._authenticate(wsock)
+
+    assert result == (None, None)
+    wsock.close.assert_awaited_once_with(code=4001, message=b"Invalid client ID")

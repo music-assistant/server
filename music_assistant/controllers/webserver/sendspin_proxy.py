@@ -189,13 +189,16 @@ class SendspinProxyHandler:
         # This allows the player controller to auto-whitelist this (web)player
         # without modifying the user's player_filter list
         client_id = auth_data.get("client_id")
+        if client_id is not None and not isinstance(client_id, str):
+            await wsock.close(code=4001, message=b"Invalid client ID")
+            return None, None
         if client_id:
             self.webserver.set_sendspin_player_for_user(user.user_id, client_id)
             self.logger.debug("Registered sendspin player %s for user %s", client_id, user.username)
 
         self.logger.debug("Sendspin proxy authenticated user: %s", user.username)
         await wsock.send_str('{"type": "auth_ok"}')
-        return user, client_id if isinstance(client_id, str) else None
+        return user, client_id or None
 
     async def _proxy_messages(
         self,
@@ -276,7 +279,7 @@ class SendspinProxyHandler:
         """
         async for msg in client_ws:
             if msg.type == WSMsgType.TEXT:
-                if player_id := get_sendspin_client_id(msg.data):
+                if context.player_id is None and (player_id := get_sendspin_client_id(msg.data)):
                     context.player_id = player_id
                 await internal_ws.send_str(msg.data)
             elif msg.type == WSMsgType.BINARY:
