@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar, cast
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, ClassVar, Final
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Album, ItemMapping
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    Genre,
+    ItemMapping,
+    Playlist,
+    Track,
+)
 
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import MediaItemType, Track
-
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.music_quiz.models import MusicQuizConfig, MusicQuizRound
 
@@ -25,15 +32,17 @@ LOGGER = logging.getLogger(__name__)
 MAX_ROUND_COUNT = 100
 MAX_ANSWER_DURATION = 300
 MAX_SOURCE_COUNT = 200
+GENRE_TRACK_PAGE_SIZE = 100
+MAX_GENRE_TRACK_COUNT = 500
 MAX_SUGGESTION_COUNT = 12
 MIN_RELEASE_YEAR = 1000
-SUPPORTED_SOURCE_MEDIA_TYPES = frozenset(
+SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
     {
         MediaType.TRACK,
         MediaType.PLAYLIST,
-        MediaType.GENRE,
         MediaType.ALBUM,
         MediaType.ARTIST,
+        MediaType.GENRE,
     }
 )
 
@@ -147,12 +156,28 @@ class QuizType(ABC):
             # skip individual unavailable sources so one bad source does not
             # abort a round that other sources can still populate
             try:
-                media_item = await self.mass.music.get_item_by_uri(source_uri)
-                if media_item.media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
+                source_media_type, provider_instance, item_id = await parse_uri(source_uri)
+                if source_media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
+                    LOGGER.warning(
+                        "Ignoring unsupported Music Quiz source %s (%s)",
+                        source_uri,
+                        source_media_type,
+                    )
                     continue
-                for track in await self.mass.player_queues.get_tracks_for_playback(
-                    cast("MediaItemType", media_item)
-                ):
+                media_item = await self.mass.music.get_item(
+                    media_type=source_media_type,
+                    item_id=item_id,
+                    provider_instance_id_or_domain=provider_instance,
+                    allow_update_metadata=False,
+                )
+                if not isinstance(media_item, Track | Playlist | Album | Artist | Genre):
+                    LOGGER.warning(
+                        "Ignoring unsupported Music Quiz source %s (%s)",
+                        source_uri,
+                        media_item.media_type,
+                    )
+                    continue
+                async for track in self._iter_source_tracks(media_item):
                     if track.uri:
                         pool[track.uri] = track
             except Exception as err:
@@ -165,6 +190,52 @@ class QuizType(ABC):
             )
         self._source_track_pool = pool
         return pool
+
+    async def _iter_source_tracks(
+        self, media_item: Track | Playlist | Album | Artist | Genre
+    ) -> AsyncGenerator[Track]:
+        """
+        Yield tracks from a supported Music Quiz source.
+
+        :param media_item: Resolved source item.
+        """
+        if isinstance(media_item, Track):
+            yield media_item
+            return
+        if isinstance(media_item, Playlist):
+            async for track in self.mass.music.playlists.tracks(
+                item_id=media_item.item_id,
+                provider_instance_id_or_domain=media_item.provider,
+            ):
+                if isinstance(track, Track):
+                    yield track
+            return
+        if isinstance(media_item, Album):
+            tracks = await self.mass.music.albums.tracks(
+                item_id=media_item.item_id,
+                provider_instance_id_or_domain=media_item.provider,
+            )
+        elif isinstance(media_item, Artist):
+            tracks = await self.mass.music.artists.tracks(
+                item_id=media_item.item_id,
+                provider_instance_id_or_domain=media_item.provider,
+            )
+        else:
+            tracks = []
+            offset = 0
+            while offset < MAX_GENRE_TRACK_COUNT:
+                page = await self.mass.music.genres.tracks(
+                    item_id=media_item.item_id,
+                    limit=min(GENRE_TRACK_PAGE_SIZE, MAX_GENRE_TRACK_COUNT - offset),
+                    offset=offset,
+                )
+                tracks.extend(page)
+                if len(page) < GENRE_TRACK_PAGE_SIZE:
+                    break
+                offset += len(page)
+        for track in tracks:
+            if isinstance(track, Track):
+                yield track
 
 
 def get_track_release_year(track: Track) -> int | None:

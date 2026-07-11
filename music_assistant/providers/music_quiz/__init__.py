@@ -67,6 +67,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
 from music_assistant.providers.music_quiz.answer_types.base import (
@@ -119,7 +120,10 @@ from music_assistant.providers.music_quiz.quiz_types import (
     get_available_quiz_types,
     get_quiz_type,
 )
-from music_assistant.providers.music_quiz.quiz_types.base import QuizType
+from music_assistant.providers.music_quiz.quiz_types.base import (
+    SUPPORTED_SOURCE_MEDIA_TYPES,
+    QuizType,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ProviderFeature
@@ -320,8 +324,7 @@ class MusicQuizPlugin(PluginProvider):
         :param round_count: Number of rounds to play.
         :param suggestion_count: Number of answer suggestions per round.
         :param answer_duration: Answering duration in seconds.
-        :param source_uris: Track, playlist, genre, album or artist URIs to draw
-            the rounds from.
+        :param source_uris: Track, playlist, album, artist or genre URIs to draw rounds from.
         :param name: Optional game name.
         :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
         :param artist_bonus_mode: Hitster artist bonus mode.
@@ -755,12 +758,36 @@ class MusicQuizPlugin(PluginProvider):
         sources: list[MusicQuizSource] = []
         for source_uri in source_uris:
             try:
-                media_item = await self.mass.music.get_item_by_uri(source_uri)
+                source_media_type, provider_instance, item_id = await parse_uri(source_uri)
+            except Exception as err:
+                self.logger.warning("Ignoring invalid Music Quiz source %s: %s", source_uri, err)
+                continue
+            if source_media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
+                self.logger.warning(
+                    "Ignoring unsupported Music Quiz source %s (%s)",
+                    source_uri,
+                    source_media_type,
+                )
+                continue
+            try:
+                media_item = await self.mass.music.get_item(
+                    media_type=source_media_type,
+                    item_id=item_id,
+                    provider_instance_id_or_domain=provider_instance,
+                    allow_update_metadata=False,
+                )
             except Exception as err:
                 # the real failure otherwise only surfaces at round start,
                 # minutes later and far from the cause
                 self.logger.warning("Could not resolve Music Quiz source %s: %s", source_uri, err)
                 sources.append(MusicQuizSource(uri=source_uri, name=source_uri))
+                continue
+            if media_item.media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
+                self.logger.warning(
+                    "Ignoring unsupported Music Quiz source %s (%s)",
+                    source_uri,
+                    media_item.media_type,
+                )
                 continue
             sources.append(
                 MusicQuizSource(
