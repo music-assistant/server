@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -14,6 +14,9 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizPlayer,
     QuizRoundAnswerState,
 )
+
+QuizAnswerSubmissionValue = str | None
+QuizAnswerSubmissionPayload = dict[str, QuizAnswerSubmissionValue]
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +32,7 @@ class QuizAnswerType(ABC):
     answer_type: ClassVar[MusicQuizAnswerType]
 
     @abstractmethod
-    def parse_submission(self, payload: dict[str, object]) -> QuizAnswerSubmission:
+    def parse_submission(self, payload: Mapping[str, object]) -> QuizAnswerSubmission:
         """
         Parse an answer submission received from the API.
 

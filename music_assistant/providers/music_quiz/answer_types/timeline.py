@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -91,7 +91,7 @@ class TimelineAnswerType(QuizAnswerType):
 
     answer_type = MusicQuizAnswerType.TIMELINE
 
-    def parse_submission(self, payload: dict[str, object]) -> QuizAnswerSubmission:
+    def parse_submission(self, payload: Mapping[str, object]) -> QuizAnswerSubmission:
         """
         Parse a strict timeline submission.
 
@@ -490,7 +490,7 @@ class TimelineAnswerType(QuizAnswerType):
             )
         return {"answer": serialized_answer}
 
-    def _parse_placement(self, payload: dict[str, object]) -> TimelinePlacementSubmission:
+    def _parse_placement(self, payload: Mapping[str, object]) -> TimelinePlacementSubmission:
         """Parse a strict timeline placement submission."""
         expected_keys = {
             "answer_type",
@@ -510,7 +510,7 @@ class TimelineAnswerType(QuizAnswerType):
         )
         return TimelinePlacementSubmission(previous_entry_id, next_entry_id)
 
-    def _parse_bonus_text(self, payload: dict[str, object]) -> TimelineBonusTextSubmission:
+    def _parse_bonus_text(self, payload: Mapping[str, object]) -> TimelineBonusTextSubmission:
         """Parse a strict free-text timeline bonus submission."""
         expected_keys = {"answer_type", "action", "bonus_type", "value"}
         if payload.keys() != expected_keys:
@@ -530,7 +530,7 @@ class TimelineAnswerType(QuizAnswerType):
             )
         return TimelineBonusTextSubmission(bonus_type, value)
 
-    def _parse_bonus_choice(self, payload: dict[str, object]) -> TimelineBonusChoiceSubmission:
+    def _parse_bonus_choice(self, payload: Mapping[str, object]) -> TimelineBonusChoiceSubmission:
         """Parse a strict multiple-choice timeline bonus submission."""
         expected_keys = {"answer_type", "action", "bonus_type", "option_id"}
         if payload.keys() != expected_keys:

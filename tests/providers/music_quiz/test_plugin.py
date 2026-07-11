@@ -21,6 +21,7 @@ from music_assistant.providers.music_quiz import (
     get_config_entries,
 )
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
+from music_assistant.providers.music_quiz.answer_types.base import QuizAnswerSubmissionPayload
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizGameActiveError,
     MusicQuizInvalidAnswerError,
@@ -497,10 +498,28 @@ async def test_hitster_edge_placement_accepts_null_at_api_boundary(
                 },
             },
         )
+        invalid_arguments = parse_arguments(
+            handler.signature,
+            handler.type_hints,
+            {
+                "player_id": player_ids["Alice"],
+                "submission": {
+                    "answer_type": "timeline",
+                    "action": 1,
+                    "previous_entry_id": None,
+                    "next_entry_id": "anchor",
+                },
+            },
+        )
         with patch(
             "music_assistant.providers.music_quiz.get_current_user",
             return_value=_guest_user(),
         ):
+            with pytest.raises(MusicQuizInvalidAnswerError):
+                await cast(
+                    "Coroutine[Any, Any, Any]",
+                    handler.target(**invalid_arguments),
+                )
             await cast("Coroutine[Any, Any, Any]", handler.target(**arguments))
 
     game = plugin._game
@@ -1087,7 +1106,7 @@ async def test_hitster_late_joiner_starts_on_prefetched_next_round() -> None:
     ],
 )
 async def test_generic_submit_answer_rejects_invalid_payload(
-    submission: dict[str, object],
+    submission: QuizAnswerSubmissionPayload,
 ) -> None:
     """Malformed generic submissions fail without mutating round state."""
     plugin = _create_plugin()
