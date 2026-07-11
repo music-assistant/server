@@ -33,6 +33,7 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusMode,
     TimelineBonusOption,
     TimelineBonusType,
+    TimelineCandidate,
     TimelineEntry,
     TimelineFreeTextBonusDefinition,
     TimelineMultipleChoiceBonusDefinition,
@@ -59,6 +60,8 @@ def _state(
     current_year: int = 2005,
     *,
     bonus_definitions: list[TimelineBonusDefinition] | None = None,
+    artist_answers: list[str] | None = None,
+    title_answers: list[str] | None = None,
 ) -> TimelineRoundState:
     """Return timeline state with an equal-year run."""
     current = _entry("current-secret", current_year)
@@ -71,7 +74,11 @@ def _state(
             _entry("same-b", 2000),
             _entry("newer", 2010),
         ],
-        current_entry=current,
+        candidate=TimelineCandidate(
+            entry=current,
+            artist_answers=artist_answers or [current.artist],
+            title_answers=title_answers or [current.title],
+        ),
         bonus_definitions=list(bonus_definitions or []),
     )
 
@@ -80,8 +87,8 @@ def _game(
     state: TimelineRoundState,
     player_ids: Iterable[str] = ("p1",),
     *,
-    artist_mode: str = TimelineBonusMode.OFF.value,
-    title_mode: str = TimelineBonusMode.OFF.value,
+    artist_mode: TimelineBonusMode = TimelineBonusMode.OFF,
+    title_mode: TimelineBonusMode = TimelineBonusMode.OFF,
 ) -> MusicQuizGame:
     """Return an active timeline game."""
     players = {
@@ -109,7 +116,7 @@ def _game(
                 round_index=0,
                 answer_label="Current Secret Artist - Current Secret Title",
                 answer_state=state,
-                track_uri=state.current_entry.track_uri,
+                track_uri=state.candidate.entry.track_uri,
             )
         ],
         current_round_index=0,
@@ -237,7 +244,7 @@ def test_validate_round_rejects_invalid_timeline_and_bonus_state() -> None:
         ANSWER_TYPE.validate_round(game, state)
 
     state = _state()
-    state.current_entry.entry_id = "anchor"
+    state.candidate.entry.entry_id = "anchor"
     with pytest.raises(InvalidDataError, match="unique"):
         ANSWER_TYPE.validate_round(_game(state), state)
 
@@ -245,7 +252,6 @@ def test_validate_round_rejects_invalid_timeline_and_bonus_state() -> None:
         bonus_definitions=[
             TimelineFreeTextBonusDefinition(
                 bonus_type=TimelineBonusType.ARTIST,
-                correct_value="Artist",
             )
         ]
     )
@@ -257,7 +263,7 @@ def test_validate_round_rejects_invalid_timeline_and_bonus_state() -> None:
     state = _state(bonus_definitions=[choice_definition])
     with pytest.raises(InvalidDataError, match="labels"):
         ANSWER_TYPE.validate_round(
-            _game(state, title_mode=TimelineBonusMode.MULTIPLE_CHOICE.value),
+            _game(state, title_mode=TimelineBonusMode.MULTIPLE_CHOICE),
             state,
         )
 
@@ -272,7 +278,7 @@ def test_all_adjacent_boundaries_are_valid_but_stale_boundaries_do_not_lock() ->
         ("same-b", "newer"),
         ("newer", None),
     ]
-    game = _game(state, [f"p{index}" for index in range(len(valid_boundaries) + 3)])
+    game = _game(state, [f"p{index}" for index in range(len(valid_boundaries) + 5)])
     for index, (previous_id, next_id) in enumerate(valid_boundaries):
         ANSWER_TYPE.submit(
             game,
@@ -286,6 +292,8 @@ def test_all_adjacent_boundaries_are_valid_but_stale_boundaries_do_not_lock() ->
         ("p5", TimelinePlacementSubmission("missing", "anchor")),
         ("p6", TimelinePlacementSubmission("anchor", "newer")),
         ("p7", TimelinePlacementSubmission(None, None)),
+        ("p8", TimelinePlacementSubmission(None, "same-a")),
+        ("p9", TimelinePlacementSubmission("same-b", None)),
     ):
         with pytest.raises(MusicQuizInvalidAnswerError):
             ANSWER_TYPE.submit(game, state, game.players[player_id], submission, 10)
@@ -352,7 +360,7 @@ def test_chronological_boundary_ends_score_correctly(
 def test_reveal_always_inserts_entry_in_deterministic_order() -> None:
     """Insert the revealed song by year and entry ID even when its placement is wrong."""
     state = _state(current_year=2000)
-    state.current_entry.entry_id = "same-aa"
+    state.candidate.entry.entry_id = "same-aa"
     game = _game(state)
     ANSWER_TYPE.submit(
         game,
@@ -364,6 +372,7 @@ def test_reveal_always_inserts_entry_in_deterministic_order() -> None:
 
     ANSWER_TYPE.reveal(game, state)
     revealed = cast("dict[str, Any]", ANSWER_TYPE.serialize_round(state, revealed=True))
+    revealed_again = cast("dict[str, Any]", ANSWER_TYPE.serialize_round(state, revealed=True))
 
     assert state.results["p1"].placement.is_correct is False
     assert state.results["p1"].placement.points == 0
@@ -375,6 +384,9 @@ def test_reveal_always_inserts_entry_in_deterministic_order() -> None:
         "newer",
     ]
     assert revealed["revealed_entry"]["entry_id"] == "same-aa"
+    assert revealed_again["timeline"] == revealed["timeline"]
+    assert sum(entry["entry_id"] == "same-aa" for entry in revealed["timeline"]) == 1
+    assert "same-aa" not in {entry.entry_id for entry in state.placement_snapshot}
 
 
 def test_placement_locks_and_completes_immediately_without_bonuses() -> None:
@@ -413,15 +425,14 @@ def test_bonus_and_finish_rules_reject_invalid_action_order_and_modes() -> None:
     definitions = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
-            correct_value="Beyoncé",
         ),
         _choice_definition(),
     ]
-    state = _state(bonus_definitions=definitions)
+    state = _state(bonus_definitions=definitions, artist_answers=["Beyoncé"])
     game = _game(
         state,
-        artist_mode=TimelineBonusMode.FREE_TEXT.value,
-        title_mode=TimelineBonusMode.MULTIPLE_CHOICE.value,
+        artist_mode=TimelineBonusMode.FREE_TEXT,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
     )
     player = game.players["p1"]
 
@@ -504,21 +515,27 @@ def test_artist_choice_and_title_text_modes_score_independently() -> None:
         (
             _choice_definition(TimelineBonusType.ARTIST),
             TimelineBonusChoiceSubmission(TimelineBonusType.ARTIST, "correct-option"),
-            TimelineBonusMode.MULTIPLE_CHOICE.value,
-            TimelineBonusMode.OFF.value,
+            TimelineBonusMode.MULTIPLE_CHOICE,
+            TimelineBonusMode.OFF,
         ),
         (
             TimelineFreeTextBonusDefinition(
                 bonus_type=TimelineBonusType.TITLE,
-                correct_value="Around the World (Radio Edit)",
             ),
             TimelineBonusTextSubmission(TimelineBonusType.TITLE, "Around the World"),
-            TimelineBonusMode.OFF.value,
-            TimelineBonusMode.FREE_TEXT.value,
+            TimelineBonusMode.OFF,
+            TimelineBonusMode.FREE_TEXT,
         ),
     ]
     for definition, submission, artist_mode, title_mode in cases:
-        state = _state(bonus_definitions=[definition])
+        state = _state(
+            bonus_definitions=[definition],
+            title_answers=(
+                ["Around the World (Radio Edit)"]
+                if definition.bonus_type == TimelineBonusType.TITLE
+                else None
+            ),
+        )
         game = _game(
             state,
             artist_mode=artist_mode,
@@ -539,16 +556,18 @@ def test_reveal_scores_speed_ranked_placements_and_fixed_bonuses() -> None:
     definitions = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
-            correct_value="Beyoncé feat. Jay-Z",
         ),
         _choice_definition(),
     ]
-    state = _state(bonus_definitions=definitions)
+    state = _state(
+        bonus_definitions=definitions,
+        artist_answers=["Beyoncé feat. Jay-Z"],
+    )
     game = _game(
         state,
         ("p1", "p2", "p3"),
-        artist_mode=TimelineBonusMode.FREE_TEXT.value,
-        title_mode=TimelineBonusMode.MULTIPLE_CHOICE.value,
+        artist_mode=TimelineBonusMode.FREE_TEXT,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
     )
     for player_id, placement, answered_at in (
         ("p1", _correct_placement(), 3),
@@ -612,13 +631,13 @@ def test_deadline_reveal_scores_unfinished_submissions() -> None:
         bonus_definitions=[
             TimelineFreeTextBonusDefinition(
                 bonus_type=TimelineBonusType.ARTIST,
-                correct_value="Massive Attack",
             )
-        ]
+        ],
+        artist_answers=["Massive Attack"],
     )
     game = _game(
         state,
-        artist_mode=TimelineBonusMode.FREE_TEXT.value,
+        artist_mode=TimelineBonusMode.FREE_TEXT,
     )
     player = game.players["p1"]
     ANSWER_TYPE.submit(game, state, player, _correct_placement(), 1)
@@ -636,6 +655,50 @@ def test_deadline_reveal_scores_unfinished_submissions() -> None:
     assert state.results["p1"].placement.points == 1000
     assert state.results["p1"].bonuses[0].points == 250
     assert game.players["p1"].score == 1250
+    with pytest.raises(MusicQuizInvalidAnswerError, match="revealing"):
+        ANSWER_TYPE.submit(game, state, player, TimelineFinishSubmission(), 3)
+
+
+@pytest.mark.parametrize(
+    ("submitted_artist", "expected_points"),
+    [
+        ("Daft Punk feat. Pharrell Williams", 250),
+        ("Daft Punk", 250),
+        ("Pharrell Williams", 250),
+        ("Punk, Daft", 250),
+        ("Random Artist", 0),
+    ],
+)
+def test_artist_free_text_accepts_persisted_contributors_and_aliases(
+    submitted_artist: str,
+    expected_points: int,
+) -> None:
+    """Accept only artist truths justified by the persisted candidate metadata."""
+    state = _state(
+        bonus_definitions=[TimelineFreeTextBonusDefinition(bonus_type=TimelineBonusType.ARTIST)],
+        artist_answers=[
+            "Daft Punk feat. Pharrell Williams",
+            "Daft Punk",
+            "Pharrell Williams",
+            "Punk, Daft",
+        ],
+    )
+    state.candidate.entry.artist = "Daft Punk feat. Pharrell Williams"
+    game = _game(state, artist_mode=TimelineBonusMode.FREE_TEXT)
+    player = game.players["p1"]
+    ANSWER_TYPE.submit(game, state, player, _correct_placement(), 1)
+    ANSWER_TYPE.submit(
+        game,
+        state,
+        player,
+        TimelineBonusTextSubmission(TimelineBonusType.ARTIST, submitted_artist),
+        2,
+    )
+
+    ANSWER_TYPE.reveal(game, state)
+
+    assert state.results["p1"].bonuses[0].points == expected_points
+    assert state.candidate.entry.artist == "Daft Punk feat. Pharrell Williams"
 
 
 def test_reveal_rejects_progress_without_a_locked_placement() -> None:
@@ -652,15 +715,17 @@ def test_serialization_redacts_answer_material_and_restores_personal_progress() 
     definitions = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
-            correct_value="Current Secret Artist",
         ),
         _choice_definition(),
     ]
-    state = _state(bonus_definitions=definitions)
+    state = _state(
+        bonus_definitions=definitions,
+        artist_answers=["Current Secret Artist", "Hidden Artist Alias"],
+    )
     game = _game(
         state,
-        artist_mode=TimelineBonusMode.FREE_TEXT.value,
-        title_mode=TimelineBonusMode.MULTIPLE_CHOICE.value,
+        artist_mode=TimelineBonusMode.FREE_TEXT,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
     )
     player = game.players["p1"]
     ANSWER_TYPE.submit(game, state, player, _correct_placement(), 10)
@@ -684,7 +749,8 @@ def test_serialization_redacts_answer_material_and_restores_personal_progress() 
     assert set(public_round) == {"timeline", "bonus_definitions"}
     assert "Current Secret" not in serialized_public
     assert "current-secret" not in serialized_public
-    assert "correct_value" not in serialized_public
+    assert "Hidden Artist Alias" not in serialized_public
+    assert "candidate" not in serialized_public
     assert "is_correct" not in serialized_public
     assert public_round["bonus_definitions"][0] == {
         "bonus_type": "artist",
@@ -757,7 +823,7 @@ def test_host_serialization_is_flat_and_complete() -> None:
 
     assert set(host) == {
         "placement_snapshot",
-        "current_entry",
+        "candidate",
         "bonus_definitions",
         "placements",
         "bonus_answers",
@@ -765,7 +831,7 @@ def test_host_serialization_is_flat_and_complete() -> None:
         "results",
         "revealed",
     }
-    assert host["current_entry"]["entry_id"] == "current-secret"
+    assert host["candidate"]["entry"]["entry_id"] == "current-secret"
     assert host["placements"]["p1"]["answered_at"] == 1
     assert host["results"]["p1"]["placement"]["is_correct"] is True
 

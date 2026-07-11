@@ -35,6 +35,7 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusMode,
     TimelineBonusOption,
     TimelineBonusType,
+    TimelineCandidate,
     TimelineEntry,
     TimelineFreeTextBonusDefinition,
     TimelineMultipleChoiceBonusDefinition,
@@ -103,7 +104,7 @@ def _make_hitster_round(
         previous_state = previous_rounds[-1].answer_state
         assert isinstance(previous_state, TimelineRoundState)
         timeline = sorted(
-            [*previous_state.placement_snapshot, previous_state.current_entry],
+            [*previous_state.placement_snapshot, previous_state.candidate.entry],
             key=lambda entry: (entry.release_year, entry.entry_id),
         )
     else:
@@ -131,7 +132,11 @@ def _make_hitster_round(
         answer_label=f"Secret Artist {round_index} - Secret Title {round_index}",
         answer_state=TimelineRoundState(
             placement_snapshot=timeline,
-            current_entry=current_entry,
+            candidate=TimelineCandidate(
+                entry=current_entry,
+                artist_answers=[current_entry.artist],
+                title_answers=[current_entry.title],
+            ),
             bonus_definitions=list(bonus_definitions or []),
         ),
         track_uri=current_entry.track_uri,
@@ -487,6 +492,7 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
         ),
     ):
         player_ids = await _create_started_hitster_game(plugin)
+        _, deadline_callback, round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
         signal = cast("MagicMock", plugin.signal_provider_event)
         hidden_state = signal.call_args[0][0]["state"]
         hidden_round = hidden_state["current_round"]
@@ -519,6 +525,7 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
                 ),
             )
 
+        await deadline_callback(round_index)
         game = plugin._game
         assert game is not None
         assert game.phase == MusicQuizPhase.REVEAL
@@ -530,6 +537,10 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
             "anchor",
             "hitster-0",
         ]
+        assert (
+            sum(entry["entry_id"] == "hitster-0" for entry in state["current_round"]["timeline"])
+            == 1
+        )
         assert state["you"]["answer"]["previous_entry_id"] == "anchor"
         assert state["you"]["answer"]["correct"] is True
         assert state["you"]["answer"]["points"] == 1000
@@ -541,7 +552,6 @@ async def test_hitster_bonuses_require_finish_and_allow_skipping_unanswered_bonu
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
-            correct_value="Secret Artist 0",
         ),
         TimelineMultipleChoiceBonusDefinition(
             bonus_type=TimelineBonusType.TITLE,
@@ -624,7 +634,6 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
-            correct_value="Secret Artist 0",
         )
     ]
     plugin = _create_plugin()
@@ -688,7 +697,6 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
-            correct_value="Secret Artist 0",
         )
     ]
     plugin = _create_plugin()
@@ -714,7 +722,7 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
         assert host_state is not None
         host_round = host_state["rounds"][0]
         assert "answer_state" not in host_round
-        assert host_round["current_entry"]["title"] == "Secret Title 0"
+        assert host_round["candidate"]["entry"]["title"] == "Secret Title 0"
         assert host_round["placement_snapshot"][0]["is_anchor"] is True
 
         with patch(

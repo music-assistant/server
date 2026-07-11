@@ -23,6 +23,7 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusMode,
     TimelineBonusOption,
     TimelineBonusType,
+    TimelineCandidate,
     TimelineEntry,
     TimelineFreeTextBonusDefinition,
     TimelineMultipleChoiceBonusDefinition,
@@ -60,7 +61,6 @@ class HitsterQuizType(QuizType):
         """
         super().__init__(mass, config)
         self._eligible_tracks: list[Track] | None = None
-        self._selected_tracks: list[Track] | None = None
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -102,9 +102,7 @@ class HitsterQuizType(QuizType):
                 ) from err
 
     async def initialize(self) -> None:
-        """Select the anchor and scored tracks required for this game."""
-        if self._selected_tracks is not None:
-            return
+        """Validate enough unique dated content exists for the complete game."""
         eligible_tracks = await self._get_eligible_tracks()
         required_track_count = self.config.round_count + 1
         if len(eligible_tracks) < required_track_count:
@@ -114,10 +112,6 @@ class HitsterQuizType(QuizType):
                 translation_owner=TRANSLATION_OWNER,
                 translation_args=[required_track_count],
             )
-        self._selected_tracks = secrets.SystemRandom().sample(
-            eligible_tracks,
-            required_track_count,
-        )
 
     async def prepare_round(
         self, round_index: int, previous_rounds: list[MusicQuizRound]
@@ -130,22 +124,20 @@ class HitsterQuizType(QuizType):
         :raises InvalidDataError: If the selected content or round history is inconsistent.
         :return: The prepared (not yet started) round.
         """
-        if self._selected_tracks is None:
-            await self.initialize()
-        assert self._selected_tracks is not None
+        eligible_tracks = await self._get_eligible_tracks()
         if round_index < 0 or round_index >= self.config.round_count:
             raise InvalidDataError("Hitster round index is outside the configured game")
         if len(previous_rounds) != round_index:
             raise InvalidDataError("Hitster round history does not match the requested round")
 
         if round_index == 0:
-            placement_snapshot = [
-                await self._create_entry(self._selected_tracks[0], is_anchor=True)
-            ]
+            anchor_track = self._select_unused_track(eligible_tracks, set())
+            placement_snapshot = [await self._create_entry(anchor_track, is_anchor=True)]
         else:
-            placement_snapshot = self._future_timeline(previous_rounds[-1])
-        current_track = self._selected_tracks[round_index + 1]
-        current_entry = await self._create_entry(
+            placement_snapshot = self._timeline_from_previous_rounds(previous_rounds)
+        used_track_uris = {entry.track_uri for entry in placement_snapshot}
+        current_track = self._select_unused_track(eligible_tracks, used_track_uris)
+        candidate = await self._create_candidate(
             current_track,
             existing_ids={entry.entry_id for entry in placement_snapshot},
         )
@@ -157,10 +149,10 @@ class HitsterQuizType(QuizType):
             answer_label=build_answer_label(current_track.artist_str or None, current_track.name),
             answer_state=TimelineRoundState(
                 placement_snapshot=placement_snapshot,
-                current_entry=current_entry,
+                candidate=candidate,
                 bonus_definitions=bonus_definitions,
             ),
-            image_url=current_entry.image_url,
+            image_url=candidate.entry.image_url,
             duration=current_track.duration,
         )
 
@@ -228,6 +220,20 @@ class HitsterQuizType(QuizType):
             is_anchor=is_anchor,
         )
 
+    async def _create_candidate(
+        self,
+        track: Track,
+        *,
+        existing_ids: set[str],
+    ) -> TimelineCandidate:
+        """Create the protected timeline candidate and its accepted truths."""
+        entry = await self._create_entry(track, existing_ids=existing_ids)
+        return TimelineCandidate(
+            entry=entry,
+            artist_answers=self._artist_answers(track),
+            title_answers=[track.name],
+        )
+
     async def _create_bonus_definitions(
         self,
         track: Track,
@@ -246,12 +252,7 @@ class HitsterQuizType(QuizType):
             if not correct_value:
                 raise InvalidDataError("Hitster track is missing required bonus metadata")
             if mode == TimelineBonusMode.FREE_TEXT:
-                definitions.append(
-                    TimelineFreeTextBonusDefinition(
-                        bonus_type=bonus_type,
-                        correct_value=correct_value,
-                    )
-                )
+                definitions.append(TimelineFreeTextBonusDefinition(bonus_type=bonus_type))
                 continue
             definitions.append(
                 TimelineMultipleChoiceBonusDefinition(
@@ -330,24 +331,70 @@ class HitsterQuizType(QuizType):
             )
         ]
 
-    def _future_timeline(self, previous_round: MusicQuizRound) -> list[TimelineEntry]:
-        """Return the timeline after the previous round's guaranteed insertion."""
-        if not isinstance(previous_round.answer_state, TimelineRoundState):
-            raise InvalidDataError("Hitster round history contains a different answer type")
-        state = previous_round.answer_state
-        return sorted(
-            [*state.placement_snapshot, state.current_entry],
-            key=lambda entry: (entry.release_year, entry.entry_id),
-        )
+    def _timeline_from_previous_rounds(
+        self,
+        previous_rounds: list[MusicQuizRound],
+    ) -> list[TimelineEntry]:
+        """Derive the guaranteed shared timeline from persisted round history."""
+        timeline: list[TimelineEntry] = []
+        for previous_round in previous_rounds:
+            if not isinstance(previous_round.answer_state, TimelineRoundState):
+                raise InvalidDataError("Hitster round history contains a different answer type")
+            state = previous_round.answer_state
+            expected_snapshot = sorted(
+                timeline or state.placement_snapshot,
+                key=lambda entry: (entry.release_year, entry.entry_id),
+            )
+            if state.placement_snapshot != expected_snapshot:
+                raise InvalidDataError("Hitster round history contains a stale timeline snapshot")
+            timeline = sorted(
+                [*state.placement_snapshot, state.candidate.entry],
+                key=lambda entry: (entry.release_year, entry.entry_id),
+            )
+        track_uris = [entry.track_uri for entry in timeline]
+        if len(track_uris) != len(set(track_uris)):
+            raise InvalidDataError("Hitster round history contains duplicate tracks")
+        return timeline
 
     def _bonus_mode(self, bonus_type: TimelineBonusType) -> TimelineBonusMode:
         """Return the configured mode for a bonus type."""
-        raw_mode = (
+        return (
             self.config.artist_bonus_mode
             if bonus_type == TimelineBonusType.ARTIST
             else self.config.title_bonus_mode
         )
-        return TimelineBonusMode(raw_mode)
+
+    @staticmethod
+    def _select_unused_track(
+        tracks: list[Track],
+        used_track_uris: set[str],
+    ) -> Track:
+        """Return one random track that is absent from persisted round history."""
+        available_tracks = [
+            track for track in tracks if track.uri and track.uri not in used_track_uris
+        ]
+        if not available_tracks:
+            raise InvalidDataError(
+                "No unused dated tracks are available",
+                translation_key="music_quiz_no_unused_source_tracks",
+                translation_owner=TRANSLATION_OWNER,
+            )
+        return secrets.choice(available_tracks)
+
+    @staticmethod
+    def _artist_answers(track: Track) -> list[str]:
+        """Return deterministic accepted artist names available on the track."""
+        answers: list[str] = []
+        seen_answers: set[str] = set()
+        for answer in (
+            track.artist_str,
+            *(artist.name for artist in track.artists),
+            *(artist.sort_name for artist in track.artists),
+        ):
+            if answer and (normalized_answer := answer.casefold()) not in seen_answers:
+                answers.append(answer)
+                seen_answers.add(normalized_answer)
+        return answers
 
     @staticmethod
     def _bonus_candidate(track: Track, bonus_type: TimelineBonusType) -> SuggestionCandidate:

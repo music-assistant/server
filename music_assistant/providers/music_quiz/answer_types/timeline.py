@@ -30,6 +30,7 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusMode,
     TimelineBonusResult,
     TimelineBonusType,
+    TimelineCandidate,
     TimelineChoiceBonusAnswer,
     TimelineEntry,
     TimelineFreeTextBonusDefinition,
@@ -131,7 +132,8 @@ class TimelineAnswerType(QuizAnswerType):
             timeline_state.placement_snapshot
         ):
             raise InvalidDataError("Timeline placement snapshot must be deterministically ordered")
-        entries = [*timeline_state.placement_snapshot, timeline_state.current_entry]
+        candidate = timeline_state.candidate
+        entries = [*timeline_state.placement_snapshot, candidate.entry]
         entry_ids = [entry.entry_id for entry in entries]
         track_uris = [entry.track_uri for entry in entries]
         if any(not entry_id for entry_id in entry_ids) or len(entry_ids) != len(set(entry_ids)):
@@ -144,8 +146,17 @@ class TimelineAnswerType(QuizAnswerType):
             raise InvalidDataError("Timeline entries require a release year")
         if sum(entry.is_anchor for entry in timeline_state.placement_snapshot) != 1:
             raise InvalidDataError("Timeline placement snapshot requires exactly one anchor")
-        if timeline_state.current_entry.is_anchor:
+        if candidate.entry.is_anchor:
             raise InvalidDataError("The scored timeline entry cannot be the anchor")
+        if (
+            not candidate.artist_answers
+            or not candidate.title_answers
+            or candidate.entry.artist not in candidate.artist_answers
+            or candidate.entry.title not in candidate.title_answers
+            or any(not answer.strip() for answer in candidate.artist_answers)
+            or any(not answer.strip() for answer in candidate.title_answers)
+        ):
+            raise InvalidDataError("Timeline candidate requires non-empty display truths")
         if (
             timeline_state.placements
             or timeline_state.bonus_answers
@@ -175,6 +186,8 @@ class TimelineAnswerType(QuizAnswerType):
         """
         timeline_state = self._get_state(state)
         player_id = player.player_id
+        if timeline_state.revealed:
+            raise MusicQuizInvalidAnswerError("No actions are allowed after revealing the round")
         if player_id in timeline_state.finished_at:
             raise MusicQuizInvalidAnswerError("No actions are allowed after finishing the round")
         if isinstance(submission, TimelinePlacementSubmission):
@@ -251,7 +264,7 @@ class TimelineAnswerType(QuizAnswerType):
         placement_correctness = {
             player_id: self._is_correct_placement(
                 timeline_state.placement_snapshot,
-                timeline_state.current_entry.release_year,
+                timeline_state.candidate.entry.release_year,
                 placement,
             )
             for player_id, placement in timeline_state.placements.items()
@@ -285,7 +298,11 @@ class TimelineAnswerType(QuizAnswerType):
                 definition = definitions.get(bonus_answer.bonus_type)
                 if definition is None:
                     raise InvalidDataError("Timeline bonus answer has no matching definition")
-                is_correct = self._is_bonus_correct(definition, bonus_answer)
+                is_correct = self._is_bonus_correct(
+                    timeline_state.candidate,
+                    definition,
+                    bonus_answer,
+                )
                 bonus_results.append(
                     TimelineBonusResult(
                         bonus_type=bonus_answer.bonus_type,
@@ -314,8 +331,8 @@ class TimelineAnswerType(QuizAnswerType):
         :param game: Game whose configuration should be serialized.
         """
         return {
-            "artist_bonus_mode": game.config.artist_bonus_mode,
-            "title_bonus_mode": game.config.title_bonus_mode,
+            "artist_bonus_mode": game.config.artist_bonus_mode.value,
+            "title_bonus_mode": game.config.title_bonus_mode.value,
         }
 
     def serialize_host_round(self, state: QuizRoundAnswerState) -> dict[str, SerializableType]:
@@ -329,7 +346,7 @@ class TimelineAnswerType(QuizAnswerType):
             "placement_snapshot": [
                 self._serialize_entry(entry) for entry in timeline_state.placement_snapshot
             ],
-            "current_entry": self._serialize_entry(timeline_state.current_entry),
+            "candidate": self._serialize_host_candidate(timeline_state.candidate),
             "bonus_definitions": [
                 self._serialize_host_bonus_definition(definition)
                 for definition in timeline_state.bonus_definitions
@@ -377,7 +394,9 @@ class TimelineAnswerType(QuizAnswerType):
             ],
         }
         if revealed:
-            serialized_state["revealed_entry"] = self._serialize_entry(timeline_state.current_entry)
+            serialized_state["revealed_entry"] = self._serialize_entry(
+                timeline_state.candidate.entry
+            )
         return serialized_state
 
     def serialize_public_player(
@@ -615,8 +634,6 @@ class TimelineAnswerType(QuizAnswerType):
             if definition is None or definition.mode != configured_mode:
                 raise InvalidDataError("Timeline bonus definition does not match the game config")
             if isinstance(definition, TimelineFreeTextBonusDefinition):
-                if not definition.correct_value.strip():
-                    raise InvalidDataError("Free-text timeline bonus requires a correct value")
                 continue
             if not isinstance(definition, TimelineMultipleChoiceBonusDefinition):
                 raise InvalidDataError("Unknown timeline bonus definition type")
@@ -692,6 +709,7 @@ class TimelineAnswerType(QuizAnswerType):
 
     def _is_bonus_correct(
         self,
+        candidate: TimelineCandidate,
         definition: TimelineBonusDefinition,
         answer: TimelineBonusAnswer,
     ) -> bool:
@@ -699,7 +717,15 @@ class TimelineAnswerType(QuizAnswerType):
         if isinstance(definition, TimelineFreeTextBonusDefinition) and isinstance(
             answer, TimelineTextBonusAnswer
         ):
-            return compare_free_text_answer(answer.value, definition.correct_value)
+            accepted_answers = (
+                candidate.artist_answers
+                if answer.bonus_type == TimelineBonusType.ARTIST
+                else candidate.title_answers
+            )
+            return any(
+                compare_free_text_answer(answer.value, accepted_answer)
+                for accepted_answer in accepted_answers
+            )
         if isinstance(definition, TimelineMultipleChoiceBonusDefinition) and isinstance(
             answer, TimelineChoiceBonusAnswer
         ):
@@ -800,7 +826,7 @@ class TimelineAnswerType(QuizAnswerType):
 
     def _timeline_with_current(self, state: TimelineRoundState) -> list[TimelineEntry]:
         """Return the revealed timeline with the current entry inserted."""
-        return self._sorted_timeline([*state.placement_snapshot, state.current_entry])
+        return self._sorted_timeline([*state.placement_snapshot, state.candidate.entry])
 
     @staticmethod
     def _serialize_entry(entry: TimelineEntry) -> dict[str, SerializableType]:
@@ -832,9 +858,7 @@ class TimelineAnswerType(QuizAnswerType):
     ) -> dict[str, SerializableType]:
         """Serialize a protected timeline bonus definition for the host."""
         serialized = self._serialize_public_bonus_definition(definition)
-        if isinstance(definition, TimelineFreeTextBonusDefinition):
-            serialized["correct_value"] = definition.correct_value
-        elif isinstance(definition, TimelineMultipleChoiceBonusDefinition):
+        if isinstance(definition, TimelineMultipleChoiceBonusDefinition):
             serialized["options"] = [
                 {
                     "option_id": option.option_id,
@@ -844,6 +868,17 @@ class TimelineAnswerType(QuizAnswerType):
                 for option in definition.options
             ]
         return serialized
+
+    def _serialize_host_candidate(
+        self,
+        candidate: TimelineCandidate,
+    ) -> dict[str, SerializableType]:
+        """Serialize the protected candidate for the host."""
+        return {
+            "entry": self._serialize_entry(candidate.entry),
+            "artist_answers": list(candidate.artist_answers),
+            "title_answers": list(candidate.title_answers),
+        }
 
     @staticmethod
     def _serialize_public_bonus_definition(

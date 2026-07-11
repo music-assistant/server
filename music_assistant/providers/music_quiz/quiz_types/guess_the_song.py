@@ -53,8 +53,8 @@ class GuessTheSongQuizType(QuizType):
         """
         return replace(
             config,
-            artist_bonus_mode=TimelineBonusMode.OFF.value,
-            title_bonus_mode=TimelineBonusMode.OFF.value,
+            artist_bonus_mode=TimelineBonusMode.OFF,
+            title_bonus_mode=TimelineBonusMode.OFF,
         )
 
     @classmethod

@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -94,8 +95,8 @@ def _quiz(
     tracks: list[Track],
     *,
     round_count: int = 1,
-    artist_mode: str = TimelineBonusMode.OFF.value,
-    title_mode: str = TimelineBonusMode.OFF.value,
+    artist_mode: TimelineBonusMode = TimelineBonusMode.OFF,
+    title_mode: TimelineBonusMode = TimelineBonusMode.OFF,
 ) -> tuple[HitsterQuizType, MagicMock]:
     """Return a Hitster type backed by a deterministic source pool."""
     mass = _mass()
@@ -118,8 +119,8 @@ def test_config_normalization_and_validation_are_hitster_specific() -> None:
         source_uris=["prov://playlist/1"],
         difficulty="not-used",
         use_ai_distractors=True,
-        artist_bonus_mode=TimelineBonusMode.FREE_TEXT.value,
-        title_bonus_mode=TimelineBonusMode.MULTIPLE_CHOICE.value,
+        artist_bonus_mode=TimelineBonusMode.FREE_TEXT,
+        title_bonus_mode=TimelineBonusMode.MULTIPLE_CHOICE,
     )
 
     normalized = HitsterQuizType.normalize_config(config)
@@ -132,14 +133,14 @@ def test_config_normalization_and_validation_are_hitster_specific() -> None:
         HitsterQuizType.validate_config(
             MusicQuizConfig(
                 source_uris=["prov://playlist/1"],
-                artist_bonus_mode="invalid",
+                artist_bonus_mode=cast("TimelineBonusMode", "invalid"),
             )
         )
 
 
 @pytest.mark.asyncio
-async def test_initialize_selects_anchor_plus_unique_scored_tracks() -> None:
-    """Reserve one extra unique dated track for the unscored anchor."""
+async def test_initialize_requires_anchor_plus_unique_scored_tracks() -> None:
+    """Validate the complete pool without retaining an ephemeral track sequence."""
     tracks = [
         _track("one", "Teardrop", "Massive Attack", album_year=1998),
         _track("two", "Genesis", "Justice", album_year=2007),
@@ -150,9 +151,9 @@ async def test_initialize_selects_anchor_plus_unique_scored_tracks() -> None:
 
     await quiz.initialize()
 
-    assert quiz._selected_tracks is not None
-    assert len(quiz._selected_tracks) == 4
-    assert len({track.uri for track in quiz._selected_tracks}) == 4
+    assert quiz._eligible_tracks is not None
+    assert len(quiz._eligible_tracks) == 4
+    assert not hasattr(quiz, "_selected_tracks")
 
 
 @pytest.mark.asyncio
@@ -259,10 +260,19 @@ async def test_prepare_round_seeds_anchor_and_prefetches_guaranteed_future_snaps
     second = _track("second", "Lisztomania", "Phoenix", album_year=2009)
     quiz, _ = _quiz([anchor, first, second], round_count=2)
     quiz._eligible_tracks = [anchor, first, second]
-    quiz._selected_tracks = [anchor, first, second]
 
-    first_round = await quiz.prepare_round(0, [])
-    second_round = await quiz.prepare_round(1, [first_round])
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.hitster.secrets.choice",
+        side_effect=[anchor, first],
+    ):
+        first_round = await quiz.prepare_round(0, [])
+    reconnected_quiz, _ = _quiz([anchor, first, second], round_count=2)
+    reconnected_quiz._eligible_tracks = [anchor, first, second]
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.hitster.secrets.choice",
+        return_value=second,
+    ):
+        second_round = await reconnected_quiz.prepare_round(1, [first_round])
 
     assert isinstance(first_round.answer_state, TimelineRoundState)
     assert isinstance(second_round.answer_state, TimelineRoundState)
@@ -281,7 +291,7 @@ async def test_prepare_round_seeds_anchor_and_prefetches_guaranteed_future_snaps
                 entry.entry_id
                 for entry in [
                     *second_round.answer_state.placement_snapshot,
-                    second_round.answer_state.current_entry,
+                    second_round.answer_state.candidate.entry,
                 ]
             }
         )
@@ -301,19 +311,23 @@ async def test_prepare_round_builds_free_text_and_opaque_multiple_choice_bonuses
     ]
     quiz, mass = _quiz(
         tracks,
-        artist_mode=TimelineBonusMode.FREE_TEXT.value,
-        title_mode=TimelineBonusMode.MULTIPLE_CHOICE.value,
+        artist_mode=TimelineBonusMode.FREE_TEXT,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
     )
     quiz._eligible_tracks = tracks
-    quiz._selected_tracks = tracks[:2]
 
-    game_round = await quiz.prepare_round(0, [])
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.hitster.secrets.choice",
+        side_effect=tracks[:2],
+    ):
+        game_round = await quiz.prepare_round(0, [])
 
     assert isinstance(game_round.answer_state, TimelineRoundState)
     artist_definition, title_definition = game_round.answer_state.bonus_definitions
     assert isinstance(artist_definition, TimelineFreeTextBonusDefinition)
     assert artist_definition.bonus_type == TimelineBonusType.ARTIST
-    assert artist_definition.correct_value == "Justice"
+    assert game_round.answer_state.candidate.artist_answers == ["Justice"]
+    assert game_round.answer_state.candidate.title_answers == ["Genesis"]
     assert isinstance(title_definition, TimelineMultipleChoiceBonusDefinition)
     assert title_definition.bonus_type == TimelineBonusType.TITLE
     assert len(title_definition.options) == 4
@@ -321,3 +335,38 @@ async def test_prepare_round_builds_free_text_and_opaque_multiple_choice_bonuses
     assert len({option.option_id for option in title_definition.options}) == 4
     assert all("correct" not in option.option_id for option in title_definition.options)
     mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_candidate_persists_display_artist_contributors_and_sort_aliases() -> None:
+    """Persist justified artist truths while keeping one deterministic display value."""
+    anchor = _track("anchor", "Teardrop", "Massive Attack", album_year=1998)
+    current = _track("current", "Get Lucky", "Daft Punk", album_year=2013)
+    current.artists[0].sort_name = "Punk, Daft"
+    current.artists.append(
+        ItemMapping(
+            media_type=MediaType.ARTIST,
+            item_id="artist-pharrell",
+            provider="prov",
+            name="Pharrell Williams",
+        )
+    )
+    quiz, _ = _quiz([anchor, current])
+    quiz._eligible_tracks = [anchor, current]
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.hitster.secrets.choice",
+        side_effect=[anchor, current],
+    ):
+        game_round = await quiz.prepare_round(0, [])
+
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    candidate = game_round.answer_state.candidate
+    assert candidate.entry.artist == current.artist_str
+    assert candidate.artist_answers == [
+        current.artist_str,
+        "Daft Punk",
+        "Pharrell Williams",
+        "Punk, Daft",
+    ]
+    assert candidate.title_answers == ["Get Lucky"]

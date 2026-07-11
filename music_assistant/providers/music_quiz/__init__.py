@@ -318,6 +318,15 @@ class MusicQuizPlugin(PluginProvider):
         """
         quiz_type_class = get_quiz_type(quiz_type)
         get_answer_type(quiz_type_class.answer_type)
+        try:
+            parsed_artist_bonus_mode = TimelineBonusMode(artist_bonus_mode)
+            parsed_title_bonus_mode = TimelineBonusMode(title_bonus_mode)
+        except ValueError as err:
+            raise InvalidDataError(
+                "Unknown timeline bonus mode",
+                translation_key="music_quiz_invalid_bonus_mode",
+                translation_owner=TRANSLATION_OWNER,
+            ) from err
         game_config = quiz_type_class.normalize_config(
             MusicQuizConfig(
                 round_count=round_count,
@@ -327,8 +336,8 @@ class MusicQuizPlugin(PluginProvider):
                 name=_clean_game_name(name),
                 difficulty=difficulty,
                 use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
-                artist_bonus_mode=artist_bonus_mode,
-                title_bonus_mode=title_bonus_mode,
+                artist_bonus_mode=parsed_artist_bonus_mode,
+                title_bonus_mode=parsed_title_bonus_mode,
             )
         )
         quiz_type_class.validate_config(game_config)

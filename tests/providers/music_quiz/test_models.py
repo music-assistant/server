@@ -21,6 +21,7 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusOption,
     TimelineBonusResult,
     TimelineBonusType,
+    TimelineCandidate,
     TimelineChoiceBonusAnswer,
     TimelineEntry,
     TimelineFreeTextBonusDefinition,
@@ -212,19 +213,20 @@ def test_timeline_round_state_round_trips_with_strict_nested_variants() -> None:
                 is_anchor=True,
             )
         ],
-        current_entry=TimelineEntry(
-            entry_id="current",
-            release_year=2000,
-            title="Current",
-            artist="Artist",
-            track_uri="library://track/current",
-            image_url="https://img/current",
+        candidate=TimelineCandidate(
+            entry=TimelineEntry(
+                entry_id="current",
+                release_year=2000,
+                title="Current",
+                artist="Artist",
+                track_uri="library://track/current",
+                image_url="https://img/current",
+            ),
+            artist_answers=["Artist", "Artist Alias"],
+            title_answers=["Current"],
         ),
         bonus_definitions=[
-            TimelineFreeTextBonusDefinition(
-                bonus_type=TimelineBonusType.ARTIST,
-                correct_value="Artist",
-            ),
+            TimelineFreeTextBonusDefinition(bonus_type=TimelineBonusType.ARTIST),
             TimelineMultipleChoiceBonusDefinition(
                 bonus_type=TimelineBonusType.TITLE,
                 options=[
@@ -271,6 +273,7 @@ def test_timeline_round_state_round_trips_with_strict_nested_variants() -> None:
 
     assert restored == game_round
     assert isinstance(restored.answer_state, TimelineRoundState)
+    assert isinstance(restored.answer_state.candidate, TimelineCandidate)
     assert isinstance(
         restored.answer_state.bonus_definitions[0],
         TimelineFreeTextBonusDefinition,
@@ -286,7 +289,8 @@ def test_timeline_round_state_round_trips_with_strict_nested_variants() -> None:
     "field_path",
     [
         ("placement_snapshot", 0),
-        ("current_entry", None),
+        ("candidate", None),
+        ("candidate_entry", None),
         ("bonus_definitions", 0),
         ("bonus_answers", 0),
         ("results", None),
@@ -308,20 +312,19 @@ def test_timeline_round_state_rejects_extra_nested_data(
                 True,
             )
         ],
-        current_entry=TimelineEntry(
-            "current",
-            2000,
-            "Current",
-            "Artist",
-            "library://track/current",
-            None,
+        candidate=TimelineCandidate(
+            entry=TimelineEntry(
+                "current",
+                2000,
+                "Current",
+                "Artist",
+                "library://track/current",
+                None,
+            ),
+            artist_answers=["Artist"],
+            title_answers=["Current"],
         ),
-        bonus_definitions=[
-            TimelineFreeTextBonusDefinition(
-                bonus_type=TimelineBonusType.ARTIST,
-                correct_value="Artist",
-            )
-        ],
+        bonus_definitions=[TimelineFreeTextBonusDefinition(bonus_type=TimelineBonusType.ARTIST)],
         bonus_answers={
             "p1": [
                 TimelineChoiceBonusAnswer(
@@ -341,8 +344,10 @@ def test_timeline_round_state_rejects_extra_nested_data(
     target: dict[str, object]
     if field_name == "placement_snapshot":
         target = state[field_name][index]
-    elif field_name == "current_entry":
+    elif field_name == "candidate":
         target = state[field_name]
+    elif field_name == "candidate_entry":
+        target = state["candidate"]["entry"]
     elif field_name == "bonus_definitions":
         target = state[field_name][index]
     elif field_name == "bonus_answers":
@@ -375,13 +380,17 @@ def test_timeline_round_state_rejects_extra_top_level_data() -> None:
                 True,
             )
         ],
-        current_entry=TimelineEntry(
-            "current",
-            2000,
-            "Current",
-            "Artist",
-            "library://track/current",
-            None,
+        candidate=TimelineCandidate(
+            entry=TimelineEntry(
+                "current",
+                2000,
+                "Current",
+                "Artist",
+                "library://track/current",
+                None,
+            ),
+            artist_answers=["Artist"],
+            title_answers=["Current"],
         ),
     ).to_dict()
     state["extra"] = True

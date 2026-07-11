@@ -63,8 +63,8 @@ class MusicQuizConfig(DataClassDictMixin):
     difficulty: str = MusicQuizDifficulty.NORMAL.value
     use_ai_distractors: bool = False
     # timeline specific; other answer types ignore these
-    artist_bonus_mode: str = TimelineBonusMode.OFF.value
-    title_bonus_mode: str = TimelineBonusMode.OFF.value
+    artist_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
+    title_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
 
 
 @dataclass
@@ -186,6 +186,20 @@ class TimelinePlacementAnswer(DataClassDictMixin):
 
 
 @dataclass
+class TimelineCandidate(DataClassDictMixin):
+    """Protected candidate and accepted truths for a timeline round."""
+
+    entry: TimelineEntry
+    artist_answers: list[str]
+    title_answers: list[str]
+
+    class Config(BaseConfig):
+        """Mashumaro configuration."""
+
+        forbid_extra_keys = True
+
+
+@dataclass
 class TimelineBonusOption(DataClassDictMixin):
     """A possible answer for a multiple-choice timeline bonus."""
 
@@ -221,7 +235,6 @@ class TimelineFreeTextBonusDefinition(TimelineBonusDefinition):
         default=TimelineBonusMode.FREE_TEXT,
         init=False,
     )
-    correct_value: str
 
 
 @dataclass
@@ -317,7 +330,7 @@ class TimelineRoundState(QuizRoundAnswerState):
         init=False,
     )
     placement_snapshot: list[TimelineEntry]
-    current_entry: TimelineEntry
+    candidate: TimelineCandidate
     bonus_definitions: list[TimelineBonusDefinition] = field(default_factory=list)
     placements: dict[str, TimelinePlacementAnswer] = field(default_factory=dict)
     bonus_answers: dict[str, list[TimelineBonusAnswer]] = field(default_factory=dict)
