@@ -159,6 +159,35 @@ async def test_restricted_guest_events_exclude_dynamic_queues(
     assert all("Web Queue" not in message for message in messages)
 
 
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        EventType.QUEUE_ADDED,
+        EventType.QUEUE_ITEMS_UPDATED,
+        EventType.QUEUE_TIME_UPDATED,
+        EventType.QUEUE_UPDATED,
+    ],
+)
+async def test_restricted_guest_cannot_claim_host_queue_events_with_sendspin_player(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    event_type: EventType,
+) -> None:
+    """A managed guest cannot claim host queue events through its Sendspin player ID."""
+    guest = create_ws_client(
+        webserver,
+        "guest1",
+        role=UserRole.GUEST,
+        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+        sendspin_player_id="host_player",
+    )
+
+    mass_minimal.signal_event(event_type, "host_player", {"name": "Host Queue"})
+    await drain_event_callbacks()
+
+    assert guest._to_write.empty()
+
+
 async def test_filtered_user_receives_own_sendspin_queue_event(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
