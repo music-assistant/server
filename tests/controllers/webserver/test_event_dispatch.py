@@ -130,9 +130,6 @@ async def test_restricted_guest_events_exclude_dynamic_queues(
     webserver: WebserverController,
 ) -> None:
     """Restricted guests receive own-player and provider events, but no dynamic queues."""
-    mass_minimal.players = SimpleNamespace(  # type: ignore[assignment]
-        is_protocol_player=lambda _player_id: False
-    )
     guest = create_ws_client(
         webserver,
         "guest1",
@@ -162,28 +159,33 @@ async def test_restricted_guest_events_exclude_dynamic_queues(
     assert all("Web Queue" not in message for message in messages)
 
 
-async def test_restricted_guest_receives_protocol_sendspin_queue_event(
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        EventType.QUEUE_ADDED,
+        EventType.QUEUE_ITEMS_UPDATED,
+        EventType.QUEUE_TIME_UPDATED,
+        EventType.QUEUE_UPDATED,
+    ],
+)
+async def test_restricted_guest_cannot_claim_host_queue_events(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
+    event_type: EventType,
 ) -> None:
-    """A managed guest receives its Sendspin queue event after becoming a protocol child."""
-    mass_minimal.players = SimpleNamespace(  # type: ignore[assignment]
-        is_protocol_player=lambda player_id: player_id == "web_player"
-    )
+    """A managed guest cannot claim host queue events through its Sendspin ID."""
     guest = create_ws_client(
         webserver,
         "guest1",
         role=UserRole.GUEST,
         player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
-        sendspin_player_id="web_player",
+        sendspin_player_id="host_player",
     )
 
-    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "web_player", {"name": "Web Queue"})
+    mass_minimal.signal_event(event_type, "host_player", {"name": "Host Queue"})
     await drain_event_callbacks()
 
-    message = get_written_message(guest)
     assert guest._to_write.empty()
-    assert "Web Queue" in message
 
 
 async def test_filtered_user_receives_own_sendspin_queue_event(

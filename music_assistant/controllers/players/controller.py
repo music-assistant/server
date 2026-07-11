@@ -396,14 +396,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             raise PlayerUnavailableError(msg)
         return None
 
-    def is_protocol_player(self, player_id: str | None) -> bool:
-        """Return whether the given ID belongs to a registered protocol player."""
-        return bool(
-            player_id
-            and (player := self.get_player(player_id))
-            and player.type == PlayerType.PROTOCOL
-        )
-
     @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(
         self,

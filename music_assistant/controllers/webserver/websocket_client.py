@@ -569,10 +569,8 @@ class WebsocketClientHandler:
             EventType.QUEUE_TIME_UPDATED,
             EventType.QUEUE_UPDATED,
         ):
-            if event.object_id != self._sendspin_player_id:
-                return False
             return (
                 GUEST_ACCESS_RESTRICTED_PLAYER_ID not in current_user.player_filter
-                or self.mass.players.is_protocol_player(event.object_id)
+                and event.object_id == self._sendspin_player_id
             )
         return True

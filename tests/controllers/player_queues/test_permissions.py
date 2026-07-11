@@ -76,8 +76,6 @@ def _set_user(role: UserRole, player_filter: list[str]) -> None:
 def test_restricted_guest_only_sees_explicit_queues() -> None:
     """A restricted guest only sees explicitly allowed queues."""
     controller = _create_controller("host", "allowed", "web_player")
-    players = cast("MagicMock", controller.mass.players)
-    players.is_protocol_player.return_value = False
     _set_user(
         UserRole.GUEST,
         [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "allowed"],
@@ -102,11 +100,9 @@ def test_direct_queue_reads_reject_hidden_queue() -> None:
         controller.items_for_api("host")
 
 
-def test_restricted_guest_cannot_read_standalone_sendspin_queue() -> None:
-    """A restricted guest cannot read its standalone Sendspin queue."""
+def test_restricted_guest_cannot_read_claimed_sendspin_queue() -> None:
+    """A restricted guest cannot read a claimed Sendspin queue."""
     controller = _create_controller("web_player")
-    players = cast("MagicMock", controller.mass.players)
-    players.is_protocol_player.return_value = False
     _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
     set_sendspin_player_id("web_player")
 
@@ -116,23 +112,9 @@ def test_restricted_guest_cannot_read_standalone_sendspin_queue() -> None:
         controller.items_for_api("web_player")
 
 
-def test_restricted_guest_can_read_protocol_sendspin_queue() -> None:
-    """A restricted guest may read its Sendspin queue after it becomes a protocol child."""
-    controller = _create_controller("web_player")
-    players = cast("MagicMock", controller.mass.players)
-    players.is_protocol_player.return_value = True
-    _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
-    set_sendspin_player_id("web_player")
-
-    assert controller.get_for_api("web_player") is controller.get("web_player")
-    assert controller.items_for_api("web_player") == controller.items("web_player")
-
-
 def test_restricted_guest_cannot_claim_host_queue() -> None:
     """A restricted guest cannot claim a host queue through Sendspin."""
     controller = _create_controller("host")
-    players = cast("MagicMock", controller.mass.players)
-    players.is_protocol_player.return_value = False
     _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
     set_sendspin_player_id("host")
 
