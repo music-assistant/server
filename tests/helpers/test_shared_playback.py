@@ -21,6 +21,8 @@ def _create_mock_mass(venue_player: MagicMock | None) -> MagicMock:
     mass = MagicMock()
     mass.players.get_player.return_value = venue_player
     mass.players.cmd_set_members = AsyncMock()
+    mass.players.register_audio_only_player = MagicMock()
+    mass.players.unregister_audio_only_player = MagicMock()
     return mass
 
 
@@ -104,6 +106,78 @@ async def test_venue_add_and_remove_guest_listener() -> None:
     mass.players.cmd_set_members.assert_awaited_with(
         "venue_player", player_ids_to_remove=["web_player_1"]
     )
+    mass.players.register_audio_only_player.assert_not_called()
+    mass.players.unregister_audio_only_player.assert_not_called()
+
+
+async def test_audio_only_registration_wraps_group_membership() -> None:
+    """Audio-only registration starts before grouping and ends after ungrouping."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    mass = _create_mock_mass(venue_player)
+    events: list[tuple[str, bool | None]] = []
+    mass.players.register_audio_only_player.side_effect = lambda _player_id: events.append(
+        ("audio_only", True)
+    )
+    mass.players.unregister_audio_only_player.side_effect = lambda _player_id: events.append(
+        ("audio_only", False)
+    )
+
+    async def record_grouping(
+        _player_id: str,
+        *,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        assert (player_ids_to_add is None) != (player_ids_to_remove is None)
+        events.append(("group", player_ids_to_remove is None))
+
+    mass.players.cmd_set_members.side_effect = record_grouping
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player", audio_only=True)
+
+    await session.add_guest_listener("web_player_1")
+    await session.add_guest_listener("web_player_1")
+    await session.remove_guest_listener("web_player_1")
+    await session.remove_guest_listener("web_player_1")
+
+    assert events == [
+        ("audio_only", True),
+        ("group", True),
+        ("group", False),
+        ("audio_only", False),
+    ]
+
+
+async def test_audio_only_registration_rolls_back_on_grouping_failure() -> None:
+    """A failed group operation immediately restores normal metadata behavior."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    mass = _create_mock_mass(venue_player)
+    mass.players.cmd_set_members.side_effect = RuntimeError("grouping failed")
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player", audio_only=True)
+
+    with pytest.raises(RuntimeError, match="grouping failed"):
+        await session.add_guest_listener("web_player_1")
+
+    mass.players.register_audio_only_player.assert_called_once_with("web_player_1")
+    mass.players.unregister_audio_only_player.assert_called_once_with("web_player_1")
+
+
+async def test_audio_only_close_restores_listeners_after_detach() -> None:
+    """Closing an audio-only venue session restores every tracked guest."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1", "web_player_2"})
+    mass = _create_mock_mass(venue_player)
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player", audio_only=True)
+    await session.add_guest_listener("web_player_1")
+    await session.add_guest_listener("web_player_2")
+    mass.players.unregister_audio_only_player.reset_mock()
+
+    await session.close()
+
+    removed = mass.players.cmd_set_members.await_args.kwargs["player_ids_to_remove"]
+    assert set(removed) == {"web_player_1", "web_player_2"}
+    assert {call.args for call in mass.players.unregister_audio_only_player.call_args_list} == {
+        ("web_player_1",),
+        ("web_player_2",),
+    }
 
 
 async def test_venue_add_guest_listener_unsupported() -> None:

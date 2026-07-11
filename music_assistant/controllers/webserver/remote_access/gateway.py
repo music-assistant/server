@@ -22,6 +22,10 @@ from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSession
 from aiortc.sdp import candidate_from_sdp
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.sendspin import (
+    filter_audio_only_sendspin_message,
+    get_sendspin_client_id,
+)
 from music_assistant.helpers.webrtc_certificate import create_peer_connection_with_certificate
 
 if TYPE_CHECKING:
@@ -89,6 +93,7 @@ class WebRTCGateway:
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
         set_sendspin_player_callback: Callable[[str, str], None] | None = None,
+        is_sendspin_player_audio_only: Callable[[str], bool] | None = None,
     ) -> None:
         """
         Initialize the WebRTC Gateway.
@@ -102,6 +107,7 @@ class WebRTCGateway:
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
         :param set_sendspin_player_callback: Callback to set sendspin player for a session.
+        :param is_sendspin_player_audio_only: Callback to check whether metadata is redacted.
         """
         self.http_session = http_session
         self.signaling_url = signaling_url
@@ -112,6 +118,7 @@ class WebRTCGateway:
         self.logger = LOGGER
         self._ice_servers_callback = ice_servers_callback
         self._set_sendspin_player_callback = set_sendspin_player_callback
+        self._is_sendspin_player_audio_only = is_sendspin_player_audio_only
 
         # Static ICE servers used at registration time (relayed to clients via signaling server)
         self.ice_servers = ice_servers or self.DEFAULT_ICE_SERVERS
@@ -820,24 +827,15 @@ class WebRTCGateway:
         :param session: The WebRTC session.
         :param message: The first sendspin message (expected to be auth).
         """
-        try:
-            data = json.loads(message)
-            if data.get("type") != "auth":
-                return  # Not an auth message
-
-            # This is an auth message - extract client_id if present
-            if client_id := data.get("client_id"):
-                session.sendspin_player_id = client_id
-                self.logger.debug(
-                    "Extracted sendspin player %s for session %s",
-                    client_id,
-                    session.session_id,
-                )
-                # Use callback to set sendspin player on the websocket client
-                if self._set_sendspin_player_callback:
-                    self._set_sendspin_player_callback(session.session_id, client_id)
-        except json.JSONDecodeError, TypeError:
-            pass  # Not valid JSON, ignore
+        if client_id := get_sendspin_client_id(message):
+            session.sendspin_player_id = client_id
+            self.logger.debug(
+                "Extracted sendspin player %s for session %s",
+                client_id,
+                session.session_id,
+            )
+            if self._set_sendspin_player_callback:
+                self._set_sendspin_player_callback(session.session_id, client_id)
 
     async def _forward_sendspin_from_local(self, session: WebRTCSession) -> None:
         """
@@ -852,7 +850,9 @@ class WebRTCGateway:
             async for msg in session.sendspin_ws:
                 if msg.type in {aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY}:
                     if session.sendspin_channel and session.sendspin_channel.readyState == "open":
-                        session.sendspin_channel.send(msg.data)
+                        data = self._filter_sendspin_message(session, msg.data)
+                        if data is not None:
+                            session.sendspin_channel.send(data)
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
                     break
         except asyncio.CancelledError:
@@ -863,3 +863,15 @@ class WebRTCGateway:
             raise
         except Exception:
             self.logger.exception("Error forwarding sendspin from local")
+
+    def _filter_sendspin_message(
+        self, session: WebRTCSession, message: str | bytes
+    ) -> str | bytes | None:
+        """Return the Sendspin message allowed for a remote session."""
+        if (
+            session.sendspin_player_id is None
+            or self._is_sendspin_player_audio_only is None
+            or not self._is_sendspin_player_audio_only(session.sendspin_player_id)
+        ):
+            return message
+        return filter_audio_only_sendspin_message(message)

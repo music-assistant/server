@@ -50,16 +50,27 @@ class SharedPlaybackSession:
     :meth:`close` when the session ends.
     """
 
-    def __init__(self, mass: MusicAssistant, mode: SharedPlaybackMode, player_id: str) -> None:
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        mode: SharedPlaybackMode,
+        player_id: str,
+        audio_only: bool = False,
+    ) -> None:
         """Initialize the session. Use the create_venue/create_remote factories instead."""
         self.mass = mass
         self._mode = mode
         self._player_id = player_id
+        self._audio_only = audio_only
         self._guest_listeners: set[str] = set()
 
     @classmethod
     async def create_venue(
-        cls, mass: MusicAssistant, venue_player_id: str
+        cls,
+        mass: MusicAssistant,
+        venue_player_id: str,
+        *,
+        audio_only: bool = False,
     ) -> SharedPlaybackSession:
         """
         Create a session hosted by an existing (real) player.
@@ -67,12 +78,13 @@ class SharedPlaybackSession:
         :param mass: MusicAssistant instance.
         :param venue_player_id: The player_id of the player that owns the queue
             and plays out loud.
+        :param audio_only: Redact media metadata from attached guest players.
         :raises SetupFailedError: If the venue player is unknown.
         :return: The created session.
         """
         if mass.players.get_player(venue_player_id) is None:
             raise SetupFailedError(f"Venue player {venue_player_id} is not available")
-        return cls(mass, SharedPlaybackMode.VENUE, venue_player_id)
+        return cls(mass, SharedPlaybackMode.VENUE, venue_player_id, audio_only)
 
     @classmethod
     async def create_remote(
@@ -81,6 +93,8 @@ class SharedPlaybackSession:
         owner_instance_id: str,
         display_name: str,
         session_id: str | None = None,
+        *,
+        audio_only: bool = False,
     ) -> SharedPlaybackSession:
         """
         Create a session hosted by a hidden Sendspin virtual player.
@@ -91,6 +105,7 @@ class SharedPlaybackSession:
         :param display_name: Human readable name for the virtual player.
         :param session_id: Optional stable id for the virtual player so the
             owner can re-create the session with the same player_id.
+        :param audio_only: Redact media metadata from attached guest players.
         :raises SetupFailedError: If the Sendspin provider is not loaded.
         :return: The created session.
         """
@@ -102,7 +117,7 @@ class SharedPlaybackSession:
             display_name=display_name,
             player_id=session_id,
         )
-        return cls(mass, SharedPlaybackMode.REMOTE, player_id)
+        return cls(mass, SharedPlaybackMode.REMOTE, player_id, audio_only)
 
     @property
     def mode(self) -> SharedPlaybackMode:
@@ -145,11 +160,23 @@ class SharedPlaybackSession:
         :raises UnsupportedFeaturedException: If the session host does not
             support grouping with the given player.
         """
+        if web_player_id in self._guest_listeners:
+            return
         if not self.can_listen_in(web_player_id):
             raise UnsupportedFeaturedException(
                 f"Player {web_player_id} can not listen in on this session"
             )
-        await self.mass.players.cmd_set_members(self._player_id, player_ids_to_add=[web_player_id])
+        grouping_succeeded = False
+        if self._audio_only:
+            self.mass.players.register_audio_only_player(web_player_id)
+        try:
+            await self.mass.players.cmd_set_members(
+                self._player_id, player_ids_to_add=[web_player_id]
+            )
+            grouping_succeeded = True
+        finally:
+            if self._audio_only and not grouping_succeeded:
+                self.mass.players.unregister_audio_only_player(web_player_id)
         self._guest_listeners.add(web_player_id)
 
     async def remove_guest_listener(self, web_player_id: str) -> None:
@@ -158,12 +185,15 @@ class SharedPlaybackSession:
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._guest_listeners.discard(web_player_id)
-        if self._get_host_player() is None:
+        if web_player_id not in self._guest_listeners:
             return
-        await self.mass.players.cmd_set_members(
-            self._player_id, player_ids_to_remove=[web_player_id]
-        )
+        if self._get_host_player() is not None:
+            await self.mass.players.cmd_set_members(
+                self._player_id, player_ids_to_remove=[web_player_id]
+            )
+        self._guest_listeners.remove(web_player_id)
+        if self._audio_only:
+            self.mass.players.unregister_audio_only_player(web_player_id)
 
     async def close(self) -> None:
         """
@@ -177,12 +207,13 @@ class SharedPlaybackSession:
             sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
             if sendspin is not None and sendspin.is_virtual_player(self._player_id):
                 await sendspin.remove_virtual_player(self._player_id)
-            self._guest_listeners.clear()
-            return
-        if self._guest_listeners and self._get_host_player() is not None:
+        elif self._guest_listeners and self._get_host_player() is not None:
             await self.mass.players.cmd_set_members(
                 self._player_id, player_ids_to_remove=list(self._guest_listeners)
             )
+        if self._audio_only:
+            for web_player_id in self._guest_listeners:
+                self.mass.players.unregister_audio_only_player(web_player_id)
         self._guest_listeners.clear()
 
     def _get_host_player(self) -> Player | None:

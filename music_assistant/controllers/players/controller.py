@@ -179,6 +179,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]
         ] = []
+        self._audio_only_player_ids: dict[str, int] = {}
 
     @contextlib.asynccontextmanager
     async def get_player_lock(
@@ -395,6 +396,41 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             msg = f"Player {player_id} is not available"
             raise PlayerUnavailableError(msg)
         return None
+
+    def register_audio_only_player(self, player_id: str) -> None:
+        """
+        Register a player that may expose audio without media metadata.
+
+        :param player_id: ID of the player.
+        """
+        registrations = self._audio_only_player_ids.get(player_id, 0)
+        self._audio_only_player_ids[player_id] = registrations + 1
+        if registrations == 0 and (player := self.get_player(player_id)):
+            player.refresh_state()
+
+    def unregister_audio_only_player(self, player_id: str) -> None:
+        """
+        Remove one audio-only registration for a player.
+
+        :param player_id: ID of the player.
+        """
+        registrations = self._audio_only_player_ids.get(player_id, 0)
+        if registrations == 0:
+            return
+        if registrations > 1:
+            self._audio_only_player_ids[player_id] = registrations - 1
+            return
+        del self._audio_only_player_ids[player_id]
+        if player := self.get_player(player_id):
+            player.refresh_state()
+
+    def is_player_audio_only(self, player_id: str) -> bool:
+        """
+        Return whether a player may expose audio without media metadata.
+
+        :param player_id: ID of the player.
+        """
+        return player_id in self._audio_only_player_ids
 
     @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(

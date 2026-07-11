@@ -2016,6 +2016,7 @@ async def test_playback_session_remote_mode() -> None:
         owner_instance_id=INSTANCE_ID,
         display_name="Music Quiz",
         session_id=INSTANCE_ID,
+        audio_only=True,
     )
 
 
@@ -2049,7 +2050,7 @@ async def test_playback_session_venue_mode() -> None:
         new=AsyncMock(return_value=session),
     ) as create_venue:
         assert await plugin._get_playback_session() is session
-    create_venue.assert_awaited_once_with(plugin.mass, "venue_player")
+    create_venue.assert_awaited_once_with(plugin.mass, "venue_player", audio_only=True)
 
 
 @pytest.mark.asyncio
@@ -2066,7 +2067,7 @@ async def test_playback_session_venue_mode_auto_prefers_playing_player() -> None
         new=AsyncMock(return_value=session),
     ) as create_venue:
         assert await plugin._get_playback_session() is session
-    create_venue.assert_awaited_once_with(plugin.mass, "playing_player")
+    create_venue.assert_awaited_once_with(plugin.mass, "playing_player", audio_only=True)
 
 
 @pytest.mark.asyncio

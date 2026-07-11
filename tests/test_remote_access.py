@@ -1,9 +1,12 @@
 """Tests for remote access feature."""
 
 import base64
-from unittest.mock import AsyncMock, Mock, patch
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, call, patch
 from urllib.parse import urlparse
 
+import aiohttp
 import pytest
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection
 from aiortc.rtcdtlstransport import RTCCertificate
@@ -435,3 +438,51 @@ async def test_http_proxy_request_cannot_change_host(
     assert parsed.port == 8095
     assert parsed.username is None
     assert "evil.com" not in (parsed.netloc or "")
+
+
+async def test_sendspin_forwarding_uses_dynamic_audio_only_registry(
+    mock_certificate: Mock,
+) -> None:
+    """An existing WebRTC path starts filtering when its player is marked audio-only."""
+    audio_only = False
+    metadata = '{"type":"server/state","payload":{"metadata":{"title":"Answer"}}}'
+    audio = bytes([4]) + b"\0" * 8 + b"audio"
+    artwork = bytes([8]) + b"\0" * 8 + b"artwork"
+    visualizer = bytes([16]) + b"\0" * 8 + b"visualizer"
+
+    async def messages() -> AsyncIterator[SimpleNamespace]:
+        nonlocal audio_only
+        yield SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=metadata)
+        audio_only = True
+        yield SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=metadata)
+        yield SimpleNamespace(type=aiohttp.WSMsgType.BINARY, data=artwork)
+        yield SimpleNamespace(type=aiohttp.WSMsgType.BINARY, data=visualizer)
+        yield SimpleNamespace(type=aiohttp.WSMsgType.BINARY, data=audio)
+
+    class MessageStream:
+        """Async message stream with the WebSocket state used by the gateway."""
+
+        closed = False
+
+        def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
+            return messages()
+
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        is_sendspin_player_audio_only=lambda _player_id: audio_only,
+    )
+    channel = Mock()
+    channel.readyState = "open"
+    session = WebRTCSession(
+        session_id="s1",
+        peer_connection=Mock(),
+        sendspin_channel=channel,
+        sendspin_ws=MessageStream(),
+        sendspin_player_id="web_player",
+    )
+
+    await gateway._forward_sendspin_from_local(session)
+
+    assert channel.send.call_args_list == [call(metadata), call(audio)]

@@ -1,14 +1,20 @@
 """Tests for the Sendspin WebSocket proxy handler."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from aiohttp import ClientConnectorError, web
+from aiohttp import ClientConnectorError, WSMsgType, web
 from aiohttp.test_utils import make_mocked_request
 
-from music_assistant.controllers.webserver.sendspin_proxy import SendspinProxyHandler
+from music_assistant.controllers.webserver.sendspin_proxy import (
+    SendspinProxyHandler,
+    _SendspinConnectionContext,
+)
 
 
 @pytest.fixture
@@ -50,7 +56,7 @@ class TestSendspinProxyRetry:
         )
 
         with (
-            patch.object(handler, "_authenticate", return_value=MagicMock()),
+            patch.object(handler, "_authenticate", return_value=(MagicMock(), "web_player")),
             patch.object(handler, "_proxy_messages", new_callable=AsyncMock),
             patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
             patch.object(handler.mass, "http_session", create=True) as mock_session,
@@ -82,7 +88,7 @@ class TestSendspinProxyRetry:
         mock_ws_connect = AsyncMock(side_effect=connector_error)
 
         with (
-            patch.object(handler, "_authenticate", return_value=MagicMock()),
+            patch.object(handler, "_authenticate", return_value=(MagicMock(), "web_player")),
             patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
             patch.object(handler.mass, "http_session", create=True) as mock_session,
             patch(
@@ -110,7 +116,7 @@ class TestSendspinProxyRetry:
         mock_ws_connect = AsyncMock(side_effect=TypeError("unexpected error"))
 
         with (
-            patch.object(handler, "_authenticate", return_value=MagicMock()),
+            patch.object(handler, "_authenticate", return_value=(MagicMock(), "web_player")),
             patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
             patch.object(handler.mass, "http_session", create=True) as mock_session,
             patch(
@@ -207,3 +213,37 @@ class TestSendspinProxyMessages:
             patch.object(handler, "_forward_client_to_internal", new=wait_forever),
         ):
             await handler._proxy_messages(MagicMock(), MagicMock())
+
+    async def test_outbound_redaction_uses_dynamic_registry(
+        self, handler: SendspinProxyHandler
+    ) -> None:
+        """An existing local proxy connection starts filtering as soon as it is marked."""
+        audio_only = False
+        metadata = '{"type":"server/state","payload":{"metadata":{"title":"Answer"}}}'
+        audio = bytes([4]) + b"\0" * 8 + b"audio"
+        artwork = bytes([8]) + b"\0" * 8 + b"artwork"
+        visualizer = bytes([16]) + b"\0" * 8 + b"visualizer"
+
+        async def messages() -> AsyncIterator[SimpleNamespace]:
+            nonlocal audio_only
+            yield SimpleNamespace(type=WSMsgType.TEXT, data=metadata)
+            audio_only = True
+            yield SimpleNamespace(type=WSMsgType.TEXT, data=metadata)
+            yield SimpleNamespace(type=WSMsgType.BINARY, data=artwork)
+            yield SimpleNamespace(type=WSMsgType.BINARY, data=visualizer)
+            yield SimpleNamespace(type=WSMsgType.BINARY, data=audio)
+
+        cast("MagicMock", handler.mass.players.is_player_audio_only).side_effect = (
+            lambda _player_id: audio_only
+        )
+        client_ws = AsyncMock()
+        context = _SendspinConnectionContext("web_player")
+
+        await handler._forward_internal_to_client(
+            client_ws,
+            cast("aiohttp.ClientWebSocketResponse", messages()),
+            context,
+        )
+
+        client_ws.send_str.assert_awaited_once_with(metadata)
+        client_ws.send_bytes.assert_awaited_once_with(audio)

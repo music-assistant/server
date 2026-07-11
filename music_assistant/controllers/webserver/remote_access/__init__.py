@@ -198,6 +198,7 @@ class RemoteAccessManager:
             ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
             # Pass callback to set sendspin player on websocket client
             set_sendspin_player_callback=self.webserver.set_sendspin_player_for_webrtc_session,
+            is_sendspin_player_audio_only=self.mass.players.is_player_audio_only,
         )
 
         await self.gateway.start()

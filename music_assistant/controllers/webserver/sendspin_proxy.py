@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -22,6 +23,10 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     is_request_from_ingress,
 )
+from music_assistant.helpers.sendspin import (
+    filter_audio_only_sendspin_message,
+    get_sendspin_client_id,
+)
 from music_assistant.helpers.util import format_ip_for_url
 
 if TYPE_CHECKING:
@@ -30,6 +35,13 @@ if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.sendspin_proxy")
+
+
+@dataclass
+class _SendspinConnectionContext:
+    """Mutable state shared by both forwarding directions."""
+
+    player_id: str | None = None
 
 
 class SendspinProxyHandler:
@@ -78,6 +90,7 @@ class SendspinProxyHandler:
         self.logger.debug("Sendspin proxy connection from %s", request.remote)
 
         # Check for ingress authentication (HA handles auth via headers)
+        sendspin_player_id: str | None = None
         if is_request_from_ingress(request):
             user = await get_authenticated_user(request)
             if not user:
@@ -90,7 +103,7 @@ class SendspinProxyHandler:
         else:
             # Regular auth via first message
             try:
-                user = await self._authenticate(wsock)
+                user, sendspin_player_id = await self._authenticate(wsock)
                 if not user:
                     return wsock
             except TimeoutError:
@@ -129,7 +142,7 @@ class SendspinProxyHandler:
         self.logger.debug("Sendspin proxy authenticated and connected for %s", request.remote)
 
         try:
-            await self._proxy_messages(wsock, internal_ws)
+            await self._proxy_messages(wsock, internal_ws, sendspin_player_id)
         finally:
             if not internal_ws.closed:
                 await internal_ws.close()
@@ -138,39 +151,39 @@ class SendspinProxyHandler:
 
         return wsock
 
-    async def _authenticate(self, wsock: web.WebSocketResponse) -> User | None:
+    async def _authenticate(self, wsock: web.WebSocketResponse) -> tuple[User | None, str | None]:
         """
         Wait for and validate authentication message.
 
         :param wsock: The client WebSocket connection.
-        :return: The authenticated user, or None if authentication failed.
+        :return: The authenticated user and Sendspin player ID.
         """
         async with asyncio.timeout(10):
             msg = await wsock.receive()
 
         if msg.type != WSMsgType.TEXT:
             await wsock.close(code=4001, message=b"Expected text message for auth")
-            return None
+            return None, None
 
         try:
             auth_data = json.loads(msg.data)
         except json.JSONDecodeError:
             await wsock.close(code=4001, message=b"Invalid JSON in auth message")
-            return None
+            return None, None
 
         if auth_data.get("type") != "auth":
             await wsock.close(code=4001, message=b"First message must be auth")
-            return None
+            return None, None
 
         token = auth_data.get("token")
         if not token:
             await wsock.close(code=4001, message=b"Token required in auth message")
-            return None
+            return None, None
 
         user = await self.webserver.auth.authenticate_with_token(token)
         if not user:
             await wsock.close(code=4001, message=b"Invalid or expired token")
-            return None
+            return None, None
 
         # Set the sendspin player_id on the user's websocket client(s)
         # This allows the player controller to auto-whitelist this (web)player
@@ -182,24 +195,27 @@ class SendspinProxyHandler:
 
         self.logger.debug("Sendspin proxy authenticated user: %s", user.username)
         await wsock.send_str('{"type": "auth_ok"}')
-        return user
+        return user, client_id if isinstance(client_id, str) else None
 
     async def _proxy_messages(
         self,
         client_ws: web.WebSocketResponse,
         internal_ws: aiohttp.ClientWebSocketResponse,
+        player_id: str | None = None,
     ) -> None:
         """
         Proxy messages bidirectionally between client and internal Sendspin server.
 
         :param client_ws: The client WebSocket connection.
         :param internal_ws: The internal Sendspin server WebSocket connection.
+        :param player_id: The authenticated Sendspin player ID, if known.
         """
+        context = _SendspinConnectionContext(player_id)
         client_to_internal = asyncio.create_task(
-            self._forward_client_to_internal(client_ws, internal_ws)
+            self._forward_client_to_internal(client_ws, internal_ws, context)
         )
         internal_to_client = asyncio.create_task(
-            self._forward_internal_to_client(client_ws, internal_ws)
+            self._forward_internal_to_client(client_ws, internal_ws, context)
         )
 
         done, pending = await asyncio.wait(
@@ -249,15 +265,19 @@ class SendspinProxyHandler:
         self,
         client_ws: web.WebSocketResponse,
         internal_ws: aiohttp.ClientWebSocketResponse,
+        context: _SendspinConnectionContext,
     ) -> None:
         """
         Forward messages from client to internal Sendspin server.
 
         :param client_ws: The client WebSocket connection.
         :param internal_ws: The internal Sendspin server WebSocket connection.
+        :param context: Shared connection state.
         """
         async for msg in client_ws:
             if msg.type == WSMsgType.TEXT:
+                if player_id := get_sendspin_client_id(msg.data):
+                    context.player_id = player_id
                 await internal_ws.send_str(msg.data)
             elif msg.type == WSMsgType.BINARY:
                 await internal_ws.send_bytes(msg.data)
@@ -270,19 +290,35 @@ class SendspinProxyHandler:
         self,
         client_ws: web.WebSocketResponse,
         internal_ws: aiohttp.ClientWebSocketResponse,
+        context: _SendspinConnectionContext,
     ) -> None:
         """
         Forward messages from internal Sendspin server to client.
 
         :param client_ws: The client WebSocket connection.
         :param internal_ws: The internal Sendspin server WebSocket connection.
+        :param context: Shared connection state.
         """
         async for msg in internal_ws:
             if msg.type == WSMsgType.TEXT:
-                await client_ws.send_str(msg.data)
+                data = self._filter_outbound_message(context, msg.data)
+                if isinstance(data, str):
+                    await client_ws.send_str(data)
             elif msg.type == WSMsgType.BINARY:
-                await client_ws.send_bytes(msg.data)
+                data = self._filter_outbound_message(context, msg.data)
+                if isinstance(data, bytes):
+                    await client_ws.send_bytes(data)
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
                 if msg.type == WSMsgType.ERROR:
                     self.logger.debug("Sendspin proxy internal transport error: %s", msg.data)
                 break
+
+    def _filter_outbound_message(
+        self, context: _SendspinConnectionContext, message: str | bytes
+    ) -> str | bytes | None:
+        """Return the outbound message allowed for this connection."""
+        if context.player_id is None or not self.mass.players.is_player_audio_only(
+            context.player_id
+        ):
+            return message
+        return filter_audio_only_sendspin_message(message)

@@ -14,7 +14,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
@@ -193,6 +194,36 @@ class TestSyncedPlayers:
         # Leader should be able to see its own members (for ungrouping)
         assert "member_a" in leader.state.can_group_with
         assert "member_b" in leader.state.can_group_with
+
+    def test_audio_only_member_does_not_inherit_group_media(self, mock_mass: MagicMock) -> None:
+        """Only a marked grouped child has current media redacted."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        mock_mass.player_queues.get.return_value = None
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_group_members = ["leader", "member"]
+        leader._attr_current_media = PlayerMedia(
+            uri="library://track/answer",
+            media_type=MediaType.TRACK,
+            title="Answer",
+            artist="Artist",
+        )
+        member = MockPlayer(provider, "member", "Member")
+        leader.initialized.set()
+        member.initialized.set()
+        controller._players = {"leader": leader, "member": member}
+        mock_mass.players = controller
+        leader.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+        assert member.state.current_media is leader.state.current_media
+
+        controller.register_audio_only_player("member")
+
+        assert member.state.current_media is None
+        assert leader.state.current_media is not None
+        controller.unregister_audio_only_player("member")
+        assert member.state.current_media is leader.state.current_media
 
 
 class TestSyncLeaderBehavior:

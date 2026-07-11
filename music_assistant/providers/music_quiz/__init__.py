@@ -1002,13 +1002,14 @@ class MusicQuizPlugin(PluginProvider):
                     owner_instance_id=self.instance_id,
                     display_name=game_name or "Music Quiz",
                     session_id=self.instance_id,
+                    audio_only=True,
                 )
             except SetupFailedError as err:
                 self.logger.warning("Unable to create remote quiz session: %s", err)
         elif player_id := self._resolve_venue_player_id():
             try:
                 self._playback_session = await SharedPlaybackSession.create_venue(
-                    self.mass, player_id
+                    self.mass, player_id, audio_only=True
                 )
             except SetupFailedError as err:
                 self.logger.warning("Unable to create venue quiz session: %s", err)
