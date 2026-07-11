@@ -49,8 +49,8 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     IdentifierType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
 )
@@ -1297,10 +1297,13 @@ class SendspinProvider(PlayerProvider):
         """
         if self._unloading:
             return
+        sendspin_client = self.server_api.get_client(client_id)
+        if sendspin_client is None:
+            return
         existing_player = self.mass.players.get_player(client_id)
         if not isinstance(existing_player, SendspinBasePlayer):
             return
-        existing_player._refresh_client_info(self.server_api.get_client(client_id))
+        existing_player._refresh_client_info(sendspin_client)
 
     async def _handle_client_connected(self, client_id: str) -> None:
         """
@@ -1332,7 +1335,7 @@ class SendspinProvider(PlayerProvider):
         if not isinstance(existing_player, SendspinBasePlayer):
             return
         # Remember playing state for auto-resume on reconnect
-        if existing_player.state == PlayerState.PLAYING:  # type: ignore[comparison-overlap]
+        if existing_player.playback_state is PlaybackState.PLAYING:
             existing_player._was_playing = True
             self.logger.debug(
                 "Client %s disconnected while playing, marked for auto-resume (reason=%s)",
