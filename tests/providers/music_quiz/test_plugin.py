@@ -25,6 +25,7 @@ from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz import (
     MUSIC_QUIZ_GUEST_USER,
     PLAYER_RECONNECT_GRACE_SECONDS,
+    REPLAY_AUTO_START_SECONDS,
     MusicQuizPlugin,
     get_config_entries,
 )
@@ -208,6 +209,7 @@ def _create_plugin(
     plugin._quiz_type = None
     plugin._answer_type = None
     plugin._game_lock = asyncio.Lock()
+    plugin._game_generation = 0
     plugin._playback_session = None
     plugin._playback_lock = asyncio.Lock()
     plugin._next_round_task = None
@@ -271,6 +273,22 @@ def _round_timer_call(plugin: MusicQuizPlugin, task_id: str) -> tuple[float, Any
                 cast("int", timer_call.args[2]),
             )
     raise AssertionError(f"No round timer was scheduled for {task_id}")
+
+
+def _replay_timer_call(
+    plugin: MusicQuizPlugin,
+) -> tuple[float, Any, MusicQuizGame, int, float]:
+    """Return the most recently scheduled replay auto-start timer."""
+    for timer_call in reversed(cast("MagicMock", plugin.mass.call_later).call_args_list):
+        if timer_call.kwargs.get("task_id") == plugin._replay_auto_start_timer_id:
+            return (
+                cast("float", timer_call.args[0]),
+                timer_call.args[1],
+                cast("MusicQuizGame", timer_call.args[2]),
+                cast("int", timer_call.args[3]),
+                cast("float", timer_call.args[4]),
+            )
+    raise AssertionError("No replay auto-start timer was scheduled")
 
 
 def _timeline_answer_state(game_round: MusicQuizRound) -> TimelineRoundState:
@@ -1924,6 +1942,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "round_count",
         "suggestion_count",
         "answer_duration",
+        "auto_start_at",
         "players",
         "current_round",
     }
@@ -2032,6 +2051,7 @@ async def test_game_info_exposes_game_identity_and_playback_mode() -> None:
         "mode": "remote",
         "player_count": 0,
         "round_count": 5,
+        "auto_start_at": None,
     }
 
 
@@ -2578,6 +2598,342 @@ async def test_reset_preserves_quiz_type_in_state_and_events() -> None:
     payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]
     assert payload["state"]["quiz_type"] == "guess_the_song"
     assert payload["state"]["answer_type"] == "multiple_choice"
+
+
+@pytest.mark.asyncio
+async def test_replay_reset_schedules_and_serializes_authoritative_deadline() -> None:
+    """Expose one 30-second replay deadline in host, public and personal state."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+        host_state = await plugin.reset(auto_start=True)
+        with patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ):
+            personal_state = await plugin.get_player_state(player_ids["Alice"])
+        game_info = await plugin.get_game_info()
+
+    delay, _, scheduled_game, generation, deadline = _replay_timer_call(plugin)
+    public_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    assert delay == REPLAY_AUTO_START_SECONDS
+    assert deadline == 100.0 + REPLAY_AUTO_START_SECONDS
+    assert scheduled_game is game
+    assert generation == plugin._game_generation
+    assert game.auto_start_at == deadline
+    assert host_state["auto_start_at"] == deadline
+    assert public_state["auto_start_at"] == deadline
+    assert personal_state["auto_start_at"] == deadline
+    assert game_info is not None
+    assert game_info["auto_start_at"] == deadline
+
+
+@pytest.mark.asyncio
+async def test_manual_or_inactive_replay_reset_does_not_schedule() -> None:
+    """Keep reset manual by default and ignore stale player dictionary entries."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+    game = plugin._game
+    assert game is not None
+    player = game.players[player_ids["Alice"]]
+    player.last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+        manual_state = await plugin.reset()
+    assert manual_state["auto_start_at"] is None
+    assert not any(
+        call.kwargs.get("task_id") == plugin._replay_auto_start_timer_id
+        for call in cast("MagicMock", plugin.mass.call_later).call_args_list
+    )
+
+    cast("MagicMock", plugin.mass.call_later).reset_mock()
+    player.last_seen = 40.0
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+        inactive_state = await plugin.reset(auto_start=True)
+
+    assert player.player_id in game.players
+    assert inactive_state["phase"] == "lobby"
+    assert inactive_state["auto_start_at"] is None
+    assert not any(
+        call.kwargs.get("task_id") == plugin._replay_auto_start_timer_id
+        for call in cast("MagicMock", plugin.mass.call_later).call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_start_cancels_replay_countdown_and_starts_once() -> None:
+    """Let the host start immediately without a later timer duplicating the round."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+        await plugin.reset(auto_start=True)
+    _, callback, scheduled_game, generation, deadline = _replay_timer_call(plugin)
+    cast("AsyncMock", plugin._play_track).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+
+    state = await plugin.start_game()
+
+    assert state["phase"] == "answering"
+    assert state["auto_start_at"] is None
+    assert game.auto_start_at is None
+    assert len(game.rounds) == 1
+    cast("AsyncMock", plugin._play_track).assert_awaited_once()
+    cast("MagicMock", plugin.mass.cancel_timer).assert_called_once_with(
+        plugin._replay_auto_start_timer_id
+    )
+    cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(
+        plugin._replay_auto_start_timer_id
+    )
+
+    await callback(scheduled_game, generation, deadline)
+
+    assert len(game.rounds) == 1
+    cast("AsyncMock", plugin._play_track).assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_replay_deadline_starts_once_in_system_context() -> None:
+    """Run timed preparation and playback without inheriting the host request."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+    prepare_contexts: list[tuple[User | None, User | None]] = []
+    playback_contexts: list[tuple[User | None, User | None]] = []
+
+    async def _prepare_round(
+        round_index: int,
+        _previous_rounds: list[MusicQuizRound],
+    ) -> MusicQuizRound:
+        prepare_contexts.append((current_user.get(), impersonated_user.get()))
+        return _make_round(round_index)
+
+    async def _play_track(_track_uri: str) -> None:
+        playback_contexts.append((current_user.get(), impersonated_user.get()))
+
+    prepare_round = AsyncMock(side_effect=_prepare_round)
+    plugin._play_track = AsyncMock(side_effect=_play_track)  # type: ignore[method-assign]
+    requesting_user = cast("User", _guest_user())
+    requesting_impersonation = cast("User", _guest_user())
+    current_user_token = current_user.set(requesting_user)
+    impersonated_user_token = impersonated_user.set(requesting_impersonation)
+    try:
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.quiz_types.guess_the_song."
+                "GuessTheSongQuizType.prepare_round",
+                new=prepare_round,
+            ),
+            patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
+        ):
+            await plugin.reset(auto_start=True)
+        _, callback, scheduled_game, generation, deadline = _replay_timer_call(plugin)
+
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=130.0):
+            await callback(scheduled_game, generation, deadline)
+            await callback(scheduled_game, generation, deadline)
+
+        assert current_user.get() is requesting_user
+        assert impersonated_user.get() is requesting_impersonation
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
+
+    prepare_round.assert_awaited_once_with(0, [])
+    assert prepare_contexts == [(None, None)]
+    assert playback_contexts == [(None, None)]
+    assert game.phase == MusicQuizPhase.ANSWERING
+    assert len(game.rounds) == 1
+    assert game.auto_start_at is None
+
+
+@pytest.mark.asyncio
+async def test_all_players_expiring_cancels_replay_without_rescheduling_on_join() -> None:
+    """Cancel an empty replay lobby and require another explicit reset to rearm it."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=140.0):
+        await plugin.reset(auto_start=True)
+    _, replay_callback, scheduled_game, generation, deadline = _replay_timer_call(plugin)
+    presence_delay, presence_callback = _presence_timer_call(plugin)
+    assert presence_delay == 20.0
+    signal = cast("MagicMock", plugin.signal_provider_event)
+    signal.reset_mock()
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=160.0):
+        await presence_callback()
+
+    assert game.players == {}
+    assert game.phase == MusicQuizPhase.LOBBY
+    assert game.auto_start_at is None
+    cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._replay_auto_start_timer_id)
+    cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(
+        plugin._replay_auto_start_timer_id
+    )
+    cancelled_state = signal.call_args.args[0]["state"]
+    assert cancelled_state["auto_start_at"] is None
+    assert cancelled_state["players"] == []
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=165.0),
+    ):
+        joined = await plugin.join_game("Bob")
+
+    assert joined["state"]["auto_start_at"] is None
+    assert (
+        sum(
+            call.kwargs.get("task_id") == plugin._replay_auto_start_timer_id
+            for call in cast("MagicMock", plugin.mass.call_later).call_args_list
+        )
+        == 1
+    )
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=170.0):
+        await replay_callback(scheduled_game, generation, deadline)
+    assert game.phase == MusicQuizPhase.LOBBY
+    assert game.rounds == []
+
+
+@pytest.mark.asyncio
+async def test_stale_replay_generation_cannot_reuse_identical_deadline() -> None:
+    """Reject an old reset callback even when a new reset chose the same epoch deadline."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+        await plugin.reset(auto_start=True)
+        old_timer = _replay_timer_call(plugin)
+        await plugin.reset(auto_start=True)
+        current_timer = _replay_timer_call(plugin)
+
+    assert old_timer[2] is current_timer[2] is game
+    assert old_timer[3] != current_timer[3]
+    assert old_timer[4] == current_timer[4]
+    cast("AsyncMock", plugin._play_track).reset_mock()
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=130.0):
+        await old_timer[1](*old_timer[2:])
+        assert _phase(plugin) == MusicQuizPhase.LOBBY
+        assert game.rounds == []
+        await current_timer[1](*current_timer[2:])
+
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    assert len(game.rounds) == 1
+    cast("AsyncMock", plugin._play_track).assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle_action", ["reset", "delete", "unload", "replace"])
+async def test_stale_replay_callbacks_ignore_lifecycle_changes(lifecycle_action: str) -> None:
+    """Keep callbacks harmless after every lifecycle path that invalidates a game."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+        await plugin.reset(auto_start=True)
+    timer = _replay_timer_call(plugin)
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+
+    if lifecycle_action == "reset":
+        await plugin.reset()
+    elif lifecycle_action == "delete":
+        await plugin.delete_game()
+    elif lifecycle_action == "unload":
+        await plugin.unload()
+    else:
+        await plugin.create_game(source_uris=["library://playlist/replacement"])
+
+    cast("MagicMock", plugin.mass.cancel_task).assert_any_call(plugin._replay_auto_start_timer_id)
+    cast("AsyncMock", plugin._play_track).reset_mock()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=130.0):
+        await timer[1](*timer[2:])
+
+    cast("AsyncMock", plugin._play_track).assert_not_awaited()
+    if plugin._game is not None:
+        assert plugin._game.phase == MusicQuizPhase.LOBBY
+        assert plugin._game.rounds == []
+        assert plugin._game.auto_start_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["preparation", "playback"])
+async def test_failed_timed_start_remains_retryable(failure_stage: str) -> None:
+    """Clear a failed timed start and let the host retry the unchanged lobby."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    game.players[player_ids["Alice"]].last_seen = 100.0
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+        await plugin.reset(auto_start=True)
+    timer = _replay_timer_call(plugin)
+    plugin._cancel_next_round_task()
+    quiz_type = plugin._quiz_type
+    assert quiz_type is not None
+    prepared_round = _make_round(0)
+    prepare_round = AsyncMock()
+    quiz_type.prepare_round = prepare_round  # type: ignore[method-assign]
+    if failure_stage == "preparation":
+        failure = InvalidDataError("Round preparation failed")
+        prepare_round.side_effect = failure
+    else:
+        failure = MusicQuizNoPlaybackTargetError("Playback unavailable")
+        prepare_round.return_value = prepared_round
+        cast("AsyncMock", plugin._play_track).side_effect = failure
+    signal = cast("MagicMock", plugin.signal_provider_event)
+    signal.reset_mock()
+    cast("MagicMock", plugin.logger.error).reset_mock()
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=130.0):
+        await timer[1](*timer[2:])
+
+    assert game.phase == MusicQuizPhase.LOBBY
+    assert game.rounds == []
+    assert game.auto_start_at is None
+    assert signal.call_args.args[0]["state"]["auto_start_at"] is None
+    cast("MagicMock", plugin.logger.error).assert_called_once_with(
+        "Could not automatically start Music Quiz replay: %s",
+        failure,
+        exc_info=failure,
+    )
+
+    recovered_round = _make_round(0)
+    prepare_round.side_effect = None
+    prepare_round.return_value = recovered_round
+    cast("AsyncMock", plugin._play_track).side_effect = None
+
+    state = await plugin.start_game()
+
+    assert state["phase"] == "answering"
+    assert game.rounds == [recovered_round]
+    assert game.auto_start_at is None
 
 
 @pytest.mark.asyncio

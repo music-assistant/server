@@ -331,10 +331,12 @@ def test_reset_game_keeps_players_and_config_for_new_game() -> None:
     game.players["p1"].ready = True
     game.players["p2"].score = 500
     game.players["p2"].ready = True
+    game.auto_start_at = 30
 
     reset_game(game)
 
     assert game.phase == MusicQuizPhase.LOBBY
+    assert game.to_dict()["auto_start_at"] is None
     assert game.quiz_type == "guess_the_song"
     assert game.answer_type == MusicQuizAnswerType.MULTIPLE_CHOICE
     assert game.current_round_index is None
