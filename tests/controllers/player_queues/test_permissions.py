@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
@@ -197,6 +197,83 @@ def test_raw_queue_methods_remain_available_to_internal_callers() -> None:
     assert controller.all()
     assert controller.get("host") is not None
     assert controller.items("host")
+
+
+async def test_play_media_api_denies_guest_but_raw_method_remains_available() -> None:
+    """Only the API wrapper authorizes play-media requests."""
+    controller = _create_controller("host")
+    _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
+    handle_play_media = AsyncMock()
+
+    with patch.object(controller, "_handle_play_media", new=handle_play_media):
+        with pytest.raises(InsufficientPermissions):
+            await controller.play_media_for_api("host", "library://track/1")
+
+        await controller.play_media("host", "library://track/1")
+
+    handle_play_media.assert_awaited_once_with("host", "library://track/1", None, False, None, None)
+
+
+async def test_stop_api_denies_guest_but_raw_method_remains_available() -> None:
+    """Only the API wrapper authorizes stop requests."""
+    controller = _create_controller("host")
+    _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
+    players = cast("MagicMock", controller.mass.players)
+    players.get_player.return_value = MagicMock()
+    players._handle_cmd_stop = AsyncMock()
+
+    with (
+        patch.object(controller, "_cleanup_queue_audio_data", return_value=None),
+        pytest.raises(InsufficientPermissions),
+    ):
+        await controller.stop_for_api("host")
+
+    await controller.stop("host")
+
+    players._handle_cmd_stop.assert_awaited_once_with("host")
+
+
+def test_clear_api_denies_guest_but_raw_method_remains_available() -> None:
+    """Only the API wrapper authorizes clear requests."""
+    controller = _create_controller("host")
+    _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
+
+    with pytest.raises(InsufficientPermissions):
+        controller.clear_for_api("host")
+
+    with (
+        patch.object(controller, "store_sources"),
+        patch.object(controller, "_cleanup_queue_audio_data", return_value=None),
+        patch.object(controller, "update_items") as update_items,
+    ):
+        controller.clear("host", skip_stop=True)
+
+    update_items.assert_called_once_with("host", [])
+
+
+@pytest.mark.parametrize(
+    ("source_queue_id", "target_queue_id"),
+    [("host", "allowed"), ("allowed", "host")],
+)
+async def test_transfer_api_authorizes_both_queues_but_raw_method_remains_available(
+    source_queue_id: str,
+    target_queue_id: str,
+) -> None:
+    """The API authorizes both transfer endpoints while trusted callers use the raw method."""
+    controller = _create_controller("host", "allowed")
+    _set_user(
+        UserRole.GUEST,
+        [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "allowed"],
+    )
+    transfer_queue = AsyncMock()
+
+    with patch.object(controller, "transfer_queue", new=transfer_queue):
+        with pytest.raises(InsufficientPermissions):
+            await controller.transfer_queue_for_api(source_queue_id, target_queue_id)
+
+        await controller.transfer_queue(source_queue_id, target_queue_id)
+
+    transfer_queue.assert_awaited_once_with(source_queue_id, target_queue_id)
 
 
 def test_missing_user_keeps_existing_access() -> None:

@@ -78,6 +78,26 @@ def test_reserved_guest_filter_player_id_is_rejected(provider: MockProvider) -> 
         MockPlayer(provider, GUEST_ACCESS_RESTRICTED_PLAYER_ID, "Reserved")
 
 
+async def test_cmd_stop_authorizes_resolved_active_queue(
+    mock_mass: MagicMock,
+    controller: PlayerController,
+    provider: MockProvider,
+) -> None:
+    """Stopping a player authorizes the active queue selected after redirection."""
+    player = MockPlayer(provider, "allowed", "Allowed")
+    controller._players = {"allowed": player}
+    mock_mass.players = controller
+    player.update_state(signal_event=False)
+    active_queue = SimpleNamespace(queue_id="hidden")
+    controller.get_active_queue = MagicMock(return_value=active_queue)  # type: ignore[method-assign]
+    mock_mass.player_queues.stop_for_api = AsyncMock()
+
+    await controller.cmd_stop("allowed")
+
+    mock_mass.player_queues.stop_for_api.assert_awaited_once_with("hidden")
+    mock_mass.player_queues.stop.assert_not_called()
+
+
 class TestSetMembersValidation:
     """Test cmd_set_members validation logic."""
 

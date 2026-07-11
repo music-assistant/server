@@ -603,6 +603,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command(
         "player_queues/play_media", required_scope=Scope.QUEUES_CONTROL, allow_impersonation=True
     )
+    async def play_media_for_api(
+        self,
+        queue_id: str,
+        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+        option: QueueOption | None = None,
+        radio_mode: bool = False,
+        start_item: PlayableMediaItemType | str | None = None,
+        sort_by: str | None = None,
+    ) -> None:
+        """Validate queue access and play media from an API request."""
+        self._check_player_permission(queue_id)
+        await self.play_media(queue_id, media, option, radio_mode, start_item, sort_by)
+
     async def play_media(
         self,
         queue_id: str,
@@ -623,7 +636,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param start_item: Optional item to start the playlist or album from.
         :param sort_by: Optional sort key to order tracks before applying start_item.
         """
-        self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # Lock is acquired by the @handle_play_action decorator on the internal handler
@@ -710,6 +722,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.update_items(queue_id, queue_items)
 
     @api_command("player_queues/clear", required_scope=Scope.QUEUES_CONTROL)
+    def clear_for_api(self, queue_id: str, skip_stop: bool = False) -> None:
+        """Validate queue access and clear a queue from an API request."""
+        self._check_player_permission(queue_id)
+        self.clear(queue_id, skip_stop)
+
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue."""
         queue = self._queue_data[queue_id].queue
@@ -749,6 +766,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
 
     @api_command("player_queues/stop", required_scope=Scope.QUEUES_CONTROL)
+    async def stop_for_api(self, queue_id: str) -> None:
+        """Validate queue access and stop playback from an API request."""
+        self._check_player_permission(queue_id)
+        await self.stop(queue_id)
+
     @handle_play_action
     async def stop(self, queue_id: str) -> None:
         """
@@ -756,7 +778,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         # cancel in-flight preload/enqueue-next so it can't enqueue after stop
@@ -1127,6 +1148,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._set_transitioning(queue_id, False)
 
     @api_command("player_queues/transfer", required_scope=Scope.QUEUES_CONTROL)
+    async def transfer_queue_for_api(
+        self,
+        source_queue_id: str,
+        target_queue_id: str,
+        auto_play: bool | None = None,
+    ) -> None:
+        """Validate queue access and transfer a queue from an API request."""
+        self._check_player_permission(source_queue_id)
+        self._check_player_permission(target_queue_id)
+        await self.transfer_queue(source_queue_id, target_queue_id, auto_play)
+
     async def transfer_queue(
         self,
         source_queue_id: str,
