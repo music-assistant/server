@@ -27,6 +27,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.player import PlayerSource
 
+from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
 
@@ -69,6 +70,12 @@ def controller(mock_mass: MagicMock) -> PlayerController:
 def provider(mock_mass: MagicMock) -> MockProvider:
     """Create a mock provider."""
     return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+
+
+def test_reserved_guest_filter_player_id_is_rejected(provider: MockProvider) -> None:
+    """A real player cannot use the managed-guest filter sentinel."""
+    with pytest.raises(InvalidDataError, match="reserved"):
+        MockPlayer(provider, GUEST_ACCESS_RESTRICTED_PLAYER_ID, "Reserved")
 
 
 class TestSetMembersValidation:
@@ -1224,6 +1231,41 @@ class TestPlayAnnouncementCleanup:
             await controller.play_announcement("player_1", "http://test/announcement.mp3")
 
         assert announcements == {}
+
+
+class TestScheduleActiveOutputProtocolClear:
+    """Test the deferred clear of a player's active output protocol."""
+
+    def test_schedule_starts_cancellable_clear_task(self, mock_mass: MagicMock) -> None:
+        """Scheduling defers the clear to a single, per-player, cancellable task."""
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.player_id = "player_1"
+
+        controller.schedule_active_output_protocol_clear(player)
+
+        mock_mass.create_task.assert_called_once()
+        # close the coroutine passed to the mocked create_task to avoid a
+        # "coroutine was never awaited" warning
+        mock_mass.create_task.call_args.args[0].close()
+        # no abort_existing: a duplicate schedule must reuse the pending clear
+        # (deduped by task_id) instead of replacing it with an untracked task
+        assert mock_mass.create_task.call_args.kwargs == {
+            "task_id": "clear_active_protocol_player_1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_clears_protocol_once_player_idle(self, mock_mass: MagicMock) -> None:
+        """The protocol is cleared after waiting for the player to reach IDLE."""
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.player_id = "player_1"
+
+        with patch.object(controller, "_wait_for_playback_state", new=AsyncMock()) as wait_mock:
+            await controller._clear_active_output_protocol_when_idle(player)
+
+        wait_mock.assert_awaited_once_with(player, PlaybackState.IDLE, timeout=10)
+        player.set_active_output_protocol.assert_called_once_with(None)
 
 
 if __name__ == "__main__":

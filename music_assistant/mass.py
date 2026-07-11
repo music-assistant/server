@@ -745,13 +745,21 @@ class MusicAssistant:
         self,
         prov_conf: ProviderConfig,
     ) -> None:
-        """Try to load a provider and catch errors."""
+        """Load (or reload) a provider from its config, recording any load failure."""
         # cancel existing (re)load timer if needed
         task_id = f"load_provider_{prov_conf.instance_id}"
         if existing := self._tracked_timers.pop(task_id, None):
             existing.cancel()
 
-        await self._load_provider(prov_conf)
+        try:
+            await self._load_provider(prov_conf)
+        except Exception as exc:
+            # persist the failure so the provider surfaces a clear status (e.g. auth_required)
+            # to the UI instead of appearing stuck loading, then propagate to the caller
+            self.config.update_provider_last_error(
+                prov_conf.instance_id, _provider_error_from_exc(exc)
+            )
+            raise
 
         # (re)load any dependants
         prov_configs = await self.config.get_provider_configs(include_values=True)
@@ -876,9 +884,18 @@ class MusicAssistant:
                 await self._update_available_providers_cache()
                 self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
-    async def unload_provider_with_error(self, instance_id: str, error: str) -> None:
-        """Unload a provider when it got into trouble which needs user interaction."""
-        prov_error = ProviderError(error_code=999, message=error)
+    async def unload_provider_with_error(self, instance_id: str, error: str | Exception) -> None:
+        """
+        Unload a provider that hit a problem which needs user interaction.
+
+        :param error: The originating exception (preferred, so e.g. a LoginFailed surfaces as an
+            auth-required status with a localized message) or a plain string for a generic error.
+        """
+        prov_error = (
+            _provider_error_from_exc(error)
+            if isinstance(error, Exception)
+            else ProviderError(error_code=999, message=error)
+        )
         self.config.update_provider_last_error(instance_id, prov_error)
         await self.unload_provider(instance_id)
 

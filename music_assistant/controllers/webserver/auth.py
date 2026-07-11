@@ -65,6 +65,8 @@ TOKEN_ABSOLUTE_MAX_EXPIRATION = 90
 TOKEN_GUEST_EXPIRATION = 1  # Guest sessions: short fixed lifetime, no renewal
 # Days before the absolute cap at which the HA integration token is rotated
 HA_TOKEN_ROTATION_MARGIN = 7
+# Minimum age of a token's stored last_used_at before token activity is persisted again
+TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
 
 HA_TOKEN_SETTING_KEY = "ha_integration_token"
 HA_TOKEN_NAME = "Home Assistant Integration"
@@ -191,12 +193,8 @@ class AuthenticationManager:
             updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
             if updates is None:
                 return None
-
-            await self.database.update(
-                "auth_tokens",
-                {"token_id": token_id},
-                updates,
-            )
+            if updates:
+                await self.database.update("auth_tokens", {"token_id": token_id}, updates)
 
             return user
 
@@ -231,12 +229,10 @@ class AuthenticationManager:
         legacy_updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
         if legacy_updates is None:
             return None
-
-        await self.database.update(
-            "auth_tokens",
-            {"token_id": token_row["token_id"]},
-            legacy_updates,
-        )
+        if legacy_updates:
+            await self.database.update(
+                "auth_tokens", {"token_id": token_row["token_id"]}, legacy_updates
+            )
 
         return user
 
@@ -727,6 +723,9 @@ class AuthenticationManager:
         """
         Get current user's auth tokens or another user's tokens (admin only).
 
+        The last_used_at timestamp is persisted at most once per hour, so it may lag
+        actual token usage by up to an hour.
+
         :param user_id: Optional user ID to get tokens for (admin only).
         :return: List of auth tokens.
         """
@@ -1023,6 +1022,8 @@ class AuthenticationManager:
         Short-lived tokens (for regular user sessions) are only created during login
         and auto-renew on each use (sliding 30-day expiration window).
 
+        Long-lived tokens cannot be created for guest accounts.
+
         :param name: The name/description for the token (e.g., "Home Assistant", "Mobile App").
         :param user_id: Optional user ID to create token for (admin only).
         :return: The created token string.
@@ -1043,6 +1044,10 @@ class AuthenticationManager:
                 raise InvalidDataError("User not found")
         else:
             target_user = current_user
+
+        # Guest access is temporary by design, deny tokens that would outlive it
+        if target_user.role == UserRole.GUEST:
+            raise InsufficientPermissions("Long-lived tokens cannot be created for guest accounts")
 
         # Create a long-lived token (only long-lived tokens can be created via this command)
         token = await self.create_token(target_user, name, is_long_lived=True)
@@ -1167,9 +1172,9 @@ class AuthenticationManager:
     ) -> User:
         """Update user player and provider filters (helper method)."""
         updates = {}
-        if player_filter is not None:
+        if player_filter is not None and player_filter != target_user.player_filter:
             updates["player_filter"] = json_dumps(player_filter)
-        if provider_filter is not None:
+        if provider_filter is not None and provider_filter != target_user.provider_filter:
             updates["provider_filter"] = json_dumps(provider_filter)
 
         if updates:
@@ -1178,6 +1183,7 @@ class AuthenticationManager:
             refreshed_user = await self.get_user(target_user.user_id)
             if not refreshed_user:
                 raise InvalidDataError("Failed to refresh user after filter update")
+            self.webserver.disconnect_websockets_for_user(target_user.user_id)
             return refreshed_user
         return target_user
 
@@ -1444,6 +1450,28 @@ class AuthenticationManager:
         )
         row = await cursor.fetchone()
         return str(row["code"]) if row else None
+
+    async def get_join_code_expiry(self, code: str, user: User | None = None) -> datetime | None:
+        """
+        Get the expiry datetime for an active join code.
+
+        :param code: The join code to look up.
+        :param user: Optional user that must own the join code.
+        :return: The expiry datetime if the code is active, None otherwise.
+        """
+        query = """
+            SELECT expires_at FROM join_codes
+            WHERE code = :code
+            AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
+            """
+        params: dict[str, Any] = {"code": code.upper(), "now": utc().isoformat()}
+        if user is not None:
+            query += "AND user_id = :user_id "
+            params["user_id"] = user.user_id
+        cursor = await self.database.execute(query + "LIMIT 1", params)
+        row = await cursor.fetchone()
+        return datetime.fromisoformat(str(row["expires_at"])) if row else None
 
     @api_command("auth/join_code/exchange", authenticated=False)
     async def exchange_join_code(self, code: str) -> dict[str, Any]:
@@ -1943,21 +1971,31 @@ class AuthenticationManager:
         :param token_row: The auth_tokens row for the token being used.
         :param user: The user owning the token.
         :param is_long_lived: Whether the token is long-lived.
-        :return: Column updates to apply, or None if the token exceeded its max lifetime
-            (in which case the token row is deleted).
+        :return: Column updates to apply (empty when the stored activity timestamp is
+            still fresh, so callers can skip the write), or None if the token exceeded
+            its max lifetime (in which case the token row is deleted).
         """
         now = utc()
-        updates = {"last_used_at": now.isoformat()}
 
         if not is_long_lived:
             created_at = datetime.fromisoformat(token_row["created_at"])
             if now > created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION):
                 await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
                 return None
-            if user.role != UserRole.GUEST:
-                # Short-lived token: extend expiration on each use (sliding window)
-                new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-                updates["expires_at"] = new_expires_at.isoformat()
+
+        # The HTTP API authenticates on every request, so persisting activity per use
+        # would cost an UPDATE+commit (an fsync) per request. Skip the write while the
+        # stored timestamp is fresh; last_used_at and the sliding expiration then lag
+        # by at most this interval, which is negligible against the 30-day idle window.
+        if last_used_at := token_row["last_used_at"]:
+            if now - datetime.fromisoformat(last_used_at) < TOKEN_ACTIVITY_PERSIST_INTERVAL:
+                return {}
+
+        updates = {"last_used_at": now.isoformat()}
+        if not is_long_lived and user.role != UserRole.GUEST:
+            # Short-lived token: extend expiration on each use (sliding window)
+            new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+            updates["expires_at"] = new_expires_at.isoformat()
 
         return updates
 

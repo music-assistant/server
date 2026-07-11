@@ -30,9 +30,9 @@ def _analysis(bpm: float, duration: float) -> AudioAnalysisData:
     return AudioAnalysisData(
         duration=duration,
         bpm=bpm,
-        beats=beats,
-        downbeats=beats[::4],
-        rms_energy=np.full(1800, 0.5, dtype=np.float32),
+        beats=beats.tolist(),
+        downbeats=beats[::4].tolist(),
+        rms_energy=np.full(1800, 0.5, dtype=np.float32).tolist(),
         key="A",
         mode="minor",
     )

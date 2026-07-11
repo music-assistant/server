@@ -27,7 +27,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
 from music_assistant_models.player import (
     DeviceInfo,
     OutputProtocol,
@@ -59,6 +59,7 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
+    GUEST_ACCESS_RESTRICTED_PLAYER_ID,
     PLAYER_CONTROL_PROTOCOL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
@@ -334,6 +335,8 @@ class Player(ABC):
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
+        if player_id == GUEST_ACCESS_RESTRICTED_PLAYER_ID:
+            raise InvalidDataError(f"Player ID {player_id} is reserved")
         # set mass as public variable
         self.mass = provider.mass
         self.logger = provider.logger
@@ -1508,9 +1511,9 @@ class Player(ABC):
         :param protocol_id: The protocol player_id to set as active, "native" for native playback,
             or None to clear the active protocol.
         """
-        # cancel any existing timer to set/clear the active protocol,
+        # cancel any pending scheduled protocol clear,
         # as we're explicitly setting it now
-        self.mass.cancel_timer(f"clear_active_protocol_{self.player_id}")
+        self.mass.cancel_task(f"clear_active_protocol_{self.player_id}")
         if self.__attr_active_output_protocol == protocol_id:
             return  # No change
         if protocol_id == self.player_id:

@@ -75,6 +75,7 @@ def create_mock_album(
     album.media_type = MediaType.ALBUM
     album.favorite = favorite
     album.provider_mappings = UniqueList(provider_mappings or [])
+    album.metadata = Mock(images=None)
     return album
 
 
@@ -875,6 +876,19 @@ async def test_library_items_default_filters_in_library_only() -> None:
     assert call_kwargs["in_library_only"] is True
 
 
+async def test_library_items_defaults_to_summary() -> None:
+    """library_items defaults to summary=True so list endpoints return slim rows."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl._ensure_provider_filter = Mock(return_value=None)
+    ctrl.get_library_items_by_query = AsyncMock(return_value=[])
+    ctrl.library_items = MediaControllerBase.library_items.__get__(ctrl)
+
+    await ctrl.library_items()
+
+    call_kwargs = ctrl.get_library_items_by_query.call_args[1]
+    assert call_kwargs["summary"] is True
+
+
 def test_ensure_provider_filter_keeps_plugin_provider_mappings() -> None:
     """Test that plugin providers are kept when a user music-provider filter is active."""
     ctrl = Mock(spec=MediaControllerBase)
@@ -1066,6 +1080,7 @@ async def test_update_item_in_library_skips_non_music_providers() -> None:
                     item_id="abc",
                 )
             ],
+            metadata=Mock(images=None),
         )
     )
 

@@ -23,6 +23,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    ArtistSummary,
     Audiobook,
     ItemMapping,
     ProviderMapping,
@@ -51,6 +52,8 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -61,6 +64,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     db_table = DB_TABLE_ARTISTS
     media_type = MediaType.ARTIST
     item_cls = Artist
+    summary_item_cls = ArtistSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -91,6 +95,17 @@ class ArtistsController(MediaControllerBase[Artist]):
             required_scope=Scope.LIBRARY_READ,
         )
 
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for artist summary listings."""
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            artists.artist_type,
+            {self._provider_mappings_query()} AS provider_mappings
+            FROM artists"""
+        return query, {}
+
     async def library_count(
         self,
         favorite_only: bool = False,
@@ -113,7 +128,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sql_query += f" WHERE {' AND '.join(query_parts)}"
         return await self.mass.music.database.get_count_from_query(sql_query)
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -125,6 +140,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         played_only: bool = False,
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
+        *,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Artist]:
         """
@@ -139,6 +156,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param album_artists_only: Only return artists that have albums.
         :param genre: Filter by genre id(s).
         :param artist_type: The artist's type
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
@@ -161,6 +180,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             extra_query_params=extra_query_params,
             played_only=played_only,
             in_library_only=True,
+            summary=summary,
         )
 
     async def tracks(
@@ -1098,3 +1118,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 provider_filter=[provider_instance_id_or_domain],
             )
         return []
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> ArtistSummary:
+        """Parse a raw summary db row into an ArtistSummary object."""
+        item = cast("ArtistSummary", super()._parse_summary_row(db_row))
+        item.artist_type = ArtistType(db_row["artist_type"])
+        return item

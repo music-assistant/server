@@ -333,7 +333,8 @@
       "options": {
         "audiobooks": "Audiobooks",
         "music": "Music",
-        "podcasts": "Podcasts"
+        "podcasts": "Podcasts",
+        "sound_effects": "Sound Effects"
       }
     },
     "mass_player_id": {
@@ -814,6 +815,9 @@
       },
       "podcasts": {
         "name": "Podcasts"
+      },
+      "sound_effects": {
+        "name": "Sound Effects"
       },
       "library": {
         "name": "Library"

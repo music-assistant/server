@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
@@ -192,7 +193,11 @@ class TestProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 ),
             },
-            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB]), genres={genre}),
+            metadata=MediaItemMetadata(
+                images=UniqueList([DEFAULT_THUMB]),
+                genres={genre},
+                release_date=datetime(2021, 6, 15, tzinfo=UTC),
+            ),
             disc_number=1,
             track_number=int(track_idx),
         )

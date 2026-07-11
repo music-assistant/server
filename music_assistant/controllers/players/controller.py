@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.json import SerializableType
 
 CACHE_CATEGORY_PLAYER_POWER = 1
 
@@ -276,6 +277,20 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         for player in self._players.values():
             if player.sleep_timer_expires_at is not None:
                 self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        players = list(self._players.values())
+        return {
+            "players_synced": sum(player.state.synced_to is not None for player in players),
+            "players_with_active_group": sum(
+                player.state.active_group is not None for player in players
+            ),
+            "announcements_in_progress": sum(
+                bool(player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)) for player in players
+            ),
+            "pending_protocol_evaluations": len(self._pending_protocol_evaluations),
+        }
 
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
@@ -2349,6 +2364,24 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_stop(player_id)
             await self.cmd_play(player_id)
 
+    def schedule_active_output_protocol_clear(self, player: Player) -> None:
+        """
+        Clear the player's active output protocol once it stops playing.
+
+        A device may keep reporting PLAYING for a short while after a stop
+        command, so the clear is deferred until the player reports IDLE (with a
+        timeout as fallback). Starting a new session cancels the pending clear
+        (see Player.set_active_output_protocol).
+
+        :param player: The player whose active output protocol must be cleared.
+        """
+        # Deduplicated per player via task_id: if a clear is already pending we
+        # keep it, so the single tracked task stays cancellable by a new session.
+        self.mass.create_task(
+            self._clear_active_output_protocol_when_idle(player),
+            task_id=f"clear_active_protocol_{player.player_id}",
+        )
+
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
         return iter(self._players.values())
@@ -2619,6 +2652,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         elapsed = time.time() - start_timestamp
         if elapsed < minimal_time:
             await asyncio.sleep(minimal_time - elapsed)
+
+    async def _clear_active_output_protocol_when_idle(self, player: Player) -> None:
+        """Wait for the player to stop playing, then clear its active output protocol."""
+        await self._wait_for_playback_state(player, PlaybackState.IDLE, timeout=10)
+        player.set_active_output_protocol(None)
 
     def _handle_membership_cleanup_on_state_change(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
@@ -4025,12 +4063,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # If there are still protocol group members, keep the protocol active so that
         # when playback resumes it continues on the same protocol.
         if target_player.player_id == player.player_id or len(target_player.group_members) <= 1:
-            self.mass.call_later(
-                5,
-                player.set_active_output_protocol,
-                None,
-                task_id=f"clear_active_protocol_{player_id}",
-            )
+            self.schedule_active_output_protocol_clear(player)
 
     async def _handle_cmd_play(self, player_id: str) -> None:
         """

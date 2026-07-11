@@ -155,8 +155,6 @@ class PodcastIndexProvider(MusicProvider):
         if not isinstance(item, Podcast):
             return await super().library_add(item)
 
-        stored_podcasts = cast("list[str]", self.config.get_value(CONF_STORED_PODCASTS))
-
         # Get the RSS URL from the podcast via API
         try:
             feed_url = await self._get_feed_url_for_podcast(item.item_id)
@@ -172,12 +170,12 @@ class PodcastIndexProvider(MusicProvider):
             )
             return False
 
+        stored_podcasts = cast("list[str]", self.get_config_value(CONF_STORED_PODCASTS))
         if feed_url in stored_podcasts:
             return False
 
         self.logger.debug("Adding podcast %s to library", item.name)
-        stored_podcasts.append(feed_url)
-        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, [*stored_podcasts, feed_url])
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -189,8 +187,6 @@ class PodcastIndexProvider(MusicProvider):
         logs a warning but still returns True to maintain the idempotent contract
         as required by MA convention.
         """
-        stored_podcasts = cast("list[str]", self.config.get_value(CONF_STORED_PODCASTS))
-
         # Get the RSS URL for this podcast
         try:
             feed_url = await self._get_feed_url_for_podcast(prov_item_id)
@@ -204,7 +200,11 @@ class PodcastIndexProvider(MusicProvider):
             # Still return True for idempotent operation
             return True
 
-        if not feed_url or feed_url not in stored_podcasts:
+        if not feed_url:
+            return True
+
+        stored_podcasts = cast("list[str]", self.get_config_value(CONF_STORED_PODCASTS))
+        if feed_url not in stored_podcasts:
             return True
 
         self.logger.debug("Removing podcast %s from library", prov_item_id)

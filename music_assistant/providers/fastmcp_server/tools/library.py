@@ -340,7 +340,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.tracks.library_items(limit=limit, offset=offset)
+        items = await mass.music.tracks.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_track(t) for t in items]
 
     @sub.tool(
@@ -359,7 +359,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.albums.library_items(limit=limit, offset=offset)
+        items = await mass.music.albums.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_album(a) for a in items]
 
     @sub.tool(
@@ -378,7 +378,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.artists.library_items(limit=limit, offset=offset)
+        items = await mass.music.artists.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_artist(a) for a in items]
 
     @sub.tool(
@@ -396,7 +396,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.playlists.library_items(limit=limit, offset=offset)
+        items = await mass.music.playlists.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_playlist(p) for p in items]
 
     @sub.tool(
@@ -414,7 +414,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.radio.library_items(limit=limit, offset=offset)
+        items = await mass.music.radio.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_radio(r) for r in items]
 
     @sub.tool(

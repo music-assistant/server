@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
@@ -17,6 +17,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Genre,
+    GenreSummary,
     MediaItemImage,
     MediaItemMetadata,
     RecommendationFolder,
@@ -45,6 +46,7 @@ from music_assistant.constants import (
     GENRE_ICONS_DIR_NAME,
     RESOURCES_DIR,
 )
+from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
@@ -54,6 +56,8 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant_models.event import MassEvent
 
     from music_assistant import MusicAssistant
@@ -127,6 +131,7 @@ class GenreController(MediaControllerBase[Genre]):
     db_table = DB_TABLE_GENRES
     media_type = MediaType.GENRE
     item_cls = Genre
+    summary_item_cls = GenreSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -263,6 +268,19 @@ class GenreController(MediaControllerBase[Genre]):
         FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
         return query, {}
 
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for genre summary listings."""
+        # Same derived table as the base query so excluded genres stay hidden.
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            {DB_TABLE_GENRES}.translation_key,
+            {DB_TABLE_GENRES}.content_type,
+            {self._provider_mappings_query()} AS provider_mappings
+        FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
+        return query, {}
+
     async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
@@ -276,6 +294,8 @@ class GenreController(MediaControllerBase[Genre]):
         hide_empty: bool | None = None,
         media_type: MediaType | None = None,
         content_type: str | None = None,
+        *,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Genre]:
         """
@@ -292,6 +312,8 @@ class GenreController(MediaControllerBase[Genre]):
             general/music taxonomy, stored as NULL), "podcast" or "audiobook". Composes with
             hide_empty, so e.g. content_type="podcast" + hide_empty=None returns only the
             default podcast genres.
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
@@ -337,6 +359,7 @@ class GenreController(MediaControllerBase[Genre]):
             extra_query_params=extra_params,
             extra_query_parts=extra_parts,
             played_only=played_only,
+            summary=summary,
         )
         if kwargs.get("_localized_fallback", True) and search and not items:
             # retry with the canonical name behind a localized query, so genres are findable
@@ -351,6 +374,7 @@ class GenreController(MediaControllerBase[Genre]):
                 hide_empty=hide_empty,
                 media_type=media_type,
                 content_type=content_type,
+                summary=summary,
             )
         return items
 
@@ -1234,11 +1258,11 @@ class GenreController(MediaControllerBase[Genre]):
                 result.append(alias)
         return result
 
-    @property
-    def _search_filter_clause(self) -> str:
+    def _search_filter_clause(self, search: str, query_params: dict[str, Any]) -> str:
         """Return search filter that also matches genre aliases."""
+        name_clause = search_name_match_clause(self.db_table, search, "search", query_params)
         return (
-            f"({self.db_table}.search_name LIKE :search"
+            f"({name_clause}"
             " OR EXISTS("
             f"SELECT 1 FROM json_each({self.db_table}.genre_aliases) "
             "WHERE LOWER(json_each.value) LIKE :search_raw))"
@@ -2122,3 +2146,13 @@ class GenreController(MediaControllerBase[Genre]):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> GenreSummary:
+        """Parse a raw summary db row into a GenreSummary object."""
+        item = cast("GenreSummary", super()._parse_summary_row(db_row))
+        # only overwrite the (name-derived) translation key when explicitly stored
+        if translation_key := db_row["translation_key"]:
+            item.translation_key = translation_key
+        if content_type := db_row["content_type"]:
+            item.content_type = MediaType(content_type)
+        return item

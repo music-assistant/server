@@ -6,25 +6,13 @@ on:
       - stable
       - dev
     paths: &benchmark_paths
-      # core code exercised by the benchmarks
-      - "music_assistant/*.py"
-      - "music_assistant/controllers/**"
+      # helper functions exercised by the benchmarks
       - "music_assistant/helpers/**"
-      - "music_assistant/models/**"
-      # providers loaded by the macro benchmarks
-      - "music_assistant/providers/test/**"
-      - "music_assistant/providers/builtin/**"
-      - "music_assistant/providers/loudness_analysis/**"
-      - "music_assistant/providers/playlist_metadata/**"
-      - "music_assistant/providers/radio_playlist/**"
-      - "music_assistant/providers/sync_group/**"
-      - "music_assistant/providers/universal_player/**"
       # the benchmarks and toolchain itself
       - "tests/benchmarks/**"
       - ".github/workflows/codspeed.yml"
       - "pyproject.toml"
       - "requirements_all.txt"
-      - ".python-version"
   pull_request:
     branches:
       - stable
@@ -52,10 +40,12 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python
+        # Pin an exact patch (not .python-version's "3.14") so the interpreter is
+        # identical across runs and CodSpeed's instruction counts stay comparable;
+        # check-latest is omitted so a new 3.14.x can't silently change the runtime.
         uses: actions/setup-python@v6.3.0
         with:
-          python-version-file: ".python-version"
-          check-latest: true
+          python-version: "3.14.6"
 
       - name: Install uv
         run: pip install uv
@@ -72,9 +62,13 @@ jobs:
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@v4
+        uses: CodSpeedHQ/action@f99becdce5e5d51fd556489ebef684f4ecfd6286  # v4.18.5
         with:
           mode: simulation
+          # tests/benchmarks/ holds only deterministic pure-function benchmarks, so their
+          # instruction counts are reproducible under simulation. Server-level / async
+          # scenarios are non-deterministic under instruction counting and are covered by
+          # the scripts/perf/ deep-dive suite instead.
           # -o addopts="" clears the default "--cov music_assistant" so coverage
           # instrumentation does not interfere with the CodSpeed measurements.
           run: pytest tests/benchmarks/ --codspeed -o addopts=""

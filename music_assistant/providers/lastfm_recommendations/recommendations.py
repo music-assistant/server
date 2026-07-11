@@ -173,7 +173,7 @@ class LastFMRecommendationManager:
         if media_type == MediaType.ARTIST:
             if name:
                 artist_results = await self.mass.music.artists.library_items(
-                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 artist_match = next(
                     (a for a in artist_results if compare_strings(name, a.name, strict=False)),
@@ -188,7 +188,7 @@ class LastFMRecommendationManager:
         elif media_type == MediaType.ALBUM:
             if name:
                 album_results = await self.mass.music.albums.library_items(
-                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 album_match = next(
                     (a for a in album_results if compare_strings(name, a.name, strict=False)),
@@ -212,7 +212,7 @@ class LastFMRecommendationManager:
                 # "Artist - Title" format so the tracks controller searches both fields
                 search_query = f"{artist_name} - {clean_name}"
                 track_results = await self.mass.music.tracks.library_items(
-                    search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT
+                    search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 # Match both title and artist; a title-only check would treat a same-named
                 # track by a different artist as owned. Differing recording MBIDs identify

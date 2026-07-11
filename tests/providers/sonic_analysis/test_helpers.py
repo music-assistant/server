@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.providers.sonic_analysis.helpers import (
     MIN_BLOCK_SAMPLES,
@@ -123,6 +124,35 @@ def test_collapse_to_analysis_time_series_populated() -> None:
 
     assert result.spectral_centroid is not None
     assert len(result.spectral_centroid) > 0
+
+
+def test_collapse_to_analysis_replaces_non_finite_features() -> None:
+    """All Sonic numeric output remains finite and survives a JSON round-trip."""
+    features = extract_block_features(_make_sine(), 22050)
+    assert features is not None
+    non_finite = np.array([np.nan, np.inf, -np.inf], dtype=np.float32)
+    for frames in (
+        features.chroma_frames,
+        features.contrast_frames,
+        features.centroid_frames,
+        features.flatness_frames,
+        features.rms_frames,
+        features.onset_env_frames,
+    ):
+        frames[0] = frames[0].copy()
+        frames[0].flat[: len(non_finite)] = non_finite
+
+    result = collapse_to_analysis(features, 22050)
+    payload = result.to_dict()
+    numeric_values = [value for value in payload.values() if isinstance(value, int | float)]
+    numeric_values.extend(
+        item for value in payload.values() if isinstance(value, list) for item in value
+    )
+
+    assert numeric_values
+    assert all(math.isfinite(float(value)) for value in numeric_values)
+    restored = AudioAnalysisData.from_dict(json_loads(json_dumps(payload)))
+    assert restored == result
 
 
 def test_collapse_to_analysis_deterministic() -> None:

@@ -27,6 +27,7 @@ from music_assistant_models.media_items import (
     Radio,
     RecommendationFolder,
     SearchResults,
+    SoundEffect,
     Track,
 )
 
@@ -217,6 +218,20 @@ class MusicProvider(Provider):
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
+        raise NotImplementedError
+
+    async def get_sound_effect(self, prov_sound_effect_id: str) -> SoundEffect:
+        """Get full sound effect details by id."""
+        raise NotImplementedError
+
+    async def get_sound_effects(self) -> AsyncGenerator[SoundEffect]:
+        """
+        Get all sound effect items this provider offers.
+
+        Sound effects are not library-backed; they are fetched live from the provider.
+        Only called if provider supports ProviderFeature.SOUND_EFFECTS.
+        """
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_item_genre_names(self, media_type: MediaType, item_id: str) -> set[str]:
@@ -516,7 +531,7 @@ class MusicProvider(Provider):
         """
         return path
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
         """
         Browse this provider's items.
 
@@ -533,6 +548,7 @@ class MusicProvider(Provider):
         if subpath == "artists":
             if artists := await self.mass.music.artists.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return artists
             # library items not (yet) synced, fallback to direct retrieval
@@ -540,6 +556,7 @@ class MusicProvider(Provider):
         if subpath == "albums":
             if albums := await self.mass.music.albums.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return albums
             # library items not (yet) synced, fallback to direct retrieval
@@ -547,6 +564,7 @@ class MusicProvider(Provider):
         if subpath == "tracks":
             if tracks := await self.mass.music.tracks.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return tracks
             # library items not (yet) synced, fallback to direct retrieval
@@ -554,6 +572,7 @@ class MusicProvider(Provider):
         if subpath == "radios":
             if radios := await self.mass.music.radio.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return radios
             # library items not (yet) synced, fallback to direct retrieval
@@ -561,6 +580,7 @@ class MusicProvider(Provider):
         if subpath == "playlists":
             if playlists := await self.mass.music.playlists.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return playlists
             # library items not (yet) synced, fallback to direct retrieval
@@ -568,6 +588,7 @@ class MusicProvider(Provider):
         if subpath == "audiobooks":
             if audiobooks := await self.mass.music.audiobooks.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return audiobooks
             # library items not (yet) synced, fallback to direct retrieval
@@ -575,10 +596,14 @@ class MusicProvider(Provider):
         if subpath == "podcasts":
             if podcasts := await self.mass.music.podcasts.library_items(
                 provider=self.instance_id,
+                summary=False,
             ):
                 return podcasts
             # library items not (yet) synced, fallback to direct retrieval
             return [x async for x in self.get_library_podcasts()]
+        if subpath == "sound_effects":
+            # sound effects are not library-backed, always retrieve them live
+            return [x async for x in self.get_sound_effects()]
         if subpath == "recommendations" and sub_subpath:
             # recommendations contents listing
             recommendations = await self.recommendations()
@@ -681,6 +706,16 @@ class MusicProvider(Provider):
                     path=path + "podcasts",
                     name="",
                     translation_key="podcasts",
+                )
+            )
+        if ProviderFeature.SOUND_EFFECTS in self.supported_features:
+            folders.append(
+                BrowseFolder(
+                    item_id="sound_effects",
+                    provider=self.instance_id,
+                    path=path + "sound_effects",
+                    name="",
+                    translation_key="sound_effects",
                 )
             )
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:

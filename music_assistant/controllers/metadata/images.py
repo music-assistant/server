@@ -33,13 +33,14 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.colors import get_palette
+from music_assistant.helpers.colors import get_palette, invalidate_cached_palette
 from music_assistant.helpers.images import (
     create_collage,
     create_thumb_hash,
     detect_image_content_format,
     get_image_data,
     get_image_thumb,
+    invalidate_cached_image,
 )
 from music_assistant.helpers.security import is_safe_path
 
@@ -279,6 +280,21 @@ class ImageProxyMixin:
             return await get_palette(self.mass, path, provider)
         except MediaNotFoundError, OSError:
             return None
+
+    async def invalidate_image_cache(self, provider: str, path: str) -> None:
+        """
+        Drop every cached artifact for an image so the next request re-fetches it.
+
+        Removes the cached source bytes, all thumbnail size/format variants
+        (memory + disk) and the extracted color palette. Call this when the
+        image content behind an unchanged (provider, path) identity has
+        changed, e.g. a local file whose (embedded) artwork was replaced.
+
+        :param provider: Provider (instance) id that owns / can resolve the image.
+        :param path: Image path or URL exactly as referenced by media items.
+        """
+        await invalidate_cached_image(self.mass, provider, path)
+        await invalidate_cached_palette(self.mass, provider, path)
 
     async def get_thumbnail(
         self,

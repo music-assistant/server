@@ -23,7 +23,8 @@
       "options": {
         "music": "[%key:common::config_entries::content_type::options::music%]",
         "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
-        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]",
+        "sound_effects": "[%key:common::config_entries::content_type::options::sound_effects%]"
       }
     },
     "library_sync_tracks": {
