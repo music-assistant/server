@@ -320,7 +320,7 @@ async def test_selected_track_and_playlist_sources_are_loaded_without_search(
 
         playlist_tracks = MagicMock(side_effect=_playlist_tracks)
         mass.music.playlists.tracks = playlist_tracks
-    mass.music.get_item_by_uri = AsyncMock(return_value=source)
+    mass.music.get_item = AsyncMock(return_value=source)
     assert source.uri is not None
     quiz = TriviaQuizType(
         mass,
@@ -331,7 +331,12 @@ async def test_selected_track_and_playlist_sources_are_loaded_without_search(
 
     assert quiz._eligible_tracks is not None
     assert set(quiz._eligible_tracks) == {selected_track.uri}
-    mass.music.get_item_by_uri.assert_awaited_once_with(source.uri)
+    mass.music.get_item.assert_awaited_once_with(
+        media_type=source.media_type,
+        item_id=source.item_id,
+        provider_instance_id_or_domain=source.provider,
+        allow_update_metadata=False,
+    )
     mass.music.search.assert_not_awaited()
     if source_kind == "playlist":
         assert playlist_tracks is not None
