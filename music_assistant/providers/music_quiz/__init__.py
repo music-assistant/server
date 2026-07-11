@@ -1183,6 +1183,7 @@ def _public_state(game: MusicQuizGame, mode: str, answer_type: QuizAnswerType) -
             "name": player.name,
             "score": player.score,
             "ready": player.ready,
+            "active_from_round": player.active_from_round,
             **answer_type.serialize_public_player(
                 answer_state,
                 player.player_id,
