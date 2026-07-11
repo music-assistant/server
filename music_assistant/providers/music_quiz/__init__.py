@@ -347,8 +347,6 @@ class MusicQuizPlugin(PluginProvider):
                 MusicQuizPhase.REVEAL,
             ):
                 raise MusicQuizGameActiveError("A Music Quiz game is already in progress")
-            self._cancel_timers()
-            self._cancel_next_round_task()
             game = MusicQuizGame(
                 config=game_config,
                 quiz_type=quiz_type,
@@ -358,6 +356,8 @@ class MusicQuizPlugin(PluginProvider):
             )
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
             await quiz_strategy.initialize()
+            self._cancel_timers()
+            self._cancel_next_round_task()
             self._game = game
             self._quiz_type = quiz_strategy
             self._answer_type = answer_strategy

@@ -770,6 +770,8 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
             pending_task.cancel.assert_not_called()
             assert plugin._next_round_task is pending_task
             cast("MagicMock", plugin.mass.cancel_timer).assert_not_called()
+            cast("MagicMock", plugin.mass.cancel_task).assert_not_called()
+            cast("AsyncMock", plugin._stop_playback).assert_not_awaited()
 
     initialize = AsyncMock(side_effect=_initialize)
     with (
@@ -787,6 +789,8 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
         await _create_started_hitster_game(plugin)
         plugin._next_round_task = pending_task
         cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+        cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+        cast("AsyncMock", plugin._stop_playback).reset_mock()
         state = await plugin.reset()
 
     game = plugin._game
@@ -797,6 +801,8 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
     cancel_timer.assert_any_call(plugin._reveal_timer_id)
     cancel_timer.assert_any_call(plugin._advance_timer_id)
     cancel_timer.assert_any_call(plugin._presence_timer_id)
+    cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
+    cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
     assert game.rounds == []
     assert state["phase"] == "lobby"
     assert state["quiz_type"] == "hitster"
@@ -1785,23 +1791,30 @@ async def test_create_game_replaces_finished_game() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_game_cancels_previous_background_work_before_initialize() -> None:
-    """Stop an old lobby prefetch and timers before initializing its replacement."""
+async def test_create_game_cancels_previous_background_work_after_initialize() -> None:
+    """Initialize a replacement before stopping the current game's background work."""
     plugin = _create_plugin()
     await plugin.create_game(source_uris=["library://playlist/1"])
+    game = plugin._game
+    assert game is not None
+    game_state = game.to_dict()
+    quiz_strategy = plugin._quiz_type
+    answer_strategy = plugin._answer_type
     plugin._cancel_next_round_task()
     pending_task = MagicMock()
-    pending_task.cancelled.return_value = False
     plugin._next_round_task = pending_task
     cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
 
     async def _initialize(_strategy: Any) -> None:
-        pending_task.cancel.assert_called_once()
-        assert plugin._next_round_task is None
-        cancel_timer = cast("MagicMock", plugin.mass.cancel_timer)
-        cancel_timer.assert_any_call(plugin._reveal_timer_id)
-        cancel_timer.assert_any_call(plugin._advance_timer_id)
-        cancel_timer.assert_any_call(plugin._presence_timer_id)
+        assert plugin._game is game
+        assert game.to_dict() == game_state
+        assert plugin._quiz_type is quiz_strategy
+        assert plugin._answer_type is answer_strategy
+        assert plugin._next_round_task is pending_task
+        pending_task.cancel.assert_not_called()
+        cast("MagicMock", plugin.mass.cancel_timer).assert_not_called()
+        cast("MagicMock", plugin.mass.cancel_task).assert_not_called()
 
     with (
         patch(
@@ -1819,6 +1832,92 @@ async def test_create_game_cancels_previous_background_work_before_initialize() 
             quiz_type="hitster",
             source_uris=["library://playlist/2"],
         )
+
+    assert plugin._game is not game
+    pending_task.cancel.assert_called_once()
+    cancel_timer = cast("MagicMock", plugin.mass.cancel_timer)
+    cancel_timer.assert_any_call(plugin._reveal_timer_id)
+    cancel_timer.assert_any_call(plugin._advance_timer_id)
+    cancel_timer.assert_any_call(plugin._presence_timer_id)
+    cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
+
+
+@pytest.mark.asyncio
+async def test_create_game_source_failure_preserves_existing_lobby() -> None:
+    """Keep an existing lobby when replacement source preparation fails."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+    game = plugin._game
+    assert game is not None
+    game_state = game.to_dict()
+    quiz_strategy = plugin._quiz_type
+    answer_strategy = plugin._answer_type
+    plugin._cancel_next_round_task()
+    pending_task = MagicMock()
+    plugin._next_round_task = pending_task
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+    cast("MagicMock", plugin.mass.call_later).reset_mock()
+
+    resolve_sources = AsyncMock(side_effect=InvalidDataError("Source preparation failed"))
+    with (
+        patch.object(plugin, "_resolve_sources", new=resolve_sources),
+        pytest.raises(InvalidDataError, match="Source preparation failed"),
+    ):
+        await plugin.create_game(source_uris=["library://playlist/2"])
+
+    assert plugin._game is game
+    assert game.to_dict() == game_state
+    assert plugin._quiz_type is quiz_strategy
+    assert plugin._answer_type is answer_strategy
+    assert plugin._next_round_task is pending_task
+    pending_task.cancel.assert_not_called()
+    cast("MagicMock", plugin.mass.cancel_timer).assert_not_called()
+    cast("MagicMock", plugin.mass.cancel_task).assert_not_called()
+    cast("MagicMock", plugin.mass.call_later).assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_game_initialize_failure_preserves_existing_finished_game() -> None:
+    """Keep an existing finished game when replacement initialization fails."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+    game = plugin._game
+    assert game is not None
+    game.phase = MusicQuizPhase.FINISHED
+    game_state = game.to_dict()
+    quiz_strategy = plugin._quiz_type
+    answer_strategy = plugin._answer_type
+    plugin._cancel_next_round_task()
+    pending_task = MagicMock()
+    plugin._next_round_task = pending_task
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+    cast("MagicMock", plugin.mass.call_later).reset_mock()
+
+    initialize = AsyncMock(side_effect=InvalidDataError("Initialization failed"))
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            new=initialize,
+        ),
+        pytest.raises(InvalidDataError, match="Initialization failed"),
+    ):
+        await plugin.create_game(
+            quiz_type="hitster",
+            source_uris=["library://playlist/2"],
+        )
+
+    initialize.assert_awaited_once()
+    assert plugin._game is game
+    assert game.to_dict() == game_state
+    assert plugin._quiz_type is quiz_strategy
+    assert plugin._answer_type is answer_strategy
+    assert plugin._next_round_task is pending_task
+    pending_task.cancel.assert_not_called()
+    cast("MagicMock", plugin.mass.cancel_timer).assert_not_called()
+    cast("MagicMock", plugin.mass.cancel_task).assert_not_called()
+    cast("MagicMock", plugin.mass.call_later).assert_not_called()
 
 
 @pytest.mark.asyncio
