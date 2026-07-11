@@ -718,12 +718,30 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
             plugin,
             artist_bonus_mode="free_text",
         )
+        signal = cast("MagicMock", plugin.signal_provider_event)
+        event_state = signal.call_args[0][0]["state"]
+        public_player_keys = {
+            "name",
+            "score",
+            "ready",
+            "active_from_round",
+            "answered",
+            "placed",
+            "artist_bonus_answered",
+            "title_bonus_answered",
+        }
+        assert set(event_state["players"][0]) == public_player_keys
+        assert event_state["players"][0]["active_from_round"] == 0
         host_state = await plugin.get_game()
         assert host_state is not None
+        assert host_state["players"] == event_state["players"]
         host_round = host_state["rounds"][0]
         assert "answer_state" not in host_round
         assert host_round["candidate"]["entry"]["title"] == "Secret Title 0"
         assert host_round["placement_snapshot"][0]["is_anchor"] is True
+        for player_id in player_ids.values():
+            assert player_id not in str(event_state)
+            assert player_id not in str(host_state["players"])
 
         with patch(
             "music_assistant.providers.music_quiz.get_current_user",
@@ -744,6 +762,15 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
             reconnected = await plugin.get_player_state(player_ids["Alice"])
             with pytest.raises(MusicQuizInvalidAnswerError, match="multiple_choice"):
                 await plugin.answer(player_ids["Alice"], "not-supported")
+        assert set(personal["players"][0]) == public_player_keys
+        assert set(personal["you"]) == {
+            "name",
+            "score",
+            "ready",
+            "active_from_round",
+            "answer",
+        }
+        assert personal["you"]["active_from_round"] == 0
         assert personal["you"]["answer"] == {
             "previous_entry_id": "anchor",
             "next_entry_id": None,
@@ -751,8 +778,9 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
             "bonuses": [],
             "finished": False,
         }
-        assert reconnected["you"]["answer"] == personal["you"]["answer"]
-        assert player_ids["Alice"] not in str(personal["players"])
+        assert reconnected == personal
+        for player_id in player_ids.values():
+            assert player_id not in str(personal)
 
 
 @pytest.mark.asyncio
@@ -908,6 +936,22 @@ async def test_hitster_late_joiner_starts_on_prefetched_next_round() -> None:
             joined = await plugin.join_game("Late")
             player_ids["Late"] = joined["player_id"]
             assert joined["state"]["you"]["active_from_round"] == 1
+            public_state = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]["state"]
+            late_player = next(
+                player for player in public_state["players"] if player["name"] == "Late"
+            )
+            assert late_player == {
+                "name": "Late",
+                "score": 0,
+                "ready": False,
+                "active_from_round": 1,
+                "answered": False,
+                "placed": False,
+                "artist_bonus_answered": False,
+                "title_bonus_answered": False,
+            }
+            for player_id in player_ids.values():
+                assert player_id not in str(public_state)
             await plugin.submit_answer(
                 player_ids["Alice"],
                 {
@@ -1061,6 +1105,20 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     assert state["quiz_type"] == "guess_the_song"
     assert state["answer_type"] == "multiple_choice"
     assert state["mode"] == "venue"
+    public_player_keys = {
+        "name",
+        "score",
+        "ready",
+        "active_from_round",
+        "answered",
+    }
+    assert all(
+        set(player) == public_player_keys and player["active_from_round"] == 0
+        for player in state["players"]
+    )
+    host_state = await plugin.get_game()
+    assert host_state is not None
+    assert host_state["players"] == state["players"]
     current_round = state["current_round"]
     assert set(current_round) == {
         "round_index",
@@ -1099,8 +1157,11 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     assert "track_uri" not in str(personal_state)
     public_state = signal.call_args[0][0]["state"]
     alice = next(player for player in public_state["players"] if player["name"] == "Alice")
+    assert set(alice) == public_player_keys
     assert alice["answered"] is True
     assert "last_answer" not in alice
+    for player_id in player_ids.values():
+        assert player_id not in str(personal_state)
 
     # after the reveal the same payload exposes the answer
     await plugin.reveal()
@@ -1123,7 +1184,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     assert current_round["track_uri"] == "library://track/0"
     assert current_round["answer_label"] == "Artist - Correct 0"
     alice = next(player for player in state["players"] if player["name"] == "Alice")
-    assert set(alice) == {"name", "score", "ready", "answered", "last_answer"}
+    assert set(alice) == {*public_player_keys, "last_answer"}
     assert set(alice["last_answer"]) == {"suggestion_id", "correct", "points"}
 
 
@@ -1750,7 +1811,7 @@ async def test_reveal_schedules_track_end_advance() -> None:
 async def test_join_during_round_activates_player_next_round() -> None:
     """A player joining mid-round only participates from the next round."""
     plugin = _create_plugin()
-    await _create_started_game(plugin, player_names=("Alice",))
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
     game = plugin._game
     assert game is not None
 
@@ -1760,6 +1821,17 @@ async def test_join_during_round_activates_player_next_round() -> None:
     ):
         result = await plugin.join_game("Late")
         assert result["state"]["you"]["active_from_round"] == 1
+    public_state = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]["state"]
+    late_player = next(player for player in public_state["players"] if player["name"] == "Late")
+    assert late_player == {
+        "name": "Late",
+        "score": 0,
+        "ready": False,
+        "active_from_round": 1,
+        "answered": False,
+    }
+    for player_id in (*player_ids.values(), result["player_id"]):
+        assert player_id not in str(public_state)
 
 
 @pytest.mark.asyncio
