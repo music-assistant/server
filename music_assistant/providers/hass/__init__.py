@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
@@ -346,6 +345,7 @@ class HomeAssistantProvider(PluginProvider):
         try:
             await self.hass.connect()
         except BaseHassClientError as err:
+            await self._cleanup_failed_init()
             err_msg = str(err) or err.__class__.__name__
             raise SetupFailedError(err_msg) from err
         self._listen_task = self.mass.create_task(self._hass_listener())
@@ -701,15 +701,19 @@ class HomeAssistantProvider(PluginProvider):
             self._listen_task = None
             if not listen_task.done():
                 listen_task.cancel()
-            with suppress(asyncio.CancelledError):
+            try:
                 await listen_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as err:
+                self.logger.warning("Home Assistant listener stopped with error: %s", err)
         await self.hass.disconnect()
 
     async def _cleanup_failed_init(self) -> None:
         """Clean up the Home Assistant connection after initialization fails."""
         try:
             await self._disconnect_hass()
-        except BaseHassClientError as err:
+        except Exception as err:
             self.logger.warning("Failed to disconnect from Home Assistant: %s", err)
 
     async def _resolve_feature_entities(self) -> None:

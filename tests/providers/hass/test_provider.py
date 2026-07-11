@@ -67,6 +67,8 @@ class _HomeAssistantClient:
         self,
         states: list[dict[str, Any]],
         get_states_error: Exception | None = None,
+        listener_error: Exception | None = None,
+        connect_error: Exception | None = None,
     ) -> None:
         self.connected = False
         self.disconnected = False
@@ -75,17 +77,23 @@ class _HomeAssistantClient:
         self.calls: list[str] = []
         self._states = states
         self._get_states_error = get_states_error
+        self._listener_error = listener_error
+        self._connect_error = connect_error
         self.send_command = AsyncMock(return_value={"response": {"data": "answer"}})
 
     async def connect(self) -> None:
         """Connect the client."""
         self.calls.append("connect")
+        if self._connect_error:
+            raise self._connect_error
         self.connected = True
 
     async def start_listening(self) -> None:
         """Listen until the provider stops the listener task."""
         self.calls.append("start_listening")
         self.listener_started.set()
+        if self._listener_error:
+            raise self._listener_error
         try:
             await asyncio.Event().wait()
         finally:
@@ -157,6 +165,45 @@ async def test_feature_resolution_failure_cleans_up_connection() -> None:
     assert hass.listener_stopped.is_set()
     assert hass.disconnected
     assert hass.calls == ["connect", "start_listening", "get_states", "disconnect"]
+    assert provider._listen_task is None
+
+
+async def test_listener_failure_does_not_mask_feature_resolution_failure() -> None:
+    """Preserve the startup error when the listener also fails."""
+    hass = _HomeAssistantClient(
+        [],
+        BaseHassClientError("Unable to load Home Assistant states"),
+        RuntimeError("Listener failed"),
+    )
+    manifest = MagicMock()
+    manifest.domain = "hass"
+    manifest.name = "Home Assistant"
+    with patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass):
+        provider = await setup(_mass(), manifest, _config())
+        assert isinstance(provider, HomeAssistantProvider)
+
+        with pytest.raises(SetupFailedError, match="Unable to load Home Assistant states"):
+            async with asyncio.timeout(1):
+                await provider.handle_async_init()
+
+    assert hass.disconnected
+    assert provider._listen_task is None
+
+
+async def test_connection_failure_cleans_up_client() -> None:
+    """Clean up the client when connecting to Home Assistant fails."""
+    hass = _HomeAssistantClient([], connect_error=BaseHassClientError("Unable to connect"))
+    manifest = MagicMock()
+    manifest.domain = "hass"
+    manifest.name = "Home Assistant"
+    with patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass):
+        provider = await setup(_mass(), manifest, _config())
+        assert isinstance(provider, HomeAssistantProvider)
+
+        with pytest.raises(SetupFailedError, match="Unable to connect"):
+            await provider.handle_async_init()
+
+    assert hass.disconnected
     assert provider._listen_task is None
 
 
