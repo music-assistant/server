@@ -327,6 +327,7 @@ async def test_join_url_uses_restricted_guest_without_host_queue_access() -> Non
         plugin.mass,
         MUSIC_QUIZ_GUEST_USER,
         MUSIC_QUIZ_GUEST_DISPLAY_NAME,
+        allowed_player_ids=(),
     )
 
 

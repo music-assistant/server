@@ -26,11 +26,11 @@ def _create_mock_mass() -> MagicMock:
 
 
 async def test_get_or_create_guest_user_returns_existing() -> None:
-    """An existing restricted guest user is returned without updating it."""
+    """Default guest access preserves an existing filter."""
     mass = _create_mock_mass()
     existing_user = MagicMock(
         role=UserRole.GUEST,
-        player_filter=[guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+        player_filter=["existing_party_queue"],
     )
     mass.webserver.auth.get_user_by_username.return_value = existing_user
 
@@ -54,7 +54,7 @@ async def test_get_or_create_guest_user_rejects_non_guest() -> None:
 
 
 async def test_get_or_create_guest_user_creates_guest() -> None:
-    """A missing guest user is created with a restrictive player filter."""
+    """Default guest access preserves the existing unrestricted create behavior."""
     mass = _create_mock_mass()
     created_user = MagicMock()
     mass.webserver.auth.create_user.return_value = created_user
@@ -66,6 +66,27 @@ async def test_get_or_create_guest_user_creates_guest() -> None:
         username="party_guest",
         role=UserRole.GUEST,
         display_name="Party Guest",
+    )
+
+
+async def test_get_or_create_guest_user_creates_restricted_guest() -> None:
+    """Opting into managed access creates a guest with the restrictive sentinel."""
+    mass = _create_mock_mass()
+    created_user = MagicMock()
+    mass.webserver.auth.create_user.return_value = created_user
+
+    user = await guest_access.get_or_create_guest_user(
+        mass,
+        "quiz_guest",
+        "Quiz Guest",
+        allowed_player_ids=(),
+    )
+
+    assert user is created_user
+    mass.webserver.auth.create_user.assert_awaited_once_with(
+        username="quiz_guest",
+        role=UserRole.GUEST,
+        display_name="Quiz Guest",
         player_filter=[guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
     )
 
@@ -82,7 +103,12 @@ async def test_get_or_create_guest_user_migrates_unrestricted_guest() -> None:
     mass.webserver.auth.get_user_by_username.return_value = existing_user
     mass.webserver.auth.update_user_filters.return_value = updated_user
 
-    user = await guest_access.get_or_create_guest_user(mass, "party_guest", "Party Guest")
+    user = await guest_access.get_or_create_guest_user(
+        mass,
+        "quiz_guest",
+        "Quiz Guest",
+        allowed_player_ids=(),
+    )
 
     assert user is updated_user
     mass.webserver.auth.update_user_filters.assert_awaited_once_with(
@@ -101,16 +127,16 @@ async def test_get_or_create_guest_user_manages_allowed_players() -> None:
 
     user = await guest_access.get_or_create_guest_user(
         mass,
-        "party_guest",
-        "Party Guest",
+        "managed_guest",
+        "Managed Guest",
         {"venue_player", "remote_player"},
     )
 
     assert user is created_user
     mass.webserver.auth.create_user.assert_awaited_once_with(
-        username="party_guest",
+        username="managed_guest",
         role=UserRole.GUEST,
-        display_name="Party Guest",
+        display_name="Managed Guest",
         player_filter=[
             guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
             "remote_player",
@@ -126,9 +152,9 @@ async def test_get_or_create_guest_user_refreshes_allowed_player() -> None:
         role=UserRole.GUEST,
         player_filter=[
             guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
-            "old_party_player",
+            "old_player",
         ],
-        user_id="party_guest_id",
+        user_id="managed_guest_id",
     )
     updated_user = MagicMock()
     mass.webserver.auth.get_user_by_username.return_value = existing_user
@@ -136,9 +162,9 @@ async def test_get_or_create_guest_user_refreshes_allowed_player() -> None:
 
     user = await guest_access.get_or_create_guest_user(
         mass,
-        "party_guest",
-        "Party Guest",
-        ("new_party_player",),
+        "managed_guest",
+        "Managed Guest",
+        ("new_player",),
     )
 
     assert user is updated_user
@@ -146,11 +172,11 @@ async def test_get_or_create_guest_user_refreshes_allowed_player() -> None:
         existing_user,
         [
             guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
-            "new_party_player",
+            "new_player",
         ],
         None,
     )
-    mass.webserver.disconnect_websockets_for_user.assert_called_once_with("party_guest_id")
+    mass.webserver.disconnect_websockets_for_user.assert_called_once_with("managed_guest_id")
 
 
 async def test_get_or_create_guest_user_ignores_filter_order() -> None:
@@ -164,8 +190,8 @@ async def test_get_or_create_guest_user_ignores_filter_order() -> None:
 
     user = await guest_access.get_or_create_guest_user(
         mass,
-        "party_guest",
-        "Party Guest",
+        "managed_guest",
+        "Managed Guest",
         ("party_player",),
     )
 

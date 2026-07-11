@@ -516,12 +516,8 @@ class PartyPlugin(PluginProvider):
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return None
 
-        player_id = await self._resolve_party_player_id()
         guest_user = await guest_access.get_or_create_guest_user(
-            self.mass,
-            PARTY_GUEST_USER,
-            PARTY_GUEST_DISPLAY_NAME,
-            (player_id,) if player_id else (),
+            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
         )
         code = await guest_access.get_or_create_join_code(
             self.mass, guest_user, device_name="Party Guest"
@@ -538,9 +534,32 @@ class PartyPlugin(PluginProvider):
 
         :returns: The queue ID for party, or None if no player available.
         """
-        player_id = await self._resolve_party_player_id()
-        await self._ensure_guest_player_access(player_id)
-        return player_id
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            return None
+
+        if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            session = await self._get_session()
+            return session.queue_id if session else None
+
+        player_id = self.config.get_value(CONF_PARTY_PLAYER)
+        if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
+            return str(player_id)
+
+        # Auto-select: prefer playing queue, then paused, then any active queue
+        best_queue: str | None = None
+        best_priority = -1
+        for queue in self.mass.player_queues:
+            if not queue.active:
+                continue
+            if queue.state == PlaybackState.PLAYING:
+                return queue.queue_id
+            if queue.state == PlaybackState.PAUSED and best_priority < 1:
+                best_queue = queue.queue_id
+                best_priority = 1
+            elif best_priority < 0:
+                best_queue = queue.queue_id
+                best_priority = 0
+        return best_queue
 
     async def get_party_config(self) -> PartyConfig:
         """
@@ -992,57 +1011,6 @@ class PartyPlugin(PluginProvider):
         """
         async with self._session_lock:
             return await self._get_or_create_session_locked()
-
-    async def _resolve_party_player_id(self) -> str | None:
-        """Return the queue currently selected for Party playback."""
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return None
-        if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
-            session = await self._get_session()
-            return session.queue_id if session else None
-
-        player_id = self.config.get_value(CONF_PARTY_PLAYER)
-        if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
-            return str(player_id)
-
-        # Auto-select: prefer playing queue, then paused, then any active queue
-        best_queue: str | None = None
-        best_priority = -1
-        for queue in self.mass.player_queues:
-            if not queue.active:
-                continue
-            if queue.state == PlaybackState.PLAYING:
-                return queue.queue_id
-            if queue.state == PlaybackState.PAUSED and best_priority < 1:
-                best_queue = queue.queue_id
-                best_priority = 1
-            elif best_priority < 0:
-                best_queue = queue.queue_id
-                best_priority = 0
-        return best_queue
-
-    async def _ensure_guest_player_access(self, player_id: str | None) -> None:
-        """
-        Refresh a connected Party guest's filter when the selected queue changes.
-
-        :param player_id: Currently selected Party queue ID, if available.
-        :raises InvalidDataError: If the guest must reconnect with the refreshed filter.
-        """
-        user = get_current_user()
-        if user is None or user.username != PARTY_GUEST_USER:
-            return
-        expected_filter = {guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID}
-        if player_id:
-            expected_filter.add(player_id)
-        if set(user.player_filter) == expected_filter:
-            return
-        await guest_access.get_or_create_guest_user(
-            self.mass,
-            PARTY_GUEST_USER,
-            PARTY_GUEST_DISPLAY_NAME,
-            (player_id,) if player_id else (),
-        )
-        raise InvalidDataError("The Party player changed; reconnect to continue")
 
     async def _get_or_create_session_locked(self) -> SharedPlaybackSession | None:
         """

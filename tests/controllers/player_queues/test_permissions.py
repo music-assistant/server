@@ -75,16 +75,16 @@ def _set_user(role: UserRole, player_filter: list[str]) -> None:
 
 def test_all_for_api_filters_restricted_user() -> None:
     """A restricted user only sees explicitly allowed and own Sendspin queues."""
-    controller = _create_controller("host", "party", "web_player")
+    controller = _create_controller("host", "allowed", "web_player")
     _set_user(
         UserRole.GUEST,
-        [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "party"],
+        [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "allowed"],
     )
     set_sendspin_player_id("web_player")
 
     queues = controller.all_for_api()
 
-    assert {queue.queue_id for queue in queues} == {"party", "web_player"}
+    assert {queue.queue_id for queue in queues} == {"allowed", "web_player"}
 
 
 def test_direct_queue_reads_reject_hidden_queue() -> None:
@@ -122,34 +122,21 @@ def test_active_queue_cannot_pivot_from_own_player_to_hidden_parent() -> None:
         controller.get_active_queue_for_api("web_player")
 
 
-def test_active_queue_allows_explicit_party_parent() -> None:
-    """A Party guest may resolve the explicitly allowed Party queue."""
-    controller = _create_controller("party", "web_player")
+def test_active_queue_allows_explicit_parent() -> None:
+    """A restricted user may resolve an explicitly allowed parent queue."""
+    controller = _create_controller("allowed", "web_player")
     web_player = MagicMock()
     players = cast("MagicMock", controller.mass.players)
     players.get_player.return_value = web_player
-    party_queue = controller.get("party")
-    players.get_active_queue.return_value = party_queue
+    allowed_queue = controller.get("allowed")
+    players.get_active_queue.return_value = allowed_queue
     _set_user(
         UserRole.GUEST,
-        [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "party"],
+        [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "allowed"],
     )
     set_sendspin_player_id("web_player")
 
-    assert controller.get_active_queue_for_api("web_player") is party_queue
-
-
-def test_party_filter_preserves_existing_queue_control_check() -> None:
-    """An explicitly allowed Party queue still passes the existing control guard."""
-    controller = _create_controller("party", "host")
-    _set_user(
-        UserRole.GUEST,
-        [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "party"],
-    )
-
-    controller._check_player_permission("party")
-    with pytest.raises(InsufficientPermissions):
-        controller._check_player_permission("host")
+    assert controller.get_active_queue_for_api("web_player") is allowed_queue
 
 
 @pytest.mark.parametrize(
