@@ -923,7 +923,7 @@ async def test_hitster_create_uses_flat_config_and_derived_answer_type() -> None
     assert game.answer_type == "timeline"
     assert game.config.suggestion_count == 4
     assert game.config.difficulty == "normal"
-    assert game.config.use_ai_distractors is False
+    assert game.config.use_ai_distractors is True
     assert created["artist_bonus_mode"] == "free_text"
     assert created["title_bonus_mode"] == "multiple_choice"
     assert "suggestion_count" not in created
