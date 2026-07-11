@@ -683,6 +683,12 @@ api.subscribe(<span class="string">'player_updated'</span>, (event) => {
                     <li><strong>Home Assistant OAuth</strong> - OAuth flow for HA users (optional)</li>
                     <li><strong>Bearer Tokens</strong> - Token-based authentication for HTTP and WebSocket</li>
                 </ul>
+                <p>
+                  When using tokens to automatically authenticate users, clients should be careful to validate that the server
+                  ID for the server they are communicating with matches the ID observed when the user logged in explicitly. Otherwise,
+                  there is a risk of sending tokens and attempting to authenticate with a different server that has the same local address
+                  and port (`homeassistant.local:8095` for example) as their own.
+                </p>
 
                 <h3>HTTP Authentication Endpoints</h3>
                 <p>The following HTTP endpoints are available for authentication (no auth required):</p>
