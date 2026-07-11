@@ -9,16 +9,12 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
-from music_assistant.constants import (
-    GUEST_ACCESS_RESTRICTED_PLAYER_ID,
-    HOMEASSISTANT_SYSTEM_USER,
-)
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
     JOIN_CODE_LENGTH,
@@ -1154,73 +1150,6 @@ async def test_guest_cannot_create_long_lived_token(auth_manager: Authentication
 
     with pytest.raises(InsufficientPermissions):
         await auth_manager.create_long_lived_token("Guest Escalation")
-
-
-async def test_guest_cannot_remove_own_player_filter(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """A dedicated guest cannot make its own player access unrestricted."""
-    guest = await auth_manager.create_user(
-        username="filteredguest",
-        role=UserRole.GUEST,
-        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
-    )
-    set_impersonated_user(None)
-    set_current_user(guest)
-
-    with pytest.raises(InsufficientPermissions):
-        await auth_manager.update_user_profile(player_filter=[])
-
-    stored_guest = await auth_manager.get_user(guest.user_id)
-    assert stored_guest is not None
-    assert stored_guest.player_filter == [GUEST_ACCESS_RESTRICTED_PLAYER_ID]
-
-
-async def test_admin_can_update_guest_player_filter(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """An administrator may still manage a dedicated guest's player filter."""
-    admin = await auth_manager.create_user(username="filteradmin", role=UserRole.ADMIN)
-    guest = await auth_manager.create_user(
-        username="managedguest",
-        role=UserRole.GUEST,
-        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
-    )
-    set_impersonated_user(None)
-    set_current_user(admin)
-
-    with patch.object(auth_manager.webserver, "disconnect_websockets_for_user") as disconnect:
-        updated_guest = await auth_manager.update_user_profile(
-            user_id=guest.user_id,
-            player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID, "party_queue"],
-        )
-
-    assert updated_guest.player_filter == [
-        GUEST_ACCESS_RESTRICTED_PLAYER_ID,
-        "party_queue",
-    ]
-    disconnect.assert_called_once_with(guest.user_id)
-
-
-async def test_unchanged_user_filter_does_not_disconnect(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """An unchanged managed filter does not write or disconnect the user."""
-    guest = await auth_manager.create_user(
-        username="unchangedfilter",
-        role=UserRole.GUEST,
-        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
-    )
-
-    with patch.object(auth_manager.webserver, "disconnect_websockets_for_user") as disconnect:
-        result = await auth_manager.update_user_filters(
-            guest,
-            [GUEST_ACCESS_RESTRICTED_PLAYER_ID],
-            None,
-        )
-
-    assert result is guest
-    disconnect.assert_not_called()
 
 
 async def test_no_long_lived_token_for_guest_account(auth_manager: AuthenticationManager) -> None:

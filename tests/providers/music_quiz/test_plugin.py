@@ -8,14 +8,11 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.auth import Scope, User, UserRole
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, QueueOption
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.auth import Scope
+from music_assistant_models.enums import ConfigEntryType, PlaybackState
+from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
-from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.providers.music_quiz import (
-    MUSIC_QUIZ_GUEST_DISPLAY_NAME,
     MUSIC_QUIZ_GUEST_USER,
     PLAYER_RECONNECT_GRACE_SECONDS,
     MusicQuizPlugin,
@@ -303,37 +300,6 @@ def _deterministic_rounds() -> Any:
 
 
 @pytest.mark.asyncio
-async def test_join_url_uses_restricted_guest_without_host_queue_access() -> None:
-    """Music Quiz creates a sentinel-only guest instead of allowing its host queue."""
-    plugin = _create_plugin()
-    guest_user = MagicMock()
-
-    with (
-        patch(
-            "music_assistant.providers.music_quiz.guest_access.get_or_create_guest_user",
-            new=AsyncMock(return_value=guest_user),
-        ) as get_guest_user,
-        patch(
-            "music_assistant.providers.music_quiz.guest_access.get_or_create_join_code",
-            new=AsyncMock(return_value="JOIN"),
-        ),
-        patch(
-            "music_assistant.providers.music_quiz.guest_access.build_join_url",
-            return_value="http://ma/?join=JOIN",
-        ),
-    ):
-        result = await MusicQuizPlugin._get_join_url(plugin)
-
-    assert result == "http://ma/?join=JOIN"
-    get_guest_user.assert_awaited_once_with(
-        plugin.mass,
-        MUSIC_QUIZ_GUEST_USER,
-        MUSIC_QUIZ_GUEST_DISPLAY_NAME,
-        allowed_player_ids=(),
-    )
-
-
-@pytest.mark.asyncio
 async def test_api_command_scopes_lock_out_guests_from_host_commands() -> None:
     """Host commands require USERS_INVITE, which guest users do not hold."""
     plugin = _create_plugin()
@@ -424,59 +390,6 @@ async def test_full_game_flow() -> None:
     assert _phase(plugin) == MusicQuizPhase.FINISHED
     assert game.players[player_ids["Bob"]].score == 1000
     cast("AsyncMock", plugin._stop_playback).assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_last_guest_ready_uses_trusted_queue_playback_controls() -> None:
-    """Guest-triggered progression uses trusted queue controls under its request context."""
-    plugin = _create_plugin()
-    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=2)
-    await plugin.reveal()
-
-    queue_controller = MagicMock()
-    queue_controller.play_media = AsyncMock()
-    queue_controller.play_media_for_api = AsyncMock(side_effect=InsufficientPermissions("denied"))
-    queue_controller.stop = AsyncMock()
-    queue_controller.stop_for_api = AsyncMock(side_effect=InsufficientPermissions("denied"))
-    plugin.mass.player_queues = queue_controller
-    cast("MagicMock", plugin.mass.players).get_player.return_value = MagicMock()
-    session = MagicMock()
-    session.player_id = "host_player"
-    session.queue_id = "host_player"
-    plugin._playback_session = session
-    plugin._play_track = MusicQuizPlugin._play_track.__get__(plugin)  # type: ignore[method-assign]
-    plugin._stop_playback = MusicQuizPlugin._stop_playback.__get__(plugin)  # type: ignore[method-assign]
-    guest = User(
-        user_id="guest",
-        username=MUSIC_QUIZ_GUEST_USER,
-        role=UserRole.GUEST,
-        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
-    )
-
-    set_current_user(guest)
-    try:
-        await plugin.ready(player_ids["Alice"])
-    finally:
-        set_current_user(None)
-
-    assert _phase(plugin) == MusicQuizPhase.ANSWERING
-    queue_controller.play_media.assert_awaited_once_with(
-        "host_player",
-        "library://track/1",
-        option=QueueOption.REPLACE,
-    )
-    queue_controller.play_media_for_api.assert_not_awaited()
-
-    await plugin.reveal()
-    set_current_user(guest)
-    try:
-        await plugin.ready(player_ids["Alice"])
-    finally:
-        set_current_user(None)
-
-    assert _phase(plugin) == MusicQuizPhase.FINISHED
-    queue_controller.stop.assert_awaited_once_with("host_player")
-    queue_controller.stop_for_api.assert_not_awaited()
 
 
 @pytest.mark.asyncio
