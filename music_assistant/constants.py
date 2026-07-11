@@ -54,8 +54,6 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
 # Home Assistant system user
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
-# Reserved filter-only player ID for managed guest accounts.
-GUEST_ACCESS_RESTRICTED_PLAYER_ID: Final[str] = "__guest_access_restricted__"
 # Port used by the internal ingress webserver for the HA integration
 INGRESS_SERVER_PORT: Final[int] = 8094
 

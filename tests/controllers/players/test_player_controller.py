@@ -27,7 +27,6 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.player import PlayerSource
 
-from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
 
@@ -70,32 +69,6 @@ def controller(mock_mass: MagicMock) -> PlayerController:
 def provider(mock_mass: MagicMock) -> MockProvider:
     """Create a mock provider."""
     return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
-
-
-def test_reserved_guest_filter_player_id_is_rejected(provider: MockProvider) -> None:
-    """A real player cannot use the managed-guest filter sentinel."""
-    with pytest.raises(InvalidDataError, match="reserved"):
-        MockPlayer(provider, GUEST_ACCESS_RESTRICTED_PLAYER_ID, "Reserved")
-
-
-async def test_cmd_stop_authorizes_resolved_active_queue(
-    mock_mass: MagicMock,
-    controller: PlayerController,
-    provider: MockProvider,
-) -> None:
-    """Stopping a player authorizes the active queue selected after redirection."""
-    player = MockPlayer(provider, "allowed", "Allowed")
-    controller._players = {"allowed": player}
-    mock_mass.players = controller
-    player.update_state(signal_event=False)
-    active_queue = SimpleNamespace(queue_id="hidden")
-    controller.get_active_queue = MagicMock(return_value=active_queue)  # type: ignore[method-assign]
-    mock_mass.player_queues.stop_for_api = AsyncMock()
-
-    await controller.cmd_stop("allowed")
-
-    mock_mass.player_queues.stop_for_api.assert_awaited_once_with("hidden")
-    mock_mass.player_queues.stop.assert_not_called()
 
 
 class TestSetMembersValidation:

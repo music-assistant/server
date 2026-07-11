@@ -9,10 +9,7 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues.constants import CACHE_FORMAT_VERSION
-from music_assistant.controllers.player_queues.state import (
-    PlayerQueueData,
-    QueueMediaPresentation,
-)
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
 def _track(item_id: str) -> Track:
@@ -72,7 +69,6 @@ def _data_with_dynamic_source() -> PlayerQueueData:
         play_action_refcount=3,
         last_counted_play="t1",
         flow_buffer_completed="sess-1",
-        media_presentation=QueueMediaPresentation(object(), "Music Quiz", b"secret"),
     )
 
 
@@ -100,8 +96,6 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
     assert restored.play_action_refcount == 0
     assert restored.last_counted_play is None
     assert restored.flow_buffer_completed is None
-    assert restored.media_presentation is None
-    assert "media_presentation" not in data.to_cache()
 
 
 def test_cache_round_trip_non_dynamic_has_no_sources() -> None:

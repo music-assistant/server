@@ -284,17 +284,10 @@ class MusicQuizPlugin(PluginProvider):
             self._game = None
             self._quiz_type = None
             self._answer_type = None
-        try:
-            try:
-                await self._stop_playback()
-            finally:
-                await self._close_playback_session()
-        finally:
-            try:
-                if is_removed:
-                    await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
-            finally:
-                await super().unload(is_removed)
+        await self._close_playback_session()
+        if is_removed:
+            await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
+        await super().unload(is_removed)
 
     # ==================== Host API Commands ====================
 
@@ -363,7 +356,6 @@ class MusicQuizPlugin(PluginProvider):
             )
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
             await quiz_strategy.initialize()
-            await self._stop_playback()
             self._cancel_timers()
             self._cancel_next_round_task()
             self._game = game
@@ -439,15 +431,11 @@ class MusicQuizPlugin(PluginProvider):
             self._game = None
             self._quiz_type = None
             self._answer_type = None
-            try:
-                try:
-                    await self._stop_playback()
-                finally:
-                    # tear down the shared session so its virtual player / listen-in
-                    # guests do not linger once the game is gone
-                    await self._close_playback_session()
-            finally:
-                self.signal_provider_event({"event": "game_removed"})
+            await self._stop_playback()
+            # tear down the shared session so its virtual player / listen-in
+            # guests do not linger once the game is gone
+            await self._close_playback_session()
+            self.signal_provider_event({"event": "game_removed"})
 
     # ==================== Guest API Commands ====================
 
@@ -729,10 +717,7 @@ class MusicQuizPlugin(PluginProvider):
     async def _get_join_url(self) -> str:
         """Return the guest join URL, creating the guest user and join code if needed."""
         guest_user = await guest_access.get_or_create_guest_user(
-            self.mass,
-            MUSIC_QUIZ_GUEST_USER,
-            MUSIC_QUIZ_GUEST_DISPLAY_NAME,
-            allowed_player_ids=(),
+            self.mass, MUSIC_QUIZ_GUEST_USER, MUSIC_QUIZ_GUEST_DISPLAY_NAME
         )
         code = await guest_access.get_or_create_join_code(
             self.mass, guest_user, device_name="Music Quiz Guest"
@@ -808,8 +793,6 @@ class MusicQuizPlugin(PluginProvider):
                 task_id=self._advance_timer_id,
             )
         self._signal_game_updated()
-        if self._playback_session is not None:
-            self._playback_session.clear_media_presentation()
 
     async def _advance_from_reveal(self) -> None:
         """Advance a revealed game to the next round or finish it."""
@@ -943,42 +926,34 @@ class MusicQuizPlugin(PluginProvider):
 
     async def _play_track(self, track_uri: str) -> None:
         """Play the given track on the game's playback session."""
-        async with self._playback_lock:
-            session = await self._get_or_create_session_locked()
-            if session is None:
-                raise MusicQuizNoPlaybackTargetError(
-                    "No playback target is available for the Music Quiz game"
-                )
-            game = self._require_game()
-            session.set_media_presentation(game.config.name or "Music Quiz")
-            try:
-                await self.mass.player_queues.play_media(
-                    session.queue_id, track_uri, option=QueueOption.REPLACE
-                )
-            except asyncio.CancelledError:
-                await self._cleanup_failed_play_locked(session)
-                raise
-            except Exception:
-                await self._cleanup_failed_play_locked(session)
-                raise
+        session = await self._get_playback_session()
+        if session is None:
+            raise MusicQuizNoPlaybackTargetError(
+                "No playback target is available for the Music Quiz game"
+            )
+        await self.mass.player_queues.play_media(
+            session.queue_id, track_uri, option=QueueOption.REPLACE
+        )
 
     async def _stop_playback(self) -> None:
-        """Stop and clear playback on the game's playback session, if any."""
-        async with self._playback_lock:
-            if self._playback_session is not None:
-                await self._playback_session.clear_playback()
+        """Stop playback on the game's playback session, if any."""
+        if self._playback_session is None:
+            return
+        if self.mass.players.get_player(self._playback_session.player_id) is None:
+            return
+        try:
+            await self.mass.player_queues.stop(self._playback_session.queue_id)
+        except Exception as err:
+            self.logger.warning("Could not stop Music Quiz playback: %s", err)
 
     async def _close_playback_session(self) -> None:
         """Close and drop the shared playback session under the playback lock."""
         # use the same lock that guards session creation/refresh so a concurrent
         # _get_playback_session() cannot resurrect a session we are tearing down
         async with self._playback_lock:
-            if (session := self._playback_session) is not None:
-                try:
-                    await session.close()
-                finally:
-                    if self._playback_session is session:
-                        self._playback_session = None
+            if self._playback_session is not None:
+                await self._playback_session.close()
+                self._playback_session = None
 
     async def _get_playback_session(self) -> SharedPlaybackSession | None:
         """
@@ -1059,17 +1034,6 @@ class MusicQuizPlugin(PluginProvider):
             elif fallback_priority < 0:
                 fallback, fallback_priority = player.player_id, 0
         return fallback
-
-    async def _cleanup_failed_play_locked(self, session: SharedPlaybackSession) -> None:
-        """Clear and close a playback session after its media failed to start."""
-        try:
-            await session.clear_playback()
-        finally:
-            try:
-                await session.close()
-            finally:
-                if self._playback_session is session:
-                    self._playback_session = None
 
     # ---------- timers ----------
 

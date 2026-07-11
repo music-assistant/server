@@ -56,7 +56,6 @@ class SharedPlaybackSession:
         self._mode = mode
         self._player_id = player_id
         self._guest_listeners: set[str] = set()
-        self._media_presentation_owner = object()
 
     @classmethod
     async def create_venue(
@@ -121,36 +120,6 @@ class SharedPlaybackSession:
         # a player-owned queue always has the same id as the player
         return self._player_id
 
-    def set_media_presentation(self, title: str) -> None:
-        """
-        Conceal media identity exposed by this session's queue.
-
-        :param title: Neutral title to expose while presentation is concealed.
-        """
-        self.mass.player_queues.set_media_presentation(
-            self.queue_id, self._media_presentation_owner, title
-        )
-
-    def clear_media_presentation(self) -> bool:
-        """Release this session's media presentation lease."""
-        return self.mass.player_queues.clear_media_presentation(
-            self.queue_id, self._media_presentation_owner
-        )
-
-    async def clear_playback(self) -> None:
-        """
-        Stop and clear this session's queue before releasing its presentation lease.
-
-        Any playback cleanup failure leaves the lease installed and is propagated.
-        """
-        queue = self.mass.player_queues.get(self.queue_id)
-        if queue is None:
-            self.clear_media_presentation()
-            return
-        await self.mass.player_queues.stop(self.queue_id)
-        self.mass.player_queues.clear(self.queue_id, skip_stop=True)
-        self.clear_media_presentation()
-
     def can_listen_in(self, web_player_id: str) -> bool:
         """
         Return whether the given guest web player can listen in on this session.
@@ -204,21 +173,17 @@ class SharedPlaybackSession:
         In VENUE mode only the guest listeners added through this session are
         detached; the venue player itself is left untouched.
         """
-        try:
-            if self.mass.player_queues.has_media_presentation(
-                self.queue_id, self._media_presentation_owner
-            ):
-                await self.clear_playback()
-        finally:
-            if self._mode == SharedPlaybackMode.REMOTE:
-                sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
-                if sendspin is not None and sendspin.is_virtual_player(self._player_id):
-                    await sendspin.remove_virtual_player(self._player_id)
-            elif self._guest_listeners and self._get_host_player() is not None:
-                await self.mass.players.cmd_set_members(
-                    self._player_id, player_ids_to_remove=list(self._guest_listeners)
-                )
+        if self._mode == SharedPlaybackMode.REMOTE:
+            sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
+            if sendspin is not None and sendspin.is_virtual_player(self._player_id):
+                await sendspin.remove_virtual_player(self._player_id)
             self._guest_listeners.clear()
+            return
+        if self._guest_listeners and self._get_host_player() is not None:
+            await self.mass.players.cmd_set_members(
+                self._player_id, player_ids_to_remove=list(self._guest_listeners)
+            )
+        self._guest_listeners.clear()
 
     def _get_host_player(self) -> Player | None:
         """Return the (available) player hosting this session, if any."""
