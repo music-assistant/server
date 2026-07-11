@@ -50,6 +50,15 @@ class QuizType(ABC):
         self._source_track_pool: dict[str, Track] | None = None
 
     @classmethod
+    def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003
+        """
+        Return whether this quiz type can be created.
+
+        :param mass: MusicAssistant instance.
+        """
+        return True
+
+    @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
         """
         Normalize quiz-specific configuration before it is persisted.

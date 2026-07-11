@@ -115,7 +115,10 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizSource,
     TimelineBonusMode,
 )
-from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
+from music_assistant.providers.music_quiz.quiz_types import (
+    get_available_quiz_types,
+    get_quiz_type,
+)
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
 
 if TYPE_CHECKING:
@@ -231,6 +234,7 @@ class MusicQuizPlugin(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         host_commands: tuple[tuple[str, _ApiHandler], ...] = (
+            ("music_quiz/available_quiz_types", self.available_quiz_types),
             ("music_quiz/create", self.create_game),
             ("music_quiz/get", self.get_game),
             ("music_quiz/start", self.start_game),
@@ -292,6 +296,10 @@ class MusicQuizPlugin(PluginProvider):
         await super().unload(is_removed)
 
     # ==================== Host API Commands ====================
+
+    async def available_quiz_types(self) -> list[str]:
+        """Return quiz types currently available for game creation."""
+        return get_available_quiz_types(self.mass)
 
     async def create_game(
         self,

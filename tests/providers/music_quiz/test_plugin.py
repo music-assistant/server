@@ -51,6 +51,7 @@ from music_assistant.providers.music_quiz.quiz_types.trivia import TriviaQuizTyp
 INSTANCE_ID = "music_quiz--test"
 
 HOST_COMMANDS = (
+    "music_quiz/available_quiz_types",
     "music_quiz/create",
     "music_quiz/get",
     "music_quiz/start",
@@ -484,6 +485,20 @@ async def test_generic_submit_answer_uses_discriminated_payload() -> None:
     assert game.players[player_ids["Alice"]].last_seen == 120.0
 
 
+@pytest.mark.asyncio
+async def test_available_quiz_types_reflect_ai_plugin_availability() -> None:
+    """Expose Trivia only when a loaded AI_QUERY plugin can support it."""
+    plugin = _create_plugin()
+    providers = cast("MagicMock", plugin.mass.get_providers_supporting_feature)
+
+    providers.return_value = []
+    assert await plugin.available_quiz_types() == ["guess_the_song", "hitster"]
+    providers.return_value = [MagicMock()]
+    assert await plugin.available_quiz_types() == ["guess_the_song", "hitster"]
+    providers.return_value = [MagicMock(spec=PluginProvider)]
+    assert await plugin.available_quiz_types() == ["guess_the_song", "hitster", "trivia"]
+
+
 @pytest.mark.parametrize(
     ("previous_entry_id", "next_entry_id"),
     [(None, "anchor"), ("anchor", None)],
@@ -714,7 +729,7 @@ async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
 
         game = plugin._game
         assert game is not None
-        assert game.config.difficulty == "normal"
+        assert game.config.difficulty == "hard"
         assert game.config.use_ai_distractors is False
         assert game.config.artist_bonus_mode == "off"
         assert game.config.title_bonus_mode == "off"

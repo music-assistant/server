@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -52,6 +53,7 @@ MAX_AI_RESPONSE_BYTES = 4096
 MAX_METADATA_VALUE_LENGTH = 500
 MAX_ANSWER_LENGTH = 200
 MAX_QUESTION_LENGTH = 300
+SYSTEM_RANDOM = random.SystemRandom()
 
 
 class TriviaTarget(StrEnum):
@@ -108,6 +110,15 @@ class TriviaQuizType(QuizType):
         self._eligible_tracks: dict[str, TriviaTrackFacts] | None = None
 
     @classmethod
+    def is_available(cls, mass: MusicAssistant) -> bool:
+        """
+        Return whether a loaded AI plugin can generate Trivia questions.
+
+        :param mass: MusicAssistant instance.
+        """
+        return bool(cls._get_ai_providers(mass))
+
+    @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
         """
         Set stable defaults for configuration unrelated to Trivia.
@@ -117,7 +128,6 @@ class TriviaQuizType(QuizType):
         """
         return replace(
             config,
-            difficulty=MusicQuizDifficulty.NORMAL.value,
             use_ai_distractors=False,
             artist_bonus_mode=TimelineBonusMode.OFF,
             title_bonus_mode=TimelineBonusMode.OFF,
@@ -131,6 +141,12 @@ class TriviaQuizType(QuizType):
         :param config: Configuration to validate.
         """
         super().validate_config(config)
+        if config.difficulty not in {item.value for item in MusicQuizDifficulty}:
+            raise InvalidDataError(
+                f"Unknown difficulty: {config.difficulty}",
+                translation_key="music_quiz_invalid_difficulty",
+                translation_owner=TRANSLATION_OWNER,
+            )
         if config.suggestion_count < 2:
             raise InvalidDataError(
                 "Suggestion count must be at least 2",
@@ -192,7 +208,7 @@ class TriviaQuizType(QuizType):
                 translation_args=[self.config.round_count],
             )
 
-        track_facts = available_tracks[0]
+        track_facts = SYSTEM_RANDOM.choice(available_tracks)
         fact = self._select_fact(track_facts, round_index)
         generation = await self._generate_question(fact)
         correct = SuggestionCandidate(
@@ -254,20 +270,25 @@ class TriviaQuizType(QuizType):
 
     def _require_ai_providers(self) -> list[PluginProvider]:
         """Return loaded AI plugin providers in deterministic fallback order."""
-        providers = sorted(
-            (
-                provider
-                for provider in self.mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
-                if isinstance(provider, PluginProvider)
-            ),
-            key=lambda provider: provider.instance_id,
-        )
+        providers = self._get_ai_providers(self.mass)
         if providers:
             return providers
         raise InvalidDataError(
             "Trivia requires a loaded plugin provider with AI query support",
             translation_key="music_quiz_trivia_ai_provider_required",
             translation_owner=TRANSLATION_OWNER,
+        )
+
+    @staticmethod
+    def _get_ai_providers(mass: MusicAssistant) -> list[PluginProvider]:
+        """Return loaded AI plugin providers in deterministic fallback order."""
+        return sorted(
+            (
+                provider
+                for provider in mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
+                if isinstance(provider, PluginProvider)
+            ),
+            key=lambda provider: provider.instance_id,
         )
 
     def _build_prompt(self, fact: TriviaFact) -> str:
@@ -281,6 +302,7 @@ class TriviaQuizType(QuizType):
             metadata["release_year"] = fact.track.release_year
         grounded_data = json_dumps(
             {
+                "difficulty": self.config.difficulty,
                 "question_target": fact.target.value,
                 "correct_answer": fact.correct_answer,
                 "track_metadata": metadata,
@@ -289,6 +311,7 @@ class TriviaQuizType(QuizType):
         wrong_answer_count = self.config.suggestion_count - 1
         return (
             "Create one concise music trivia question using only the supplied metadata. "
+            "Match the question and wrong-answer plausibility to the supplied difficulty. "
             "The server selected the question target and correct answer; do not change, repeat, "
             "or include the correct answer in the question. Produce plausible wrong answers for "
             "the same target, but do not invent any additional facts in the question. "
