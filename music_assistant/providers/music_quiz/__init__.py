@@ -34,7 +34,8 @@ The public game state is guest-safe by construction. Common state contains:
 - reveal/finished rounds additionally expose common ``answer_label``,
   ``track_uri``, ``image_url``, ``duration`` and ``ended_at`` fields. The
   answer strategy adds the revealed correct option or timeline entry and
-  answer-specific player results.
+  answer-specific player results. ``auto_advance_at`` contains the authoritative
+  next-round deadline when the backend scheduled automatic advancement.
 
 Guests authenticate through the standard guest access flow (join code in
 the join URL) and register themselves as quiz player via ``music_quiz/join``,
@@ -49,7 +50,8 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope, UserRole
@@ -60,10 +62,20 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, QueueOption
-from music_assistant_models.errors import InvalidDataError, SetupFailedError
+from music_assistant_models.errors import (
+    AudioError,
+    InvalidDataError,
+    MediaNotFoundError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import Track
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
+    get_current_user,
+    impersonated_user,
+)
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
@@ -149,6 +161,7 @@ MAX_PLAYER_COUNT = 100
 # the joined name is broadcast to every client on each state update; bound it
 MAX_PLAYER_NAME_LENGTH = 40
 PLAYER_RECONNECT_GRACE_SECONDS = 60.0
+MAX_PLAYBACK_ATTEMPTS = 5
 
 # minimum time players get to see the reveal/scoreboard before the game
 # advances, even when the round track has (almost) finished playing
@@ -369,7 +382,8 @@ class MusicQuizPlugin(PluginProvider):
                 created_at=time.time(),
             )
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
-            await quiz_strategy.initialize()
+            with _system_auth_context():
+                await quiz_strategy.initialize()
             async with self._playback_lock:
                 if not quiz_strategy.uses_audio:
                     await self._close_playback_session_locked()
@@ -425,7 +439,8 @@ class MusicQuizPlugin(PluginProvider):
         async with self._game_lock:
             game = self._require_game()
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
-            await quiz_strategy.initialize()
+            with _system_auth_context():
+                await quiz_strategy.initialize()
             self._cancel_timers()
             self._cancel_next_round_task()
             if quiz_strategy.uses_audio:
@@ -718,7 +733,7 @@ class MusicQuizPlugin(PluginProvider):
         submit_game_answer(game, player.player_id, submission, submitted_at, answer_type)
         self._refresh_player_presence(player, submitted_at)
         if all_active_players_complete(game, answer_type):
-            self._do_reveal()
+            self._do_reveal(completed=True)
         else:
             self._signal_game_updated()
         return _player_state(game, player, self._mode, answer_type)
@@ -802,45 +817,84 @@ class MusicQuizPlugin(PluginProvider):
 
     async def _start_next_round(self) -> None:
         """Prepare the next round, start its playback (if any) and open the answering phase."""
-        game, quiz_type, answer_type = self._require_game_strategies()
-        round_index = len(game.rounds)
-        next_round = await self._get_prepared_round(round_index)
-        if next_round.track_uri:
-            await self._play_track(next_round.track_uri)
-        start_round(game, next_round, time.time(), answer_type)
-        answer_window = _answer_window(game, next_round)
-        self.mass.call_later(
-            answer_window,
-            self._on_answer_deadline,
-            round_index,
-            task_id=self._reveal_timer_id,
-        )
-        if next_round.track_uri and quiz_type.warm_up_lyrics:
-            self._warm_up_lyrics(next_round.track_uri)
-        self._prefetch_round(round_index + 1)
-        self._signal_game_updated()
+        with _system_auth_context():
+            game, quiz_type, answer_type = self._require_game_strategies()
+            round_index = len(game.rounds)
+            next_round = await self._prepare_playable_round(round_index)
+            start_round(game, next_round, time.time(), answer_type)
+            answer_window = _answer_window(game, next_round)
+            self.mass.call_later(
+                answer_window,
+                self._on_answer_deadline,
+                round_index,
+                task_id=self._reveal_timer_id,
+            )
+            if next_round.track_uri and quiz_type.warm_up_lyrics:
+                self._warm_up_lyrics(next_round.track_uri)
+            self._prefetch_round(round_index + 1)
+            self._signal_game_updated()
 
-    def _do_reveal(self) -> None:
+    async def _prepare_playable_round(self, round_index: int) -> MusicQuizRound:
+        """Return a prepared round after its audio starts successfully."""
+        _, quiz_type, _ = self._require_game_strategies()
+        rejected_uris: set[str] = set()
+        last_error: AudioError | MediaNotFoundError | None = None
+        for _attempt in range(MAX_PLAYBACK_ATTEMPTS):
+            next_round = await self._get_prepared_round(round_index)
+            track_uri = next_round.track_uri
+            if track_uri is None:
+                if quiz_type.uses_audio:
+                    raise InvalidDataError("Prepared audio round is missing a track URI")
+                return next_round
+            if track_uri in rejected_uris:
+                quiz_type.reject_track(track_uri)
+                continue
+            try:
+                # This public queue operation is both the production resolution boundary and
+                # the intended start of playback. A temporary QueueItem would bypass URI,
+                # user/provider and target resolution performed by this path.
+                await self._play_track(track_uri)
+            except (AudioError, MediaNotFoundError) as err:
+                rejected_uris.add(track_uri)
+                last_error = err
+                quiz_type.reject_track(track_uri)
+                self.logger.warning(
+                    "Could not play Music Quiz track %s; preparing a replacement: %s",
+                    track_uri,
+                    err,
+                )
+                continue
+            return next_round
+        raise MediaNotFoundError(
+            f"No playable Music Quiz track found after {MAX_PLAYBACK_ATTEMPTS} attempts"
+        ) from last_error
+
+    def _do_reveal(self, *, completed: bool = False) -> None:
         """Reveal the current round, apply scoring and schedule the auto-advance."""
-        game, _, answer_type = self._require_game_strategies()
+        game, quiz_type, answer_type = self._require_game_strategies()
         reveal_round(game, answer_type)
         self.mass.cancel_timer(self._reveal_timer_id)
         current_round = get_current_round(game)
-        # let the revealed track play out before auto-advancing; without a
-        # known duration the game advances on all-ready or a host command
-        if current_round.duration and current_round.started_at:
-            remaining = current_round.started_at + current_round.duration - time.time()
+        current_round.auto_advance_at = None
+        now = time.time()
+        advance_delay = quiz_type.completed_reveal_auto_advance_delay if completed else None
+        if advance_delay is None and current_round.duration and current_round.started_at:
+            remaining = current_round.started_at + current_round.duration - now
+            advance_delay = max(remaining, MIN_REVEAL_SECONDS)
+        if advance_delay is not None:
             self.mass.call_later(
-                max(remaining, MIN_REVEAL_SECONDS),
+                advance_delay,
                 self._on_reveal_finished,
                 current_round.round_index,
                 task_id=self._advance_timer_id,
             )
+            current_round.auto_advance_at = now + advance_delay
         self._signal_game_updated()
 
     async def _advance_from_reveal(self) -> None:
         """Advance a revealed game to the next round or finish it."""
         game = self._require_game()
+        get_current_round(game).auto_advance_at = None
         self.mass.cancel_timer(self._advance_timer_id)
         if len(game.rounds) >= game.config.round_count:
             if self._quiz_type is None or self._quiz_type.uses_audio:
@@ -873,7 +927,7 @@ class MusicQuizPlugin(PluginProvider):
 
             if game.players and game.phase == MusicQuizPhase.ANSWERING:
                 if all_active_players_complete(game, answer_type):
-                    self._do_reveal()
+                    self._do_reveal(completed=True)
                 else:
                     self._signal_game_updated()
             elif game.players and game.phase == MusicQuizPhase.REVEAL:
@@ -919,9 +973,10 @@ class MusicQuizPlugin(PluginProvider):
         if self._game is None or round_index >= self._game.config.round_count:
             return
         game, quiz_type, _ = self._require_game_strategies()
-        self._next_round_task = self.mass.create_task(
-            quiz_type.prepare_round(round_index, list(game.rounds))
-        )
+        with _system_auth_context():
+            self._next_round_task = self.mass.create_task(
+                quiz_type.prepare_round(round_index, list(game.rounds))
+            )
 
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
         """Return the (prefetched) round with the given index."""
@@ -939,7 +994,8 @@ class MusicQuizPlugin(PluginProvider):
                 self.logger.warning(
                     "Prefetched Music Quiz round failed, preparing a fresh one: %s", err
                 )
-        return await quiz_type.prepare_round(round_index, list(game.rounds))
+        with _system_auth_context():
+            return await quiz_type.prepare_round(round_index, list(game.rounds))
 
     def _cancel_next_round_task(self) -> None:
         """Cancel a pending round prefetch task."""
@@ -952,11 +1008,12 @@ class MusicQuizPlugin(PluginProvider):
 
     def _warm_up_lyrics(self, track_uri: str) -> None:
         """Fetch/caches the track lyrics so they are ready when revealed."""
-        self.mass.create_task(
-            self._fetch_lyrics(track_uri),
-            task_id=f"music_quiz_lyrics_{self.instance_id}",
-            abort_existing=True,
-        )
+        with _system_auth_context():
+            self.mass.create_task(
+                self._fetch_lyrics(track_uri),
+                task_id=f"music_quiz_lyrics_{self.instance_id}",
+                abort_existing=True,
+            )
 
     async def _fetch_lyrics(self, track_uri: str) -> None:
         """Best-effort lyrics warm-up for the given track."""
@@ -971,25 +1028,32 @@ class MusicQuizPlugin(PluginProvider):
 
     async def _play_track(self, track_uri: str) -> None:
         """Play the given track on the game's playback session."""
-        session = await self._get_playback_session()
-        if session is None:
-            raise MusicQuizNoPlaybackTargetError(
-                "No playback target is available for the Music Quiz game"
+        with _system_auth_context():
+            session = await self._get_playback_session()
+            if session is None:
+                raise MusicQuizNoPlaybackTargetError(
+                    "No playback target is available for the Music Quiz game"
+                )
+            player = self.mass.players.get_player(session.player_id)
+            if player and player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+                raise MusicQuizNoPlaybackTargetError(
+                    "The Music Quiz playback target is handling an announcement"
+                )
+            await self.mass.player_queues.play_media(
+                session.queue_id, track_uri, option=QueueOption.REPLACE
             )
-        await self.mass.player_queues.play_media(
-            session.queue_id, track_uri, option=QueueOption.REPLACE
-        )
 
     async def _stop_playback(self) -> None:
         """Stop playback on the game's playback session, if any."""
-        if self._playback_session is None:
-            return
-        if self.mass.players.get_player(self._playback_session.player_id) is None:
-            return
-        try:
-            await self.mass.player_queues.stop(self._playback_session.queue_id)
-        except Exception as err:
-            self.logger.warning("Could not stop Music Quiz playback: %s", err)
+        with _system_auth_context():
+            if self._playback_session is None:
+                return
+            if self.mass.players.get_player(self._playback_session.player_id) is None:
+                return
+            try:
+                await self.mass.player_queues.stop(self._playback_session.queue_id)
+            except Exception as err:
+                self.logger.warning("Could not stop Music Quiz playback: %s", err)
 
     async def _close_playback_session(self) -> None:
         """Close and drop the shared playback session under the playback lock."""
@@ -1174,6 +1238,18 @@ def _consume_task_exception(task: asyncio.Task[Any]) -> None:
         task.exception()
 
 
+@contextmanager
+def _system_auth_context() -> Iterator[None]:
+    """Temporarily run provider-owned work without a requesting user."""
+    current_user_token = current_user.set(None)
+    impersonated_user_token = impersonated_user.set(None)
+    try:
+        yield
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
+
+
 def _get_join_round(game: MusicQuizGame) -> int:
     """Return the first round a newly joined player may answer."""
     if game.phase == MusicQuizPhase.LOBBY:
@@ -1221,6 +1297,7 @@ def _host_round(
         "duration": game_round.duration,
         "started_at": game_round.started_at,
         "ended_at": game_round.ended_at,
+        "auto_advance_at": game_round.auto_advance_at,
     }
 
 
@@ -1278,6 +1355,7 @@ def _public_round(
         "round_index": game_round.round_index,
         "started_at": game_round.started_at,
         "deadline": (game_round.started_at or 0) + _answer_window(game, game_round),
+        "auto_advance_at": game_round.auto_advance_at,
         "question": game_round.question,
         **answer_type.serialize_round(game_round.answer_state, revealed=revealed),
     }

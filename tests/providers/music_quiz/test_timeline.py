@@ -34,10 +34,12 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusOption,
     TimelineBonusType,
     TimelineCandidate,
+    TimelineChoiceBonusAnswer,
     TimelineEntry,
     TimelineFreeTextBonusDefinition,
     TimelineMultipleChoiceBonusDefinition,
     TimelineRoundState,
+    TimelineTextBonusAnswer,
 )
 
 ANSWER_TYPE = TimelineAnswerType()
@@ -267,6 +269,22 @@ def test_validate_round_rejects_invalid_timeline_and_bonus_state() -> None:
             state,
         )
 
+    state = _state(
+        bonus_definitions=[
+            _choice_definition(),
+            TimelineFreeTextBonusDefinition(bonus_type=TimelineBonusType.ARTIST),
+        ]
+    )
+    with pytest.raises(InvalidDataError, match="configured order"):
+        ANSWER_TYPE.validate_round(
+            _game(
+                state,
+                artist_mode=TimelineBonusMode.FREE_TEXT,
+                title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+            ),
+            state,
+        )
+
 
 def test_all_adjacent_boundaries_are_valid_but_stale_boundaries_do_not_lock() -> None:
     """Accept every adjacent snapshot boundary and reject stale or non-adjacent IDs."""
@@ -403,6 +421,108 @@ def test_placement_locks_and_completes_immediately_without_bonuses() -> None:
         ANSWER_TYPE.submit(game, state, player, _correct_placement(), 13)
 
 
+def test_incorrect_placement_finishes_and_cannot_receive_bonus_results() -> None:
+    """Complete wrong placements immediately and ignore inconsistent bonus data."""
+    definitions = [
+        TimelineFreeTextBonusDefinition(bonus_type=TimelineBonusType.ARTIST),
+        _choice_definition(),
+    ]
+    state = _state(bonus_definitions=definitions)
+    game = _game(
+        state,
+        ("text", "choice"),
+        artist_mode=TimelineBonusMode.FREE_TEXT,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    wrong_placement = TimelinePlacementSubmission(None, "anchor")
+    for player_id, submitted_at in (("text", 1.0), ("choice", 2.0)):
+        ANSWER_TYPE.submit(
+            game,
+            state,
+            game.players[player_id],
+            wrong_placement,
+            submitted_at,
+        )
+        assert state.finished_at[player_id] == submitted_at
+
+    personal = cast(
+        "dict[str, Any]",
+        ANSWER_TYPE.serialize_personal_player(state, "text", revealed=False),
+    )
+    assert personal["answer"]["finished"] is True
+    rejected_submissions = {
+        "text": TimelineBonusTextSubmission(TimelineBonusType.ARTIST, "Artist"),
+        "choice": TimelineBonusChoiceSubmission(TimelineBonusType.TITLE, "correct-option"),
+    }
+    for player_id, submission in rejected_submissions.items():
+        with pytest.raises(MusicQuizInvalidAnswerError, match="after finishing"):
+            ANSWER_TYPE.submit(game, state, game.players[player_id], submission, 3)
+
+    state.finished_at.clear()
+    for player_id, submission in rejected_submissions.items():
+        with pytest.raises(MusicQuizInvalidAnswerError, match="correct placement"):
+            ANSWER_TYPE.submit(game, state, game.players[player_id], submission, 3)
+
+    state.finished_at.update({"text": 1.0, "choice": 2.0})
+    state.bonus_answers = {
+        "text": [
+            TimelineTextBonusAnswer(
+                bonus_type=TimelineBonusType.ARTIST,
+                submitted_at=3,
+                value="Current Secret Artist",
+            )
+        ],
+        "choice": [
+            TimelineChoiceBonusAnswer(
+                bonus_type=TimelineBonusType.TITLE,
+                submitted_at=4,
+                option_id="correct-option",
+            )
+        ],
+    }
+
+    ended_at = ANSWER_TYPE.reveal(game, state)
+
+    assert ended_at == 2.0
+    assert all(not result.bonuses for result in state.results.values())
+    assert all(player.score == 0 for player in game.players.values())
+
+
+def test_final_configured_bonus_completes_at_submission_timestamp() -> None:
+    """Complete only when the final configured bonus is submitted."""
+    definitions = [
+        TimelineFreeTextBonusDefinition(bonus_type=TimelineBonusType.ARTIST),
+        _choice_definition(),
+    ]
+    state = _state(bonus_definitions=definitions)
+    game = _game(
+        state,
+        artist_mode=TimelineBonusMode.FREE_TEXT,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    player = game.players["p1"]
+
+    ANSWER_TYPE.submit(game, state, player, _correct_placement(), 1)
+    ANSWER_TYPE.submit(
+        game,
+        state,
+        player,
+        TimelineBonusTextSubmission(TimelineBonusType.ARTIST, "Artist"),
+        2,
+    )
+    assert ANSWER_TYPE.is_player_complete(state, "p1") is False
+
+    ANSWER_TYPE.submit(
+        game,
+        state,
+        player,
+        TimelineBonusChoiceSubmission(TimelineBonusType.TITLE, "correct-option"),
+        3,
+    )
+
+    assert state.finished_at["p1"] == 3
+
+
 def test_remove_player_clears_all_timeline_answer_state() -> None:
     """Remove placement, bonus, finish and result state for an expired player."""
     state = _state()
@@ -440,7 +560,6 @@ def test_removed_player_neither_blocks_completion_nor_scores() -> None:
             TimelineBonusTextSubmission(TimelineBonusType.ARTIST, "Massive Attack"),
             index + 2,
         )
-        ANSWER_TYPE.submit(game, state, player, TimelineFinishSubmission(), index + 4)
     departed = game.players.pop("departed")
 
     ANSWER_TYPE.remove_player(state, departed.player_id)
@@ -494,7 +613,7 @@ def test_bonus_and_finish_rules_reject_invalid_action_order_and_modes() -> None:
             TimelineBonusChoiceSubmission(TimelineBonusType.ARTIST, "correct-option"),
             3,
         )
-    with pytest.raises(MusicQuizInvalidAnswerError, match="does not accept"):
+    with pytest.raises(MusicQuizInvalidAnswerError, match="artist bonus first"):
         ANSWER_TYPE.submit(
             game,
             state,
@@ -502,15 +621,6 @@ def test_bonus_and_finish_rules_reject_invalid_action_order_and_modes() -> None:
             TimelineBonusTextSubmission(TimelineBonusType.TITLE, "Correct"),
             3,
         )
-    with pytest.raises(MusicQuizUnknownSuggestionError):
-        ANSWER_TYPE.submit(
-            game,
-            state,
-            player,
-            TimelineBonusChoiceSubmission(TimelineBonusType.TITLE, "unknown"),
-            3,
-        )
-
     ANSWER_TYPE.submit(
         game,
         state,
@@ -518,6 +628,14 @@ def test_bonus_and_finish_rules_reject_invalid_action_order_and_modes() -> None:
         TimelineBonusTextSubmission(TimelineBonusType.ARTIST, "Beyoncé"),
         4,
     )
+    with pytest.raises(MusicQuizUnknownSuggestionError):
+        ANSWER_TYPE.submit(
+            game,
+            state,
+            player,
+            TimelineBonusChoiceSubmission(TimelineBonusType.TITLE, "unknown"),
+            5,
+        )
     with pytest.raises(MusicQuizInvalidAnswerError, match="already answered"):
         ANSWER_TYPE.submit(
             game,
@@ -533,8 +651,8 @@ def test_bonus_and_finish_rules_reject_invalid_action_order_and_modes() -> None:
         TimelineBonusChoiceSubmission(TimelineBonusType.TITLE, "correct-option"),
         6,
     )
-    ANSWER_TYPE.submit(game, state, player, TimelineFinishSubmission(), 7)
     assert ANSWER_TYPE.is_player_complete(state, "p1") is True
+    assert state.finished_at["p1"] == 6
     for submission in (
         TimelineFinishSubmission(),
         TimelineBonusTextSubmission(TimelineBonusType.ARTIST, "Beyoncé"),
@@ -542,6 +660,34 @@ def test_bonus_and_finish_rules_reject_invalid_action_order_and_modes() -> None:
     ):
         with pytest.raises(MusicQuizInvalidAnswerError, match="after finishing"):
             ANSWER_TYPE.submit(game, state, player, submission, 8)
+
+
+def test_explicit_finish_skips_remaining_bonuses() -> None:
+    """Keep finish as an explicit way to skip configured bonuses."""
+    definitions = [
+        TimelineFreeTextBonusDefinition(bonus_type=TimelineBonusType.ARTIST),
+        _choice_definition(),
+    ]
+    state = _state(bonus_definitions=definitions)
+    game = _game(
+        state,
+        artist_mode=TimelineBonusMode.FREE_TEXT,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    player = game.players["p1"]
+
+    ANSWER_TYPE.submit(game, state, player, _correct_placement(), 1)
+    ANSWER_TYPE.submit(
+        game,
+        state,
+        player,
+        TimelineBonusTextSubmission(TimelineBonusType.ARTIST, "Artist"),
+        2,
+    )
+    ANSWER_TYPE.submit(game, state, player, TimelineFinishSubmission(), 3)
+
+    assert state.finished_at["p1"] == 3
+    assert len(state.bonus_answers["p1"]) == 1
 
 
 def test_artist_choice_and_title_text_modes_score_independently() -> None:
@@ -578,8 +724,9 @@ def test_artist_choice_and_title_text_modes_score_independently() -> None:
         )
         player = game.players["p1"]
         ANSWER_TYPE.submit(game, state, player, _correct_placement(), 1)
+        assert ANSWER_TYPE.is_player_complete(state, "p1") is False
         ANSWER_TYPE.submit(game, state, player, submission, 2)
-        ANSWER_TYPE.submit(game, state, player, TimelineFinishSubmission(), 3)
+        assert state.finished_at["p1"] == 2
 
         ANSWER_TYPE.reveal(game, state)
 
@@ -624,28 +771,19 @@ def test_reveal_scores_speed_ranked_placements_and_fixed_bonuses() -> None:
         TimelineBonusChoiceSubmission(TimelineBonusType.TITLE, "correct-option"),
         5,
     )
-    ANSWER_TYPE.submit(
-        game,
-        state,
-        game.players["p2"],
-        TimelineBonusTextSubmission(TimelineBonusType.ARTIST, "wrong"),
-        2,
-    )
-    ANSWER_TYPE.submit(
-        game,
-        state,
-        game.players["p2"],
-        TimelineBonusChoiceSubmission(TimelineBonusType.TITLE, "correct-option"),
-        3,
-    )
-    for player_id, finished_at in (("p1", 6), ("p2", 4), ("p3", 3)):
-        ANSWER_TYPE.submit(
-            game,
-            state,
-            game.players[player_id],
-            TimelineFinishSubmission(),
-            finished_at,
-        )
+    state.bonus_answers["p2"] = [
+        TimelineTextBonusAnswer(
+            bonus_type=TimelineBonusType.ARTIST,
+            submitted_at=2,
+            value="wrong",
+        ),
+        TimelineChoiceBonusAnswer(
+            bonus_type=TimelineBonusType.TITLE,
+            submitted_at=3,
+            option_id="correct-option",
+        ),
+    ]
+    ANSWER_TYPE.submit(game, state, game.players["p3"], TimelineFinishSubmission(), 6)
 
     ended_at = ANSWER_TYPE.reveal(game, state)
 
@@ -654,9 +792,9 @@ def test_reveal_scores_speed_ranked_placements_and_fixed_bonuses() -> None:
     assert state.results["p1"].placement.points == 500
     assert state.results["p2"].placement.points == 0
     assert [result.points for result in state.results["p1"].bonuses] == [250, 250]
-    assert [result.points for result in state.results["p2"].bonuses] == [0, 250]
+    assert state.results["p2"].bonuses == []
     assert game.players["p1"].score == 1000
-    assert game.players["p2"].score == 250
+    assert game.players["p2"].score == 0
     assert game.players["p3"].score == 1000
 
 
@@ -666,13 +804,15 @@ def test_deadline_reveal_scores_unfinished_submissions() -> None:
         bonus_definitions=[
             TimelineFreeTextBonusDefinition(
                 bonus_type=TimelineBonusType.ARTIST,
-            )
+            ),
+            _choice_definition(),
         ],
         artist_answers=["Massive Attack"],
     )
     game = _game(
         state,
         artist_mode=TimelineBonusMode.FREE_TEXT,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
     )
     player = game.players["p1"]
     ANSWER_TYPE.submit(game, state, player, _correct_placement(), 1)
@@ -795,7 +935,7 @@ def test_serialization_redacts_answer_material_and_restores_personal_progress() 
         assert set(option) == {"option_id", "label"}
 
     assert ANSWER_TYPE.serialize_public_player(state, "p1", revealed=False) == {
-        "answered": False,
+        "answered": True,
         "placed": True,
         "artist_bonus_answered": True,
         "title_bonus_answered": True,
@@ -817,7 +957,7 @@ def test_serialization_redacts_answer_material_and_restores_personal_progress() 
                     "option_id": "wrong-a",
                 },
             ],
-            "finished": False,
+            "finished": True,
         }
     }
     assert "p1" not in str(ANSWER_TYPE.serialize_public_player(state, "p1", revealed=False))

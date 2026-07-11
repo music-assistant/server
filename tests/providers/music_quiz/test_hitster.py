@@ -19,6 +19,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.models import (
     MusicQuizConfig,
     MusicQuizDifficulty,
@@ -29,10 +30,12 @@ from music_assistant.providers.music_quiz.models import (
     TimelineRoundState,
 )
 from music_assistant.providers.music_quiz.quiz_types.hitster import (
+    AI_QUERY_TIMEOUT_SECONDS,
     DEFAULT_BONUS_OPTION_COUNT,
     TRACK_ENRICHMENT_CONCURRENCY,
     HitsterQuizType,
 )
+from music_assistant.providers.music_quiz.suggestions import SuggestionCandidate
 
 
 def _track(
@@ -84,6 +87,27 @@ def _track(
     return track
 
 
+def _artist(item_id: str, name: str) -> ItemMapping:
+    """Return a catalog artist mapping."""
+    return ItemMapping(
+        media_type=MediaType.ARTIST,
+        item_id=item_id,
+        provider="prov",
+        name=name,
+    )
+
+
+def _ai_provider(
+    response: str | None = None,
+    error: Exception | None = None,
+) -> MagicMock:
+    """Return a mock AI-query plugin provider."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = "ai--test"
+    provider.ai_query = AsyncMock(return_value=response, side_effect=error)
+    return provider
+
+
 def _mass() -> MagicMock:
     """Return a mock MusicAssistant for Hitster tests."""
     mass = MagicMock()
@@ -91,7 +115,11 @@ def _mass() -> MagicMock:
         side_effect=lambda track: f"https://img/{track.item_id}"
     )
     mass.music.tracks.get = AsyncMock()
+    mass.music.tracks.similar_tracks = AsyncMock(return_value=[])
+    mass.music.artists.similar_artists = AsyncMock(return_value=[])
+    mass.music.artists.tracks = AsyncMock(return_value=[])
     mass.music.search = AsyncMock(return_value=SimpleNamespace(tracks=[]))
+    mass.get_providers_supporting_feature = MagicMock(return_value=[])
     return mass
 
 
@@ -101,6 +129,7 @@ def _quiz(
     round_count: int = 1,
     artist_mode: TimelineBonusMode = TimelineBonusMode.OFF,
     title_mode: TimelineBonusMode = TimelineBonusMode.OFF,
+    use_ai: bool = False,
 ) -> tuple[HitsterQuizType, MagicMock]:
     """Return a Hitster type backed by a deterministic source pool."""
     mass = _mass()
@@ -109,6 +138,7 @@ def _quiz(
         source_uris=["prov://playlist/1"],
         artist_bonus_mode=artist_mode,
         title_bonus_mode=title_mode,
+        use_ai_distractors=use_ai,
     )
     quiz = HitsterQuizType(mass, config)
     quiz._source_track_pool = {track.uri: track for track in tracks if track.uri}
@@ -132,7 +162,7 @@ def test_config_normalization_and_validation_are_hitster_specific() -> None:
 
     assert normalized.suggestion_count == DEFAULT_BONUS_OPTION_COUNT
     assert normalized.difficulty == MusicQuizDifficulty.NORMAL.value
-    assert normalized.use_ai_distractors is False
+    assert normalized.use_ai_distractors is True
     with pytest.raises(InvalidDataError, match="bonus mode"):
         HitsterQuizType.validate_config(
             MusicQuizConfig(
@@ -290,9 +320,15 @@ async def test_track_enrichment_concurrency_is_bounded() -> None:
     assert max_active_calls <= TRACK_ENRICHMENT_CONCURRENCY
 
 
-def test_release_year_prefers_album_and_falls_back_to_track_metadata() -> None:
-    """Resolve usable years from Album, ItemMapping and track release metadata."""
-    mapped = _track("mapped", "Mapped", "Artist", album_year=1999, release_year=2001)
+def test_release_year_uses_earliest_valid_track_or_album_year() -> None:
+    """Resolve the earliest usable year from album and track metadata."""
+    track_first = _track(
+        "track-first",
+        "Track First",
+        "Artist",
+        album_year=2005,
+        release_year=1999,
+    )
     full_album = Album(
         item_id="album",
         provider="prov",
@@ -306,21 +342,55 @@ def test_release_year_prefers_album_and_falls_back_to_track_metadata() -> None:
             )
         },
     )
-    full = _track("full", "Full", "Artist", release_year=2002)
-    full.album = full_album
-    fallback = _track("fallback", "Fallback", "Artist", release_year=2003)
-    future = _track(
-        "future",
-        "Future",
+    album_first = _track("album-first", "Album First", "Artist", release_year=2002)
+    album_first.album = full_album
+    album_only = _track("album-only", "Album Only", "Artist", album_year=2001)
+    track_only = _track("track-only", "Track Only", "Artist", release_year=2003)
+    future_album = _track(
+        "future-album",
+        "Future Album",
         "Artist",
         album_year=datetime.now(tz=UTC).year + 1,
         release_year=2004,
     )
+    too_old_track = _track(
+        "too-old-track",
+        "Too Old Track",
+        "Artist",
+        album_year=2006,
+        release_year=999,
+    )
+    invalid = _track(
+        "invalid",
+        "Invalid",
+        "Artist",
+        album_year=datetime.now(tz=UTC).year + 1,
+        release_year=999,
+    )
 
-    assert HitsterQuizType._release_year(mapped) == 1999
-    assert HitsterQuizType._release_year(full) == 2000
-    assert HitsterQuizType._release_year(fallback) == 2003
-    assert HitsterQuizType._release_year(future) == 2004
+    assert HitsterQuizType._release_year(track_first) == 1999
+    assert HitsterQuizType._release_year(album_first) == 2000
+    assert HitsterQuizType._release_year(album_only) == 2001
+    assert HitsterQuizType._release_year(track_only) == 2003
+    assert HitsterQuizType._release_year(future_album) == 2004
+    assert HitsterQuizType._release_year(too_old_track) == 2006
+    assert HitsterQuizType._release_year(invalid) is None
+
+
+def test_reject_track_removes_it_from_hitster_caches() -> None:
+    """Exclude failed playback tracks from future Hitster selection."""
+    failed = _track("failed", "Unavailable", "Artist", album_year=2000)
+    available = _track("available", "Playable", "Artist", album_year=2001)
+    quiz, _ = _quiz([failed, available])
+    assert failed.uri is not None
+    assert available.uri is not None
+    quiz._source_track_pool = {failed.uri: failed, available.uri: available}
+    quiz._eligible_tracks = [failed, available]
+
+    quiz.reject_track(failed.uri)
+
+    assert quiz._source_track_pool == {available.uri: available}
+    assert quiz._eligible_tracks == [available]
 
 
 @pytest.mark.asyncio
@@ -405,7 +475,296 @@ async def test_prepare_round_builds_free_text_and_opaque_multiple_choice_bonuses
     assert sum(option.is_correct for option in title_definition.options) == 1
     assert len({option.option_id for option in title_definition.options}) == 4
     assert all("correct" not in option.option_id for option in title_definition.options)
+    mass.music.artists.tracks.assert_awaited_once()
+    mass.music.search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_artist_bonus_prefers_similar_artists_and_excludes_aliases() -> None:
+    """Build artist options from similar artists without accepted aliases."""
+    current = _track("current", "Get Lucky", "Daft Punk", album_year=2013)
+    current.artists[0].sort_name = "Punk, Daft"
+    current.artists.append(_artist("pharrell", "Pharrell Williams"))
+    fallback_tracks = [
+        _track("anchor", "Teardrop", "Massive Attack", album_year=1998),
+        _track("fallback", "Glory Box", "Portishead", album_year=1994),
+    ]
+    quiz, mass = _quiz(
+        [current, *fallback_tracks],
+        artist_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, *fallback_tracks]
+    mass.music.artists.similar_artists.return_value = [
+        _artist("alias-sort", "Punk, Daft"),
+        _artist("alias-feature", "Pharrell Williams"),
+        _artist("justice", "Justice"),
+        _artist("air", "Air"),
+        _artist("phoenix", "Phoenix"),
+        _artist("duplicate-air", "air"),
+    ]
+
+    options = await quiz._create_bonus_options(current, TimelineBonusType.ARTIST)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "Justice",
+        "Air",
+        "Phoenix",
+    }
+    assert len({option.option_id for option in options}) == DEFAULT_BONUS_OPTION_COUNT
+    mass.music.artists.similar_artists.assert_awaited_once_with(
+        item_id=current.artists[0].item_id,
+        provider_instance_id_or_domain=current.artists[0].provider,
+        limit=24,
+    )
+    mass.music.tracks.similar_tracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_bonus_uses_similar_tracks_before_source_fallback() -> None:
+    """Supplement similar artists with related-track artists before source artists."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    source_fallback = [
+        _track("fallback-one", "Teardrop", "Massive Attack", album_year=1998),
+        _track("fallback-two", "Glory Box", "Portishead", album_year=1994),
+    ]
+    quiz, mass = _quiz(
+        [current, *source_fallback],
+        artist_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, *source_fallback]
+    mass.music.artists.similar_artists.return_value = [_artist("daft-punk", "Daft Punk")]
+    mass.music.tracks.similar_tracks.return_value = [
+        _track("similar-track", "Sexy Boy", "Air"),
+    ]
+
+    options = await quiz._create_bonus_options(current, TimelineBonusType.ARTIST)
+
+    wrong_labels = {option.label for option in options if not option.is_correct}
+    assert {"Daft Punk", "Air"} <= wrong_labels
+    assert len(wrong_labels & {"Massive Attack", "Portishead"}) == 1
+    mass.music.tracks.similar_tracks.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_artist_bonus_supplements_pairwise_close_similar_artists() -> None:
+    """Do not count mutually ambiguous artist names as distinct options."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    source_fallback = _track("fallback", "Glory Box", "Portishead", album_year=1994)
+    quiz, mass = _quiz(
+        [current, source_fallback],
+        artist_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, source_fallback]
+    mass.music.artists.similar_artists.return_value = [
+        _artist("massive-attack", "Massive Attack"),
+        _artist("massive-attack-collective", "Massive Attack Collective"),
+        _artist("daft-punk", "Daft Punk"),
+    ]
+    mass.music.tracks.similar_tracks.return_value = [
+        _track("similar-track", "Sexy Boy", "Air"),
+    ]
+
+    options = await quiz._create_bonus_options(current, TimelineBonusType.ARTIST)
+
+    wrong_labels = {option.label for option in options if not option.is_correct}
+    assert "Air" in wrong_labels
+    assert "Portishead" not in wrong_labels
+    assert len(wrong_labels & {"Massive Attack", "Massive Attack Collective"}) == 1
+    mass.music.tracks.similar_tracks.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_title_bonus_prefers_same_artist_source_tracks_and_excludes_versions() -> None:
+    """Use same-artist source titles while excluding the current song and close versions."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    same_artist_tracks = [
+        _track("close", "Genesis (Remix)", "Justice", album_year=2008),
+        _track("one", "D.A.N.C.E.", "Justice", album_year=2007),
+        _track("two", "Phantom", "Justice", album_year=2007),
+        _track("three", "Audio, Video, Disco", "Justice", album_year=2011),
+    ]
+    unrelated = _track("unrelated", "Teardrop", "Massive Attack", album_year=1998)
+    quiz, mass = _quiz(
+        [current, *same_artist_tracks, unrelated],
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, *same_artist_tracks, unrelated]
+
+    options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "D.A.N.C.E.",
+        "Phantom",
+        "Audio, Video, Disco",
+    }
+    mass.music.artists.tracks.assert_not_awaited()
     mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_title_bonus_uses_artist_catalog_before_unrelated_source_tracks() -> None:
+    """Fill sparse same-artist source titles from the artist controller first."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    source_same_artist = _track("source-same", "D.A.N.C.E.", "Justice", album_year=2007)
+    unrelated = _track("unrelated", "Teardrop", "Massive Attack", album_year=1998)
+    quiz, mass = _quiz(
+        [current, source_same_artist, unrelated],
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, source_same_artist, unrelated]
+    mass.music.artists.tracks.return_value = [
+        _track("catalog-one", "Phantom", "Justice"),
+        _track("catalog-two", "Audio, Video, Disco", "Justice"),
+    ]
+
+    options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "D.A.N.C.E.",
+        "Phantom",
+        "Audio, Video, Disco",
+    }
+    assert "Teardrop" not in {option.label for option in options}
+    mass.music.artists.tracks.assert_awaited_once()
+    mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ai_ranking_only_reorders_grounded_bonus_candidates() -> None:
+    """Map a strict AI ranking back to the supplied catalog candidates."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    quiz, mass = _quiz([current], use_ai=True)
+    provider = _ai_provider('{"ranked_ids":["candidate_2","candidate_0","candidate_1"]}')
+    mass.get_providers_supporting_feature.return_value = [provider]
+    candidates = [
+        SuggestionCandidate("Daft Punk"),
+        SuggestionCandidate("Air"),
+        SuggestionCandidate("Phoenix"),
+    ]
+
+    ranked = await quiz._rank_bonus_candidates(
+        current,
+        TimelineBonusType.ARTIST,
+        candidates,
+    )
+
+    assert [candidate.label for candidate in ranked] == ["Phoenix", "Daft Punk", "Air"]
+    prompt = provider.ai_query.await_args.args[0]
+    assert all(candidate.label in prompt for candidate in candidates)
+    assert "candidate_3" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_ai_ranking_cannot_replace_sufficient_similar_artists_with_fallback() -> None:
+    """Keep sufficient catalog ordering when AI ranking makes it ambiguous."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    source_fallback = _track("fallback", "Glory Box", "Portishead", album_year=1994)
+    quiz, mass = _quiz(
+        [current, source_fallback],
+        artist_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+        use_ai=True,
+    )
+    quiz._eligible_tracks = [current, source_fallback]
+    mass.music.artists.similar_artists.return_value = [
+        _artist("massive-attack", "Massive Attack"),
+        _artist("attack-collective", "Attack Collective"),
+        _artist("daft-punk", "Daft Punk"),
+        _artist("massive-attack-collective", "Massive Attack Collective"),
+    ]
+    provider = _ai_provider(
+        '{"ranked_ids":["candidate_3","candidate_0","candidate_1","candidate_2"]}'
+    )
+    mass.get_providers_supporting_feature.return_value = [provider]
+
+    options = await quiz._create_bonus_options(current, TimelineBonusType.ARTIST)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "Massive Attack",
+        "Attack Collective",
+        "Daft Punk",
+    }
+    assert "Portishead" not in {option.label for option in options}
+    mass.music.tracks.similar_tracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        "not json",
+        '{"ranked_ids":["candidate_0","candidate_1","invented"]}',
+        '{"ranked_ids":["candidate_0","candidate_1"]}',
+    ],
+)
+async def test_invalid_ai_ranking_falls_back_to_catalog_order(response: str) -> None:
+    """Keep deterministic catalog ordering when AI output is invalid."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    quiz, mass = _quiz([current], use_ai=True)
+    mass.get_providers_supporting_feature.return_value = [_ai_provider(response)]
+    candidates = [
+        SuggestionCandidate("Daft Punk"),
+        SuggestionCandidate("Air"),
+        SuggestionCandidate("Phoenix"),
+    ]
+
+    ranked = await quiz._rank_bonus_candidates(
+        current,
+        TimelineBonusType.ARTIST,
+        candidates,
+    )
+
+    assert ranked == candidates
+
+
+@pytest.mark.asyncio
+async def test_invalid_primary_ai_provider_does_not_try_another_provider() -> None:
+    """Keep catalog order immediately when the deterministic AI provider fails."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    quiz, mass = _quiz([current], use_ai=True)
+    invalid = _ai_provider("not json")
+    invalid.instance_id = "ai--a"
+    later = _ai_provider('{"ranked_ids":["candidate_1","candidate_0"]}')
+    later.instance_id = "ai--b"
+    mass.get_providers_supporting_feature.return_value = [later, invalid]
+    candidates = [SuggestionCandidate("Daft Punk"), SuggestionCandidate("Air")]
+
+    ranked = await quiz._rank_bonus_candidates(
+        current,
+        TimelineBonusType.ARTIST,
+        candidates,
+    )
+
+    assert ranked == candidates
+    invalid.ai_query.assert_awaited_once()
+    later.ai_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ai_ranking_timeout_falls_back_to_catalog_order() -> None:
+    """Keep catalog ordering when an AI provider exceeds the ranking deadline."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    quiz, mass = _quiz([current], use_ai=True)
+    provider = _ai_provider()
+
+    async def _stall(_prompt: str) -> str:
+        await asyncio.sleep(1)
+        return '{"ranked_ids":["candidate_1","candidate_0"]}'
+
+    provider.ai_query.side_effect = _stall
+    mass.get_providers_supporting_feature.return_value = [provider]
+    candidates = [SuggestionCandidate("Daft Punk"), SuggestionCandidate("Air")]
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.hitster.AI_QUERY_TIMEOUT_SECONDS",
+        AI_QUERY_TIMEOUT_SECONDS / 30_000,
+    ):
+        ranked = await quiz._rank_bonus_candidates(
+            current,
+            TimelineBonusType.ARTIST,
+            candidates,
+        )
+
+    assert ranked == candidates
 
 
 @pytest.mark.asyncio

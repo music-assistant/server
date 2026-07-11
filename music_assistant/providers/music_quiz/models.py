@@ -354,6 +354,7 @@ class MusicQuizRound(DataClassDictMixin):
     duration: float | None = None
     started_at: float | None = None
     ended_at: float | None = None
+    auto_advance_at: float | None = None
 
     class Config(BaseConfig):
         """Mashumaro configuration."""

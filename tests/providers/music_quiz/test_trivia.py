@@ -362,21 +362,65 @@ def test_server_selects_correct_artist_title_album_and_year_truths() -> None:
         assert fact.correct_answer == answer
 
 
-def test_track_facts_use_real_album_and_release_date_without_defaults() -> None:
-    """Read factual year variants while leaving absent fields unset."""
-    album_year = _track(
-        "album-year",
-        "Album Year",
+def test_track_facts_use_earliest_valid_release_year_without_defaults() -> None:
+    """Read the earliest factual year while leaving invalid fields unset."""
+    track_first = _track(
+        "track-first",
+        "Track First",
         "Artist",
         album="Album",
-        album_year=1999,
-        release_year=2001,
+        album_year=2005,
+        release_year=1999,
     )
-    release_year = _track("release-year", "Release Year", "Artist", release_year=2002)
+    album_first = _track(
+        "album-first",
+        "Album First",
+        "Artist",
+        album="Album",
+        album_year=1998,
+        release_year=2004,
+    )
+    album_only = _track(
+        "album-only",
+        "Album Only",
+        "Artist",
+        album="Album",
+        album_year=2001,
+    )
+    track_only = _track("track-only", "Track Only", "Artist", release_year=2002)
+    future_album = _track(
+        "future-album",
+        "Future Album",
+        "Artist",
+        album="Album",
+        album_year=datetime.now(tz=UTC).year + 1,
+        release_year=2003,
+    )
+    too_old_track = _track(
+        "too-old-track",
+        "Too Old Track",
+        "Artist",
+        album="Album",
+        album_year=2000,
+        release_year=999,
+    )
+    invalid = _track(
+        "invalid",
+        "Invalid",
+        "Artist",
+        album="Album",
+        album_year=datetime.now(tz=UTC).year + 1,
+        release_year=999,
+    )
     missing = _track("missing", "Missing", "Artist")
 
-    assert TriviaQuizType._track_facts(album_year).release_year == 1999  # type: ignore[union-attr]
-    assert TriviaQuizType._track_facts(release_year).release_year == 2002  # type: ignore[union-attr]
+    assert TriviaQuizType._track_facts(track_first).release_year == 1999  # type: ignore[union-attr]
+    assert TriviaQuizType._track_facts(album_first).release_year == 1998  # type: ignore[union-attr]
+    assert TriviaQuizType._track_facts(album_only).release_year == 2001  # type: ignore[union-attr]
+    assert TriviaQuizType._track_facts(track_only).release_year == 2002  # type: ignore[union-attr]
+    assert TriviaQuizType._track_facts(future_album).release_year == 2003  # type: ignore[union-attr]
+    assert TriviaQuizType._track_facts(too_old_track).release_year == 2000  # type: ignore[union-attr]
+    assert TriviaQuizType._track_facts(invalid).release_year is None  # type: ignore[union-attr]
     assert TriviaQuizType._track_facts(missing).release_year is None  # type: ignore[union-attr]
 
 

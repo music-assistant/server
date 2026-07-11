@@ -9,10 +9,17 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.auth import Scope, UserRole
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, QueueOption
+from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
+    impersonated_user,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user as get_auth_current_user,
+)
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz import (
@@ -442,6 +449,304 @@ async def test_full_game_flow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_guest_ready_advances_and_prefetches_in_system_context() -> None:
+    """Keep provider playback and background preparation independent of the guest."""
+    prepared_contexts: list[tuple[int, object | None]] = []
+
+    async def _prepare_round(
+        round_index: int,
+        _previous_rounds: list[MusicQuizRound],
+    ) -> MusicQuizRound:
+        prepared_contexts.append((round_index, get_auth_current_user()))
+        game_round = _make_round(round_index)
+        game_round.track_uri = f"spotify://track/{round_index}"
+        return game_round
+
+    prepare_round = AsyncMock(side_effect=_prepare_round)
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song."
+        "GuessTheSongQuizType.prepare_round",
+        new=prepare_round,
+    ):
+        plugin = _create_plugin()
+        player_ids = await _create_started_game(plugin, round_count=3)
+        game = plugin._game
+        assert game is not None
+
+        playback_contexts: list[object | None] = []
+
+        async def _play_media(
+            _queue_id: str,
+            track_uri: str,
+            *,
+            option: QueueOption,
+        ) -> None:
+            playback_user = get_auth_current_user()
+            playback_contexts.append(playback_user)
+            if playback_user is not None:
+                raise MediaNotFoundError("No playable items found")
+            assert track_uri == "spotify://track/1"
+            assert option == QueueOption.REPLACE
+
+        plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
+            plugin, MusicQuizPlugin
+        )
+        plugin._get_playback_session = AsyncMock(  # type: ignore[method-assign]
+            return_value=SimpleNamespace(queue_id="quiz_queue", player_id="quiz_player")
+        )
+        cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace(
+            extra_data={}
+        )
+        play_media = AsyncMock(side_effect=_play_media)
+        cast("MagicMock", plugin.mass.player_queues).play_media = play_media
+        requesting_user = cast("User", _guest_user())
+        requesting_impersonation = cast("User", _guest_user())
+        current_user_token = current_user.set(requesting_user)
+        impersonated_user_token = impersonated_user.set(requesting_impersonation)
+        try:
+            await plugin.answer(player_ids["Alice"], "correct_0")
+            await plugin.answer(player_ids["Bob"], "wrong_0_1")
+            await plugin.ready(player_ids["Alice"])
+            await plugin.ready(player_ids["Bob"])
+            assert plugin._next_round_task is not None
+            await plugin._next_round_task
+            assert current_user.get() is requesting_user
+            assert impersonated_user.get() is requesting_impersonation
+        finally:
+            impersonated_user.reset(impersonated_user_token)
+            current_user.reset(current_user_token)
+
+    assert playback_contexts == [None]
+    assert (2, None) in prepared_contexts
+    assert game.current_round_index == 1
+    assert len(game.rounds) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "playback_error",
+    [MediaNotFoundError("No playable items found"), AudioError("Stream is unavailable")],
+)
+async def test_unplayable_prefetch_is_replaced_before_round_start(
+    playback_error: AudioError | MediaNotFoundError,
+) -> None:
+    """Reject an unplayable prefetch and start exactly one replacement round."""
+    plugin = _create_plugin()
+    await plugin.create_game(round_count=1, source_uris=["library://playlist/1"])
+    game = plugin._game
+    quiz_type = plugin._quiz_type
+    assert game is not None
+    assert quiz_type is not None
+    plugin._cancel_next_round_task()
+    rejected_round = _make_round(0)
+    rejected_round.track_uri = "spotify://track/unplayable"
+    replacement_round = _make_round(0)
+    replacement_round.track_uri = "spotify://track/replacement"
+
+    async def _prefetched_round() -> MusicQuizRound:
+        return rejected_round
+
+    plugin._next_round_task = asyncio.create_task(_prefetched_round())
+    quiz_type.prepare_round = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[rejected_round, replacement_round]
+    )
+    quiz_type.reject_track = MagicMock(wraps=quiz_type.reject_track)  # type: ignore[method-assign]
+    cast("AsyncMock", plugin._play_track).side_effect = [playback_error, None]
+
+    await plugin.start_game()
+
+    assert game.phase == MusicQuizPhase.ANSWERING
+    assert game.rounds == [replacement_round]
+    assert cast("AsyncMock", plugin._play_track).await_args_list[0].args == (
+        "spotify://track/unplayable",
+    )
+    assert cast("AsyncMock", plugin._play_track).await_args_list[1].args == (
+        "spotify://track/replacement",
+    )
+    assert quiz_type.reject_track.call_count == 2
+    quiz_type.reject_track.assert_called_with("spotify://track/unplayable")
+    cast("MagicMock", plugin.logger.warning).assert_called_once_with(
+        "Could not play Music Quiz track %s; preparing a replacement: %s",
+        "spotify://track/unplayable",
+        playback_error,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rejected_uri_is_not_retried_and_replacement_attempts_are_bounded() -> None:
+    """Never replay a rejected URI when a strategy keeps returning it."""
+    plugin = _create_plugin()
+    await plugin.create_game(round_count=1, source_uris=["library://playlist/1"])
+    game = plugin._game
+    quiz_type = plugin._quiz_type
+    assert game is not None
+    assert quiz_type is not None
+    plugin._cancel_next_round_task()
+    rejected_round = _make_round(0)
+    rejected_round.track_uri = "spotify://track/unplayable"
+
+    async def _prefetched_round() -> MusicQuizRound:
+        return rejected_round
+
+    plugin._next_round_task = asyncio.create_task(_prefetched_round())
+    quiz_type.prepare_round = AsyncMock(return_value=rejected_round)  # type: ignore[method-assign]
+    cast("AsyncMock", plugin._play_track).side_effect = MediaNotFoundError(
+        "No playable items found"
+    )
+
+    with pytest.raises(MediaNotFoundError, match="after 5 attempts"):
+        await plugin.start_game()
+
+    cast("AsyncMock", plugin._play_track).assert_awaited_once_with("spotify://track/unplayable")
+    assert quiz_type.prepare_round.await_count == 4
+    assert game.phase == MusicQuizPhase.LOBBY
+    assert game.rounds == []
+
+
+@pytest.mark.asyncio
+async def test_exhausted_replacements_leave_reveal_retryable() -> None:
+    """Keep the revealed round unchanged when no replacement can be prepared."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin, player_names=(), round_count=2)
+    game = plugin._game
+    quiz_type = plugin._quiz_type
+    assert game is not None
+    assert quiz_type is not None
+    first_round = game.rounds[0]
+    await plugin.reveal()
+    plugin._cancel_next_round_task()
+    rejected_round = _make_round(1)
+    rejected_round.track_uri = "spotify://track/unplayable"
+
+    async def _prefetched_round() -> MusicQuizRound:
+        return rejected_round
+
+    plugin._next_round_task = asyncio.create_task(_prefetched_round())
+    quiz_type.prepare_round = AsyncMock(  # type: ignore[method-assign]
+        side_effect=InvalidDataError("No unused source tracks are available")
+    )
+    cast("AsyncMock", plugin._play_track).reset_mock()
+    cast("AsyncMock", plugin._play_track).side_effect = MediaNotFoundError(
+        "No playable items found"
+    )
+
+    with pytest.raises(InvalidDataError, match="No unused source tracks"):
+        await plugin.next_round()
+
+    assert game.phase == MusicQuizPhase.REVEAL
+    assert game.current_round_index == 0
+    assert game.rounds == [first_round]
+
+    replacement_round = _make_round(1)
+    replacement_round.track_uri = "spotify://track/recovered"
+    quiz_type.prepare_round = AsyncMock(return_value=replacement_round)  # type: ignore[method-assign]
+    cast("AsyncMock", plugin._play_track).side_effect = None
+
+    await plugin.next_round()
+
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    assert game.rounds == [first_round, replacement_round]
+
+
+@pytest.mark.asyncio
+async def test_system_context_is_restored_when_round_start_fails() -> None:
+    """Restore requesting auth context when internal playback raises."""
+    plugin = _create_plugin()
+    await plugin.create_game(round_count=1, source_uris=["library://playlist/1"])
+    game = plugin._game
+    assert game is not None
+    requesting_user = cast("User", _guest_user())
+    requesting_impersonation = cast("User", _guest_user())
+    current_user_token = current_user.set(requesting_user)
+    impersonated_user_token = impersonated_user.set(requesting_impersonation)
+    cast("AsyncMock", plugin._play_track).side_effect = MusicQuizNoPlaybackTargetError(
+        "No playback target"
+    )
+    try:
+        with pytest.raises(MusicQuizNoPlaybackTargetError):
+            await plugin.start_game()
+        assert current_user.get() is requesting_user
+        assert impersonated_user.get() is requesting_impersonation
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
+
+    assert game.phase == MusicQuizPhase.LOBBY
+    assert game.rounds == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_error", [None, RuntimeError("Stop failed")])
+async def test_final_guest_ready_stops_playback_in_system_context(
+    stop_error: RuntimeError | None,
+) -> None:
+    """Finish from guest Ready while keeping queue stop provider-owned."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    stop_contexts: list[tuple[User | None, User | None]] = []
+
+    async def _stop(_queue_id: str) -> None:
+        stop_contexts.append((current_user.get(), impersonated_user.get()))
+        if stop_error is not None:
+            raise stop_error
+
+    plugin._playback_session = cast(
+        "Any",
+        SimpleNamespace(queue_id="quiz_queue", player_id="quiz_player"),
+    )
+    plugin._stop_playback = MusicQuizPlugin._stop_playback.__get__(  # type: ignore[method-assign]
+        plugin, MusicQuizPlugin
+    )
+    cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace()
+    stop = AsyncMock(side_effect=_stop)
+    cast("MagicMock", plugin.mass.player_queues).stop = stop
+    requesting_user = cast("User", _guest_user())
+    requesting_impersonation = cast("User", _guest_user())
+    current_user_token = current_user.set(requesting_user)
+    impersonated_user_token = impersonated_user.set(requesting_impersonation)
+    try:
+        await plugin.answer(player_ids["Alice"], "correct_0")
+        await plugin.ready(player_ids["Alice"])
+        assert current_user.get() is requesting_user
+        assert impersonated_user.get() is requesting_impersonation
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
+
+    assert stop_contexts == [(None, None)]
+    stop.assert_awaited_once_with("quiz_queue")
+    assert game.phase == MusicQuizPhase.FINISHED
+    if stop_error is not None:
+        cast("MagicMock", plugin.logger.warning).assert_called_once_with(
+            "Could not stop Music Quiz playback: %s",
+            stop_error,
+        )
+
+
+@pytest.mark.asyncio
+async def test_play_track_rejects_busy_announcement_target() -> None:
+    """Do not open an audio round when the target ignores playback during an announcement."""
+    plugin = _create_plugin()
+    plugin._game = _fake_game()
+    plugin._quiz_type = MagicMock(uses_audio=True)
+    plugin._get_playback_session = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(queue_id="quiz_queue", player_id="quiz_player")
+    )
+    cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace(
+        extra_data={"announcement_in_progress": True}
+    )
+    play_media = AsyncMock()
+    cast("MagicMock", plugin.mass.player_queues).play_media = play_media
+
+    with pytest.raises(MusicQuizNoPlaybackTargetError, match="announcement"):
+        await MusicQuizPlugin._play_track(plugin, "spotify://track/test")
+
+    play_media.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_guess_the_song_warms_lyrics_through_quiz_capability() -> None:
     """Keep lyrics warm-up enabled for guess-the-song rounds."""
     plugin = _create_plugin()
@@ -745,6 +1050,7 @@ async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
             "round_index",
             "started_at",
             "deadline",
+            "auto_advance_at",
             "question",
             "suggestions",
         }
@@ -922,7 +1228,7 @@ async def test_hitster_create_uses_flat_config_and_derived_answer_type() -> None
     assert game.answer_type == "timeline"
     assert game.config.suggestion_count == 4
     assert game.config.difficulty == "normal"
-    assert game.config.use_ai_distractors is False
+    assert game.config.use_ai_distractors is True
     assert created["artist_bonus_mode"] == "free_text"
     assert created["title_bonus_mode"] == "multiple_choice"
     assert "suggestion_count" not in created
@@ -954,17 +1260,22 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
             "round_index",
             "started_at",
             "deadline",
+            "auto_advance_at",
             "question",
             "timeline",
             "bonus_definitions",
         }
+        assert hidden_round["auto_advance_at"] is None
         assert hidden_round["timeline"][0]["is_anchor"] is True
         assert "Secret Title" not in str(hidden_state)
         assert player_ids["Alice"] not in str(hidden_state)
 
-        with patch(
-            "music_assistant.providers.music_quiz.get_current_user",
-            return_value=_guest_user(),
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ),
+            patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
         ):
             state = cast(
                 "dict[str, Any]",
@@ -979,10 +1290,14 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
                 ),
             )
 
+        advance_delay, _, _ = _round_timer_call(plugin, plugin._advance_timer_id)
         await deadline_callback(round_index)
         game = plugin._game
         assert game is not None
         assert game.phase == MusicQuizPhase.REVEAL
+        assert advance_delay == 30.0
+        assert game.rounds[0].auto_advance_at == 130.0
+        assert state["current_round"]["auto_advance_at"] == 130.0
         assert game.players[player_ids["Alice"]].score == 1000
         cast("AsyncMock", plugin._play_track).assert_awaited_with("library://track/hitster-0")
         plugin._warm_up_lyrics.assert_not_called()
@@ -998,11 +1313,20 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
         assert state["you"]["answer"]["previous_entry_id"] == "anchor"
         assert state["you"]["answer"]["correct"] is True
         assert state["you"]["answer"]["points"] == 1000
+        cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+        with patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ):
+            finished = await plugin.ready(player_ids["Alice"])
+        assert _phase(plugin) == MusicQuizPhase.FINISHED
+        assert finished["current_round"]["auto_advance_at"] is None
+        cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._advance_timer_id)
 
 
 @pytest.mark.asyncio
-async def test_hitster_bonuses_require_finish_and_allow_skipping_unanswered_bonus() -> None:
-    """Keep answering after placement and reveal when explicit finish skips a bonus."""
+async def test_hitster_finish_skips_unanswered_bonus() -> None:
+    """Keep finish as a backward-compatible way to skip a bonus."""
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
@@ -1088,7 +1412,16 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
-        )
+        ),
+        TimelineMultipleChoiceBonusDefinition(
+            bonus_type=TimelineBonusType.TITLE,
+            options=[
+                TimelineBonusOption("correct-title", "Secret Title 0", True),
+                TimelineBonusOption("wrong-a", "Wrong A"),
+                TimelineBonusOption("wrong-b", "Wrong B"),
+                TimelineBonusOption("wrong-c", "Wrong C"),
+            ],
+        ),
     ]
     plugin = _create_plugin()
     with (
@@ -1105,13 +1438,18 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
             ),
         ),
     ):
-        player_ids = await _create_started_hitster_game(
-            plugin,
-            artist_bonus_mode="free_text",
-        )
-        with patch(
-            "music_assistant.providers.music_quiz.get_current_user",
-            return_value=_guest_user(),
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+            player_ids = await _create_started_hitster_game(
+                plugin,
+                artist_bonus_mode="free_text",
+                title_bonus_mode="multiple_choice",
+            )
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ),
+            patch("music_assistant.providers.music_quiz.time.time", return_value=101.0),
         ):
             await plugin.submit_answer(
                 player_ids["Alice"],
@@ -1132,17 +1470,51 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
                 },
             )
         _, deadline_callback, round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
-        await deadline_callback(round_index)
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=130.0):
+            await deadline_callback(round_index)
 
     game = plugin._game
     assert game is not None
     assert game.phase == MusicQuizPhase.REVEAL
     assert game.players[player_ids["Alice"]].score == 1250
+    advance_delay, _, _ = _round_timer_call(plugin, plugin._advance_timer_id)
+    assert advance_delay == 150.0
+    assert game.rounds[0].auto_advance_at == 280.0
     public_state = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]["state"]
     player = public_state["players"][0]
     assert player["answered"] is False
     assert player["last_answer"]["placement"]["points"] == 1000
     assert player["last_answer"]["artist"]["points"] == 250
+
+
+@pytest.mark.asyncio
+async def test_hitster_manual_reveal_keeps_track_end_auto_advance() -> None:
+    """Keep the existing track-end schedule for a manual Hitster reveal."""
+    plugin = _create_plugin()
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            new=AsyncMock(),
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            new=AsyncMock(
+                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+            ),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
+    ):
+        await _create_started_hitster_game(plugin)
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=110.0):
+        state = await plugin.reveal()
+
+    game = plugin._game
+    assert game is not None
+    advance_delay, _, _ = _round_timer_call(plugin, plugin._advance_timer_id)
+    assert advance_delay == 170.0
+    assert game.rounds[0].auto_advance_at == 280.0
+    assert state["current_round"]["auto_advance_at"] == 280.0
 
 
 @pytest.mark.asyncio
@@ -1578,6 +1950,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "round_index",
         "started_at",
         "deadline",
+        "auto_advance_at",
         "question",
         "suggestions",
     }
@@ -1625,6 +1998,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "round_index",
         "started_at",
         "deadline",
+        "auto_advance_at",
         "question",
         "suggestions",
         "correct_suggestion_id",
@@ -1739,6 +2113,7 @@ async def test_host_rounds_preserve_flat_wire_shape() -> None:
             "duration": game_round.duration,
             "started_at": game_round.started_at,
             "ended_at": game_round.ended_at,
+            "auto_advance_at": game_round.auto_advance_at,
         }
     ]
     assert "answer_state" not in host_state["rounds"][0]

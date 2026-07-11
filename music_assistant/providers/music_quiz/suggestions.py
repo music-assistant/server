@@ -202,6 +202,27 @@ def build_opaque_options(
     return options
 
 
+def has_enough_distractors(
+    correct: SuggestionCandidate,
+    distractors: Iterable[SuggestionCandidate],
+    option_count: int,
+) -> bool:
+    """
+    Return whether candidates can fill every wrong option.
+
+    :param correct: Correct answer candidate.
+    :param distractors: Wrong answer candidates.
+    :param option_count: Total number of options that must be built.
+    """
+    if option_count < 2:
+        return False
+    try:
+        _select_distractors(correct, distractors, option_count - 1)
+    except ValueError:
+        return False
+    return True
+
+
 def _select_distractors(
     correct: SuggestionCandidate,
     distractors: Iterable[SuggestionCandidate],

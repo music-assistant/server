@@ -92,6 +92,19 @@ def _ai_provider(response: str | None = None, error: Exception | None = None) ->
     return provider
 
 
+def test_reject_track_removes_it_from_the_source_pool() -> None:
+    """Exclude failed playback tracks from later Guess rounds."""
+    quiz_type, _ = _quiz_type()
+    failed = _track("failed", "Unavailable", "Artist")
+    available = _track("available", "Playable", "Artist")
+    quiz_type._source_track_pool = _pool([failed, available])
+    assert failed.uri is not None
+
+    quiz_type.reject_track(failed.uri)
+
+    assert quiz_type._source_track_pool == _pool([available])
+
+
 @pytest.mark.asyncio
 async def test_normal_difficulty_uses_search_only() -> None:
     """Normal difficulty draws distractors from a catalog search and nothing else."""
