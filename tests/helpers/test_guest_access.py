@@ -203,7 +203,7 @@ async def test_get_or_create_guest_user_rejects_string_player_filter() -> None:
     """A single string cannot be split into one allowed player ID per character."""
     mass = _create_mock_mass()
 
-    with pytest.raises(InvalidDataError, match="collection of player IDs"):
+    with pytest.raises(TypeError, match="collection of player IDs"):
         await guest_access.get_or_create_guest_user(
             mass,
             "managed_guest",
