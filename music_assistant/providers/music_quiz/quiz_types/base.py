@@ -155,6 +155,15 @@ class QuizType(ABC):
         :return: The prepared (not yet started) round.
         """
 
+    def reject_track(self, track_uri: str) -> None:
+        """
+        Remove a failed track from future round preparation.
+
+        :param track_uri: URI of the track that failed playback.
+        """
+        if self._source_track_pool is not None:
+            self._source_track_pool.pop(track_uri, None)
+
     async def _get_source_track_pool(self) -> dict[str, Track]:
         """Return all configured source tracks keyed by URI, fetched once per game."""
         if self._source_track_pool is not None:

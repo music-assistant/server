@@ -377,6 +377,22 @@ def test_release_year_uses_earliest_valid_track_or_album_year() -> None:
     assert HitsterQuizType._release_year(invalid) is None
 
 
+def test_reject_track_removes_it_from_hitster_caches() -> None:
+    """Exclude failed playback tracks from future Hitster selection."""
+    failed = _track("failed", "Unavailable", "Artist", album_year=2000)
+    available = _track("available", "Playable", "Artist", album_year=2001)
+    quiz, _ = _quiz([failed, available])
+    assert failed.uri is not None
+    assert available.uri is not None
+    quiz._source_track_pool = {failed.uri: failed, available.uri: available}
+    quiz._eligible_tracks = [failed, available]
+
+    quiz.reject_track(failed.uri)
+
+    assert quiz._source_track_pool == {available.uri: available}
+    assert quiz._eligible_tracks == [available]
+
+
 @pytest.mark.asyncio
 async def test_prepare_round_seeds_anchor_and_prefetches_guaranteed_future_snapshot() -> None:
     """Build the next snapshot with the current song before that song is revealed."""

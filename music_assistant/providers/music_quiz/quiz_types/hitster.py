@@ -165,6 +165,18 @@ class HitsterQuizType(QuizType):
             duration=current_track.duration,
         )
 
+    def reject_track(self, track_uri: str) -> None:
+        """
+        Remove a failed track from future Hitster rounds.
+
+        :param track_uri: URI of the track that failed playback.
+        """
+        super().reject_track(track_uri)
+        if self._eligible_tracks is not None:
+            self._eligible_tracks = [
+                track for track in self._eligible_tracks if track.uri != track_uri
+            ]
+
     async def _get_eligible_tracks(self) -> list[Track]:
         """Return unique source tracks with usable release metadata."""
         if self._eligible_tracks is not None:
