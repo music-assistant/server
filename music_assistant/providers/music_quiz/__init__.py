@@ -1062,10 +1062,14 @@ class MusicQuizPlugin(PluginProvider):
 
     async def _cleanup_failed_play_locked(self, session: SharedPlaybackSession) -> None:
         """Clear and close a playback session after its media failed to start."""
-        await session.clear_playback()
-        await session.close()
-        if self._playback_session is session:
-            self._playback_session = None
+        try:
+            await session.clear_playback()
+        finally:
+            try:
+                await session.close()
+            finally:
+                if self._playback_session is session:
+                    self._playback_session = None
 
     # ---------- timers ----------
 

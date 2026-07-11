@@ -2294,6 +2294,21 @@ async def test_failed_or_cancelled_play_cleans_up_while_concealed(
     assert plugin._playback_session is None
 
 
+async def test_failed_play_cleanup_closes_session_when_queue_clear_fails() -> None:
+    """Failed-play cleanup closes and drops the session even when queue clearing fails."""
+    plugin = _create_plugin()
+    session = MagicMock()
+    session.clear_playback = AsyncMock(side_effect=RuntimeError("clear failed"))
+    session.close = AsyncMock()
+    plugin._playback_session = session
+
+    with pytest.raises(RuntimeError, match="clear failed"):
+        await MusicQuizPlugin._cleanup_failed_play_locked(plugin, session)
+
+    session.close.assert_awaited_once()
+    assert plugin._playback_session is None
+
+
 @pytest.mark.parametrize("quiz_type", ["guess_the_song", "hitster"])
 async def test_reveal_publishes_scored_state_before_exposing_media(quiz_type: str) -> None:
     """Reveal commits and broadcasts public answer state before clearing presentation."""
