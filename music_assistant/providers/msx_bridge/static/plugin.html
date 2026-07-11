@@ -32,7 +32,9 @@
             { icon: "person", label: "Artists", data: addDeviceParam(BRIDGE + "/msx/artists.json", deviceId) },
             { icon: "queue-music", label: "Playlists", data: addDeviceParam(BRIDGE + "/msx/playlists.json", deviceId) },
             { icon: "audiotrack", label: "Tracks", data: addDeviceParam(BRIDGE + "/msx/tracks.json", deviceId) },
-            { icon: "search", label: "Search", data: buildSearchRequestAction(deviceId) }
+            { icon: "search", label: "Search", data: buildSearchRequestAction(deviceId) },
+            // Static entry: the page itself explains when no party is active
+            { icon: "qr-code", label: "Party", data: addDeviceParam(BRIDGE + "/msx/party.json", deviceId) }
         ];
     }
 

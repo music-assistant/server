@@ -81,6 +81,7 @@ PyYAML==6.0.3
 qqmusic-api-python==0.6.6
 radios==0.3.2
 rokuecp==0.19.5
+segno==1.6.6
 shortuuid==1.0.13
 snapcast==2.3.8
 soco==0.31.1

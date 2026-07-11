@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import io
 import json
 import logging
+import time
 from html import escape as html_escape
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from urllib.parse import quote
 
 from aiohttp import WSMsgType, web
@@ -48,6 +51,18 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 _KNOWN_EXTENSIONS = (".mp3", ".json", ".flac", ".aac")
+
+PARTY_CACHE_TTL = 10.0
+PARTY_CALL_TIMEOUT = 5.0
+
+
+class PartyInfo(NamedTuple):
+    """Active-party details resolved from the MA Party plugin."""
+
+    join_url: str
+    name: str | None
+    qr_text: str | None
+    qr_version: str
 
 
 def _int_param(query: MultiMapping[str], name: str, default: int, max_val: int = 10000) -> int:
@@ -96,6 +111,7 @@ class MSXHTTPServer:
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
         self._active_stream_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._active_stream_transports: dict[str, set[Any]] = {}
+        self._party_cache: tuple[float, PartyInfo | None] | None = None
         self._setup_routes()
 
     def _setup_routes(self) -> None:
@@ -128,6 +144,7 @@ class MSXHTTPServer:
         self.app.router.add_get("/msx/search-page.json", self._handle_msx_search_page)
         self.app.router.add_get("/msx/search-input.json", self._handle_msx_search_input)
         self.app.router.add_get("/msx/search.json", self._handle_msx_search)
+        self.app.router.add_get("/msx/party.json", self._handle_msx_party)
 
         # MSX detail pages
         self.app.router.add_get("/msx/albums/{item_id}/tracks.json", self._handle_msx_album_tracks)
@@ -187,6 +204,9 @@ class MSXHTTPServer:
         self.app.router.add_get("/api/recently-played", self._handle_recently_played)
         self.app.router.add_get("/api/lyrics/{player_id}", self._handle_lyrics)
         self.app.router.add_get("/api/queue/{player_id}", self._handle_queue)
+        self.app.router.add_get("/api/party", self._handle_party_status)
+        self.app.router.add_get("/api/party/qr.svg", self._handle_party_qr)
+        self.app.router.add_get("/api/party/qr.png", self._handle_party_qr)
 
         # Playback control
         self.app.router.add_post("/api/play", self._handle_play)
@@ -434,6 +454,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             ("Tracks", "msx-white-soft:audiotrack", f"{prefix}/msx/tracks.json"),
             ("Search", "search", f"{prefix}/msx/search-page.json"),
         ]
+        if await self._get_active_party() is not None:
+            items.append(("Party", "msx-white-soft:qr-code", f"{prefix}/msx/party.json"))
         content = MsxContent(
             headline="Music Assistant",
             template=MsxTemplate(
@@ -723,6 +745,29 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 image_filler="default",
             ),
             items=items if items else [MsxItem(title="No results found")],
+        )
+        return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
+
+    async def _handle_msx_party(self, request: web.Request) -> web.Response:
+        """Return MSX page with the party QR code, or a hint when no party is active."""
+        await self._ensure_player_for_request(request)
+        prefix = self._get_prefix(request)
+        party = await self._get_active_party()
+        if party is None:
+            item = MsxItem(
+                title="No active party",
+                label="Enable guest access in the Music Assistant Party plugin",
+            )
+        else:
+            # PNG, not SVG: MSX image slots on older TV engines cannot decode SVG
+            item = MsxItem(
+                image=f"{prefix}/api/party/qr.png",
+                label=party.qr_text or "Scan to join the party",
+            )
+        content = MsxContent(
+            headline=(party.name if party else None) or "Party",
+            template=MsxTemplate(type="separate", layout="0,0,4,4"),
+            items=[item],
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
@@ -2050,6 +2095,70 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 current_index = i
 
         return web.json_response({"items": items, "current_index": current_index})
+
+    # --- Party Mode ---
+
+    async def _get_active_party(self) -> PartyInfo | None:
+        """
+        Return details of the active party, or None when no party is active.
+
+        Never raises: a broken or slow Party plugin degrades to "no party" so
+        the core UI (menu, kiosk) keeps working. Results are cached briefly.
+        """
+        now = time.monotonic()
+        if self._party_cache is not None and now - self._party_cache[0] < PARTY_CACHE_TTL:
+            return self._party_cache[1]
+        info: PartyInfo | None = None
+        try:
+            party = cast("Any", self.provider.mass.get_provider("party"))
+            if party is not None:
+                join_url = await asyncio.wait_for(party.get_party_url(), PARTY_CALL_TIMEOUT)
+                if join_url:
+                    config = await asyncio.wait_for(party.get_party_config(), PARTY_CALL_TIMEOUT)
+                    info = PartyInfo(
+                        join_url=join_url,
+                        name=getattr(config, "party_name", None),
+                        qr_text=getattr(config, "qr_text", None),
+                        qr_version=hashlib.sha256(join_url.encode()).hexdigest()[:12],
+                    )
+        except Exception:
+            logger.warning("Party plugin status check failed", exc_info=True)
+        self._party_cache = (now, info)
+        return info
+
+    async def _handle_party_status(self, _request: web.Request) -> web.Response:
+        """Return party status for the kiosk overlay."""
+        party = await self._get_active_party()
+        if party is None:
+            return web.json_response({"active": False})
+        # the join URL itself is deliberately not exposed — clients only get the QR
+        # image URL (relative, so it works behind reverse proxies) plus an opaque
+        # version so they refetch the image only when the join code rotates
+        return web.json_response(
+            {
+                "active": True,
+                "name": party.name,
+                "qr_text": party.qr_text,
+                "qr_url": "/api/party/qr.svg",
+                "qr_version": party.qr_version,
+            }
+        )
+
+    async def _handle_party_qr(self, request: web.Request) -> web.Response:
+        """Serve the guest join URL as a QR code image (SVG or PNG by route)."""
+        party = await self._get_active_party()
+        if party is None:
+            return web.Response(status=404, text="No active party")
+        import segno  # noqa: PLC0415  # only needed when the Party plugin is used
+
+        kind = "png" if request.path.endswith(".png") else "svg"
+        buf = io.BytesIO()
+        segno.make(party.join_url, error="m").save(buf, kind=kind, scale=8)
+        return web.Response(
+            body=buf.getvalue(),
+            content_type="image/png" if kind == "png" else "image/svg+xml",
+            headers={"Cache-Control": "no-store"},
+        )
 
     # --- Playback Control ---
 

@@ -1009,6 +1009,41 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         }
     }
 
+    // --- Party Mode (kiosk QR overlay) ---
+    var PARTY_POLL_INTERVAL = 30000;
+
+    function updatePartyOverlay() {
+        fetch('/api/party')
+            .then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function (data) {
+                var panel = document.getElementById('kiosk-party');
+                if (!panel) return;
+                var qrUrl = data && data.active ? resolveUrl(data.qr_url) : '';
+                if (!qrUrl) { panel.hidden = true; return; }
+                // the version param changes only when the join code rotates, so the
+                // TV refetches the image exactly then (no flicker on idle polls)
+                var src = addParam(qrUrl, 'v=' + encodeURIComponent(data.qr_version || ''));
+                var img = document.getElementById('kiosk-party-qr');
+                if (img.src !== src) img.src = src;
+                document.getElementById('kiosk-party-name').textContent = data.name || '';
+                document.getElementById('kiosk-party-text').textContent =
+                    data.qr_text || 'Scan to join the party';
+                panel.hidden = false;
+            })
+            .catch(function (e) {
+                // keep the last shown state on transient network errors
+                console.warn('Party status fetch failed:', e);
+            });
+    }
+
+    function startPartyPolling() {
+        updatePartyOverlay();
+        setInterval(updatePartyOverlay, PARTY_POLL_INTERVAL);
+    }
+
     // --- Kiosk Queue ---
     function fetchKioskQueue(playerId) {
         clearTimeout(kioskQueueTimer);
@@ -1201,6 +1236,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             updateLyricsOffset();
             window.addEventListener('resize', updateLyricsOffset);
 
+            startPartyPolling();
+
             console.log('[WebPlayer] Kiosk mode initialized with Sendspin');
         } else if (KIOSK_MODE) {
             // Kiosk HTML5 mode: fullscreen player with WebSocket push + HTML5 Audio
@@ -1257,6 +1294,8 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             hideKioskControls(); // start in hidden state
             updateLyricsOffset();
             window.addEventListener('resize', updateLyricsOffset);
+
+            startPartyPolling();
 
             console.log('[WebPlayer] Kiosk mode initialized with HTML5 streaming');
         } else {
