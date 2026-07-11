@@ -37,6 +37,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.guest_access import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.mass import MusicAssistant
 
 
@@ -1150,6 +1151,50 @@ async def test_guest_cannot_create_long_lived_token(auth_manager: Authentication
 
     with pytest.raises(InsufficientPermissions):
         await auth_manager.create_long_lived_token("Guest Escalation")
+
+
+async def test_guest_cannot_remove_own_player_filter(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """A dedicated guest cannot make its own player access unrestricted."""
+    guest = await auth_manager.create_user(
+        username="filteredguest",
+        role=UserRole.GUEST,
+        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+    )
+    set_impersonated_user(None)
+    set_current_user(guest)
+
+    with pytest.raises(InsufficientPermissions):
+        await auth_manager.update_user_profile(player_filter=[])
+
+    stored_guest = await auth_manager.get_user(guest.user_id)
+    assert stored_guest is not None
+    assert stored_guest.player_filter == [GUEST_ACCESS_RESTRICTED_PLAYER_ID]
+
+
+async def test_admin_can_update_guest_player_filter(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An administrator may still manage a dedicated guest's player filter."""
+    admin = await auth_manager.create_user(username="filteradmin", role=UserRole.ADMIN)
+    guest = await auth_manager.create_user(
+        username="managedguest",
+        role=UserRole.GUEST,
+        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+    )
+    set_impersonated_user(None)
+    set_current_user(admin)
+
+    updated_guest = await auth_manager.update_user_profile(
+        user_id=guest.user_id,
+        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID, "party_queue"],
+    )
+
+    assert updated_guest.player_filter == [
+        GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+        "party_queue",
+    ]
 
 
 async def test_no_long_lived_token_for_guest_account(auth_manager: AuthenticationManager) -> None:

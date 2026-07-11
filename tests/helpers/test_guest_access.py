@@ -17,6 +17,7 @@ def _create_mock_mass() -> MagicMock:
     auth = mass.webserver.auth
     auth.get_user_by_username = AsyncMock(return_value=None)
     auth.create_user = AsyncMock()
+    auth.update_user_filters = AsyncMock()
     auth.get_active_join_code = AsyncMock(return_value=None)
     auth.generate_join_code = AsyncMock()
     auth.revoke_join_codes = AsyncMock(return_value=0)
@@ -25,15 +26,20 @@ def _create_mock_mass() -> MagicMock:
 
 
 async def test_get_or_create_guest_user_returns_existing() -> None:
-    """An existing guest user is returned without creating a new one."""
+    """An existing restricted guest user is returned without updating it."""
     mass = _create_mock_mass()
-    existing_user = MagicMock(role=UserRole.GUEST)
+    existing_user = MagicMock(
+        role=UserRole.GUEST,
+        player_filter=[guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+    )
     mass.webserver.auth.get_user_by_username.return_value = existing_user
 
     user = await guest_access.get_or_create_guest_user(mass, "party_guest", "Party Guest")
 
     assert user is existing_user
     mass.webserver.auth.create_user.assert_not_awaited()
+    mass.webserver.auth.update_user_filters.assert_not_awaited()
+    mass.webserver.disconnect_websockets_for_user.assert_not_called()
 
 
 async def test_get_or_create_guest_user_rejects_non_guest() -> None:
@@ -44,10 +50,11 @@ async def test_get_or_create_guest_user_rejects_non_guest() -> None:
     with pytest.raises(InvalidDataError):
         await guest_access.get_or_create_guest_user(mass, "party_guest", "Party Guest")
     mass.webserver.auth.create_user.assert_not_awaited()
+    mass.webserver.auth.update_user_filters.assert_not_awaited()
 
 
 async def test_get_or_create_guest_user_creates_guest() -> None:
-    """A missing guest user is created with the GUEST role."""
+    """A missing guest user is created with a restrictive player filter."""
     mass = _create_mock_mass()
     created_user = MagicMock()
     mass.webserver.auth.create_user.return_value = created_user
@@ -59,7 +66,112 @@ async def test_get_or_create_guest_user_creates_guest() -> None:
         username="party_guest",
         role=UserRole.GUEST,
         display_name="Party Guest",
+        player_filter=[guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
     )
+
+
+async def test_get_or_create_guest_user_migrates_unrestricted_guest() -> None:
+    """An existing unrestricted guest is updated and its stale sockets are disconnected."""
+    mass = _create_mock_mass()
+    existing_user = MagicMock(
+        role=UserRole.GUEST,
+        player_filter=[],
+        user_id="guest_user_id",
+    )
+    updated_user = MagicMock()
+    mass.webserver.auth.get_user_by_username.return_value = existing_user
+    mass.webserver.auth.update_user_filters.return_value = updated_user
+
+    user = await guest_access.get_or_create_guest_user(mass, "party_guest", "Party Guest")
+
+    assert user is updated_user
+    mass.webserver.auth.update_user_filters.assert_awaited_once_with(
+        existing_user,
+        [guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+        None,
+    )
+    mass.webserver.disconnect_websockets_for_user.assert_called_once_with("guest_user_id")
+
+
+async def test_get_or_create_guest_user_manages_allowed_players() -> None:
+    """Allowed player IDs are stored with the sentinel in deterministic order."""
+    mass = _create_mock_mass()
+    created_user = MagicMock()
+    mass.webserver.auth.create_user.return_value = created_user
+
+    user = await guest_access.get_or_create_guest_user(
+        mass,
+        "party_guest",
+        "Party Guest",
+        {"venue_player", "remote_player"},
+    )
+
+    assert user is created_user
+    mass.webserver.auth.create_user.assert_awaited_once_with(
+        username="party_guest",
+        role=UserRole.GUEST,
+        display_name="Party Guest",
+        player_filter=[
+            guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+            "remote_player",
+            "venue_player",
+        ],
+    )
+
+
+async def test_get_or_create_guest_user_refreshes_allowed_player() -> None:
+    """A changed allowed player replaces stale access and disconnects existing sockets."""
+    mass = _create_mock_mass()
+    existing_user = MagicMock(
+        role=UserRole.GUEST,
+        player_filter=[
+            guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+            "old_party_player",
+        ],
+        user_id="party_guest_id",
+    )
+    updated_user = MagicMock()
+    mass.webserver.auth.get_user_by_username.return_value = existing_user
+    mass.webserver.auth.update_user_filters.return_value = updated_user
+
+    user = await guest_access.get_or_create_guest_user(
+        mass,
+        "party_guest",
+        "Party Guest",
+        ("new_party_player",),
+    )
+
+    assert user is updated_user
+    mass.webserver.auth.update_user_filters.assert_awaited_once_with(
+        existing_user,
+        [
+            guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+            "new_party_player",
+        ],
+        None,
+    )
+    mass.webserver.disconnect_websockets_for_user.assert_called_once_with("party_guest_id")
+
+
+async def test_get_or_create_guest_user_ignores_filter_order() -> None:
+    """Equivalent managed filters do not cause a database update or reconnect."""
+    mass = _create_mock_mass()
+    existing_user = MagicMock(
+        role=UserRole.GUEST,
+        player_filter=["party_player", guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+    )
+    mass.webserver.auth.get_user_by_username.return_value = existing_user
+
+    user = await guest_access.get_or_create_guest_user(
+        mass,
+        "party_guest",
+        "Party Guest",
+        ("party_player",),
+    )
+
+    assert user is existing_user
+    mass.webserver.auth.update_user_filters.assert_not_awaited()
+    mass.webserver.disconnect_websockets_for_user.assert_not_called()
 
 
 async def test_get_or_create_join_code_reuses_active_code() -> None:

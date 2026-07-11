@@ -13,6 +13,7 @@ from music_assistant_models.enums import ConfigEntryType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.music_quiz import (
+    MUSIC_QUIZ_GUEST_DISPLAY_NAME,
     MUSIC_QUIZ_GUEST_USER,
     PLAYER_RECONNECT_GRACE_SECONDS,
     MusicQuizPlugin,
@@ -297,6 +298,36 @@ def _deterministic_rounds() -> Any:
         new=AsyncMock(side_effect=lambda round_index, _used: _make_round(round_index)),
     ):
         yield
+
+
+@pytest.mark.asyncio
+async def test_join_url_uses_restricted_guest_without_host_queue_access() -> None:
+    """Music Quiz creates a sentinel-only guest instead of allowing its host queue."""
+    plugin = _create_plugin()
+    guest_user = MagicMock()
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.guest_access.get_or_create_guest_user",
+            new=AsyncMock(return_value=guest_user),
+        ) as get_guest_user,
+        patch(
+            "music_assistant.providers.music_quiz.guest_access.get_or_create_join_code",
+            new=AsyncMock(return_value="JOIN"),
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.guest_access.build_join_url",
+            return_value="http://ma/?join=JOIN",
+        ),
+    ):
+        result = await MusicQuizPlugin._get_join_url(plugin)
+
+    assert result == "http://ma/?join=JOIN"
+    get_guest_user.assert_awaited_once_with(
+        plugin.mass,
+        MUSIC_QUIZ_GUEST_USER,
+        MUSIC_QUIZ_GUEST_DISPLAY_NAME,
+    )
 
 
 @pytest.mark.asyncio

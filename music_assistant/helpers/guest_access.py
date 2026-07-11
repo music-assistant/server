@@ -8,6 +8,7 @@ join URL that guests open on their own device.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import UserRole
@@ -19,28 +20,49 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 DEFAULT_JOIN_CODE_EXPIRY_HOURS = 8
+# Reserved filter-only ID; player providers must never register this ID.
+GUEST_ACCESS_RESTRICTED_PLAYER_ID = "__guest_access_restricted__"
 
 
-async def get_or_create_guest_user(mass: MusicAssistant, username: str, display_name: str) -> User:
+async def get_or_create_guest_user(
+    mass: MusicAssistant,
+    username: str,
+    display_name: str,
+    allowed_player_ids: Collection[str] = (),
+) -> User:
     """
     Get the guest user with the given username, creating it if needed.
 
     :param mass: MusicAssistant instance.
     :param username: Unique username for the guest account.
     :param display_name: Human readable display name for the guest account.
+    :param allowed_player_ids: Player IDs the dedicated guest may access.
     :return: The (existing or newly created) guest User.
     :raises InvalidDataError: If the username belongs to a non-guest account.
     """
     auth = mass.webserver.auth
+    player_filter = [
+        GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+        *sorted(
+            player_id
+            for player_id in set(allowed_player_ids)
+            if player_id and player_id != GUEST_ACCESS_RESTRICTED_PLAYER_ID
+        ),
+    ]
     if user := await auth.get_user_by_username(username):
         # never hand out guest access on a higher privileged account
         if user.role != UserRole.GUEST:
             raise InvalidDataError(f"User {username} exists but is not a guest account")
-        return user
+        if set(user.player_filter) == set(player_filter):
+            return user
+        updated_user = await auth.update_user_filters(user, player_filter, None)
+        mass.webserver.disconnect_websockets_for_user(user.user_id)
+        return updated_user
     return await auth.create_user(
         username=username,
         role=UserRole.GUEST,
         display_name=display_name,
+        player_filter=player_filter,
     )
 
 
