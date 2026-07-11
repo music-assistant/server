@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 from aiohttp import ClientConnectorError, WSMsgType, web
+from music_assistant_models.auth import UserRole
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -129,7 +130,7 @@ class SendspinProxyHandler:
         self.logger.debug("Sendspin proxy authenticated and connected for %s", request.remote)
 
         try:
-            await self._proxy_messages(wsock, internal_ws)
+            await self._proxy_messages(wsock, internal_ws, user)
         finally:
             if not internal_ws.closed:
                 await internal_ws.close()
@@ -158,13 +159,20 @@ class SendspinProxyHandler:
             await wsock.close(code=4001, message=b"Invalid JSON in auth message")
             return None
 
+        if not isinstance(auth_data, dict):
+            await wsock.close(code=4001, message=b"Invalid auth message")
+            return None
         if auth_data.get("type") != "auth":
             await wsock.close(code=4001, message=b"First message must be auth")
             return None
 
         token = auth_data.get("token")
-        if not token:
+        if not isinstance(token, str) or not token:
             await wsock.close(code=4001, message=b"Token required in auth message")
+            return None
+        client_id = auth_data.get("client_id")
+        if "client_id" in auth_data and (not isinstance(client_id, str) or not client_id):
+            await wsock.close(code=4001, message=b"Invalid client_id in auth message")
             return None
 
         user = await self.webserver.auth.authenticate_with_token(token)
@@ -175,8 +183,7 @@ class SendspinProxyHandler:
         # Set the sendspin player_id on the user's websocket client(s)
         # This allows the player controller to auto-whitelist this (web)player
         # without modifying the user's player_filter list
-        client_id = auth_data.get("client_id")
-        if client_id:
+        if client_id is not None:
             self.webserver.set_sendspin_player_for_user(user.user_id, client_id)
             self.logger.debug("Registered sendspin player %s for user %s", client_id, user.username)
 
@@ -188,15 +195,18 @@ class SendspinProxyHandler:
         self,
         client_ws: web.WebSocketResponse,
         internal_ws: aiohttp.ClientWebSocketResponse,
+        user: User,
     ) -> None:
         """
         Proxy messages bidirectionally between client and internal Sendspin server.
 
         :param client_ws: The client WebSocket connection.
         :param internal_ws: The internal Sendspin server WebSocket connection.
+        :param user: The user authenticated for this proxy connection.
         """
+        allowed_roles = ("player@v1",) if user.role == UserRole.GUEST else None
         client_to_internal = asyncio.create_task(
-            self._forward_client_to_internal(client_ws, internal_ws)
+            self._forward_client_to_internal(client_ws, internal_ws, allowed_roles)
         )
         internal_to_client = asyncio.create_task(
             self._forward_internal_to_client(client_ws, internal_ws)
@@ -249,16 +259,21 @@ class SendspinProxyHandler:
         self,
         client_ws: web.WebSocketResponse,
         internal_ws: aiohttp.ClientWebSocketResponse,
+        allowed_roles: tuple[str, ...] | None,
     ) -> None:
         """
         Forward messages from client to internal Sendspin server.
 
         :param client_ws: The client WebSocket connection.
         :param internal_ws: The internal Sendspin server WebSocket connection.
+        :param allowed_roles: Roles the client may advertise, or None for pass-through.
         """
         async for msg in client_ws:
             if msg.type == WSMsgType.TEXT:
-                await internal_ws.send_str(msg.data)
+                raw_message = msg.data
+                if allowed_roles is not None:
+                    raw_message = self._restrict_client_hello_roles(raw_message, allowed_roles)
+                await internal_ws.send_str(raw_message)
             elif msg.type == WSMsgType.BINARY:
                 await internal_ws.send_bytes(msg.data)
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
@@ -286,3 +301,25 @@ class SendspinProxyHandler:
                 if msg.type == WSMsgType.ERROR:
                     self.logger.debug("Sendspin proxy internal transport error: %s", msg.data)
                 break
+
+    @staticmethod
+    def _restrict_client_hello_roles(raw_message: str, allowed_roles: tuple[str, ...]) -> str:
+        """
+        Restrict the roles advertised by a structurally valid Sendspin client hello.
+
+        :param raw_message: Raw text message received from the client.
+        :param allowed_roles: Exact roles the client may advertise.
+        :return: The rewritten hello or the original message when it is not a valid hello.
+        """
+        try:
+            message = json.loads(raw_message)
+        except json.JSONDecodeError:
+            return raw_message
+        if (
+            not isinstance(message, dict)
+            or message.get("type") != "client/hello"
+            or not isinstance((payload := message.get("payload")), dict)
+        ):
+            return raw_message
+        payload["supported_roles"] = list(allowed_roles)
+        return json.dumps(message, separators=(",", ":"))

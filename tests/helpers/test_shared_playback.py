@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import PlayerFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
 
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
@@ -21,6 +21,12 @@ def _create_mock_mass(venue_player: MagicMock | None) -> MagicMock:
     mass = MagicMock()
     mass.players.get_player.return_value = venue_player
     mass.players.cmd_set_members = AsyncMock()
+    queue = MagicMock()
+    queue.state = PlaybackState.IDLE
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.stop = AsyncMock()
+    mass.player_queues.clear_media_presentation.return_value = True
+    mass.player_queues.has_media_presentation.return_value = False
     return mass
 
 
@@ -106,6 +112,22 @@ async def test_venue_add_and_remove_guest_listener() -> None:
     )
 
 
+async def test_venue_listener_can_regroup_after_disconnect() -> None:
+    """A listener removed by disconnect can be attached again after reconnect."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    mass = _create_mock_mass(venue_player)
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+
+    await session.add_guest_listener("web_player_1")
+    await session.remove_guest_listener("web_player_1")
+    await session.add_guest_listener("web_player_1")
+
+    assert mass.players.cmd_set_members.await_count == 3
+    mass.players.cmd_set_members.assert_awaited_with(
+        "venue_player", player_ids_to_add=["web_player_1"]
+    )
+
+
 async def test_venue_add_guest_listener_unsupported() -> None:
     """Attaching an incompatible web player raises."""
     venue_player = _create_venue_player(can_group_with=set())
@@ -139,6 +161,119 @@ async def test_venue_close_without_listeners() -> None:
     await session.close()
 
     mass.players.cmd_set_members.assert_not_awaited()
+
+
+async def test_media_presentation_owner_is_private_per_session() -> None:
+    """Each session uses a distinct private token for presentation ownership."""
+    mass = _create_mock_mass(_create_venue_player())
+    first = await SharedPlaybackSession.create_venue(mass, "venue_player")
+    second = await SharedPlaybackSession.create_venue(mass, "venue_player")
+
+    first.set_media_presentation("Music Quiz")
+    first_token = mass.player_queues.set_media_presentation.call_args.args[1]
+    second.set_media_presentation("Other")
+    second_token = mass.player_queues.set_media_presentation.call_args.args[1]
+    assert first_token is not second_token
+
+    assert first.clear_media_presentation() is True
+    mass.player_queues.clear_media_presentation.assert_called_with("venue_player", first_token)
+
+
+async def test_clear_playback_releases_presentation_after_queue_cleanup() -> None:
+    """Playback stops and clears before the presentation lease is released."""
+    mass = _create_mock_mass(_create_venue_player())
+    mass.player_queues.get.return_value.state = PlaybackState.PLAYING
+    calls: list[str] = []
+    mass.player_queues.stop.side_effect = lambda _queue_id: calls.append("stop")
+    mass.player_queues.clear.side_effect = lambda *_args, **_kwargs: calls.append("clear")
+
+    def _release(*_args: object) -> bool:
+        calls.append("release")
+        return True
+
+    mass.player_queues.clear_media_presentation.side_effect = _release
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+
+    await session.clear_playback()
+
+    assert calls == ["stop", "clear", "release"]
+    mass.player_queues.clear.assert_called_once_with("venue_player", skip_stop=True)
+
+
+async def test_clear_playback_stops_before_state_reports_playing() -> None:
+    """Cleanup always sends stop so a just-started device cannot outpace queue state."""
+    mass = _create_mock_mass(_create_venue_player())
+    mass.player_queues.get.return_value.state = PlaybackState.IDLE
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+
+    await session.clear_playback()
+
+    mass.player_queues.stop.assert_awaited_once_with("venue_player")
+    mass.player_queues.clear.assert_called_once_with("venue_player", skip_stop=True)
+    mass.player_queues.clear_media_presentation.assert_called_once()
+
+
+async def test_clear_playback_failure_keeps_presentation() -> None:
+    """A stop failure is propagated without clearing the queue or lease."""
+    mass = _create_mock_mass(_create_venue_player())
+    mass.player_queues.get.return_value.state = PlaybackState.PLAYING
+    mass.player_queues.stop.side_effect = RuntimeError("stop failed")
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await session.clear_playback()
+
+    mass.player_queues.clear.assert_not_called()
+    mass.player_queues.clear_media_presentation.assert_not_called()
+
+
+async def test_venue_close_clears_owned_presentation_before_detach() -> None:
+    """Closing an owning session fail-safely clears playback before listener teardown."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    mass = _create_mock_mass(venue_player)
+    mass.player_queues.has_media_presentation.return_value = True
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+    await session.add_guest_listener("web_player_1")
+
+    await session.close()
+
+    mass.player_queues.clear.assert_called_once_with("venue_player", skip_stop=True)
+    mass.player_queues.clear_media_presentation.assert_called_once()
+    mass.players.cmd_set_members.assert_awaited_with(
+        "venue_player", player_ids_to_remove=["web_player_1"]
+    )
+
+
+async def test_venue_close_detaches_listeners_when_playback_cleanup_fails() -> None:
+    """Closing still detaches listeners while propagating playback cleanup failure."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    mass = _create_mock_mass(venue_player)
+    mass.player_queues.has_media_presentation.return_value = True
+    mass.player_queues.stop.side_effect = RuntimeError("stop failed")
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+    await session.add_guest_listener("web_player_1")
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await session.close()
+
+    mass.player_queues.clear.assert_not_called()
+    mass.player_queues.clear_media_presentation.assert_not_called()
+    mass.players.cmd_set_members.assert_awaited_with(
+        "venue_player", player_ids_to_remove=["web_player_1"]
+    )
+
+
+async def test_venue_close_does_not_clear_different_presentation_owner() -> None:
+    """Closing a non-owning venue session leaves another owner's playback untouched."""
+    mass = _create_mock_mass(_create_venue_player())
+    mass.player_queues.has_media_presentation.return_value = False
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+
+    await session.close()
+
+    mass.player_queues.stop.assert_not_awaited()
+    mass.player_queues.clear.assert_not_called()
+    mass.player_queues.clear_media_presentation.assert_not_called()
 
 
 # ==================== REMOTE mode ====================
