@@ -8,6 +8,7 @@ import pytest
 from music_assistant_models.auth import UserRole
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.helpers import guest_access
 
 
@@ -87,12 +88,12 @@ async def test_get_or_create_guest_user_creates_restricted_guest() -> None:
         username="quiz_guest",
         role=UserRole.GUEST,
         display_name="Quiz Guest",
-        player_filter=[guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
     )
 
 
 async def test_get_or_create_guest_user_migrates_unrestricted_guest() -> None:
-    """An existing unrestricted guest is updated and its stale sockets are disconnected."""
+    """An existing unrestricted guest is updated through the auth manager."""
     mass = _create_mock_mass()
     existing_user = MagicMock(
         role=UserRole.GUEST,
@@ -113,10 +114,9 @@ async def test_get_or_create_guest_user_migrates_unrestricted_guest() -> None:
     assert user is updated_user
     mass.webserver.auth.update_user_filters.assert_awaited_once_with(
         existing_user,
-        [guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+        [GUEST_ACCESS_RESTRICTED_PLAYER_ID],
         None,
     )
-    mass.webserver.disconnect_websockets_for_user.assert_called_once_with("guest_user_id")
 
 
 async def test_get_or_create_guest_user_manages_allowed_players() -> None:
@@ -138,7 +138,7 @@ async def test_get_or_create_guest_user_manages_allowed_players() -> None:
         role=UserRole.GUEST,
         display_name="Managed Guest",
         player_filter=[
-            guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+            GUEST_ACCESS_RESTRICTED_PLAYER_ID,
             "remote_player",
             "venue_player",
         ],
@@ -146,12 +146,12 @@ async def test_get_or_create_guest_user_manages_allowed_players() -> None:
 
 
 async def test_get_or_create_guest_user_refreshes_allowed_player() -> None:
-    """A changed allowed player replaces stale access and disconnects existing sockets."""
+    """A changed allowed player replaces stale access through the auth manager."""
     mass = _create_mock_mass()
     existing_user = MagicMock(
         role=UserRole.GUEST,
         player_filter=[
-            guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+            GUEST_ACCESS_RESTRICTED_PLAYER_ID,
             "old_player",
         ],
         user_id="managed_guest_id",
@@ -171,12 +171,11 @@ async def test_get_or_create_guest_user_refreshes_allowed_player() -> None:
     mass.webserver.auth.update_user_filters.assert_awaited_once_with(
         existing_user,
         [
-            guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+            GUEST_ACCESS_RESTRICTED_PLAYER_ID,
             "new_player",
         ],
         None,
     )
-    mass.webserver.disconnect_websockets_for_user.assert_called_once_with("managed_guest_id")
 
 
 async def test_get_or_create_guest_user_ignores_filter_order() -> None:
@@ -184,7 +183,7 @@ async def test_get_or_create_guest_user_ignores_filter_order() -> None:
     mass = _create_mock_mass()
     existing_user = MagicMock(
         role=UserRole.GUEST,
-        player_filter=["party_player", guest_access.GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+        player_filter=["party_player", GUEST_ACCESS_RESTRICTED_PLAYER_ID],
     )
     mass.webserver.auth.get_user_by_username.return_value = existing_user
 

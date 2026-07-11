@@ -9,12 +9,16 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.constants import (
+    GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+    HOMEASSISTANT_SYSTEM_USER,
+)
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
     JOIN_CODE_LENGTH,
@@ -37,7 +41,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.guest_access import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.mass import MusicAssistant
 
 
@@ -1186,15 +1189,38 @@ async def test_admin_can_update_guest_player_filter(
     set_impersonated_user(None)
     set_current_user(admin)
 
-    updated_guest = await auth_manager.update_user_profile(
-        user_id=guest.user_id,
-        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID, "party_queue"],
-    )
+    with patch.object(auth_manager.webserver, "disconnect_websockets_for_user") as disconnect:
+        updated_guest = await auth_manager.update_user_profile(
+            user_id=guest.user_id,
+            player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID, "party_queue"],
+        )
 
     assert updated_guest.player_filter == [
         GUEST_ACCESS_RESTRICTED_PLAYER_ID,
         "party_queue",
     ]
+    disconnect.assert_called_once_with(guest.user_id)
+
+
+async def test_unchanged_user_filter_does_not_disconnect(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """An unchanged managed filter does not write or disconnect the user."""
+    guest = await auth_manager.create_user(
+        username="unchangedfilter",
+        role=UserRole.GUEST,
+        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+    )
+
+    with patch.object(auth_manager.webserver, "disconnect_websockets_for_user") as disconnect:
+        result = await auth_manager.update_user_filters(
+            guest,
+            [GUEST_ACCESS_RESTRICTED_PLAYER_ID],
+            None,
+        )
+
+    assert result is guest
+    disconnect.assert_not_called()
 
 
 async def test_no_long_lived_token_for_guest_account(auth_manager: AuthenticationManager) -> None:

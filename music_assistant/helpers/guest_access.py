@@ -14,14 +14,14 @@ from typing import TYPE_CHECKING
 from music_assistant_models.auth import UserRole
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
+
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
 
     from music_assistant.mass import MusicAssistant
 
 DEFAULT_JOIN_CODE_EXPIRY_HOURS = 8
-# Reserved filter-only ID; player providers must never register this ID.
-GUEST_ACCESS_RESTRICTED_PLAYER_ID = "__guest_access_restricted__"
 
 
 async def get_or_create_guest_user(
@@ -51,9 +51,7 @@ async def get_or_create_guest_user(
         player_filter = _managed_player_filter(allowed_player_ids)
         if set(user.player_filter) == set(player_filter):
             return user
-        updated_user = await auth.update_user_filters(user, player_filter, None)
-        mass.webserver.disconnect_websockets_for_user(user.user_id)
-        return updated_user
+        return await auth.update_user_filters(user, player_filter, None)
     if allowed_player_ids is None:
         return await auth.create_user(
             username=username,

@@ -12,6 +12,7 @@ from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -19,7 +20,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_impersonated_user,
     set_sendspin_player_id,
 )
-from music_assistant.helpers.guest_access import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 
 
 @pytest.fixture(autouse=True)

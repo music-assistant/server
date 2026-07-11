@@ -12,9 +12,9 @@ from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import EventType
 
+from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
-from music_assistant.helpers.guest_access import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant

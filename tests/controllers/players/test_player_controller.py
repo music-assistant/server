@@ -27,6 +27,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.player import PlayerSource
 
+from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
 
@@ -69,6 +70,12 @@ def controller(mock_mass: MagicMock) -> PlayerController:
 def provider(mock_mass: MagicMock) -> MockProvider:
     """Create a mock provider."""
     return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
+
+
+def test_reserved_guest_filter_player_id_is_rejected(provider: MockProvider) -> None:
+    """A real player cannot use the managed-guest filter sentinel."""
+    with pytest.raises(InvalidDataError, match="reserved"):
+        MockPlayer(provider, GUEST_ACCESS_RESTRICTED_PLAYER_ID, "Reserved")
 
 
 class TestSetMembersValidation:
