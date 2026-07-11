@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -42,7 +42,7 @@ class MultipleChoiceAnswerType(QuizAnswerType):
 
     answer_type = MusicQuizAnswerType.MULTIPLE_CHOICE
 
-    def parse_submission(self, payload: dict[str, object]) -> QuizAnswerSubmission:
+    def parse_submission(self, payload: Mapping[str, object]) -> QuizAnswerSubmission:
         """
         Parse a multiple-choice submission.
 

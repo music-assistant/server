@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +13,7 @@ from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.enums import ConfigEntryType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.providers.music_quiz import (
     MUSIC_QUIZ_GUEST_USER,
     PLAYER_RECONNECT_GRACE_SECONDS,
@@ -19,6 +21,7 @@ from music_assistant.providers.music_quiz import (
     get_config_entries,
 )
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
+from music_assistant.providers.music_quiz.answer_types.base import QuizAnswerSubmissionPayload
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizGameActiveError,
     MusicQuizInvalidAnswerError,
@@ -447,6 +450,83 @@ async def test_generic_submit_answer_uses_discriminated_payload() -> None:
     assert state["you"]["answer"]["correct"] is True
     assert state["you"]["answer"]["points"] == 1000
     assert game.players[player_ids["Alice"]].last_seen == 120.0
+
+
+@pytest.mark.parametrize(
+    ("previous_entry_id", "next_entry_id"),
+    [(None, "anchor"), ("anchor", None)],
+)
+@pytest.mark.asyncio
+async def test_hitster_edge_placement_accepts_null_at_api_boundary(
+    previous_entry_id: str | None,
+    next_entry_id: str | None,
+) -> None:
+    """Accept either null timeline boundary through the registered API handler."""
+    plugin = _create_plugin()
+    registered: dict[str, APICommandHandler] = {}
+
+    def _register(command: str, handler: Any, **kwargs: Any) -> Any:
+        registered[command] = APICommandHandler.parse(command, handler, **kwargs)
+        return MagicMock()
+
+    cast("MagicMock", plugin.mass).register_api_command.side_effect = _register
+    await plugin.loaded_in_mass()
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            new=AsyncMock(),
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            new=AsyncMock(
+                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+            ),
+        ),
+    ):
+        player_ids = await _create_started_hitster_game(plugin)
+        handler = registered["music_quiz/submit_answer"]
+        arguments = parse_arguments(
+            handler.signature,
+            handler.type_hints,
+            {
+                "player_id": player_ids["Alice"],
+                "submission": {
+                    "answer_type": "timeline",
+                    "action": "place",
+                    "previous_entry_id": previous_entry_id,
+                    "next_entry_id": next_entry_id,
+                },
+            },
+        )
+        invalid_arguments = parse_arguments(
+            handler.signature,
+            handler.type_hints,
+            {
+                "player_id": player_ids["Alice"],
+                "submission": {
+                    "answer_type": "timeline",
+                    "action": "place",
+                    "previous_entry_id": 1,
+                    "next_entry_id": "anchor",
+                },
+            },
+        )
+        with patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ):
+            with pytest.raises(MusicQuizInvalidAnswerError):
+                await cast(
+                    "Coroutine[Any, Any, Any]",
+                    handler.target(**invalid_arguments),
+                )
+            await cast("Coroutine[Any, Any, Any]", handler.target(**arguments))
+
+    game = plugin._game
+    assert game is not None
+    placement = _timeline_answer_state(game.rounds[0]).placements[player_ids["Alice"]]
+    assert placement.previous_entry_id == previous_entry_id
+    assert placement.next_entry_id == next_entry_id
 
 
 @pytest.mark.asyncio
@@ -1026,7 +1106,7 @@ async def test_hitster_late_joiner_starts_on_prefetched_next_round() -> None:
     ],
 )
 async def test_generic_submit_answer_rejects_invalid_payload(
-    submission: dict[str, object],
+    submission: QuizAnswerSubmissionPayload,
 ) -> None:
     """Malformed generic submissions fail without mutating round state."""
     plugin = _create_plugin()

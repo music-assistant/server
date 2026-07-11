@@ -70,6 +70,7 @@ from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
 from music_assistant.providers.music_quiz.answer_types.base import (
     QuizAnswerSubmission,
+    QuizAnswerSubmissionPayload,
     QuizAnswerType,
 )
 from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
@@ -520,7 +521,7 @@ class MusicQuizPlugin(PluginProvider):
     async def submit_answer(
         self,
         player_id: str,
-        submission: dict[str, object],
+        submission: QuizAnswerSubmissionPayload,
     ) -> dict[str, SerializableType]:
         """
         Submit a typed answer for the current round.
