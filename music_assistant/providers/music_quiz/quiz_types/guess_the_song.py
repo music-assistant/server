@@ -20,7 +20,7 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizRound,
     TimelineBonusMode,
 )
-from music_assistant.providers.music_quiz.quiz_types.base import QuizType
+from music_assistant.providers.music_quiz.quiz_types.base import MAX_SUGGESTION_COUNT, QuizType
 from music_assistant.providers.music_quiz.suggestions import (
     SuggestionCandidate,
     build_answer_label,
@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from music_assistant.providers.music_quiz.models import MusicQuizConfig
 
 LOGGER = logging.getLogger(__name__)
-MAX_SUGGESTION_COUNT = 12
 
 
 class GuessTheSongQuizType(QuizType):

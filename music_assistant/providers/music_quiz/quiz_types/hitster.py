@@ -11,9 +11,8 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Album, ItemMapping, Track
+from music_assistant_models.media_items import Track
 
-from music_assistant.helpers.datetime import utc
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     MusicQuizAnswerType,
@@ -29,7 +28,7 @@ from music_assistant.providers.music_quiz.models import (
     TimelineMultipleChoiceBonusDefinition,
     TimelineRoundState,
 )
-from music_assistant.providers.music_quiz.quiz_types.base import QuizType
+from music_assistant.providers.music_quiz.quiz_types.base import QuizType, get_track_release_year
 from music_assistant.providers.music_quiz.suggestions import (
     SuggestionCandidate,
     build_answer_label,
@@ -43,7 +42,6 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BONUS_OPTION_COUNT = 4
-MIN_RELEASE_YEAR = 1000
 TRACK_ENRICHMENT_CONCURRENCY = 10
 
 
@@ -420,13 +418,4 @@ class HitsterQuizType(QuizType):
     @staticmethod
     def _release_year(track: Track) -> int | None:
         """Return a usable release year from the track's album or metadata."""
-        album = track.album
-        year = album.year if isinstance(album, Album | ItemMapping) else None
-        current_year = utc().year
-        if year is not None and MIN_RELEASE_YEAR <= year <= current_year:
-            return year
-        if track.metadata.release_date is not None:
-            year = track.metadata.release_date.year
-            if MIN_RELEASE_YEAR <= year <= current_year:
-                return year
-        return None
+        return get_track_release_year(track)
