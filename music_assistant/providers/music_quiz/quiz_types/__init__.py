@@ -8,10 +8,12 @@ from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
 from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
 from music_assistant.providers.music_quiz.quiz_types.hitster import HitsterQuizType
+from music_assistant.providers.music_quiz.quiz_types.trivia import TriviaQuizType
 
 QUIZ_TYPES: dict[str, type[QuizType]] = {
     "guess_the_song": GuessTheSongQuizType,
     "hitster": HitsterQuizType,
+    "trivia": TriviaQuizType,
 }
 
 
