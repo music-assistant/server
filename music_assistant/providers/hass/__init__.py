@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
@@ -347,8 +348,19 @@ class HomeAssistantProvider(PluginProvider):
         except BaseHassClientError as err:
             err_msg = str(err) or err.__class__.__name__
             raise SetupFailedError(err_msg) from err
-        await self._resolve_feature_entities()
         self._listen_task = self.mass.create_task(self._hass_listener())
+        try:
+            await self._resolve_feature_entities()
+        except asyncio.CancelledError:
+            await self._cleanup_failed_init()
+            raise
+        except BaseHassClientError as err:
+            await self._cleanup_failed_init()
+            err_msg = str(err) or err.__class__.__name__
+            raise SetupFailedError(err_msg) from err
+        except Exception:
+            await self._cleanup_failed_init()
+            raise
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -364,9 +376,7 @@ class HomeAssistantProvider(PluginProvider):
         if self._player_controls:
             for entity_id in self._player_controls:
                 self.mass.players.remove_player_control(entity_id)
-        if self._listen_task and not self._listen_task.done():
-            self._listen_task.cancel()
-        await self.hass.disconnect()
+        await self._disconnect_hass()
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -684,6 +694,23 @@ class HomeAssistantProvider(PluginProvider):
         ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         return ha_url, headers, http_session
+
+    async def _disconnect_hass(self) -> None:
+        """Stop listening for Home Assistant events and disconnect the client."""
+        if listen_task := self._listen_task:
+            self._listen_task = None
+            if not listen_task.done():
+                listen_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await listen_task
+        await self.hass.disconnect()
+
+    async def _cleanup_failed_init(self) -> None:
+        """Clean up the Home Assistant connection after initialization fails."""
+        try:
+            await self._disconnect_hass()
+        except BaseHassClientError as err:
+            self.logger.warning("Failed to disconnect from Home Assistant: %s", err)
 
     async def _resolve_feature_entities(self) -> None:
         """Resolve configured or default Home Assistant feature entities."""
