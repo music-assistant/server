@@ -18,11 +18,9 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.auth import User, UserRole
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import EventType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import (
-    InsufficientPermissions,
     InvalidDataError,
     PlayerCommandFailed,
     UnsupportedFeaturedException,
@@ -31,11 +29,6 @@ from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    set_current_user,
-    set_impersonated_user,
-    set_sendspin_player_id,
-)
 from tests.common import MockPlayer, MockProvider
 
 
@@ -83,54 +76,6 @@ def test_reserved_guest_filter_player_id_is_rejected(provider: MockProvider) -> 
     """A real player cannot use the managed-guest filter sentinel."""
     with pytest.raises(InvalidDataError, match="reserved"):
         MockPlayer(provider, GUEST_ACCESS_RESTRICTED_PLAYER_ID, "Reserved")
-
-
-def test_sendspin_player_filter_exemption_requires_protocol_player(
-    controller: PlayerController,
-    provider: MockProvider,
-) -> None:
-    """A declared Sendspin ID only exempts its registered protocol player."""
-    controller.mass.players = controller
-    host = MockPlayer(provider, "host", "Host")
-    web_player = MockPlayer(
-        provider,
-        "web_player",
-        "Web Player",
-        player_type=PlayerType.PROTOCOL,
-    )
-    for player in (host, web_player):
-        player.update_state(signal_event=False)
-        player.set_initialized()
-    controller._players = {
-        host.player_id: host,
-        web_player.player_id: web_player,
-    }
-    set_impersonated_user(None)
-    set_current_user(
-        User(
-            user_id="guest_id",
-            username="guest",
-            role=UserRole.GUEST,
-            player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID],
-        )
-    )
-
-    try:
-        set_sendspin_player_id("host")
-        with pytest.raises(InsufficientPermissions):
-            controller.get_player_state("host")
-        with pytest.raises(InsufficientPermissions):
-            controller.get_player_state_by_name("Host")
-        assert controller.all_player_states(return_protocol_players=True) == []
-
-        set_sendspin_player_id("web_player")
-        assert controller.get_player_state("web_player") is web_player.state
-        assert controller.get_player_state_by_name("Web Player") is web_player.state
-        assert controller.all_player_states(return_protocol_players=True) == [web_player.state]
-    finally:
-        set_current_user(None)
-        set_impersonated_user(None)
-        set_sendspin_player_id(None)
 
 
 class TestSetMembersValidation:

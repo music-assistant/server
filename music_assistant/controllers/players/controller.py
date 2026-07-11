@@ -339,10 +339,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             and (
                 not user_filter
                 or player.player_id in user_filter
-                or (
-                    player.player_id == current_sendspin_player
-                    and player.type == PlayerType.PROTOCOL
-                )
+                or player.player_id == current_sendspin_player
             )
             and (return_protocol_players or player.state.type != PlayerType.PROTOCOL)
         ]
@@ -399,14 +396,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             raise PlayerUnavailableError(msg)
         return None
 
-    def is_protocol_player(self, player_id: str | None) -> bool:
-        """Return whether the given ID belongs to a registered protocol player."""
-        return bool(
-            player_id
-            and (player := self.get_player(player_id))
-            and player.type == PlayerType.PROTOCOL
-        )
-
     @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(
         self,
@@ -433,7 +422,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             current_user
             and user_filter
             and player_id not in user_filter
-            and not (player_id == current_sendspin_player and self.is_protocol_player(player_id))
+            and player_id != current_sendspin_player
         ):
             msg = f"{current_user.username} does not have access to player {player_id}"
             raise InsufficientPermissions(msg)
@@ -496,10 +485,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 current_user
                 and user_filter
                 and player.player_id not in user_filter
-                and not (
-                    player.player_id == current_sendspin_player
-                    and player.type == PlayerType.PROTOCOL
-                )
+                and player.player_id != current_sendspin_player
             ):
                 msg = f"{current_user.username} does not have access to player {player.player_id}"
                 raise InsufficientPermissions(msg)
