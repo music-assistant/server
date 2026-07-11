@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.auth import User, UserRole
+from music_assistant_models.enums import PlayerType
 from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -76,6 +77,8 @@ def _set_user(role: UserRole, player_filter: list[str]) -> None:
 def test_all_for_api_filters_restricted_user() -> None:
     """A restricted user only sees explicitly allowed and own Sendspin queues."""
     controller = _create_controller("host", "allowed", "web_player")
+    players = cast("MagicMock", controller.mass.players)
+    players.is_protocol_player.side_effect = lambda player_id: player_id == "web_player"
     _set_user(
         UserRole.GUEST,
         [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "allowed"],
@@ -99,8 +102,10 @@ def test_direct_queue_reads_reject_hidden_queue() -> None:
 
 
 def test_own_sendspin_queue_is_readable() -> None:
-    """The current connection may read its own Sendspin queue."""
+    """The current connection may read its registered protocol-player queue."""
     controller = _create_controller("web_player")
+    players = cast("MagicMock", controller.mass.players)
+    players.is_protocol_player.return_value = True
     _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
     set_sendspin_player_id("web_player")
 
@@ -108,13 +113,28 @@ def test_own_sendspin_queue_is_readable() -> None:
     assert controller.items_for_api("web_player") == controller.items("web_player")
 
 
+def test_spoofed_standalone_sendspin_player_is_denied() -> None:
+    """A client-declared Sendspin ID cannot grant access to a standalone host queue."""
+    controller = _create_controller("host")
+    players = cast("MagicMock", controller.mass.players)
+    players.is_protocol_player.return_value = False
+    _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
+    set_sendspin_player_id("host")
+
+    with pytest.raises(InsufficientPermissions):
+        controller.get_for_api("host")
+    with pytest.raises(InsufficientPermissions):
+        controller.items_for_api("host")
+
+
 def test_active_queue_cannot_pivot_from_own_player_to_hidden_parent() -> None:
     """An own web player cannot expose an unauthorized active parent queue."""
     controller = _create_controller("host", "web_player")
-    web_player = MagicMock()
+    web_player = MagicMock(type=PlayerType.PROTOCOL)
     players = cast("MagicMock", controller.mass.players)
     players.get_player.return_value = web_player
     players.get_active_queue.return_value = controller.get("host")
+    players.is_protocol_player.return_value = True
     _set_user(UserRole.GUEST, [GUEST_ACCESS_RESTRICTED_PLAYER_ID])
     set_sendspin_player_id("web_player")
 
@@ -125,11 +145,12 @@ def test_active_queue_cannot_pivot_from_own_player_to_hidden_parent() -> None:
 def test_active_queue_allows_explicit_parent() -> None:
     """A restricted user may resolve an explicitly allowed parent queue."""
     controller = _create_controller("allowed", "web_player")
-    web_player = MagicMock()
+    web_player = MagicMock(type=PlayerType.PROTOCOL)
     players = cast("MagicMock", controller.mass.players)
     players.get_player.return_value = web_player
     allowed_queue = controller.get("allowed")
     players.get_active_queue.return_value = allowed_queue
+    players.is_protocol_player.return_value = True
     _set_user(
         UserRole.GUEST,
         [GUEST_ACCESS_RESTRICTED_PLAYER_ID, "allowed"],

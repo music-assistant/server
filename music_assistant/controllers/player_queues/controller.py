@@ -1680,7 +1680,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             or not current_user.player_filter
         ):
             return True
-        return queue_id in current_user.player_filter or queue_id == get_sendspin_player_id()
+        if queue_id in current_user.player_filter:
+            return True
+        if queue_id != get_sendspin_player_id():
+            return False
+        return self.mass.players.is_protocol_player(queue_id)
 
     def _check_queue_read_permission(self, queue_id: str) -> None:
         """

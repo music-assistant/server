@@ -534,7 +534,7 @@ class WebsocketClientHandler:
                 )
                 and event.object_id
                 and event.object_id not in self._authenticated_user.player_filter
-                and event.object_id != self._sendspin_player_id
+                and not self._is_own_sendspin_protocol_player(event.object_id)
             ):
                 return
 
@@ -555,6 +555,12 @@ class WebsocketClientHandler:
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
+
+    def _is_own_sendspin_protocol_player(self, player_id: str) -> bool:
+        """Return whether this connection owns a registered Sendspin protocol player."""
+        if player_id != self._sendspin_player_id:
+            return False
+        return self.mass.players.is_protocol_player(player_id)
 
     def _cancel(self) -> None:
         """Cancel the connection."""
