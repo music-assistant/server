@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -309,18 +308,12 @@ async def test_selected_track_and_playlist_sources_are_loaded_without_search(
     selected_track = _track("one", "Teardrop", "Massive Attack")
     provider = _ai_provider()
     mass = _mass([provider])
-    playlist_tracks: MagicMock | None = None
     if source_kind == "track":
         source: Track | Playlist = selected_track
     else:
         source = _playlist()
-
-        async def _playlist_tracks(**_kwargs: Any) -> Any:
-            yield selected_track
-
-        playlist_tracks = MagicMock(side_effect=_playlist_tracks)
-        mass.music.playlists.tracks = playlist_tracks
     mass.music.get_item_by_uri = AsyncMock(return_value=source)
+    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=[selected_track])
     assert source.uri is not None
     quiz = TriviaQuizType(
         mass,
@@ -333,12 +326,7 @@ async def test_selected_track_and_playlist_sources_are_loaded_without_search(
     assert set(quiz._eligible_tracks) == {selected_track.uri}
     mass.music.get_item_by_uri.assert_awaited_once_with(source.uri)
     mass.music.search.assert_not_awaited()
-    if source_kind == "playlist":
-        assert playlist_tracks is not None
-        playlist_tracks.assert_called_once_with(
-            item_id=source.item_id,
-            provider_instance_id_or_domain=source.provider,
-        )
+    mass.player_queues.get_tracks_for_playback.assert_awaited_once_with(source)
 
 
 def test_server_selects_correct_artist_title_album_and_year_truths() -> None:

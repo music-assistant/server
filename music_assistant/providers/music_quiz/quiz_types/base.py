@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
@@ -15,7 +15,7 @@ from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Track
+    from music_assistant_models.media_items import MediaItemType, Track
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.music_quiz.models import MusicQuizConfig, MusicQuizRound
@@ -150,7 +150,9 @@ class QuizType(ABC):
                 media_item = await self.mass.music.get_item_by_uri(source_uri)
                 if media_item.media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
                     continue
-                for track in await self.mass.player_queues.get_tracks_for_playback(media_item):
+                for track in await self.mass.player_queues.get_tracks_for_playback(
+                    cast("MediaItemType", media_item)
+                ):
                     if track.uri:
                         pool[track.uri] = track
             except Exception as err:
