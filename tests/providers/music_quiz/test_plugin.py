@@ -745,6 +745,7 @@ async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
             "round_index",
             "started_at",
             "deadline",
+            "auto_advance_at",
             "question",
             "suggestions",
         }
@@ -954,17 +955,22 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
             "round_index",
             "started_at",
             "deadline",
+            "auto_advance_at",
             "question",
             "timeline",
             "bonus_definitions",
         }
+        assert hidden_round["auto_advance_at"] is None
         assert hidden_round["timeline"][0]["is_anchor"] is True
         assert "Secret Title" not in str(hidden_state)
         assert player_ids["Alice"] not in str(hidden_state)
 
-        with patch(
-            "music_assistant.providers.music_quiz.get_current_user",
-            return_value=_guest_user(),
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ),
+            patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
         ):
             state = cast(
                 "dict[str, Any]",
@@ -979,10 +985,14 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
                 ),
             )
 
+        advance_delay, _, _ = _round_timer_call(plugin, plugin._advance_timer_id)
         await deadline_callback(round_index)
         game = plugin._game
         assert game is not None
         assert game.phase == MusicQuizPhase.REVEAL
+        assert advance_delay == 30.0
+        assert game.rounds[0].auto_advance_at == 130.0
+        assert state["current_round"]["auto_advance_at"] == 130.0
         assert game.players[player_ids["Alice"]].score == 1000
         cast("AsyncMock", plugin._play_track).assert_awaited_with("library://track/hitster-0")
         plugin._warm_up_lyrics.assert_not_called()
@@ -998,11 +1008,20 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
         assert state["you"]["answer"]["previous_entry_id"] == "anchor"
         assert state["you"]["answer"]["correct"] is True
         assert state["you"]["answer"]["points"] == 1000
+        cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+        with patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ):
+            finished = await plugin.ready(player_ids["Alice"])
+        assert _phase(plugin) == MusicQuizPhase.FINISHED
+        assert finished["current_round"]["auto_advance_at"] is None
+        cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._advance_timer_id)
 
 
 @pytest.mark.asyncio
-async def test_hitster_bonuses_require_finish_and_allow_skipping_unanswered_bonus() -> None:
-    """Keep answering after placement and reveal when explicit finish skips a bonus."""
+async def test_hitster_finish_skips_unanswered_bonus() -> None:
+    """Keep finish as a backward-compatible way to skip a bonus."""
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
@@ -1088,7 +1107,16 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
-        )
+        ),
+        TimelineMultipleChoiceBonusDefinition(
+            bonus_type=TimelineBonusType.TITLE,
+            options=[
+                TimelineBonusOption("correct-title", "Secret Title 0", True),
+                TimelineBonusOption("wrong-a", "Wrong A"),
+                TimelineBonusOption("wrong-b", "Wrong B"),
+                TimelineBonusOption("wrong-c", "Wrong C"),
+            ],
+        ),
     ]
     plugin = _create_plugin()
     with (
@@ -1105,13 +1133,18 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
             ),
         ),
     ):
-        player_ids = await _create_started_hitster_game(
-            plugin,
-            artist_bonus_mode="free_text",
-        )
-        with patch(
-            "music_assistant.providers.music_quiz.get_current_user",
-            return_value=_guest_user(),
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+            player_ids = await _create_started_hitster_game(
+                plugin,
+                artist_bonus_mode="free_text",
+                title_bonus_mode="multiple_choice",
+            )
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ),
+            patch("music_assistant.providers.music_quiz.time.time", return_value=101.0),
         ):
             await plugin.submit_answer(
                 player_ids["Alice"],
@@ -1132,17 +1165,51 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
                 },
             )
         _, deadline_callback, round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
-        await deadline_callback(round_index)
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=130.0):
+            await deadline_callback(round_index)
 
     game = plugin._game
     assert game is not None
     assert game.phase == MusicQuizPhase.REVEAL
     assert game.players[player_ids["Alice"]].score == 1250
+    advance_delay, _, _ = _round_timer_call(plugin, plugin._advance_timer_id)
+    assert advance_delay == 150.0
+    assert game.rounds[0].auto_advance_at == 280.0
     public_state = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]["state"]
     player = public_state["players"][0]
     assert player["answered"] is False
     assert player["last_answer"]["placement"]["points"] == 1000
     assert player["last_answer"]["artist"]["points"] == 250
+
+
+@pytest.mark.asyncio
+async def test_hitster_manual_reveal_keeps_track_end_auto_advance() -> None:
+    """Keep the existing track-end schedule for a manual Hitster reveal."""
+    plugin = _create_plugin()
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            new=AsyncMock(),
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            new=AsyncMock(
+                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+            ),
+        ),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
+    ):
+        await _create_started_hitster_game(plugin)
+
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=110.0):
+        state = await plugin.reveal()
+
+    game = plugin._game
+    assert game is not None
+    advance_delay, _, _ = _round_timer_call(plugin, plugin._advance_timer_id)
+    assert advance_delay == 170.0
+    assert game.rounds[0].auto_advance_at == 280.0
+    assert state["current_round"]["auto_advance_at"] == 280.0
 
 
 @pytest.mark.asyncio
@@ -1578,6 +1645,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "round_index",
         "started_at",
         "deadline",
+        "auto_advance_at",
         "question",
         "suggestions",
     }
@@ -1625,6 +1693,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "round_index",
         "started_at",
         "deadline",
+        "auto_advance_at",
         "question",
         "suggestions",
         "correct_suggestion_id",
@@ -1739,6 +1808,7 @@ async def test_host_rounds_preserve_flat_wire_shape() -> None:
             "duration": game_round.duration,
             "started_at": game_round.started_at,
             "ended_at": game_round.ended_at,
+            "auto_advance_at": game_round.auto_advance_at,
         }
     ]
     assert "answer_state" not in host_state["rounds"][0]

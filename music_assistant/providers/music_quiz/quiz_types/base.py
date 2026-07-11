@@ -65,6 +65,7 @@ class QuizType(ABC):
     answer_type: ClassVar[MusicQuizAnswerType]
     uses_audio: ClassVar[bool] = True
     warm_up_lyrics: ClassVar[bool] = False
+    completed_reveal_auto_advance_delay: ClassVar[float | None] = None
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
         """

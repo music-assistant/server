@@ -61,6 +61,7 @@ def test_round_answer_state_round_trips_with_discriminator() -> None:
         duration=180.0,
         started_at=10.0,
         ended_at=12.0,
+        auto_advance_at=42.0,
     )
 
     serialized = game_round.to_dict()
@@ -95,6 +96,7 @@ def test_round_answer_state_round_trips_with_discriminator() -> None:
         "duration": 180.0,
         "started_at": 10.0,
         "ended_at": 12.0,
+        "auto_advance_at": 42.0,
     }
     assert restored == game_round
     assert isinstance(restored.answer_state, MultipleChoiceRoundState)

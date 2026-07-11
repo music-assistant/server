@@ -34,7 +34,8 @@ The public game state is guest-safe by construction. Common state contains:
 - reveal/finished rounds additionally expose common ``answer_label``,
   ``track_uri``, ``image_url``, ``duration`` and ``ended_at`` fields. The
   answer strategy adds the revealed correct option or timeline entry and
-  answer-specific player results.
+  answer-specific player results. ``auto_advance_at`` contains the authoritative
+  next-round deadline when the backend scheduled automatic advancement.
 
 Guests authenticate through the standard guest access flow (join code in
 the join URL) and register themselves as quiz player via ``music_quiz/join``,
@@ -718,7 +719,7 @@ class MusicQuizPlugin(PluginProvider):
         submit_game_answer(game, player.player_id, submission, submitted_at, answer_type)
         self._refresh_player_presence(player, submitted_at)
         if all_active_players_complete(game, answer_type):
-            self._do_reveal()
+            self._do_reveal(completed=True)
         else:
             self._signal_game_updated()
         return _player_state(game, player, self._mode, answer_type)
@@ -820,27 +821,32 @@ class MusicQuizPlugin(PluginProvider):
         self._prefetch_round(round_index + 1)
         self._signal_game_updated()
 
-    def _do_reveal(self) -> None:
+    def _do_reveal(self, *, completed: bool = False) -> None:
         """Reveal the current round, apply scoring and schedule the auto-advance."""
-        game, _, answer_type = self._require_game_strategies()
+        game, quiz_type, answer_type = self._require_game_strategies()
         reveal_round(game, answer_type)
         self.mass.cancel_timer(self._reveal_timer_id)
         current_round = get_current_round(game)
-        # let the revealed track play out before auto-advancing; without a
-        # known duration the game advances on all-ready or a host command
-        if current_round.duration and current_round.started_at:
-            remaining = current_round.started_at + current_round.duration - time.time()
+        current_round.auto_advance_at = None
+        now = time.time()
+        advance_delay = quiz_type.completed_reveal_auto_advance_delay if completed else None
+        if advance_delay is None and current_round.duration and current_round.started_at:
+            remaining = current_round.started_at + current_round.duration - now
+            advance_delay = max(remaining, MIN_REVEAL_SECONDS)
+        if advance_delay is not None:
             self.mass.call_later(
-                max(remaining, MIN_REVEAL_SECONDS),
+                advance_delay,
                 self._on_reveal_finished,
                 current_round.round_index,
                 task_id=self._advance_timer_id,
             )
+            current_round.auto_advance_at = now + advance_delay
         self._signal_game_updated()
 
     async def _advance_from_reveal(self) -> None:
         """Advance a revealed game to the next round or finish it."""
         game = self._require_game()
+        get_current_round(game).auto_advance_at = None
         self.mass.cancel_timer(self._advance_timer_id)
         if len(game.rounds) >= game.config.round_count:
             if self._quiz_type is None or self._quiz_type.uses_audio:
@@ -873,7 +879,7 @@ class MusicQuizPlugin(PluginProvider):
 
             if game.players and game.phase == MusicQuizPhase.ANSWERING:
                 if all_active_players_complete(game, answer_type):
-                    self._do_reveal()
+                    self._do_reveal(completed=True)
                 else:
                     self._signal_game_updated()
             elif game.players and game.phase == MusicQuizPhase.REVEAL:
@@ -1221,6 +1227,7 @@ def _host_round(
         "duration": game_round.duration,
         "started_at": game_round.started_at,
         "ended_at": game_round.ended_at,
+        "auto_advance_at": game_round.auto_advance_at,
     }
 
 
@@ -1278,6 +1285,7 @@ def _public_round(
         "round_index": game_round.round_index,
         "started_at": game_round.started_at,
         "deadline": (game_round.started_at or 0) + _answer_window(game, game_round),
+        "auto_advance_at": game_round.auto_advance_at,
         "question": game_round.question,
         **answer_type.serialize_round(game_round.answer_state, revealed=revealed),
     }

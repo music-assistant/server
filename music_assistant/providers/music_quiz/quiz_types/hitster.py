@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BONUS_OPTION_COUNT = 4
+COMPLETED_REVEAL_AUTO_ADVANCE_SECONDS = 30.0
 TRACK_ENRICHMENT_CONCURRENCY = 10
 
 
@@ -49,6 +50,7 @@ class HitsterQuizType(QuizType):
     """Quiz type where players place songs on a shared chronological timeline."""
 
     answer_type = MusicQuizAnswerType.TIMELINE
+    completed_reveal_auto_advance_delay = COMPLETED_REVEAL_AUTO_ADVANCE_SECONDS
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
         """

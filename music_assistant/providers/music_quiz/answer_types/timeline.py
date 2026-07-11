@@ -191,7 +191,7 @@ class TimelineAnswerType(QuizAnswerType):
         if player_id in timeline_state.finished_at:
             raise MusicQuizInvalidAnswerError("No actions are allowed after finishing the round")
         if isinstance(submission, TimelinePlacementSubmission):
-            self._submit_placement(game, timeline_state, player_id, submission, submitted_at)
+            self._submit_placement(timeline_state, player_id, submission, submitted_at)
             return
         if isinstance(submission, TimelineBonusTextSubmission):
             self._submit_bonus_text(timeline_state, player_id, submission, submitted_at)
@@ -293,23 +293,24 @@ class TimelineAnswerType(QuizAnswerType):
                 points=placement_scores.get(player_id, 0),
             )
             bonus_results: list[TimelineBonusResult] = []
-            for bonus_answer in self._bonus_answers_by_type(timeline_state, player_id).values():
-                timestamps.append(bonus_answer.submitted_at)
-                definition = definitions.get(bonus_answer.bonus_type)
-                if definition is None:
-                    raise InvalidDataError("Timeline bonus answer has no matching definition")
-                is_correct = self._is_bonus_correct(
-                    timeline_state.candidate,
-                    definition,
-                    bonus_answer,
-                )
-                bonus_results.append(
-                    TimelineBonusResult(
-                        bonus_type=bonus_answer.bonus_type,
-                        is_correct=is_correct,
-                        points=BONUS_POINTS if is_correct else 0,
+            if placement_correctness[player_id]:
+                for bonus_answer in self._bonus_answers_by_type(timeline_state, player_id).values():
+                    timestamps.append(bonus_answer.submitted_at)
+                    definition = definitions.get(bonus_answer.bonus_type)
+                    if definition is None:
+                        raise InvalidDataError("Timeline bonus answer has no matching definition")
+                    is_correct = self._is_bonus_correct(
+                        timeline_state.candidate,
+                        definition,
+                        bonus_answer,
                     )
-                )
+                    bonus_results.append(
+                        TimelineBonusResult(
+                            bonus_type=bonus_answer.bonus_type,
+                            is_correct=is_correct,
+                            points=BONUS_POINTS if is_correct else 0,
+                        )
+                    )
             pending_results[player_id] = TimelineAnswerResult(
                 placement=placement_result,
                 bonuses=sorted(bonus_results, key=lambda item: item.bonus_type.value),
@@ -544,7 +545,6 @@ class TimelineAnswerType(QuizAnswerType):
 
     def _submit_placement(
         self,
-        game: MusicQuizGame,
         state: TimelineRoundState,
         player_id: str,
         submission: TimelinePlacementSubmission,
@@ -563,9 +563,13 @@ class TimelineAnswerType(QuizAnswerType):
             next_entry_id=submission.next_entry_id,
             answered_at=submitted_at,
         )
-        if all(
-            self._configured_bonus_mode(game, bonus_type) == TimelineBonusMode.OFF
-            for bonus_type in TimelineBonusType
+        if (
+            not self._is_correct_placement(
+                state.placement_snapshot,
+                state.candidate.entry.release_year,
+                state.placements[player_id],
+            )
+            or not state.bonus_definitions
         ):
             state.finished_at[player_id] = submitted_at
 
@@ -577,13 +581,12 @@ class TimelineAnswerType(QuizAnswerType):
         submitted_at: float,
     ) -> None:
         """Validate and store a free-text timeline bonus answer."""
-        self._require_placement(state, player_id)
+        self._require_bonus_eligible(state, player_id, submission.bonus_type)
         definition = self._definitions_by_type(state.bonus_definitions).get(submission.bonus_type)
         if not isinstance(definition, TimelineFreeTextBonusDefinition):
             raise MusicQuizInvalidAnswerError(
                 f"{submission.bonus_type.value} bonus does not accept free text"
             )
-        self._ensure_bonus_not_answered(state, player_id, submission.bonus_type)
         state.bonus_answers.setdefault(player_id, []).append(
             TimelineTextBonusAnswer(
                 bonus_type=submission.bonus_type,
@@ -591,6 +594,7 @@ class TimelineAnswerType(QuizAnswerType):
                 value=submission.value,
             )
         )
+        self._finish_after_final_bonus(state, player_id, submitted_at)
 
     def _submit_bonus_choice(
         self,
@@ -600,13 +604,12 @@ class TimelineAnswerType(QuizAnswerType):
         submitted_at: float,
     ) -> None:
         """Validate and store a multiple-choice timeline bonus answer."""
-        self._require_placement(state, player_id)
+        self._require_bonus_eligible(state, player_id, submission.bonus_type)
         definition = self._definitions_by_type(state.bonus_definitions).get(submission.bonus_type)
         if not isinstance(definition, TimelineMultipleChoiceBonusDefinition):
             raise MusicQuizInvalidAnswerError(
                 f"{submission.bonus_type.value} bonus does not accept an option"
             )
-        self._ensure_bonus_not_answered(state, player_id, submission.bonus_type)
         if not any(option.option_id == submission.option_id for option in definition.options):
             raise MusicQuizUnknownSuggestionError("Unknown timeline bonus option")
         state.bonus_answers.setdefault(player_id, []).append(
@@ -616,6 +619,43 @@ class TimelineAnswerType(QuizAnswerType):
                 option_id=submission.option_id,
             )
         )
+        self._finish_after_final_bonus(state, player_id, submitted_at)
+
+    def _finish_after_final_bonus(
+        self,
+        state: TimelineRoundState,
+        player_id: str,
+        submitted_at: float,
+    ) -> None:
+        """Complete a player after every configured bonus has an answer."""
+        if len(self._bonus_answers_by_type(state, player_id)) == len(state.bonus_definitions):
+            state.finished_at[player_id] = submitted_at
+
+    def _require_bonus_eligible(
+        self,
+        state: TimelineRoundState,
+        player_id: str,
+        bonus_type: TimelineBonusType,
+    ) -> None:
+        """Require a correct placement and the next configured bonus."""
+        placement = self._require_placement(state, player_id)
+        if not self._is_correct_placement(
+            state.placement_snapshot,
+            state.candidate.entry.release_year,
+            placement,
+        ):
+            raise MusicQuizInvalidAnswerError("Timeline bonuses require a correct placement")
+        answered_types = self._bonus_answers_by_type(state, player_id)
+        if bonus_type in answered_types:
+            raise MusicQuizInvalidAnswerError(
+                f"Player already answered the {bonus_type.value} bonus"
+            )
+        answered_count = len(answered_types)
+        if answered_count >= len(state.bonus_definitions):
+            raise MusicQuizInvalidAnswerError("All timeline bonuses are already answered")
+        expected_type = state.bonus_definitions[answered_count].bonus_type
+        if bonus_type != expected_type:
+            raise MusicQuizInvalidAnswerError(f"Answer the {expected_type.value} bonus first")
 
     def _validate_bonus_definitions(
         self,
@@ -624,6 +664,13 @@ class TimelineAnswerType(QuizAnswerType):
     ) -> None:
         """Validate bonus definitions against the persisted game config."""
         definitions_by_type = self._definitions_by_type(definitions)
+        expected_types = [
+            bonus_type
+            for bonus_type in TimelineBonusType
+            if self._configured_bonus_mode(game, bonus_type) != TimelineBonusMode.OFF
+        ]
+        if [definition.bonus_type for definition in definitions] != expected_types:
+            raise InvalidDataError("Timeline bonus definitions must follow configured order")
         for bonus_type in TimelineBonusType:
             configured_mode = self._configured_bonus_mode(game, bonus_type)
             definition = definitions_by_type.get(bonus_type)
@@ -759,23 +806,12 @@ class TimelineAnswerType(QuizAnswerType):
             result[answer.bonus_type] = answer
         return result
 
-    def _ensure_bonus_not_answered(
-        self,
-        state: TimelineRoundState,
-        player_id: str,
-        bonus_type: TimelineBonusType,
-    ) -> None:
-        """Reject a second answer for the same timeline bonus."""
-        if bonus_type in self._bonus_answers_by_type(state, player_id):
-            raise MusicQuizInvalidAnswerError(
-                f"Player already answered the {bonus_type.value} bonus"
-            )
-
     @staticmethod
-    def _require_placement(state: TimelineRoundState, player_id: str) -> None:
+    def _require_placement(state: TimelineRoundState, player_id: str) -> TimelinePlacementAnswer:
         """Require a locked placement before accepting a bonus."""
-        if player_id not in state.placements:
+        if (placement := state.placements.get(player_id)) is None:
             raise MusicQuizInvalidAnswerError("Place the song before answering bonuses")
+        return placement
 
     @staticmethod
     def _configured_bonus_mode(
