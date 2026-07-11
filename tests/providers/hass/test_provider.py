@@ -69,16 +69,21 @@ class _HomeAssistantClient:
         get_states_error: Exception | None = None,
         listener_error: Exception | None = None,
         connect_error: Exception | None = None,
+        block_get_states: bool = False,
     ) -> None:
         self.connected = False
         self.disconnected = False
         self.listener_started = asyncio.Event()
         self.listener_stopped = asyncio.Event()
+        self.get_states_stopped = asyncio.Event()
         self.calls: list[str] = []
         self._states = states
         self._get_states_error = get_states_error
         self._listener_error = listener_error
         self._connect_error = connect_error
+        self._get_states_result = (
+            asyncio.get_running_loop().create_future() if block_get_states else None
+        )
         self.send_command = AsyncMock(return_value={"response": {"data": "answer"}})
 
     async def connect(self) -> None:
@@ -92,20 +97,27 @@ class _HomeAssistantClient:
         """Listen until the provider stops the listener task."""
         self.calls.append("start_listening")
         self.listener_started.set()
-        if self._listener_error:
-            raise self._listener_error
         try:
+            if self._listener_error:
+                raise self._listener_error
             await asyncio.Event().wait()
         finally:
+            if self._get_states_result and not self._get_states_result.done():
+                self._get_states_result.cancel()
             self.listener_stopped.set()
 
     async def get_states(self) -> list[dict[str, Any]]:
         """Return states after command responses can be received."""
         await self.listener_started.wait()
         self.calls.append("get_states")
-        if self._get_states_error:
-            raise self._get_states_error
-        return self._states
+        try:
+            if self._get_states_result:
+                await self._get_states_result
+            if self._get_states_error:
+                raise self._get_states_error
+            return self._states
+        finally:
+            self.get_states_stopped.set()
 
     async def disconnect(self) -> None:
         """Disconnect the client."""
@@ -188,6 +200,33 @@ async def test_listener_failure_does_not_mask_feature_resolution_failure() -> No
 
     assert hass.disconnected
     assert provider._listen_task is None
+
+
+async def test_listener_exit_terminates_pending_feature_resolution() -> None:
+    """Fail startup when the listener exits while feature resolution is pending."""
+    hass = _HomeAssistantClient(
+        [],
+        listener_error=BaseHassClientError("Listener failed"),
+        block_get_states=True,
+    )
+    mass = _mass()
+    manifest = MagicMock()
+    manifest.domain = "hass"
+    manifest.name = "Home Assistant"
+    with patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass):
+        provider = await setup(mass, manifest, _config())
+        assert isinstance(provider, HomeAssistantProvider)
+
+        with pytest.raises(SetupFailedError, match="listener stopped during startup"):
+            async with asyncio.timeout(1):
+                await provider.handle_async_init()
+
+    assert hass.listener_started.is_set()
+    assert hass.listener_stopped.is_set()
+    assert hass.get_states_stopped.is_set()
+    assert hass.disconnected
+    assert provider._listen_task is None
+    mass.call_later.assert_not_called()
 
 
 async def test_connection_failure_cleans_up_client() -> None:
