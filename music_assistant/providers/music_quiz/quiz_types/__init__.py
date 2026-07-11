@@ -7,9 +7,11 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
 from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
+from music_assistant.providers.music_quiz.quiz_types.hitster import HitsterQuizType
 
 QUIZ_TYPES: dict[str, type[QuizType]] = {
     "guess_the_song": GuessTheSongQuizType,
+    "hitster": HitsterQuizType,
 }
 
 
