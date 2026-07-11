@@ -255,12 +255,14 @@ def get_track_release_year(track: Track) -> int | None:
     :param track: Track whose release year should be resolved.
     """
     album = track.album
-    year = album.year if isinstance(album, Album | ItemMapping) else None
+    album_year = album.year if isinstance(album, Album | ItemMapping) else None
+    track_year = (
+        track.metadata.release_date.year if track.metadata.release_date is not None else None
+    )
     current_year = utc().year
-    if year is not None and MIN_RELEASE_YEAR <= year <= current_year:
-        return year
-    if track.metadata.release_date is not None:
-        year = track.metadata.release_date.year
-        if MIN_RELEASE_YEAR <= year <= current_year:
-            return year
-    return None
+    valid_years = (
+        year
+        for year in (track_year, album_year)
+        if year is not None and MIN_RELEASE_YEAR <= year <= current_year
+    )
+    return min(valid_years, default=None)

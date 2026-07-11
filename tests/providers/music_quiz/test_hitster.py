@@ -320,9 +320,15 @@ async def test_track_enrichment_concurrency_is_bounded() -> None:
     assert max_active_calls <= TRACK_ENRICHMENT_CONCURRENCY
 
 
-def test_release_year_prefers_album_and_falls_back_to_track_metadata() -> None:
-    """Resolve usable years from Album, ItemMapping and track release metadata."""
-    mapped = _track("mapped", "Mapped", "Artist", album_year=1999, release_year=2001)
+def test_release_year_uses_earliest_valid_track_or_album_year() -> None:
+    """Resolve the earliest usable year from album and track metadata."""
+    track_first = _track(
+        "track-first",
+        "Track First",
+        "Artist",
+        album_year=2005,
+        release_year=1999,
+    )
     full_album = Album(
         item_id="album",
         provider="prov",
@@ -336,21 +342,39 @@ def test_release_year_prefers_album_and_falls_back_to_track_metadata() -> None:
             )
         },
     )
-    full = _track("full", "Full", "Artist", release_year=2002)
-    full.album = full_album
-    fallback = _track("fallback", "Fallback", "Artist", release_year=2003)
-    future = _track(
-        "future",
-        "Future",
+    album_first = _track("album-first", "Album First", "Artist", release_year=2002)
+    album_first.album = full_album
+    album_only = _track("album-only", "Album Only", "Artist", album_year=2001)
+    track_only = _track("track-only", "Track Only", "Artist", release_year=2003)
+    future_album = _track(
+        "future-album",
+        "Future Album",
         "Artist",
         album_year=datetime.now(tz=UTC).year + 1,
         release_year=2004,
     )
+    too_old_track = _track(
+        "too-old-track",
+        "Too Old Track",
+        "Artist",
+        album_year=2006,
+        release_year=999,
+    )
+    invalid = _track(
+        "invalid",
+        "Invalid",
+        "Artist",
+        album_year=datetime.now(tz=UTC).year + 1,
+        release_year=999,
+    )
 
-    assert HitsterQuizType._release_year(mapped) == 1999
-    assert HitsterQuizType._release_year(full) == 2000
-    assert HitsterQuizType._release_year(fallback) == 2003
-    assert HitsterQuizType._release_year(future) == 2004
+    assert HitsterQuizType._release_year(track_first) == 1999
+    assert HitsterQuizType._release_year(album_first) == 2000
+    assert HitsterQuizType._release_year(album_only) == 2001
+    assert HitsterQuizType._release_year(track_only) == 2003
+    assert HitsterQuizType._release_year(future_album) == 2004
+    assert HitsterQuizType._release_year(too_old_track) == 2006
+    assert HitsterQuizType._release_year(invalid) is None
 
 
 @pytest.mark.asyncio
