@@ -420,6 +420,41 @@ def test_remove_player_clears_all_timeline_answer_state() -> None:
     assert state.results == {}
 
 
+def test_removed_player_neither_blocks_completion_nor_scores() -> None:
+    """Exclude an expired player's locked placement, bonus and finish from reveal."""
+    state = _state(
+        bonus_definitions=[TimelineFreeTextBonusDefinition(bonus_type=TimelineBonusType.ARTIST)],
+        artist_answers=["Massive Attack"],
+    )
+    game = _game(
+        state,
+        ("departed", "active"),
+        artist_mode=TimelineBonusMode.FREE_TEXT,
+    )
+    for index, player in enumerate(game.players.values(), start=1):
+        ANSWER_TYPE.submit(game, state, player, _correct_placement(), index)
+        ANSWER_TYPE.submit(
+            game,
+            state,
+            player,
+            TimelineBonusTextSubmission(TimelineBonusType.ARTIST, "Massive Attack"),
+            index + 2,
+        )
+        ANSWER_TYPE.submit(game, state, player, TimelineFinishSubmission(), index + 4)
+    departed = game.players.pop("departed")
+
+    ANSWER_TYPE.remove_player(state, departed.player_id)
+
+    assert ANSWER_TYPE.is_round_complete(state, game.players.values()) is True
+    ANSWER_TYPE.reveal(game, state)
+    assert departed.score == 0
+    assert game.players["active"].score == 1250
+    assert "departed" not in state.placements
+    assert "departed" not in state.bonus_answers
+    assert "departed" not in state.finished_at
+    assert "departed" not in state.results
+
+
 def test_bonus_and_finish_rules_reject_invalid_action_order_and_modes() -> None:
     """Enforce placement-first, mode matching, uniqueness, finish and post-finish locks."""
     definitions = [
