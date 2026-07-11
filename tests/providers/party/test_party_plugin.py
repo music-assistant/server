@@ -8,7 +8,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
@@ -75,7 +75,7 @@ async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None
     with (
         patch(
             "music_assistant.providers.party.get_current_user",
-            return_value=SimpleNamespace(username=PARTY_GUEST_USER),
+            return_value=SimpleNamespace(username=PARTY_GUEST_USER, role=UserRole.GUEST),
         ),
         patch("music_assistant.providers.party.build_queue_item", return_value=queue_item),
         pytest.raises(InvalidDataError, match="already in the queue"),
@@ -130,7 +130,7 @@ async def test_listen_in_without_session_raises() -> None:
     with (
         patch(
             "music_assistant.providers.party.get_current_user",
-            return_value=SimpleNamespace(username=PARTY_GUEST_USER),
+            return_value=SimpleNamespace(username=PARTY_GUEST_USER, role=UserRole.GUEST),
         ),
         pytest.raises(InvalidDataError, match="not available"),
     ):
@@ -152,7 +152,7 @@ async def test_listen_in_attaches_guest_player() -> None:
 
     with patch(
         "music_assistant.providers.party.get_current_user",
-        return_value=SimpleNamespace(username=PARTY_GUEST_USER),
+        return_value=SimpleNamespace(username=PARTY_GUEST_USER, role=UserRole.GUEST),
     ):
         result = await plugin.listen_in("web_player_1")
 
@@ -186,3 +186,31 @@ async def test_guest_readable_commands_use_guest_scope() -> None:
     }
     assert scopes["party/url"] == Scope.PROVIDERS_READ
     assert scopes["party/config"] == Scope.PROVIDERS_READ
+
+
+@pytest.mark.parametrize("username", [PARTY_GUEST_USER, "music_quiz_guest", "temporary_guest"])
+def test_guest_access_accepts_any_dedicated_guest(username: str) -> None:
+    """Any authenticated guest role can use the active Party experience."""
+    with patch(
+        "music_assistant.providers.party.get_current_user",
+        return_value=SimpleNamespace(username=username, role=UserRole.GUEST),
+    ):
+        PartyPlugin._validate_guest_access()
+
+
+@pytest.mark.parametrize(
+    "user",
+    [
+        None,
+        SimpleNamespace(username="user", role=UserRole.USER),
+        SimpleNamespace(username="admin", role=UserRole.ADMIN),
+        SimpleNamespace(username="service", role=UserRole.SERVICE),
+    ],
+)
+def test_guest_access_rejects_non_guests(user: SimpleNamespace | None) -> None:
+    """Party guest commands reject unauthenticated and non-guest users."""
+    with (
+        patch("music_assistant.providers.party.get_current_user", return_value=user),
+        pytest.raises(InvalidDataError, match="party guests"),
+    ):
+        PartyPlugin._validate_guest_access()

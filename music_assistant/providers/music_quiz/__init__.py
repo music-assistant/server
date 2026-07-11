@@ -4,7 +4,8 @@ Music Quiz Plugin Provider for Music Assistant.
 Provides the backend game engine for multiplayer music quiz games. Guests
 join with a QR code on their own device and play the selected quiz type:
 guess-the-song uses multiple-choice answers, while Hitster uses a shared
-chronological timeline with optional artist and title bonuses.
+chronological timeline with optional artist and title bonuses. Trivia uses
+AI-worded multiple-choice questions grounded in selected library metadata.
 
 Playback is hosted by a SharedPlaybackSession in one of two modes
 (provider config):
@@ -51,7 +52,7 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -66,10 +67,12 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
 from music_assistant.providers.music_quiz.answer_types.base import (
     QuizAnswerSubmission,
+    QuizAnswerSubmissionPayload,
     QuizAnswerType,
 )
 from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
@@ -113,8 +116,14 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizSource,
     TimelineBonusMode,
 )
-from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
-from music_assistant.providers.music_quiz.quiz_types.base import QuizType
+from music_assistant.providers.music_quiz.quiz_types import (
+    get_available_quiz_types,
+    get_quiz_type,
+)
+from music_assistant.providers.music_quiz.quiz_types.base import (
+    QuizType,
+    is_supported_source,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ProviderFeature
@@ -229,6 +238,7 @@ class MusicQuizPlugin(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         host_commands: tuple[tuple[str, _ApiHandler], ...] = (
+            ("music_quiz/available_quiz_types", self.available_quiz_types),
             ("music_quiz/create", self.create_game),
             ("music_quiz/get", self.get_game),
             ("music_quiz/start", self.start_game),
@@ -291,6 +301,10 @@ class MusicQuizPlugin(PluginProvider):
 
     # ==================== Host API Commands ====================
 
+    async def available_quiz_types(self) -> list[str]:
+        """Return quiz types currently available for game creation."""
+        return get_available_quiz_types(self.mass)
+
     async def create_game(
         self,
         quiz_type: str = "guess_the_song",
@@ -310,7 +324,7 @@ class MusicQuizPlugin(PluginProvider):
         :param round_count: Number of rounds to play.
         :param suggestion_count: Number of answer suggestions per round.
         :param answer_duration: Answering duration in seconds.
-        :param source_uris: Track or playlist URIs to draw the rounds from.
+        :param source_uris: Track, playlist, album, artist or genre URIs to draw rounds from.
         :param name: Optional game name.
         :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
         :param artist_bonus_mode: Hitster artist bonus mode.
@@ -356,13 +370,16 @@ class MusicQuizPlugin(PluginProvider):
             )
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
             await quiz_strategy.initialize()
-            self._cancel_timers()
-            self._cancel_next_round_task()
-            self._game = game
-            self._quiz_type = quiz_strategy
-            self._answer_type = answer_strategy
-            self._prefetch_round(0)
-            self._signal_game_updated()
+            async with self._playback_lock:
+                if not quiz_strategy.uses_audio:
+                    await self._close_playback_session_locked()
+                self._cancel_timers()
+                self._cancel_next_round_task()
+                self._game = game
+                self._quiz_type = quiz_strategy
+                self._answer_type = answer_strategy
+                self._prefetch_round(0)
+                self._signal_game_updated()
             return await self._host_state()
 
     async def get_game(self) -> dict[str, Any] | None:
@@ -411,7 +428,8 @@ class MusicQuizPlugin(PluginProvider):
             await quiz_strategy.initialize()
             self._cancel_timers()
             self._cancel_next_round_task()
-            await self._stop_playback()
+            if quiz_strategy.uses_audio:
+                await self._stop_playback()
             reset_game(game)
             self._quiz_type = quiz_strategy
             self._answer_type = answer_strategy
@@ -424,6 +442,7 @@ class MusicQuizPlugin(PluginProvider):
         """Delete the current game and stop its playback."""
         async with self._game_lock:
             self._require_game()
+            uses_audio = self._quiz_type is None or self._quiz_type.uses_audio
             self._cancel_timers()
             self._cancel_next_round_task()
             # clear game state before tearing down the session so a guest listen-in
@@ -431,7 +450,8 @@ class MusicQuizPlugin(PluginProvider):
             self._game = None
             self._quiz_type = None
             self._answer_type = None
-            await self._stop_playback()
+            if uses_audio:
+                await self._stop_playback()
             # tear down the shared session so its virtual player / listen-in
             # guests do not linger once the game is gone
             await self._close_playback_session()
@@ -520,7 +540,7 @@ class MusicQuizPlugin(PluginProvider):
     async def submit_answer(
         self,
         player_id: str,
-        submission: dict[str, object],
+        submission: QuizAnswerSubmissionPayload,
     ) -> dict[str, SerializableType]:
         """
         Submit a typed answer for the current round.
@@ -667,12 +687,12 @@ class MusicQuizPlugin(PluginProvider):
     @staticmethod
     def _validate_guest_access() -> None:
         """
-        Validate the current user is an authenticated Music Quiz guest.
+        Validate the current user is an authenticated dedicated guest.
 
-        :raises InvalidDataError: If the user is not a Music Quiz guest.
+        :raises InvalidDataError: If the user is not a dedicated guest.
         """
         user = get_current_user()
-        if not user or user.username != MUSIC_QUIZ_GUEST_USER:
+        if not user or user.role != UserRole.GUEST:
             raise InvalidDataError(
                 "This action is only available to Music Quiz guests",
                 translation_key="music_quiz_guest_only",
@@ -738,12 +758,36 @@ class MusicQuizPlugin(PluginProvider):
         sources: list[MusicQuizSource] = []
         for source_uri in source_uris:
             try:
-                media_item = await self.mass.music.get_item_by_uri(source_uri)
+                source_media_type, provider_instance, item_id = await parse_uri(source_uri)
+            except Exception as err:
+                self.logger.warning("Ignoring invalid Music Quiz source %s: %s", source_uri, err)
+                continue
+            if not is_supported_source(source_media_type, provider_instance):
+                self.logger.warning(
+                    "Ignoring unsupported Music Quiz source %s (%s)",
+                    source_uri,
+                    source_media_type,
+                )
+                continue
+            try:
+                media_item = await self.mass.music.get_item(
+                    media_type=source_media_type,
+                    item_id=item_id,
+                    provider_instance_id_or_domain=provider_instance,
+                    allow_update_metadata=False,
+                )
             except Exception as err:
                 # the real failure otherwise only surfaces at round start,
                 # minutes later and far from the cause
                 self.logger.warning("Could not resolve Music Quiz source %s: %s", source_uri, err)
                 sources.append(MusicQuizSource(uri=source_uri, name=source_uri))
+                continue
+            if not is_supported_source(media_item.media_type, media_item.provider):
+                self.logger.warning(
+                    "Ignoring unsupported Music Quiz source %s (%s)",
+                    source_uri,
+                    media_item.media_type,
+                )
                 continue
             sources.append(
                 MusicQuizSource(
@@ -799,7 +843,8 @@ class MusicQuizPlugin(PluginProvider):
         game = self._require_game()
         self.mass.cancel_timer(self._advance_timer_id)
         if len(game.rounds) >= game.config.round_count:
-            await self._stop_playback()
+            if self._quiz_type is None or self._quiz_type.uses_audio:
+                await self._stop_playback()
             finish_game(game)
             self._cancel_presence_expiry()
             self._signal_game_updated()
@@ -951,9 +996,13 @@ class MusicQuizPlugin(PluginProvider):
         # use the same lock that guards session creation/refresh so a concurrent
         # _get_playback_session() cannot resurrect a session we are tearing down
         async with self._playback_lock:
-            if self._playback_session is not None:
-                await self._playback_session.close()
-                self._playback_session = None
+            await self._close_playback_session_locked()
+
+    async def _close_playback_session_locked(self) -> None:
+        """Close and drop the shared playback session while holding the playback lock."""
+        if self._playback_session is not None:
+            await self._playback_session.close()
+            self._playback_session = None
 
     async def _get_playback_session(self) -> SharedPlaybackSession | None:
         """
@@ -984,6 +1033,11 @@ class MusicQuizPlugin(PluginProvider):
         # teardown from leaking a fresh session / virtual player
         if self._game is None:
             return None
+        if self._quiz_type is not None and not self._quiz_type.uses_audio:
+            return None
+        if self._quiz_type is None and isinstance(self._game, MusicQuizGame):
+            if not get_quiz_type(self._game.quiz_type).uses_audio:
+                return None
         # drop a stale session whose player no longer exists
         if self._playback_session is not None and (
             self.mass.players.get_player(self._playback_session.player_id) is None
