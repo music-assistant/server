@@ -717,7 +717,10 @@ class MusicQuizPlugin(PluginProvider):
     async def _get_join_url(self) -> str:
         """Return the guest join URL, creating the guest user and join code if needed."""
         guest_user = await guest_access.get_or_create_guest_user(
-            self.mass, MUSIC_QUIZ_GUEST_USER, MUSIC_QUIZ_GUEST_DISPLAY_NAME
+            self.mass,
+            MUSIC_QUIZ_GUEST_USER,
+            MUSIC_QUIZ_GUEST_DISPLAY_NAME,
+            allowed_player_ids=(),
         )
         code = await guest_access.get_or_create_join_code(
             self.mass, guest_user, device_name="Music Quiz Guest"

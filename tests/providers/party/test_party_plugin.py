@@ -122,6 +122,36 @@ async def test_get_party_player_remote_mode_no_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_party_url_preserves_default_guest_access() -> None:
+    """Party keeps its dynamic unrestricted player filter behavior."""
+    plugin = _create_session_test_plugin(SharedPlaybackMode.REMOTE.value)
+    guest_user = MagicMock()
+
+    with (
+        patch(
+            "music_assistant.providers.party.guest_access.get_or_create_guest_user",
+            new=AsyncMock(return_value=guest_user),
+        ) as get_guest_user,
+        patch(
+            "music_assistant.providers.party.guest_access.get_or_create_join_code",
+            new=AsyncMock(return_value="JOIN"),
+        ),
+        patch(
+            "music_assistant.providers.party.guest_access.build_join_url",
+            return_value="http://ma/?join=JOIN",
+        ),
+    ):
+        result = await plugin.get_party_url()
+
+    assert result == "http://ma/?join=JOIN"
+    get_guest_user.assert_awaited_once_with(
+        plugin.mass,
+        PARTY_GUEST_USER,
+        "Party Guest",
+    )
+
+
+@pytest.mark.asyncio
 async def test_listen_in_without_session_raises() -> None:
     """Listen-in is rejected when no session is available (venue auto mode)."""
     plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value)

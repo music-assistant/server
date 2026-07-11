@@ -12,6 +12,7 @@ from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import EventType
 
+from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
@@ -41,12 +42,22 @@ def webserver(mass_minimal: MusicAssistant) -> WebserverController:
 
 
 def create_ws_client(
-    webserver: WebserverController, username: str, role: UserRole = UserRole.ADMIN
+    webserver: WebserverController,
+    username: str,
+    role: UserRole = UserRole.ADMIN,
+    player_filter: list[str] | None = None,
+    sendspin_player_id: str | None = None,
 ) -> WebsocketClientHandler:
     """Create an authenticated + event-subscribed websocket client handler (no real socket)."""
     request = make_mocked_request("GET", "/ws", app=web.Application())
     client = WebsocketClientHandler(webserver, request)
-    client._authenticated_user = User(user_id=username, username=username, role=role)
+    client._authenticated_user = User(
+        user_id=username,
+        username=username,
+        role=role,
+        player_filter=player_filter or [],
+    )
+    client._sendspin_player_id = sendspin_player_id
     client._subscribe_to_events()
     return client
 
@@ -112,3 +123,59 @@ async def test_provider_event_delivered_to_guest_clients(
     msg_admin = get_written_message(admin)
     assert msg_guest == msg_admin
     assert "music_quiz--abcd/game_state" in msg_guest
+
+
+async def test_restricted_guest_events_exclude_dynamic_queues(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+) -> None:
+    """Restricted guests receive own-player and provider events, but no dynamic queues."""
+    guest = create_ws_client(
+        webserver,
+        "guest1",
+        role=UserRole.GUEST,
+        player_filter=[GUEST_ACCESS_RESTRICTED_PLAYER_ID, "allowed"],
+        sendspin_player_id="web_player",
+    )
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "host_player", {"name": "Host"})
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "host_player", {"name": "Host Queue"})
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "web_player", {"name": "Web Player"})
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "web_player", {"name": "Web Queue"})
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "allowed", {"name": "Allowed Queue"})
+    mass_minimal.signal_event(
+        EventType.PROVIDER_EVENT,
+        "music_quiz--abcd/game_state",
+        {"round": 1},
+    )
+    await drain_event_callbacks()
+
+    messages = [get_written_message(guest) for _ in range(3)]
+    assert guest._to_write.empty()
+    assert any("Web Player" in message for message in messages)
+    assert any("Allowed Queue" in message for message in messages)
+    assert any("game_state" in message for message in messages)
+    assert all("Host Queue" not in message for message in messages)
+    assert all("Web Queue" not in message for message in messages)
+
+
+async def test_filtered_user_receives_own_sendspin_queue_event(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+) -> None:
+    """An ordinary filtered user receives queue events for their own Sendspin player."""
+    user = create_ws_client(
+        webserver,
+        "user1",
+        role=UserRole.USER,
+        player_filter=["allowed"],
+        sendspin_player_id="web_player",
+    )
+
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "host_player", {"name": "Host Queue"})
+    mass_minimal.signal_event(EventType.QUEUE_UPDATED, "web_player", {"name": "Web Queue"})
+    await drain_event_callbacks()
+
+    message = get_written_message(user)
+    assert user._to_write.empty()
+    assert "Web Queue" in message

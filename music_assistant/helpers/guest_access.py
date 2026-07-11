@@ -8,10 +8,13 @@ join URL that guests open on their own device.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import UserRole
 from music_assistant_models.errors import InvalidDataError
+
+from music_assistant.constants import GUEST_ACCESS_RESTRICTED_PLAYER_ID
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -21,13 +24,20 @@ if TYPE_CHECKING:
 DEFAULT_JOIN_CODE_EXPIRY_HOURS = 8
 
 
-async def get_or_create_guest_user(mass: MusicAssistant, username: str, display_name: str) -> User:
+async def get_or_create_guest_user(
+    mass: MusicAssistant,
+    username: str,
+    display_name: str,
+    allowed_player_ids: Collection[str] | None = None,
+) -> User:
     """
     Get the guest user with the given username, creating it if needed.
 
     :param mass: MusicAssistant instance.
     :param username: Unique username for the guest account.
     :param display_name: Human readable display name for the guest account.
+    :param allowed_player_ids: Player IDs the dedicated guest may access. Pass
+        ``None`` to preserve the guest's existing filter behavior.
     :return: The (existing or newly created) guest User.
     :raises InvalidDataError: If the username belongs to a non-guest account.
     """
@@ -36,11 +46,23 @@ async def get_or_create_guest_user(mass: MusicAssistant, username: str, display_
         # never hand out guest access on a higher privileged account
         if user.role != UserRole.GUEST:
             raise InvalidDataError(f"User {username} exists but is not a guest account")
-        return user
+        if allowed_player_ids is None:
+            return user
+        player_filter = _managed_player_filter(allowed_player_ids)
+        if set(user.player_filter) == set(player_filter):
+            return user
+        return await auth.update_user_filters(user, player_filter, None)
+    if allowed_player_ids is None:
+        return await auth.create_user(
+            username=username,
+            role=UserRole.GUEST,
+            display_name=display_name,
+        )
     return await auth.create_user(
         username=username,
         role=UserRole.GUEST,
         display_name=display_name,
+        player_filter=_managed_player_filter(allowed_player_ids),
     )
 
 
@@ -110,3 +132,17 @@ async def revoke_guest_access(mass: MusicAssistant, username: str) -> tuple[int,
     codes_revoked = await auth.revoke_join_codes(user)
     tokens_revoked = await auth.revoke_tokens_for_user(user)
     return (codes_revoked, tokens_revoked)
+
+
+def _managed_player_filter(allowed_player_ids: Collection[str]) -> list[str]:
+    """Return the restrictive player filter for a managed guest."""
+    if isinstance(allowed_player_ids, str):
+        raise TypeError("allowed_player_ids must be a collection of player IDs")
+    return [
+        GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+        *sorted(
+            player_id
+            for player_id in set(allowed_player_ids)
+            if player_id and player_id != GUEST_ACCESS_RESTRICTED_PLAYER_ID
+        ),
+    ]
