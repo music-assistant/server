@@ -2152,7 +2152,8 @@ class LocalFileSystemProvider(MusicProvider):
                     data = (await self._read_file(nfo_file)).decode("utf-8")
                     info = await asyncio.to_thread(xmltodict.parse, data)
                     info = info["album"]
-                    album.name = info.get("title", info.get("name", name))
+                    if title := info.get("title", info.get("name")):
+                        album.name, album.version = parse_title_and_version(title)
                     if sort_name := info.get("sortname"):
                         album.sort_name = sort_name
                     if releasegroup_id := info.get("musicbrainzreleasegroupid"):
@@ -2174,8 +2175,6 @@ class LocalFileSystemProvider(MusicProvider):
                         nfo_file,
                         str(err),
                     )
-            # parse name/version
-            album.name, album.version = parse_title_and_version(album.name)
             # find local images
             if images := await self._get_local_images(folder_path, extra_thumb_names=("album",)):
                 if album.metadata.images is None:
