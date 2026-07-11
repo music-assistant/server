@@ -742,7 +742,18 @@ curl -X POST {BASE_URL}/api \
                     <code>auth</code> command as the first message:
                 </p>
                 <div class="code-block">
-<span class="comment"># Send auth command immediately after connection</span>
+<span class="comment"># Login with username and password...</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"auth"</span>,
+  <span class="string">"args"</span>: {
+    <span class="string">"username"</span>: <span class="string">"your_username"</span>
+    <span class="string">"password"</span>: <span class="string">"your_password"</span>
+    <span class="string">"device_name"</span>: <span class="string">"you_device_name"</span>
+  }
+}
+
+<span class="comment"># ...or use token from previous login</span>
 {
   <span class="string">"message_id"</span>: <span class="string">"auth-123"</span>,
   <span class="string">"command"</span>: <span class="string">"auth"</span>,
