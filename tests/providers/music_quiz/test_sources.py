@@ -352,6 +352,20 @@ async def test_empty_or_unsupported_sources_raise_localized_error(source_uris: l
 
 
 @pytest.mark.asyncio
+async def test_non_library_genre_source_raises_localized_error() -> None:
+    """Reject provider genre URIs before resolving or traversing them."""
+    source_uri = "provider://genre/42"
+    mass = _mass({})
+
+    with pytest.raises(InvalidDataError) as err:
+        await _guess_quiz(mass, [source_uri])._get_source_track_pool()
+
+    assert err.value.translation_key == "music_quiz_sources_unavailable"
+    mass.music.get_item.assert_not_awaited()
+    mass.music.genres.tracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_host_source_metadata_ignores_unsupported_types() -> None:
     """Expose metadata only for accepted Music Quiz source types."""
     playlist = _playlist()
@@ -368,7 +382,13 @@ async def test_host_source_metadata_ignores_unsupported_types() -> None:
     plugin.logger = MagicMock()
 
     sources = await plugin._resolve_sources(
-        [playlist_uri, radio_uri, "provider://podcast/unavailable", "not-a-uri"]
+        [
+            playlist_uri,
+            radio_uri,
+            "provider://genre/42",
+            "provider://podcast/unavailable",
+            "not-a-uri",
+        ]
     )
 
     assert [source.to_dict() for source in sources] == [

@@ -47,6 +47,13 @@ SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
 )
 
 
+def is_supported_source(media_type: MediaType, provider: str) -> bool:
+    """Return whether a media item can supply Music Quiz tracks."""
+    return media_type in SUPPORTED_SOURCE_MEDIA_TYPES and (
+        media_type != MediaType.GENRE or provider == "library"
+    )
+
+
 class QuizType(ABC):
     """
     Base for a Music Quiz quiz type.
@@ -157,7 +164,7 @@ class QuizType(ABC):
             # abort a round that other sources can still populate
             try:
                 source_media_type, provider_instance, item_id = await parse_uri(source_uri)
-                if source_media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
+                if not is_supported_source(source_media_type, provider_instance):
                     LOGGER.warning(
                         "Ignoring unsupported Music Quiz source %s (%s)",
                         source_uri,
@@ -170,7 +177,9 @@ class QuizType(ABC):
                     provider_instance_id_or_domain=provider_instance,
                     allow_update_metadata=False,
                 )
-                if not isinstance(media_item, Track | Playlist | Album | Artist | Genre):
+                if not isinstance(
+                    media_item, Track | Playlist | Album | Artist | Genre
+                ) or not is_supported_source(media_item.media_type, media_item.provider):
                     LOGGER.warning(
                         "Ignoring unsupported Music Quiz source %s (%s)",
                         source_uri,

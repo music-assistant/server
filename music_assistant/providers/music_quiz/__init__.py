@@ -121,8 +121,8 @@ from music_assistant.providers.music_quiz.quiz_types import (
     get_quiz_type,
 )
 from music_assistant.providers.music_quiz.quiz_types.base import (
-    SUPPORTED_SOURCE_MEDIA_TYPES,
     QuizType,
+    is_supported_source,
 )
 
 if TYPE_CHECKING:
@@ -762,7 +762,7 @@ class MusicQuizPlugin(PluginProvider):
             except Exception as err:
                 self.logger.warning("Ignoring invalid Music Quiz source %s: %s", source_uri, err)
                 continue
-            if source_media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
+            if not is_supported_source(source_media_type, provider_instance):
                 self.logger.warning(
                     "Ignoring unsupported Music Quiz source %s (%s)",
                     source_uri,
@@ -782,7 +782,7 @@ class MusicQuizPlugin(PluginProvider):
                 self.logger.warning("Could not resolve Music Quiz source %s: %s", source_uri, err)
                 sources.append(MusicQuizSource(uri=source_uri, name=source_uri))
                 continue
-            if media_item.media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
+            if not is_supported_source(media_item.media_type, media_item.provider):
                 self.logger.warning(
                     "Ignoring unsupported Music Quiz source %s (%s)",
                     source_uri,
