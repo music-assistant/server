@@ -676,6 +676,56 @@ async def test_system_context_is_restored_when_round_start_fails() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stop_error", [None, RuntimeError("Stop failed")])
+async def test_final_guest_ready_stops_playback_in_system_context(
+    stop_error: RuntimeError | None,
+) -> None:
+    """Finish from guest Ready while keeping queue stop provider-owned."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    stop_contexts: list[tuple[User | None, User | None]] = []
+
+    async def _stop(_queue_id: str) -> None:
+        stop_contexts.append((current_user.get(), impersonated_user.get()))
+        if stop_error is not None:
+            raise stop_error
+
+    plugin._playback_session = cast(
+        "Any",
+        SimpleNamespace(queue_id="quiz_queue", player_id="quiz_player"),
+    )
+    plugin._stop_playback = MusicQuizPlugin._stop_playback.__get__(  # type: ignore[method-assign]
+        plugin, MusicQuizPlugin
+    )
+    cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace()
+    stop = AsyncMock(side_effect=_stop)
+    cast("MagicMock", plugin.mass.player_queues).stop = stop
+    requesting_user = cast("User", _guest_user())
+    requesting_impersonation = cast("User", _guest_user())
+    current_user_token = current_user.set(requesting_user)
+    impersonated_user_token = impersonated_user.set(requesting_impersonation)
+    try:
+        await plugin.answer(player_ids["Alice"], "correct_0")
+        await plugin.ready(player_ids["Alice"])
+        assert current_user.get() is requesting_user
+        assert impersonated_user.get() is requesting_impersonation
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
+
+    assert stop_contexts == [(None, None)]
+    stop.assert_awaited_once_with("quiz_queue")
+    assert game.phase == MusicQuizPhase.FINISHED
+    if stop_error is not None:
+        cast("MagicMock", plugin.logger.warning).assert_called_once_with(
+            "Could not stop Music Quiz playback: %s",
+            stop_error,
+        )
+
+
+@pytest.mark.asyncio
 async def test_play_track_rejects_busy_announcement_target() -> None:
     """Do not open an audio round when the target ignores playback during an announcement."""
     plugin = _create_plugin()

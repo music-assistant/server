@@ -1045,14 +1045,15 @@ class MusicQuizPlugin(PluginProvider):
 
     async def _stop_playback(self) -> None:
         """Stop playback on the game's playback session, if any."""
-        if self._playback_session is None:
-            return
-        if self.mass.players.get_player(self._playback_session.player_id) is None:
-            return
-        try:
-            await self.mass.player_queues.stop(self._playback_session.queue_id)
-        except Exception as err:
-            self.logger.warning("Could not stop Music Quiz playback: %s", err)
+        with _system_auth_context():
+            if self._playback_session is None:
+                return
+            if self.mass.players.get_player(self._playback_session.player_id) is None:
+                return
+            try:
+                await self.mass.player_queues.stop(self._playback_session.queue_id)
+            except Exception as err:
+                self.logger.warning("Could not stop Music Quiz playback: %s", err)
 
     async def _close_playback_session(self) -> None:
         """Close and drop the shared playback session under the playback lock."""
