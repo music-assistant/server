@@ -284,11 +284,17 @@ class MusicQuizPlugin(PluginProvider):
             self._game = None
             self._quiz_type = None
             self._answer_type = None
-        await self._stop_playback()
-        await self._close_playback_session()
-        if is_removed:
-            await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
-        await super().unload(is_removed)
+        try:
+            try:
+                await self._stop_playback()
+            finally:
+                await self._close_playback_session()
+        finally:
+            try:
+                if is_removed:
+                    await guest_access.revoke_guest_access(self.mass, MUSIC_QUIZ_GUEST_USER)
+            finally:
+                await super().unload(is_removed)
 
     # ==================== Host API Commands ====================
 
@@ -433,11 +439,15 @@ class MusicQuizPlugin(PluginProvider):
             self._game = None
             self._quiz_type = None
             self._answer_type = None
-            await self._stop_playback()
-            # tear down the shared session so its virtual player / listen-in
-            # guests do not linger once the game is gone
-            await self._close_playback_session()
-            self.signal_provider_event({"event": "game_removed"})
+            try:
+                try:
+                    await self._stop_playback()
+                finally:
+                    # tear down the shared session so its virtual player / listen-in
+                    # guests do not linger once the game is gone
+                    await self._close_playback_session()
+            finally:
+                self.signal_provider_event({"event": "game_removed"})
 
     # ==================== Guest API Commands ====================
 
@@ -963,9 +973,12 @@ class MusicQuizPlugin(PluginProvider):
         # use the same lock that guards session creation/refresh so a concurrent
         # _get_playback_session() cannot resurrect a session we are tearing down
         async with self._playback_lock:
-            if self._playback_session is not None:
-                await self._playback_session.close()
-                self._playback_session = None
+            if (session := self._playback_session) is not None:
+                try:
+                    await session.close()
+                finally:
+                    if self._playback_session is session:
+                        self._playback_session = None
 
     async def _get_playback_session(self) -> SharedPlaybackSession | None:
         """

@@ -2404,6 +2404,30 @@ async def test_unload_cleans_up() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unload_tears_down_session_when_playback_cleanup_fails() -> None:
+    """Unload revokes access and closes the session before surfacing a stop failure."""
+    plugin = _create_plugin()
+    session = MagicMock()
+    session.close = AsyncMock()
+    plugin._playback_session = session
+    stop_playback = cast("AsyncMock", plugin._stop_playback)
+    stop_playback.side_effect = RuntimeError("stop failed")
+
+    with (
+        patch(
+            "music_assistant.helpers.guest_access.revoke_guest_access",
+            new=AsyncMock(return_value=(0, 0)),
+        ) as revoke,
+        pytest.raises(RuntimeError, match="stop failed"),
+    ):
+        await plugin.unload(is_removed=True)
+
+    session.close.assert_awaited_once()
+    assert plugin.__dict__["_playback_session"] is None
+    revoke.assert_awaited_once_with(plugin.mass, MUSIC_QUIZ_GUEST_USER)
+
+
+@pytest.mark.asyncio
 async def test_create_game_rejects_invalid_difficulty() -> None:
     """An unknown difficulty is rejected before a game is created."""
     plugin = _create_plugin()

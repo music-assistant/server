@@ -204,21 +204,21 @@ class SharedPlaybackSession:
         In VENUE mode only the guest listeners added through this session are
         detached; the venue player itself is left untouched.
         """
-        if self.mass.player_queues.has_media_presentation(
-            self.queue_id, self._media_presentation_owner
-        ):
-            await self.clear_playback()
-        if self._mode == SharedPlaybackMode.REMOTE:
-            sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
-            if sendspin is not None and sendspin.is_virtual_player(self._player_id):
-                await sendspin.remove_virtual_player(self._player_id)
+        try:
+            if self.mass.player_queues.has_media_presentation(
+                self.queue_id, self._media_presentation_owner
+            ):
+                await self.clear_playback()
+        finally:
+            if self._mode == SharedPlaybackMode.REMOTE:
+                sendspin = cast("SendspinProvider | None", self.mass.get_provider(SENDSPIN_DOMAIN))
+                if sendspin is not None and sendspin.is_virtual_player(self._player_id):
+                    await sendspin.remove_virtual_player(self._player_id)
+            elif self._guest_listeners and self._get_host_player() is not None:
+                await self.mass.players.cmd_set_members(
+                    self._player_id, player_ids_to_remove=list(self._guest_listeners)
+                )
             self._guest_listeners.clear()
-            return
-        if self._guest_listeners and self._get_host_player() is not None:
-            await self.mass.players.cmd_set_members(
-                self._player_id, player_ids_to_remove=list(self._guest_listeners)
-            )
-        self._guest_listeners.clear()
 
     def _get_host_player(self) -> Player | None:
         """Return the (available) player hosting this session, if any."""

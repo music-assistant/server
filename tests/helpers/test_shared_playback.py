@@ -244,6 +244,25 @@ async def test_venue_close_clears_owned_presentation_before_detach() -> None:
     )
 
 
+async def test_venue_close_detaches_listeners_when_playback_cleanup_fails() -> None:
+    """Closing still detaches listeners while propagating playback cleanup failure."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    mass = _create_mock_mass(venue_player)
+    mass.player_queues.has_media_presentation.return_value = True
+    mass.player_queues.stop.side_effect = RuntimeError("stop failed")
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+    await session.add_guest_listener("web_player_1")
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await session.close()
+
+    mass.player_queues.clear.assert_not_called()
+    mass.player_queues.clear_media_presentation.assert_not_called()
+    mass.players.cmd_set_members.assert_awaited_with(
+        "venue_player", player_ids_to_remove=["web_player_1"]
+    )
+
+
 async def test_venue_close_does_not_clear_different_presentation_owner() -> None:
     """Closing a non-owning venue session leaves another owner's playback untouched."""
     mass = _create_mock_mass(_create_venue_player())
