@@ -138,6 +138,8 @@ async def revoke_guest_access(mass: MusicAssistant, username: str) -> tuple[int,
 
 def _managed_player_filter(allowed_player_ids: Collection[str]) -> list[str]:
     """Return the restrictive player filter for a managed guest."""
+    if isinstance(allowed_player_ids, str):
+        raise InvalidDataError("allowed_player_ids must be a collection of player IDs")
     return [
         GUEST_ACCESS_RESTRICTED_PLAYER_ID,
         *sorted(

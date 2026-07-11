@@ -200,6 +200,21 @@ async def test_get_or_create_guest_user_ignores_filter_order() -> None:
     mass.webserver.disconnect_websockets_for_user.assert_not_called()
 
 
+async def test_get_or_create_guest_user_rejects_string_player_filter() -> None:
+    """A single string cannot be split into one allowed player ID per character."""
+    mass = _create_mock_mass()
+
+    with pytest.raises(InvalidDataError, match="collection of player IDs"):
+        await guest_access.get_or_create_guest_user(
+            mass,
+            "managed_guest",
+            "Managed Guest",
+            "player_id",
+        )
+
+    mass.webserver.auth.create_user.assert_not_awaited()
+
+
 async def test_get_or_create_join_code_reuses_active_code() -> None:
     """An active join code is reused instead of generating a new one."""
     mass = _create_mock_mass()
