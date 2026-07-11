@@ -289,3 +289,25 @@ async def test_authenticate_rejects_non_string_client_id(
 
     assert result == (None, None)
     wsock.close.assert_awaited_once_with(code=4001, message=b"Invalid client ID")
+
+
+@pytest.mark.parametrize(
+    ("data", "error"),
+    [
+        ("[]", b"Invalid auth message"),
+        ('{"type":"auth","token":{"invalid":true}}', b"Token required in auth message"),
+    ],
+)
+async def test_authenticate_rejects_invalid_payload_types(
+    handler: SendspinProxyHandler,
+    data: str,
+    error: bytes,
+) -> None:
+    """Proxy authentication rejects invalid JSON shapes and token types."""
+    wsock = AsyncMock(spec=web.WebSocketResponse)
+    wsock.receive.return_value = SimpleNamespace(type=WSMsgType.TEXT, data=data)
+
+    result = await handler._authenticate(wsock)
+
+    assert result == (None, None)
+    wsock.close.assert_awaited_once_with(code=4001, message=error)

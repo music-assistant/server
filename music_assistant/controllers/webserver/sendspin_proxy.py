@@ -170,14 +170,22 @@ class SendspinProxyHandler:
         except json.JSONDecodeError:
             await wsock.close(code=4001, message=b"Invalid JSON in auth message")
             return None, None
+        if not isinstance(auth_data, dict):
+            await wsock.close(code=4001, message=b"Invalid auth message")
+            return None, None
 
         if auth_data.get("type") != "auth":
             await wsock.close(code=4001, message=b"First message must be auth")
             return None, None
 
         token = auth_data.get("token")
-        if not token:
+        if not isinstance(token, str) or not token:
             await wsock.close(code=4001, message=b"Token required in auth message")
+            return None, None
+
+        client_id = auth_data.get("client_id")
+        if client_id is not None and not isinstance(client_id, str):
+            await wsock.close(code=4001, message=b"Invalid client ID")
             return None, None
 
         user = await self.webserver.auth.authenticate_with_token(token)
@@ -188,10 +196,6 @@ class SendspinProxyHandler:
         # Set the sendspin player_id on the user's websocket client(s)
         # This allows the player controller to auto-whitelist this (web)player
         # without modifying the user's player_filter list
-        client_id = auth_data.get("client_id")
-        if client_id is not None and not isinstance(client_id, str):
-            await wsock.close(code=4001, message=b"Invalid client ID")
-            return None, None
         if client_id:
             self.webserver.set_sendspin_player_for_user(user.user_id, client_id)
             self.logger.debug("Registered sendspin player %s for user %s", client_id, user.username)
