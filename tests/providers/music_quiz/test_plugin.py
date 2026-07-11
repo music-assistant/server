@@ -8,7 +8,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.enums import ConfigEntryType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
@@ -194,7 +194,7 @@ def _fake_game() -> MusicQuizGame:
 
 def _guest_user() -> SimpleNamespace:
     """Return a fake authenticated Music Quiz guest user."""
-    return SimpleNamespace(username=MUSIC_QUIZ_GUEST_USER)
+    return SimpleNamespace(username=MUSIC_QUIZ_GUEST_USER, role=UserRole.GUEST)
 
 
 def _phase(plugin: MusicQuizPlugin) -> MusicQuizPhase:
@@ -320,35 +320,48 @@ async def test_api_command_scopes_lock_out_guests_from_host_commands() -> None:
         assert registered[command] == Scope.PLAYERS_CONTROL
 
 
+@pytest.mark.parametrize(
+    "username",
+    [MUSIC_QUIZ_GUEST_USER, "party_guest", "temporary_guest"],
+)
 @pytest.mark.asyncio
-async def test_guest_commands_reject_non_guest_users() -> None:
-    """Guest game commands are only available to the Music Quiz guest user."""
+async def test_guest_commands_accept_any_dedicated_guest(username: str) -> None:
+    """Any authenticated guest role can use the active Music Quiz experience."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=SimpleNamespace(username=username, role=UserRole.GUEST),
+    ):
+        result = await plugin.join_game("Guest")
+
+    assert result["player_id"]
+
+
+@pytest.mark.parametrize(
+    "user",
+    [
+        None,
+        SimpleNamespace(username="user", role=UserRole.USER),
+        SimpleNamespace(username="admin", role=UserRole.ADMIN),
+        SimpleNamespace(username="service", role=UserRole.SERVICE),
+    ],
+)
+@pytest.mark.asyncio
+async def test_guest_commands_reject_non_guest_users(user: SimpleNamespace | None) -> None:
+    """Guest game commands reject unauthenticated and non-guest users."""
     plugin = _create_plugin()
     await plugin.create_game(source_uris=["library://playlist/1"])
 
     with (
         patch(
             "music_assistant.providers.music_quiz.get_current_user",
-            return_value=SimpleNamespace(username="admin"),
+            return_value=user,
         ),
         pytest.raises(InvalidDataError, match="guests"),
     ):
         await plugin.join_game("Mallory")
-
-    with (
-        patch("music_assistant.providers.music_quiz.get_current_user", return_value=None),
-        pytest.raises(InvalidDataError, match="guests"),
-    ):
-        await plugin.answer("some_player", "some_suggestion")
-
-    with (
-        patch(
-            "music_assistant.providers.music_quiz.get_current_user",
-            return_value=SimpleNamespace(username="admin"),
-        ),
-        pytest.raises(InvalidDataError, match="guests"),
-    ):
-        await plugin.heartbeat("some_player")
 
 
 @pytest.mark.asyncio
@@ -2182,7 +2195,7 @@ async def test_listen_in_joins_session_under_playback_lock() -> None:
     plugin._playback_session = session
     with patch(
         "music_assistant.providers.music_quiz.get_current_user",
-        return_value=SimpleNamespace(username=MUSIC_QUIZ_GUEST_USER),
+        return_value=SimpleNamespace(username=MUSIC_QUIZ_GUEST_USER, role=UserRole.GUEST),
     ):
         await plugin.listen_in("web-1")
     session.add_guest_listener.assert_awaited_once_with("web-1")
