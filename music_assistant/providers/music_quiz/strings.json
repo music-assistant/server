@@ -52,6 +52,8 @@
     "music_quiz_unknown_quiz_type": "This quiz type is not available.",
     "music_quiz_unknown_player": "This Music Quiz player is not in the game.",
     "music_quiz_unknown_suggestion": "This answer option is not available.",
-    "music_quiz_invalid_answer": "This answer is not valid for the current game."
+    "music_quiz_invalid_answer": "This answer is not valid for the current game.",
+    "music_quiz_ai_unavailable": "Music Trivia requires a configured and available AI provider.",
+    "music_quiz_not_enough_trivia_questions": "The selected sources do not contain enough unique metadata to prepare every Music Trivia round."
   }
 }

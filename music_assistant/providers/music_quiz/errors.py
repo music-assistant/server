@@ -100,3 +100,11 @@ class MusicQuizInvalidAnswerError(InvalidDataError):
     error_code = 1011
     translation_key = "music_quiz_invalid_answer"
     translation_owner = TRANSLATION_OWNER
+
+
+class MusicQuizAIUnavailableError(InvalidDataError):
+    """Raised when no usable AI provider is available for Music Trivia."""
+
+    error_code = 1012
+    translation_key = "music_quiz_ai_unavailable"
+    translation_owner = TRANSLATION_OWNER

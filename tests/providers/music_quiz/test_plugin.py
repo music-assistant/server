@@ -12,6 +12,7 @@ from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.enums import ConfigEntryType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz import (
     MUSIC_QUIZ_GUEST_USER,
     PLAYER_RECONNECT_GRACE_SECONDS,
@@ -20,9 +21,11 @@ from music_assistant.providers.music_quiz import (
 )
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
 from music_assistant.providers.music_quiz.errors import (
+    MusicQuizAIUnavailableError,
     MusicQuizGameActiveError,
     MusicQuizInvalidAnswerError,
     MusicQuizNoGameError,
+    MusicQuizNoPlaybackTargetError,
     MusicQuizUnknownPlayerError,
 )
 from music_assistant.providers.music_quiz.models import (
@@ -45,6 +48,7 @@ from music_assistant.providers.music_quiz.models import (
 INSTANCE_ID = "music_quiz--test"
 
 HOST_COMMANDS = (
+    "music_quiz/available_quiz_types",
     "music_quiz/create",
     "music_quiz/get",
     "music_quiz/start",
@@ -145,6 +149,30 @@ def _make_hitster_round(
     )
 
 
+def _make_trivia_round(round_index: int, suggestion_count: int = 4) -> MusicQuizRound:
+    """Return a deterministic non-audio Music Trivia round."""
+    suggestions = [
+        MultipleChoiceSuggestion(
+            suggestion_id=f"trivia-correct-{round_index}",
+            label=f"Correct Fact {round_index}",
+            is_correct=True,
+        ),
+        *[
+            MultipleChoiceSuggestion(
+                suggestion_id=f"trivia-wrong-{round_index}-{index}",
+                label=f"Wrong Fact {round_index}.{index}",
+            )
+            for index in range(1, suggestion_count)
+        ],
+    ]
+    return MusicQuizRound(
+        round_index=round_index,
+        question=f"Which answer matches Subject {round_index}?",
+        answer_label=f"Correct Fact {round_index}",
+        answer_state=MultipleChoiceRoundState(suggestions=suggestions),
+    )
+
+
 def _create_plugin(
     mode: str = "venue",
     player: str | None = "venue_player",
@@ -189,7 +217,13 @@ def _create_plugin(
 
 def _fake_game() -> MusicQuizGame:
     """Return a minimal active-game stub for playback-session tests."""
-    return cast("MusicQuizGame", SimpleNamespace(config=SimpleNamespace(name=None)))
+    return cast(
+        "MusicQuizGame",
+        SimpleNamespace(
+            config=SimpleNamespace(name=None),
+            quiz_type="guess_the_song",
+        ),
+    )
 
 
 def _guest_user() -> SimpleNamespace:
@@ -234,6 +268,23 @@ def _timeline_answer_state(game_round: MusicQuizRound) -> TimelineRoundState:
     """Return timeline state from a test round."""
     assert isinstance(game_round.answer_state, TimelineRoundState)
     return game_round.answer_state
+
+
+async def _assert_trivia_hidden_state(plugin: MusicQuizPlugin) -> None:
+    """Assert host and public Trivia state use the expected redaction boundary."""
+    signal = cast("MagicMock", plugin.signal_provider_event)
+    public_state = signal.call_args[0][0]["state"]
+    assert public_state["supports_listen_in"] is False
+    assert public_state["current_round"]["question"] == "Which answer matches Subject 0?"
+    assert "correct_suggestion_id" not in public_state["current_round"]
+    assert "answer_label" not in public_state["current_round"]
+    assert "track_uri" not in public_state["current_round"]
+    assert "is_correct" not in str(public_state)
+
+    host_state = await plugin.get_game()
+    assert host_state is not None
+    assert host_state["rounds"][0]["answer_label"] == "Correct Fact 0"
+    assert "track_uri" not in host_state["rounds"][0]
 
 
 async def _create_started_game(
@@ -320,6 +371,64 @@ async def test_api_command_scopes_lock_out_guests_from_host_commands() -> None:
         assert registered[command] == Scope.PLAYERS_CONTROL
 
 
+@pytest.mark.asyncio
+async def test_available_quiz_types_tracks_ai_provider_availability() -> None:
+    """Advertise Music Trivia only while a usable AI provider is loaded."""
+    plugin = _create_plugin()
+    cast("MagicMock", plugin.mass).get_providers_supporting_feature.return_value = []
+
+    unavailable = await plugin.available_quiz_types()
+
+    assert unavailable == [
+        {
+            "quiz_type": "guess_the_song",
+            "answer_type": "multiple_choice",
+            "uses_playback": True,
+            "supports_listen_in": True,
+        },
+        {
+            "quiz_type": "hitster",
+            "answer_type": "timeline",
+            "uses_playback": True,
+            "supports_listen_in": True,
+        },
+    ]
+
+    ai_provider = MagicMock(spec=PluginProvider)
+    cast("MagicMock", plugin.mass).get_providers_supporting_feature.return_value = [ai_provider]
+    available = await plugin.available_quiz_types()
+    assert available[-1] == {
+        "quiz_type": "trivia",
+        "answer_type": "multiple_choice",
+        "uses_playback": False,
+        "supports_listen_in": False,
+    }
+
+    cast("MagicMock", plugin.mass).get_providers_supporting_feature.return_value = []
+    assert all(item["quiz_type"] != "trivia" for item in await plugin.available_quiz_types())
+
+
+@pytest.mark.asyncio
+async def test_trivia_create_rejects_unavailable_ai_without_replacing_game() -> None:
+    """Reject direct Trivia creation transactionally when AI becomes unavailable."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+    plugin._cancel_next_round_task()
+    existing_game = plugin._game
+    assert existing_game is not None
+    existing_game.phase = MusicQuizPhase.FINISHED
+    cast("MagicMock", plugin.mass).get_providers_supporting_feature.return_value = []
+
+    with pytest.raises(MusicQuizAIUnavailableError) as err:
+        await plugin.create_game(
+            quiz_type="trivia",
+            source_uris=["library://playlist/1"],
+        )
+
+    assert err.value.translation_key == "music_quiz_ai_unavailable"
+    assert plugin._game is existing_game
+
+
 @pytest.mark.parametrize(
     "username",
     [MUSIC_QUIZ_GUEST_USER, "party_guest", "temporary_guest"],
@@ -403,6 +512,88 @@ async def test_full_game_flow() -> None:
     assert _phase(plugin) == MusicQuizPhase.FINISHED
     assert game.players[player_ids["Bob"]].score == 1000
     cast("AsyncMock", plugin._stop_playback).assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trivia_reuses_multiple_choice_lifecycle_without_audio() -> None:
+    """Use common answer timing, redaction, reset and late-join behavior without playback."""
+    plugin = _create_plugin()
+    plugin._warm_up_lyrics = MagicMock()  # type: ignore[method-assign]
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.TriviaQuizType.is_available",
+            return_value=True,
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.TriviaQuizType.initialize",
+            new=AsyncMock(),
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.TriviaQuizType.prepare_round",
+            new=AsyncMock(
+                side_effect=lambda round_index, _previous: _make_trivia_round(round_index)
+            ),
+        ),
+    ):
+        created = await plugin.create_game(
+            quiz_type="trivia",
+            round_count=1,
+            source_uris=["library://playlist/1"],
+        )
+        with patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ):
+            alice = await plugin.join_game("Alice")
+            bob = await plugin.join_game("Bob")
+        await plugin.start_game()
+        _, deadline_callback, round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
+
+        game = plugin._game
+        assert game is not None
+        assert created["quiz_type"] == "trivia"
+        assert created["answer_type"] == "multiple_choice"
+        assert created["supports_listen_in"] is False
+        assert _phase(plugin) is MusicQuizPhase.ANSWERING
+        cast("AsyncMock", plugin._play_track).assert_not_awaited()
+        plugin._warm_up_lyrics.assert_not_called()
+
+        await _assert_trivia_hidden_state(plugin)
+        signal = cast("MagicMock", plugin.signal_provider_event)
+
+        with patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ):
+            personal = await plugin.answer(alice["player_id"], "trivia-correct-0")
+            late = await plugin.join_game("Late")
+            assert late["state"]["you"]["active_from_round"] == 1
+            assert personal["phase"] == "answering"
+            assert set(personal["you"]["answer"]) == {"suggestion_id", "answered_at"}
+            assert await plugin.can_listen_in("web-player") is False
+            with pytest.raises(MusicQuizNoPlaybackTargetError):
+                await plugin.listen_in("web-player")
+
+        await deadline_callback(round_index)
+        assert _phase(plugin) is MusicQuizPhase.REVEAL
+        revealed_state = signal.call_args[0][0]["state"]
+        assert revealed_state["current_round"]["correct_suggestion_id"] == "trivia-correct-0"
+        assert revealed_state["current_round"]["answer_label"] == "Correct Fact 0"
+        assert "track_uri" not in revealed_state["current_round"]
+
+        await plugin.reset()
+        assert _phase(plugin) is MusicQuizPhase.LOBBY
+        assert game.rounds == []
+        await plugin.start_game()
+        with patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ):
+            await plugin.answer(alice["player_id"], "trivia-correct-0")
+            await plugin.answer(bob["player_id"], "trivia-wrong-0-1")
+            assert _phase(plugin) is MusicQuizPhase.ANSWERING
+            await plugin.answer(late["player_id"], "trivia-wrong-0-2")
+        assert _phase(plugin) is MusicQuizPhase.REVEAL
 
 
 @pytest.mark.asyncio
@@ -1108,6 +1299,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "quiz_type",
         "answer_type",
         "mode",
+        "supports_listen_in",
         "round_count",
         "suggestion_count",
         "answer_duration",
@@ -1215,6 +1407,7 @@ async def test_game_info_exposes_game_identity_and_playback_mode() -> None:
         "answer_type": "multiple_choice",
         "phase": "lobby",
         "mode": "remote",
+        "supports_listen_in": True,
         "player_count": 0,
         "round_count": 5,
     }
@@ -2081,7 +2274,7 @@ async def test_config_validation() -> None:
     with pytest.raises(InvalidDataError, match="duration"):
         await plugin.create_game(answer_duration=0, source_uris=["library://playlist/1"])
     with pytest.raises(InvalidDataError, match="quiz type"):
-        await plugin.create_game(quiz_type="trivia", source_uris=["library://playlist/1"])
+        await plugin.create_game(quiz_type="unknown", source_uris=["library://playlist/1"])
 
 
 @pytest.mark.asyncio

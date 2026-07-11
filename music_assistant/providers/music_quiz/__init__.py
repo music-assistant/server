@@ -4,10 +4,11 @@ Music Quiz Plugin Provider for Music Assistant.
 Provides the backend game engine for multiplayer music quiz games. Guests
 join with a QR code on their own device and play the selected quiz type:
 guess-the-song uses multiple-choice answers, while Hitster uses a shared
-chronological timeline with optional artist and title bonuses.
+chronological timeline with optional artist and title bonuses. Music Trivia
+uses AI-authored multiple-choice questions grounded in selected source metadata.
 
-Playback is hosted by a SharedPlaybackSession in one of two modes
-(provider config):
+Audio quiz types are hosted by a SharedPlaybackSession in one of two modes
+(provider config); Music Trivia does not use playback:
 
 - venue: a configured real player plays the rounds out loud; guests may
   optionally listen in on their own device when the player supports grouping.
@@ -24,16 +25,17 @@ contract (all payloads are JSON objects)::
 The public game state is guest-safe by construction. Common state contains:
 
 - always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``quiz_type``,
-  ``answer_type``, ``mode`` (venue/remote), ``round_count``, ``answer_duration``
-  and public player progress. Private player IDs never appear in broadcasts.
+  ``answer_type``, ``mode`` (venue/remote), ``supports_listen_in``, ``round_count``,
+  ``answer_duration`` and public player progress. Private player IDs never appear
+  in broadcasts.
 - answering rounds expose common timing and question fields plus a strategy
   fragment. Multiple-choice exposes opaque ``suggestions``. Timeline exposes
   the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
   current song, year, correct placement and bonus answers remain protected.
-- reveal/finished rounds additionally expose common ``answer_label``,
-  ``track_uri``, ``image_url``, ``duration`` and ``ended_at`` fields. The
-  answer strategy adds the revealed correct option or timeline entry and
-  answer-specific player results.
+- reveal/finished rounds additionally expose common ``answer_label`` and
+  ``ended_at`` fields, plus audio metadata when present. The answer strategy
+  adds the revealed correct option or timeline entry and answer-specific
+  player results.
 
 Guests authenticate through the standard guest access flow (join code in
 the join URL) and register themselves as quiz player via ``music_quiz/join``,
@@ -113,7 +115,7 @@ from music_assistant.providers.music_quiz.models import (
     MusicQuizSource,
     TimelineBonusMode,
 )
-from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
+from music_assistant.providers.music_quiz.quiz_types import QUIZ_TYPES, get_quiz_type
 from music_assistant.providers.music_quiz.quiz_types.base import QuizType
 
 if TYPE_CHECKING:
@@ -229,6 +231,7 @@ class MusicQuizPlugin(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         host_commands: tuple[tuple[str, _ApiHandler], ...] = (
+            ("music_quiz/available_quiz_types", self.available_quiz_types),
             ("music_quiz/create", self.create_game),
             ("music_quiz/get", self.get_game),
             ("music_quiz/start", self.start_game),
@@ -291,6 +294,19 @@ class MusicQuizPlugin(PluginProvider):
 
     # ==================== Host API Commands ====================
 
+    async def available_quiz_types(self) -> list[dict[str, str | bool]]:
+        """Return the quiz types that can currently create a game."""
+        return [
+            {
+                "quiz_type": quiz_type,
+                "answer_type": quiz_type_class.answer_type.value,
+                "uses_playback": quiz_type_class.uses_playback,
+                "supports_listen_in": quiz_type_class.supports_listen_in,
+            }
+            for quiz_type, quiz_type_class in QUIZ_TYPES.items()
+            if quiz_type_class.is_available(self.mass)
+        ]
+
     async def create_game(
         self,
         quiz_type: str = "guess_the_song",
@@ -317,6 +333,7 @@ class MusicQuizPlugin(PluginProvider):
         :param title_bonus_mode: Hitster title bonus mode.
         """
         quiz_type_class = get_quiz_type(quiz_type)
+        quiz_type_class.ensure_available(self.mass)
         get_answer_type(quiz_type_class.answer_type)
         try:
             parsed_artist_bonus_mode = TimelineBonusMode(artist_bonus_mode)
@@ -450,6 +467,7 @@ class MusicQuizPlugin(PluginProvider):
                 "answer_type": game.answer_type.value,
                 "phase": game.phase.value,
                 "mode": self._mode,
+                "supports_listen_in": get_quiz_type(game.quiz_type).supports_listen_in,
                 "player_count": len(game.players),
                 "round_count": game.config.round_count,
             }
@@ -594,7 +612,9 @@ class MusicQuizPlugin(PluginProvider):
         # hold the playback lock across resolving and joining the session so a
         # guest can never be attached to a session that is being torn down
         async with self._playback_lock:
-            self._require_game()
+            game = self._require_game()
+            if not get_quiz_type(game.quiz_type).supports_listen_in:
+                raise MusicQuizNoPlaybackTargetError("Listen-in is not available for this game")
             session = await self._get_or_create_session_locked()
             if session is None:
                 raise MusicQuizNoPlaybackTargetError("Listen-in is not available for this game")
@@ -619,6 +639,10 @@ class MusicQuizPlugin(PluginProvider):
         """
         self._validate_guest_access()
         async with self._playback_lock:
+            if self._game is None:
+                return False
+            if not get_quiz_type(self._game.quiz_type).supports_listen_in:
+                return False
             session = await self._get_or_create_session_locked()
             return session is not None and session.can_listen_in(web_player_id)
 
@@ -982,7 +1006,7 @@ class MusicQuizPlugin(PluginProvider):
         # a session only makes sense while a game is active; without one, never
         # (re)create it - this also stops a guest listen-in that races with game
         # teardown from leaking a fresh session / virtual player
-        if self._game is None:
+        if self._game is None or not get_quiz_type(self._game.quiz_type).uses_playback:
             return None
         # drop a stale session whose player no longer exists
         if self._playback_session is not None and (
@@ -1157,17 +1181,21 @@ def _host_round(
     answer_type: QuizAnswerType,
 ) -> dict[str, SerializableType]:
     """Return the host-visible flat representation of a round."""
-    return {
+    state: dict[str, SerializableType] = {
         "round_index": game_round.round_index,
         "answer_label": game_round.answer_label,
         **answer_type.serialize_host_round(game_round.answer_state),
-        "track_uri": game_round.track_uri,
         "question": game_round.question,
-        "image_url": game_round.image_url,
-        "duration": game_round.duration,
         "started_at": game_round.started_at,
         "ended_at": game_round.ended_at,
     }
+    if game_round.track_uri is not None:
+        state["track_uri"] = game_round.track_uri
+    if game_round.image_url is not None:
+        state["image_url"] = game_round.image_url
+    if game_round.duration is not None:
+        state["duration"] = game_round.duration
+    return state
 
 
 def _public_state(game: MusicQuizGame, mode: str, answer_type: QuizAnswerType) -> dict[str, Any]:
@@ -1197,6 +1225,7 @@ def _public_state(game: MusicQuizGame, mode: str, answer_type: QuizAnswerType) -
         "quiz_type": game.quiz_type,
         "answer_type": game.answer_type.value,
         "mode": mode,
+        "supports_listen_in": get_quiz_type(game.quiz_type).supports_listen_in,
         "round_count": game.config.round_count,
         "answer_duration": game.config.answer_duration,
         **answer_type.serialize_game_config(game),
@@ -1229,9 +1258,12 @@ def _public_round(
     }
     if revealed:
         state["answer_label"] = game_round.answer_label
-        state["track_uri"] = game_round.track_uri
-        state["image_url"] = game_round.image_url
-        state["duration"] = game_round.duration
+        if game_round.track_uri is not None:
+            state["track_uri"] = game_round.track_uri
+        if game_round.image_url is not None:
+            state["image_url"] = game_round.image_url
+        if game_round.duration is not None:
+            state["duration"] = game_round.duration
         state["ended_at"] = game_round.ended_at
     return state
 

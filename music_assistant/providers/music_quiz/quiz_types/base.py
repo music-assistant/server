@@ -7,8 +7,9 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Album, ItemMapping, Playlist, Track
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
@@ -21,6 +22,7 @@ LOGGER = logging.getLogger(__name__)
 MAX_ROUND_COUNT = 100
 MAX_ANSWER_DURATION = 300
 MAX_SOURCE_COUNT = 200
+MIN_RELEASE_YEAR = 1000
 
 
 class QuizType(ABC):
@@ -33,6 +35,8 @@ class QuizType(ABC):
 
     answer_type: ClassVar[MusicQuizAnswerType]
     warm_up_lyrics: ClassVar[bool] = False
+    uses_playback: ClassVar[bool] = True
+    supports_listen_in: ClassVar[bool] = True
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
         """
@@ -44,6 +48,25 @@ class QuizType(ABC):
         self.mass = mass
         self.config = config
         self._source_track_pool: dict[str, Track] | None = None
+        self._source_playlist_names: dict[str, set[str]] = {}
+
+    @classmethod
+    def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003
+        """
+        Return whether this quiz type can currently create a game.
+
+        :param mass: Music Assistant instance.
+        """
+        return True
+
+    @classmethod
+    def ensure_available(cls, mass: MusicAssistant) -> None:  # noqa: ARG003
+        """
+        Raise when this quiz type cannot currently create a game.
+
+        :param mass: Music Assistant instance.
+        """
+        return
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -134,6 +157,10 @@ class QuizType(ABC):
                     ):
                         if isinstance(track, Track) and track.uri:
                             pool[track.uri] = track
+                            if media_item.name:
+                                self._source_playlist_names.setdefault(track.uri, set()).add(
+                                    media_item.name
+                                )
             except Exception as err:
                 LOGGER.warning("Could not load Music Quiz source %s: %s", source_uri, err)
         if not pool:
@@ -144,3 +171,26 @@ class QuizType(ABC):
             )
         self._source_track_pool = pool
         return pool
+
+    async def _get_source_playlist_names(self) -> dict[str, set[str]]:
+        """Return configured playlist names keyed by their source track URI."""
+        await self._get_source_track_pool()
+        return self._source_playlist_names
+
+
+def get_track_release_year(track: Track) -> int | None:
+    """
+    Return a reliable release year from a track's available metadata.
+
+    :param track: Track whose release year should be resolved.
+    """
+    album = track.album
+    year = album.year if isinstance(album, Album | ItemMapping) else None
+    current_year = utc().year
+    if year is not None and MIN_RELEASE_YEAR <= year <= current_year:
+        return year
+    if track.metadata.release_date is not None:
+        year = track.metadata.release_date.year
+        if MIN_RELEASE_YEAR <= year <= current_year:
+            return year
+    return None
