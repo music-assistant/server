@@ -14,7 +14,9 @@ but it can also be something else, hence the loose coupling.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import random
+import secrets
 import time
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -74,7 +76,7 @@ from music_assistant.controllers.player_queues.media_resolver import MediaResolv
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
-from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.player_queues.state import PlayerQueueData, QueueMediaPresentation
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -242,6 +244,109 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     def queue_data_or_none(self, queue_id: str) -> PlayerQueueData | None:
         """Return the server-side record for a queue, or None if it is not registered."""
         return self._queue_data.get(queue_id)
+
+    def set_media_presentation(self, queue_id: str, owner_token: object, title: str) -> None:
+        """
+        Conceal media identity exposed by a queue for the given owner.
+
+        :param queue_id: Queue whose media presentation should be concealed.
+        :param owner_token: Opaque token that exclusively owns the presentation lease.
+        :param title: Neutral title to expose while the lease is active.
+        """
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        if (
+            presentation := queue_data.media_presentation
+        ) is not None and presentation.owner_token is not owner_token:
+            raise InvalidCommand(f"Queue {queue_id} already has an active media presentation")
+        queue_data.media_presentation = QueueMediaPresentation(
+            owner_token=owner_token,
+            title=title,
+            identity_key=secrets.token_bytes(32),
+        )
+        self._refresh_media_presentation_player(queue_id)
+
+    def clear_media_presentation(self, queue_id: str, owner_token: object) -> bool:
+        """
+        Release this owner's media presentation lease.
+
+        :param queue_id: Queue whose presentation lease should be released.
+        :param owner_token: Opaque token that owns the presentation lease.
+        :return: True when the matching lease was released.
+        """
+        if (
+            (queue_data := self._queue_data.get(queue_id)) is None
+            or (presentation := queue_data.media_presentation) is None
+            or presentation.owner_token is not owner_token
+        ):
+            return False
+        queue_data.media_presentation = None
+        self._refresh_media_presentation_player(queue_id)
+        return True
+
+    def has_media_presentation(self, queue_id: str, owner_token: object) -> bool:
+        """
+        Return whether this owner holds the queue's media presentation lease.
+
+        :param queue_id: Queue to inspect.
+        :param owner_token: Opaque token expected to own the lease.
+        """
+        return (
+            (queue_data := self._queue_data.get(queue_id)) is not None
+            and (presentation := queue_data.media_presentation) is not None
+            and presentation.owner_token is owner_token
+        )
+
+    def apply_media_presentation(
+        self, queue_id: str, media: PlayerMedia, *, preserve_playback_data: bool = False
+    ) -> PlayerMedia:
+        """
+        Return media projected through the queue's active presentation lease.
+
+        :param queue_id: Queue whose presentation should be applied.
+        :param media: Source media to project.
+        :param preserve_playback_data: Preserve fields required to load media on a device.
+        """
+        queue_data = self._queue_data.get(queue_id)
+        presentation = queue_data.media_presentation if queue_data is not None else None
+        if presentation is None:
+            return PlayerMedia(
+                uri=media.uri,
+                media_type=media.media_type,
+                title=media.title,
+                artist=media.artist,
+                album=media.album,
+                album_artist=media.album_artist,
+                image_url=media.image_url,
+                palette=media.palette,
+                duration=media.duration,
+                source_id=media.source_id,
+                queue_item_id=media.queue_item_id,
+                custom_data=dict(media.custom_data) if media.custom_data is not None else None,
+                elapsed_time=media.elapsed_time,
+                elapsed_time_last_updated=media.elapsed_time_last_updated,
+            )
+        if preserve_playback_data:
+            return PlayerMedia(
+                uri=media.uri,
+                media_type=media.media_type,
+                title=presentation.title,
+                duration=media.duration,
+                source_id=media.source_id,
+                queue_item_id=media.queue_item_id,
+                custom_data=dict(media.custom_data) if media.custom_data is not None else None,
+                elapsed_time=media.elapsed_time,
+                elapsed_time_last_updated=media.elapsed_time_last_updated,
+            )
+        identity = f"{media.queue_item_id or ''}\0{media.uri}".encode()
+        opaque_uri = f"media-presentation://{hmac.digest(presentation.identity_key, identity, 'sha256').hex()}"
+        return PlayerMedia(
+            uri=opaque_uri,
+            media_type=MediaType.UNKNOWN,
+            title=presentation.title,
+            elapsed_time=media.elapsed_time,
+            elapsed_time_last_updated=media.elapsed_time_last_updated,
+        )
 
     @api_command("player_queues/items", required_scope=Scope.QUEUES_READ)
     def items_for_api(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
@@ -1556,6 +1661,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 "original_uri": queue_item.uri,
             },
         )
+        if queue_data.media_presentation is not None:
+            return self.apply_media_presentation(
+                queue_item.queue_id, media, preserve_playback_data=True
+            )
         if queue_item.media_item:
             media.title = queue_item.media_item.name
             media.artist = getattr(queue_item.media_item, "artist_str", "")
@@ -1716,3 +1825,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
+
+    def _refresh_media_presentation_player(self, queue_id: str) -> None:
+        """Refresh the queue owner after its media presentation changes."""
+        if queue_player := self.mass.players.get_player(queue_id):
+            parent_player_id = queue_player.state.active_group or queue_player.state.synced_to
+            if parent_player_id and (
+                parent_player := self.mass.players.get_player(parent_player_id)
+            ):
+                parent_player.refresh_state()
+                return
+            queue_player.refresh_state()

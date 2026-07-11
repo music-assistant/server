@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import ConfigEntryType, PlaybackState
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, QueueOption
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.music_quiz import (
@@ -2220,6 +2220,162 @@ async def test_listen_in_joins_session_under_playback_lock() -> None:
     session.add_guest_listener.assert_awaited_once_with("web-1")
 
 
+@pytest.mark.parametrize(
+    ("quiz_type", "game_name"),
+    [
+        ("guess_the_song", "Song Quiz"),
+        ("hitster", "Timeline Quiz"),
+    ],
+)
+@pytest.mark.parametrize("mode", ["venue", "remote"])
+async def test_play_track_conceals_before_loading_for_every_quiz_mode(
+    quiz_type: str,
+    game_name: str,
+    mode: str,
+) -> None:
+    """Both quiz types and playback modes conceal media before loading audio."""
+    plugin = _create_plugin(mode=mode)
+    plugin._game = cast(
+        "MusicQuizGame",
+        SimpleNamespace(
+            config=SimpleNamespace(name=game_name),
+            quiz_type=quiz_type,
+        ),
+    )
+    session = MagicMock()
+    session.player_id = "quiz-player"
+    session.queue_id = "quiz-player"
+    session.clear_playback = AsyncMock()
+    session.close = AsyncMock()
+    plugin._playback_session = session
+    cast("MagicMock", plugin.mass).players.get_player.return_value = MagicMock()
+
+    async def _assert_concealed(*_args: Any, **_kwargs: Any) -> None:
+        session.set_media_presentation.assert_called_once_with(game_name)
+        assert plugin._playback_lock.locked()
+
+    play_media = AsyncMock(side_effect=_assert_concealed)
+    plugin.mass.player_queues.play_media = play_media  # type: ignore[method-assign]
+
+    await MusicQuizPlugin._play_track(plugin, "library://track/secret")
+
+    play_media.assert_awaited_once_with(
+        "quiz-player",
+        "library://track/secret",
+        option=QueueOption.REPLACE,
+    )
+
+
+@pytest.mark.parametrize("error", [RuntimeError("play failed"), asyncio.CancelledError()])
+async def test_failed_or_cancelled_play_cleans_up_while_concealed(
+    error: BaseException,
+) -> None:
+    """Failed playback clears and closes the session before propagating the failure."""
+    plugin = _create_plugin()
+    plugin._game = _fake_game()
+    session = MagicMock()
+    session.player_id = "quiz-player"
+    session.queue_id = "quiz-player"
+    session.clear_playback = AsyncMock()
+    session.close = AsyncMock()
+    plugin._playback_session = session
+    cast("MagicMock", plugin.mass).players.get_player.return_value = MagicMock()
+    play_media = AsyncMock(side_effect=error)
+    plugin.mass.player_queues.play_media = play_media  # type: ignore[method-assign]
+
+    with pytest.raises(
+        type(error), match="play failed" if isinstance(error, RuntimeError) else None
+    ):
+        await MusicQuizPlugin._play_track(plugin, "library://track/secret")
+
+    session.set_media_presentation.assert_called_once_with("Music Quiz")
+    session.clear_playback.assert_awaited_once()
+    session.close.assert_awaited_once()
+    assert plugin._playback_session is None
+
+
+@pytest.mark.parametrize("quiz_type", ["guess_the_song", "hitster"])
+async def test_reveal_publishes_scored_state_before_exposing_media(quiz_type: str) -> None:
+    """Reveal commits and broadcasts public answer state before clearing presentation."""
+    plugin = _create_plugin()
+    if quiz_type == "hitster":
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.quiz_types.hitster."
+                "HitsterQuizType.initialize",
+                new=AsyncMock(),
+            ),
+            patch(
+                "music_assistant.providers.music_quiz.quiz_types.hitster."
+                "HitsterQuizType.prepare_round",
+                new=AsyncMock(
+                    side_effect=lambda round_index, previous: _make_hitster_round(
+                        round_index, previous
+                    )
+                ),
+            ),
+        ):
+            await _create_started_hitster_game(plugin)
+    else:
+        await _create_started_game(plugin, player_names=("Alice",))
+    game = plugin._game
+    assert game is not None
+    order: list[str] = []
+    session = MagicMock()
+
+    def _expose_media() -> bool:
+        order.append("media")
+        return True
+
+    session.clear_media_presentation.side_effect = _expose_media
+    plugin._playback_session = session
+
+    def _record_public_state(payload: dict[str, Any]) -> None:
+        assert game.phase == MusicQuizPhase.REVEAL
+        assert payload["state"]["phase"] == MusicQuizPhase.REVEAL.value
+        assert payload["state"]["players"][0]["score"] == next(iter(game.players.values())).score
+        order.append("state")
+
+    plugin.signal_provider_event = MagicMock(side_effect=_record_public_state)  # type: ignore[method-assign, misc]
+
+    plugin._do_reveal()
+
+    assert order == ["state", "media"]
+
+
+async def test_stop_playback_clears_session_under_lifecycle_lock() -> None:
+    """Quiz cleanup delegates to fail-safe queue clearing while holding the session lock."""
+    plugin = _create_plugin()
+    session = MagicMock()
+
+    async def _assert_locked() -> None:
+        assert plugin._playback_lock.locked()
+
+    session.clear_playback = AsyncMock(side_effect=_assert_locked)
+    plugin._playback_session = session
+
+    await MusicQuizPlugin._stop_playback(plugin)
+
+    session.clear_playback.assert_awaited_once()
+
+
+async def test_prefetch_never_publishes_player_or_queue_metadata() -> None:
+    """Preparing the next round remains memory-only."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+    signal = cast("MagicMock", plugin.signal_provider_event)
+    player_queues = cast("MagicMock", plugin.mass.player_queues)
+    signal.reset_mock()
+    player_queues.play_media.reset_mock()
+
+    task = plugin._next_round_task
+    assert task is not None
+    await task
+
+    signal.assert_not_called()
+    player_queues.play_media.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_unload_cleans_up() -> None:
     """Unload unregisters commands, closes the session and revokes guest access."""
@@ -2239,6 +2395,7 @@ async def test_unload_cleans_up() -> None:
         await plugin.unload(is_removed=True)
 
     unregister.assert_called_once()
+    cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
     session.close.assert_awaited_once()
     assert plugin._game is None
     cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._presence_timer_id)

@@ -904,11 +904,15 @@ class SendspinPlayer(SendspinBasePlayer):
 
         return artwork_url
 
-    async def _send_artist_artwork(self, current_item: QueueItem) -> None:
+    async def _send_artist_artwork(self, current_item: QueueItem | None) -> None:
         """Send artist artwork to the sendspin group."""
         artist_artwork_url: str | None = None
 
-        if current_item.media_item is not None and is_track(current_item.media_item):
+        if (
+            current_item is not None
+            and current_item.media_item is not None
+            and is_track(current_item.media_item)
+        ):
             artists = current_item.media_item.artists
             if artists:
                 primary_artist = artists[0]
@@ -1062,8 +1066,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
         # Runs even without a queue item so radio / Spotify Connect streams still get art.
         await self._send_album_artwork(current_media)
-        if queue_item:
-            await self._send_artist_artwork(queue_item)
+        await self._send_artist_artwork(queue_item)
 
         track_number: int | None = None
         year: int | None = None
@@ -1085,7 +1088,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 if full_album and full_album.artists:
                     album_artist = full_album.artist_str
 
-        track_duration = current_media.duration or 0
+        track_duration = current_media.duration
         if controller_role := self._controller_role:
             controller_role.set_seek_max_ms(int(track_duration * 1000) if track_duration else None)
         repeat = SendspinRepeatMode.OFF
@@ -1106,7 +1109,7 @@ class SendspinPlayer(SendspinBasePlayer):
             artwork_url=current_media.image_url,
             year=year,
             track=track_number,
-            track_duration=track_duration * 1000 if track_duration is not None else None,
+            track_duration=track_duration * 1000 if track_duration else None,
             track_progress=track_progress,
             playback_speed=1000 if is_playing else 0,
             repeat=repeat,

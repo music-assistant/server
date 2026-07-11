@@ -2356,7 +2356,7 @@ class Player(ABC):
             ):
                 # handle stream metadata in streamdetails (e.g. for radio stream)
                 image_url = stream_metadata.image_url or item_image_url
-                return PlayerMedia(
+                media = PlayerMedia(
                     uri=current_item.uri,
                     media_type=current_item.media_type,
                     title=stream_metadata.title or current_item.name,
@@ -2371,7 +2371,7 @@ class Player(ABC):
                     elapsed_time_last_updated=stream_metadata.elapsed_time_last_updated
                     or active_queue.elapsed_time_last_updated,
                 )
-            if media_item := current_item.media_item:
+            elif media_item := current_item.media_item:
                 # normal media item
                 # we use getattr here to avoid issues with different media item types
                 version = getattr(media_item, "version", None)
@@ -2388,7 +2388,7 @@ class Player(ABC):
                     if current_item.media_item.image
                     else item_image_url
                 )
-                return PlayerMedia(
+                media = PlayerMedia(
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
                     title=f"{media_item.name} ({version})" if version else media_item.name,
@@ -2403,20 +2403,21 @@ class Player(ABC):
                     elapsed_time=int(active_queue.elapsed_time),
                     elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
                 )
-
-            # fallback to basic current item details
-            return PlayerMedia(
-                uri=current_item.uri,
-                media_type=current_item.media_type,
-                title=current_item.name,
-                image_url=item_image_url,
-                palette=self._resolved_palette(item_image_url),
-                duration=current_item.duration,
-                source_id=active_queue.queue_id,
-                queue_item_id=current_item.queue_item_id,
-                elapsed_time=int(active_queue.elapsed_time),
-                elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
-            )
+            else:
+                # fallback to basic current item details
+                media = PlayerMedia(
+                    uri=current_item.uri,
+                    media_type=current_item.media_type,
+                    title=current_item.name,
+                    image_url=item_image_url,
+                    palette=self._resolved_palette(item_image_url),
+                    duration=current_item.duration,
+                    source_id=active_queue.queue_id,
+                    queue_item_id=current_item.queue_item_id,
+                    elapsed_time=int(active_queue.elapsed_time),
+                    elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
+                )
+            return self.mass.player_queues.apply_media_presentation(active_queue.queue_id, media)
         if active_queue:
             # queue is active but no current item
             return None
