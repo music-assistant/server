@@ -74,7 +74,10 @@ class _HomeAssistantClient:
         self.connected = False
         self.disconnected = False
         self.listener_started = asyncio.Event()
+        self.listener_cancelled = asyncio.Event()
         self.listener_stopped = asyncio.Event()
+        self.get_states_started = asyncio.Event()
+        self.get_states_cancelled = asyncio.Event()
         self.get_states_stopped = asyncio.Event()
         self.calls: list[str] = []
         self._states = states
@@ -101,6 +104,9 @@ class _HomeAssistantClient:
             if self._listener_error:
                 raise self._listener_error
             await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.listener_cancelled.set()
+            raise
         finally:
             if self._get_states_result and not self._get_states_result.done():
                 self._get_states_result.cancel()
@@ -110,12 +116,16 @@ class _HomeAssistantClient:
         """Return states after command responses can be received."""
         await self.listener_started.wait()
         self.calls.append("get_states")
+        self.get_states_started.set()
         try:
             if self._get_states_result:
                 await self._get_states_result
             if self._get_states_error:
                 raise self._get_states_error
             return self._states
+        except asyncio.CancelledError:
+            self.get_states_cancelled.set()
+            raise
         finally:
             self.get_states_stopped.set()
 
@@ -224,6 +234,64 @@ async def test_listener_exit_terminates_pending_feature_resolution() -> None:
     assert hass.listener_started.is_set()
     assert hass.listener_stopped.is_set()
     assert hass.get_states_stopped.is_set()
+    assert hass.disconnected
+    assert provider._listen_task is None
+    mass.call_later.assert_not_called()
+
+
+async def test_feature_resolution_timeout_cleans_up_connection() -> None:
+    """Clean up startup when Home Assistant feature resolution times out."""
+    hass = _HomeAssistantClient([], block_get_states=True)
+    mass = _mass()
+    manifest = MagicMock()
+    manifest.domain = "hass"
+    manifest.name = "Home Assistant"
+    with (
+        patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass),
+        patch("music_assistant.providers.hass.FEATURE_DISCOVERY_TIMEOUT", 0.1),
+    ):
+        provider = await setup(mass, manifest, _config())
+        assert isinstance(provider, HomeAssistantProvider)
+        init_task = asyncio.create_task(provider.handle_async_init())
+        async with asyncio.timeout(1):
+            await hass.get_states_started.wait()
+
+        with pytest.raises(
+            SetupFailedError, match="Timed out while resolving Home Assistant feature entities"
+        ):
+            await init_task
+
+    assert hass.get_states_stopped.is_set()
+    assert hass.get_states_cancelled.is_set()
+    assert hass.listener_stopped.is_set()
+    assert hass.listener_cancelled.is_set()
+    assert hass.disconnected
+    assert provider._listen_task is None
+    mass.call_later.assert_not_called()
+
+
+async def test_feature_resolution_cancellation_cleans_up_connection() -> None:
+    """Clean up startup when Home Assistant initialization is cancelled."""
+    hass = _HomeAssistantClient([], block_get_states=True)
+    mass = _mass()
+    manifest = MagicMock()
+    manifest.domain = "hass"
+    manifest.name = "Home Assistant"
+    with patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass):
+        provider = await setup(mass, manifest, _config())
+        assert isinstance(provider, HomeAssistantProvider)
+        init_task = asyncio.create_task(provider.handle_async_init())
+        async with asyncio.timeout(1):
+            await hass.get_states_started.wait()
+        init_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await init_task
+
+    assert hass.get_states_stopped.is_set()
+    assert hass.get_states_cancelled.is_set()
+    assert hass.listener_stopped.is_set()
+    assert hass.listener_cancelled.is_set()
     assert hass.disconnected
     assert provider._listen_task is None
     mass.call_later.assert_not_called()
