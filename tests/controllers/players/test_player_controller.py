@@ -78,6 +78,29 @@ def test_reserved_guest_filter_player_id_is_rejected(provider: MockProvider) -> 
         MockPlayer(provider, GUEST_ACCESS_RESTRICTED_PLAYER_ID, "Reserved")
 
 
+def test_is_protocol_player(
+    controller: PlayerController,
+    provider: MockProvider,
+) -> None:
+    """Protocol-player lookup requires a registered player with protocol type."""
+    host = MockPlayer(provider, "host", "Host")
+    protocol = MockPlayer(
+        provider,
+        "protocol",
+        "Protocol",
+        player_type=PlayerType.PROTOCOL,
+    )
+    controller._players = {
+        host.player_id: host,
+        protocol.player_id: protocol,
+    }
+
+    assert controller.is_protocol_player("protocol")
+    assert not controller.is_protocol_player("host")
+    assert not controller.is_protocol_player("missing")
+    assert not controller.is_protocol_player(None)
+
+
 class TestSetMembersValidation:
     """Test cmd_set_members validation logic."""
 
