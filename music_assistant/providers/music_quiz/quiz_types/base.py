@@ -7,8 +7,9 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Album, ItemMapping, Playlist, Track
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
@@ -21,6 +22,8 @@ LOGGER = logging.getLogger(__name__)
 MAX_ROUND_COUNT = 100
 MAX_ANSWER_DURATION = 300
 MAX_SOURCE_COUNT = 200
+MAX_SUGGESTION_COUNT = 12
+MIN_RELEASE_YEAR = 1000
 
 
 class QuizType(ABC):
@@ -32,6 +35,7 @@ class QuizType(ABC):
     """
 
     answer_type: ClassVar[MusicQuizAnswerType]
+    uses_audio: ClassVar[bool] = True
     warm_up_lyrics: ClassVar[bool] = False
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
@@ -44,6 +48,15 @@ class QuizType(ABC):
         self.mass = mass
         self.config = config
         self._source_track_pool: dict[str, Track] | None = None
+
+    @classmethod
+    def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003
+        """
+        Return whether this quiz type can be created.
+
+        :param mass: MusicAssistant instance.
+        """
+        return True
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -144,3 +157,21 @@ class QuizType(ABC):
             )
         self._source_track_pool = pool
         return pool
+
+
+def get_track_release_year(track: Track) -> int | None:
+    """
+    Return a usable release year from a track's available metadata.
+
+    :param track: Track whose release year should be resolved.
+    """
+    album = track.album
+    year = album.year if isinstance(album, Album | ItemMapping) else None
+    current_year = utc().year
+    if year is not None and MIN_RELEASE_YEAR <= year <= current_year:
+        return year
+    if track.metadata.release_date is not None:
+        year = track.metadata.release_date.year
+        if MIN_RELEASE_YEAR <= year <= current_year:
+            return year
+    return None

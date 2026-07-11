@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import re
 import secrets
+import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -49,7 +50,8 @@ def normalize_answer_label(label: str) -> str:
 
     :param label: Answer label to normalize.
     """
-    return NORMALIZE_PATTERN.sub(" ", label.casefold()).strip()
+    normalized_label = unicodedata.normalize("NFKC", label).casefold()
+    return NORMALIZE_PATTERN.sub(" ", normalized_label).strip()
 
 
 def answer_labels_are_too_close(first_label: str, second_label: str) -> bool:

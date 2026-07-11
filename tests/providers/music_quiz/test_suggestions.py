@@ -33,6 +33,11 @@ def test_normalize_answer_label_ignores_case_and_punctuation() -> None:
     assert normalize_answer_label("Daft Punk - One More Time!") == "daft punk one more time"
 
 
+def test_normalize_answer_label_handles_canonical_unicode_equivalence() -> None:
+    """Normalize composed and decomposed Unicode answer labels identically."""
+    assert normalize_answer_label("Beyoncé") == normalize_answer_label("Beyonce\u0301")
+
+
 def test_answer_labels_are_too_close_detects_title_versions() -> None:
     """Treat radio edits and remasters as too close for answer choices."""
     assert answer_labels_are_too_close(
