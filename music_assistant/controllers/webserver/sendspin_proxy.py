@@ -16,12 +16,15 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 from aiohttp import ClientConnectorError, WSMsgType, web
-from music_assistant_models.auth import UserRole
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     is_request_from_ingress,
+)
+from music_assistant.helpers.sendspin import (
+    get_sendspin_role_restriction,
+    restrict_sendspin_client_hello_roles,
 )
 from music_assistant.helpers.util import format_ip_for_url
 
@@ -204,7 +207,7 @@ class SendspinProxyHandler:
         :param internal_ws: The internal Sendspin server WebSocket connection.
         :param user: The user authenticated for this proxy connection.
         """
-        allowed_roles = ("player@v1",) if user.role == UserRole.GUEST else None
+        allowed_roles = get_sendspin_role_restriction(user.role)
         client_to_internal = asyncio.create_task(
             self._forward_client_to_internal(client_ws, internal_ws, allowed_roles)
         )
@@ -272,7 +275,7 @@ class SendspinProxyHandler:
             if msg.type == WSMsgType.TEXT:
                 raw_message = msg.data
                 if allowed_roles is not None:
-                    raw_message = self._restrict_client_hello_roles(raw_message, allowed_roles)
+                    raw_message = restrict_sendspin_client_hello_roles(raw_message, allowed_roles)
                 await internal_ws.send_str(raw_message)
             elif msg.type == WSMsgType.BINARY:
                 await internal_ws.send_bytes(msg.data)
@@ -301,25 +304,3 @@ class SendspinProxyHandler:
                 if msg.type == WSMsgType.ERROR:
                     self.logger.debug("Sendspin proxy internal transport error: %s", msg.data)
                 break
-
-    @staticmethod
-    def _restrict_client_hello_roles(raw_message: str, allowed_roles: tuple[str, ...]) -> str:
-        """
-        Restrict the roles advertised by a structurally valid Sendspin client hello.
-
-        :param raw_message: Raw text message received from the client.
-        :param allowed_roles: Exact roles the client may advertise.
-        :return: The rewritten hello or the original message when it is not a valid hello.
-        """
-        try:
-            message = json.loads(raw_message)
-        except json.JSONDecodeError:
-            return raw_message
-        if (
-            not isinstance(message, dict)
-            or message.get("type") != "client/hello"
-            or not isinstance((payload := message.get("payload")), dict)
-        ):
-            return raw_message
-        payload["supported_roles"] = list(allowed_roles)
-        return json.dumps(message, separators=(",", ":"))

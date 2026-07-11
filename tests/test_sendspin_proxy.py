@@ -13,6 +13,7 @@ from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import UserRole
 
 from music_assistant.controllers.webserver.sendspin_proxy import SendspinProxyHandler
+from music_assistant.helpers.sendspin import restrict_sendspin_client_hello_roles
 
 
 @pytest.fixture
@@ -306,20 +307,20 @@ class TestSendspinGuestRoles:
         self, handler: SendspinProxyHandler, raw_message: str
     ) -> None:
         """Messages that are not structurally valid hellos remain parser-visible unchanged."""
-        assert handler._restrict_client_hello_roles(raw_message, ("player@v1",)) == raw_message
+        assert restrict_sendspin_client_hello_roles(raw_message, ("player@v1",)) == raw_message
 
     def test_rewrite_preserves_player_support_without_synthesizing_it(
         self, handler: SendspinProxyHandler
     ) -> None:
         """Role rewriting preserves support data and leaves missing support for upstream rejection."""
         supported = json.loads(
-            handler._restrict_client_hello_roles(
+            restrict_sendspin_client_hello_roles(
                 _hello("metadata@v1", include_player_support=True),
                 ("player@v1",),
             )
         )
         missing = json.loads(
-            handler._restrict_client_hello_roles(
+            restrict_sendspin_client_hello_roles(
                 _hello("metadata@v1", include_player_support=False),
                 ("player@v1",),
             )

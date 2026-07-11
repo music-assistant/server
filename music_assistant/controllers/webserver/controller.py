@@ -59,8 +59,8 @@ from music_assistant.models.core_controller import CoreController
 from .api_docs import generate_commands_json, generate_openapi_spec, generate_schemas_json
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
+    check_command_permission,
     get_authenticated_user,
-    has_scope,
     is_request_from_ingress,
     resolve_command_impersonation,
     set_current_token,
@@ -73,6 +73,7 @@ from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ConfigValueType, CoreConfig
 
     from music_assistant import MusicAssistant
@@ -445,6 +446,17 @@ class WebserverController(CoreController):
                 )
                 client._cancel()
 
+    def get_authenticated_user_for_webrtc_session(self, session_id: str) -> User | None:
+        """
+        Return the authenticated API user for a WebRTC session.
+
+        :param session_id: The WebRTC session ID.
+        """
+        for client in self.clients:
+            if client._webrtc_session_id == session_id and client._authenticated_user is not None:
+                return client._authenticated_user
+        return None
+
     def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
         """
         Set the sendspin player_id on websocket clients for a specific user.
@@ -643,10 +655,12 @@ class WebserverController(CoreController):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.lower().startswith("bearer "):
             set_current_token(auth_header[7:])
-        if handler.required_scope and not has_scope(user, handler.required_scope):
+        try:
+            check_command_permission(user, handler)
+        except InsufficientPermissions as err:
             return web.Response(
                 status=403,
-                text=f"This command requires the {handler.required_scope} scope",
+                text=str(err),
             )
         return None
 

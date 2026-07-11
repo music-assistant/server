@@ -1,12 +1,16 @@
 """Tests for remote access feature."""
 
+import asyncio
 import base64
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlparse
 
 import pytest
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection
 from aiortc.rtcdtlstransport import RTCCertificate
+from music_assistant_models.auth import User, UserRole
 
 from music_assistant.controllers.webserver.remote_access import RemoteAccessInfo
 from music_assistant.controllers.webserver.remote_access.gateway import (
@@ -18,6 +22,56 @@ from music_assistant.helpers.webrtc_certificate import (
     _remote_id_from_certificate,
     create_peer_connection_with_certificate,
 )
+
+
+class _DataChannel:
+    """Minimal RTCDataChannel test double."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.handlers: dict[str, object] = {}
+
+    def on(self, event: str) -> object:
+        """Register a channel event handler."""
+
+        def decorator(handler: object) -> object:
+            self.handlers[event] = handler
+            return handler
+
+        return decorator
+
+    def close(self) -> None:
+        """Close the test channel."""
+        self.closed = True
+
+
+def _remote_user(role: UserRole) -> User:
+    """Create an authenticated remote-access user."""
+    return User(user_id=role.value, username=role.value, role=role)
+
+
+async def _forward_sendspin_messages(
+    gateway: WebRTCGateway,
+    session: WebRTCSession,
+    messages: tuple[str | bytes, ...],
+) -> list[str | bytes]:
+    """Forward a finite set of Sendspin messages and return what reached the server."""
+    forwarded: list[str | bytes] = []
+    sendspin_ws = SimpleNamespace(closed=False)
+
+    async def forward(message: str | bytes) -> None:
+        forwarded.append(message)
+        if len(forwarded) == len(messages):
+            sendspin_ws.closed = True
+
+    sendspin_ws.send_str = AsyncMock(side_effect=forward)
+    sendspin_ws.send_bytes = AsyncMock(side_effect=forward)
+    session.sendspin_ws = sendspin_ws
+    for message in messages:
+        session.sendspin_queue.put_nowait(message)
+
+    await gateway._forward_sendspin_to_local(session)
+    return forwarded
 
 
 @pytest.fixture
@@ -435,3 +489,170 @@ async def test_http_proxy_request_cannot_change_host(
     assert parsed.port == 8095
     assert parsed.username is None
     assert "evil.com" not in (parsed.netloc or "")
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed_roles"),
+    [
+        (UserRole.GUEST, ("player@v1",)),
+        (UserRole.USER, None),
+        (UserRole.ADMIN, None),
+        (UserRole.SERVICE, None),
+    ],
+)
+async def test_webrtc_sendspin_setup_uses_authenticated_session_role(
+    mock_certificate: Mock,
+    role: UserRole,
+    allowed_roles: tuple[str, ...] | None,
+) -> None:
+    """The WebRTC Sendspin policy comes from its authenticated API session."""
+    http_session = Mock()
+    sendspin_ws = SimpleNamespace(closed=True)
+    http_session.ws_connect = AsyncMock(return_value=sendspin_ws)
+    get_user = Mock(return_value=_remote_user(role))
+    gateway = WebRTCGateway(
+        http_session=http_session,
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        get_authenticated_user_callback=get_user,
+    )
+    channel = _DataChannel()
+    session = WebRTCSession(
+        session_id="authenticated-session",
+        peer_connection=Mock(),
+        sendspin_channel=channel,
+    )
+
+    await gateway._setup_sendspin_channel(session)
+    tasks = [
+        task
+        for task in (session.sendspin_to_local_task, session.sendspin_from_local_task)
+        if task is not None
+    ]
+    await asyncio.gather(*tasks)
+
+    get_user.assert_called_once_with("authenticated-session")
+    assert session.sendspin_allowed_roles == allowed_roles
+    assert channel.closed is False
+
+
+@pytest.mark.parametrize("resolver_available", [False, True], ids=["missing", "unauthenticated"])
+async def test_webrtc_sendspin_missing_authenticated_session_fails_closed(
+    mock_certificate: Mock,
+    resolver_available: bool,
+) -> None:
+    """A Sendspin channel cannot connect without a matching authenticated API session."""
+    http_session = Mock()
+    http_session.ws_connect = AsyncMock()
+    get_user = Mock(return_value=None) if resolver_available else None
+    gateway = WebRTCGateway(
+        http_session=http_session,
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        get_authenticated_user_callback=get_user,
+    )
+    channel = _DataChannel()
+    session = WebRTCSession(
+        session_id="unauthenticated-session",
+        peer_connection=Mock(),
+        sendspin_channel=channel,
+    )
+
+    await gateway._setup_sendspin_channel(session)
+
+    assert channel.closed is True
+    http_session.ws_connect.assert_not_awaited()
+    if get_user is not None:
+        get_user.assert_called_once_with("unauthenticated-session")
+
+
+async def test_webrtc_guest_sendspin_hello_is_always_player_only(
+    mock_certificate: Mock,
+) -> None:
+    """Guest first and repeated hellos are rewritten while other traffic stays unchanged."""
+    set_player = Mock()
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        set_sendspin_player_callback=set_player,
+    )
+    session = WebRTCSession(
+        session_id="guest-session",
+        peer_connection=Mock(),
+        sendspin_allowed_roles=("player@v1",),
+    )
+    auth = '{"type":"auth","client_id":"remote-web-player"}'
+    first_hello = json.dumps(
+        {
+            "type": "client/hello",
+            "payload": {
+                "supported_roles": ["player@v1", "controller@v1", "metadata@v1"],
+                "player@v1_support": {"buffer_capacity": 1024},
+            },
+        },
+        indent=2,
+    )
+    repeated_hello = json.dumps(
+        {
+            "type": "client/hello",
+            "payload": {"supported_roles": ["metadata@v1"]},
+        },
+        indent=2,
+    )
+    non_hello = '{"type":"client/state","payload":{"volume":50}}'
+    malformed = "{not-json"
+    list_message = "[]"
+    binary = b"\x00audio"
+
+    forwarded = await _forward_sendspin_messages(
+        gateway,
+        session,
+        (
+            auth,
+            first_hello,
+            non_hello,
+            repeated_hello,
+            malformed,
+            list_message,
+            binary,
+        ),
+    )
+
+    assert forwarded[0] == auth
+    assert json.loads(forwarded[1])["payload"]["supported_roles"] == ["player@v1"]
+    assert json.loads(forwarded[1])["payload"]["player@v1_support"] == {"buffer_capacity": 1024}
+    assert forwarded[2] == non_hello
+    assert json.loads(forwarded[3])["payload"]["supported_roles"] == ["player@v1"]
+    assert forwarded[4:] == [malformed, list_message, binary]
+    assert session.sendspin_player_id == "remote-web-player"
+    set_player.assert_called_once_with("guest-session", "remote-web-player")
+
+
+@pytest.mark.parametrize("role", [UserRole.USER, UserRole.ADMIN, UserRole.SERVICE])
+async def test_webrtc_non_guest_sendspin_traffic_is_byte_identical(
+    mock_certificate: Mock,
+    role: UserRole,
+) -> None:
+    """Regular, admin and service WebRTC Sendspin traffic remains unchanged."""
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+    )
+    raw_hello = json.dumps(
+        {
+            "type": "client/hello",
+            "payload": {"supported_roles": ["player@v1", "metadata@v1"]},
+        },
+        indent=2,
+    )
+    session = WebRTCSession(
+        session_id=f"{role.value}-session",
+        peer_connection=Mock(),
+        sendspin_allowed_roles=None,
+    )
+
+    forwarded = await _forward_sendspin_messages(gateway, session, (raw_hello,))
+
+    assert forwarded == [raw_hello]

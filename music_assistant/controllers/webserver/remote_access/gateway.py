@@ -22,10 +22,15 @@ from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSession
 from aiortc.sdp import candidate_from_sdp
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.sendspin import (
+    get_sendspin_role_restriction,
+    restrict_sendspin_client_hello_roles,
+)
 from music_assistant.helpers.webrtc_certificate import create_peer_connection_with_certificate
 
 if TYPE_CHECKING:
     from aiortc.rtcdtlstransport import RTCCertificate
+    from music_assistant_models.auth import User
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
@@ -51,6 +56,7 @@ class WebRTCSession:
     sendspin_ws: Any = None
     sendspin_queue: asyncio.Queue[str | bytes] = field(default_factory=asyncio.Queue)
     sendspin_player_id: str | None = None  # Extracted from first sendspin auth message
+    sendspin_allowed_roles: tuple[str, ...] | None = None
     sendspin_to_local_task: asyncio.Task[None] | None = None
     sendspin_from_local_task: asyncio.Task[None] | None = None
 
@@ -89,6 +95,7 @@ class WebRTCGateway:
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
         set_sendspin_player_callback: Callable[[str, str], None] | None = None,
+        get_authenticated_user_callback: Callable[[str], User | None] | None = None,
     ) -> None:
         """
         Initialize the WebRTC Gateway.
@@ -102,6 +109,7 @@ class WebRTCGateway:
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
         :param set_sendspin_player_callback: Callback to set sendspin player for a session.
+        :param get_authenticated_user_callback: Callback to resolve a session's authenticated user.
         """
         self.http_session = http_session
         self.signaling_url = signaling_url
@@ -112,6 +120,7 @@ class WebRTCGateway:
         self.logger = LOGGER
         self._ice_servers_callback = ice_servers_callback
         self._set_sendspin_player_callback = set_sendspin_player_callback
+        self._get_authenticated_user_callback = get_authenticated_user_callback
 
         # Static ICE servers used at registration time (relayed to clients via signaling server)
         self.ice_servers = ice_servers or self.DEFAULT_ICE_SERVERS
@@ -741,6 +750,20 @@ class WebRTCGateway:
             return
 
         try:
+            user = (
+                self._get_authenticated_user_callback(session.session_id)
+                if self._get_authenticated_user_callback
+                else None
+            )
+            if user is None:
+                self.logger.warning(
+                    "Rejecting Sendspin channel without authenticated API session %s",
+                    session.session_id,
+                )
+                channel.close()
+                return
+            session.sendspin_allowed_roles = get_sendspin_role_restriction(user.role)
+
             loop = asyncio.get_event_loop()
 
             @channel.on("message")  # type: ignore[untyped-decorator]
@@ -781,6 +804,7 @@ class WebRTCGateway:
                 session.sendspin_from_local_task.cancel()
             if session.sendspin_ws and not session.sendspin_ws.closed:
                 await session.sendspin_ws.close()
+            channel.close()
 
     async def _forward_sendspin_to_local(self, session: WebRTCSession) -> None:
         """
@@ -803,6 +827,10 @@ class WebRTCGateway:
                     if isinstance(message, bytes):
                         await session.sendspin_ws.send_bytes(message)
                     else:
+                        if session.sendspin_allowed_roles is not None:
+                            message = restrict_sendspin_client_hello_roles(
+                                message, session.sendspin_allowed_roles
+                            )
                         await session.sendspin_ws.send_str(message)
         except asyncio.CancelledError:
             self.logger.debug(

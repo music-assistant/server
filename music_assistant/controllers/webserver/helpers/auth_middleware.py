@@ -12,7 +12,12 @@ from aiohttp import web
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    GUEST_ACCESS_RESTRICTED_PLAYER_ID,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+    VERBOSE_LOG_LEVEL,
+)
 
 from .auth_providers import get_ha_user_details, get_ha_user_role
 
@@ -20,6 +25,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.api import APICommandHandler
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
@@ -54,6 +60,8 @@ ROLE_SCOPES: Final[Mapping[str, frozenset[Scope]]] = {
     # slightly elevated rights over a regular user
     UserRole.SERVICE: _USER_SCOPES | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_IMPERSONATE},
 }
+_RECEIVE_ONLY_COMMAND_PREFIXES: Final = ("players/", "player_queues/")
+_RECEIVE_ONLY_CONTROL_SCOPES: Final = frozenset({Scope.PLAYERS_CONTROL, Scope.QUEUES_CONTROL})
 
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
@@ -192,6 +200,26 @@ def has_scope(user: User, scope: Scope) -> bool:
     """
     role_scopes = ROLE_SCOPES.get(user.role, frozenset())
     return Scope.ALL in role_scopes or scope in role_scopes
+
+
+def check_command_permission(user: User, handler: APICommandHandler) -> None:
+    """
+    Validate that a user may invoke an external API command.
+
+    :param user: The authenticated user invoking the command.
+    :param handler: The API command handler being invoked.
+    :raises InsufficientPermissions: If the user lacks the required permission.
+    """
+    if handler.required_scope and not has_scope(user, handler.required_scope):
+        raise InsufficientPermissions(f"This command requires the {handler.required_scope} scope")
+    if (
+        handler.required_scope in _RECEIVE_ONLY_CONTROL_SCOPES
+        and handler.command.startswith(_RECEIVE_ONLY_COMMAND_PREFIXES)
+        and GUEST_ACCESS_RESTRICTED_PLAYER_ID in (user.player_filter or [])
+    ):
+        raise InsufficientPermissions(
+            "This managed guest account is receive-only and cannot control players or queues"
+        )
 
 
 async def resolve_impersonated_user(mass: MusicAssistant, user: str) -> User:

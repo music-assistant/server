@@ -39,7 +39,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import (
-    has_scope,
+    check_command_permission,
     is_request_from_ingress,
     resolve_command_impersonation,
     set_current_token,
@@ -231,16 +231,15 @@ class WebsocketClientHandler:
             set_current_token(self._current_token)
             set_sendspin_player_id(self._sendspin_player_id)
 
-            # Check scope if required
-            if handler.required_scope and not has_scope(
-                self._authenticated_user, handler.required_scope
-            ):
+            try:
+                check_command_permission(self._authenticated_user, handler)
+            except InsufficientPermissions as err:
                 await self._send_message(
                     ErrorResultMessage(
                         msg.message_id,
-                        InsufficientPermissions.error_code,
-                        f"This command requires the {handler.required_scope} scope",
-                        translation_key="insufficient_permissions",
+                        err.error_code,
+                        str(err),
+                        translation_key=err.translation_key,
                     )
                 )
                 return
