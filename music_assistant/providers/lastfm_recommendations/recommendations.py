@@ -752,7 +752,7 @@ class LastFMRecommendationManager:
         # Skip rows predating the playlog artists column; they regain an artist on the next play.
         # Various Artists is a compilation placeholder, not a usable seed.
         return [
-            _SeedTrack(artist=play.artists[0].name, name=play.name)
+            _SeedTrack(artist=play.artists[0].name, name=play.track.name)
             for play in plays
             if play.artists and play.artists[0].name != VARIOUS_ARTISTS_NAME
         ]

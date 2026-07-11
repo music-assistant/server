@@ -116,9 +116,7 @@ if TYPE_CHECKING:
 class RecentPlayedTrack(NamedTuple):
     """A recently played track from the playlog, with the artists recorded at play time."""
 
-    item_id: str
-    provider: str
-    name: str
+    track: ItemMapping
     artists: list[ItemMapping]
 
 
@@ -726,7 +724,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param userid: Restrict to this user (defaults to the current session user, else all users).
         """
         query = (
-            f"SELECT item_id, provider, name, artists FROM {DB_TABLE_PLAYLOG} "
+            f"SELECT item_id, provider, name, image, artists FROM {DB_TABLE_PLAYLOG} "
             "WHERE media_type = 'track' AND fully_played = 1 "
             "AND timestamp >= :played_after_timestamp "
         )
@@ -741,11 +739,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         db_rows = await self.mass.music.database.get_rows_from_query(
             query, params=params, limit=limit
         )
+        available_providers = ("library", *get_global_cache_value("available_providers", []))
         return [
             RecentPlayedTrack(
-                item_id=db_row["item_id"],
-                provider=db_row["provider"],
-                name=db_row["name"],
+                track=ItemMapping.from_dict(
+                    {
+                        "item_id": db_row["item_id"],
+                        "provider": db_row["provider"],
+                        "media_type": "track",
+                        "name": db_row["name"],
+                        "image": json_loads(db_row["image"]) if db_row["image"] else None,
+                        "available": db_row["provider"] in available_providers,
+                    }
+                ),
                 artists=[ItemMapping.from_dict(artist) for artist in json_loads(db_row["artists"])]
                 if db_row["artists"]
                 else [],
