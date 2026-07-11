@@ -70,6 +70,7 @@ CONF_MUTE_CONTROLS = "mute_controls"
 CONF_VOLUME_CONTROLS = "volume_controls"
 CONF_TTS_ENTITY = "tts_entity"
 CONF_AI_TASK_ENTITY = "ai_task_entity"
+FEATURE_DISCOVERY_TIMEOUT = 30
 
 
 async def setup(
@@ -332,9 +333,14 @@ class HomeAssistantProvider(PluginProvider):
     _player_controls: dict[str, PlayerControl] | None = None
     _tts_entity_id: str | None = None
     _ai_task_entity_id: str | None = None
+    _startup_complete: bool = False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""
+        if self._listen_task and not self._listen_task.done():
+            msg = "Home Assistant listener is already running"
+            raise SetupFailedError(msg)
+        self._startup_complete = False
         self._player_controls = {}
         url = get_websocket_url(self.config.get_value(CONF_URL))
         token = self.config.get_value(CONF_AUTH_TOKEN)
@@ -345,10 +351,22 @@ class HomeAssistantProvider(PluginProvider):
         try:
             await self.hass.connect()
         except BaseHassClientError as err:
+            await self._cleanup_failed_init()
             err_msg = str(err) or err.__class__.__name__
             raise SetupFailedError(err_msg) from err
-        await self._resolve_feature_entities()
         self._listen_task = self.mass.create_task(self._hass_listener())
+        try:
+            await self._resolve_startup_features()
+        except asyncio.CancelledError:
+            await self._cleanup_failed_init()
+            raise
+        except BaseHassClientError as err:
+            await self._cleanup_failed_init()
+            err_msg = str(err) or err.__class__.__name__
+            raise SetupFailedError(err_msg) from err
+        except Exception:
+            await self._cleanup_failed_init()
+            raise
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -364,9 +382,8 @@ class HomeAssistantProvider(PluginProvider):
         if self._player_controls:
             for entity_id in self._player_controls:
                 self.mass.players.remove_player_control(entity_id)
-        if self._listen_task and not self._listen_task.done():
-            self._listen_task.cancel()
-        await self.hass.disconnect()
+        self._startup_complete = False
+        await self._disconnect_hass()
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -524,6 +541,8 @@ class HomeAssistantProvider(PluginProvider):
             await self.hass.start_listening()
         except BaseHassClientError as err:
             self.logger.warning("Connection to HA lost due to error: %s", err)
+        if not self._startup_complete:
+            return
         self.logger.info("Connection to HA lost. Connection will be automatically retried later.")
         # schedule a reload of the provider
         self.available = False
@@ -684,6 +703,60 @@ class HomeAssistantProvider(PluginProvider):
         ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         return ha_url, headers, http_session
+
+    async def _disconnect_hass(self) -> None:
+        """Stop listening for Home Assistant events and disconnect the client."""
+        if listen_task := self._listen_task:
+            self._listen_task = None
+            if not listen_task.done():
+                listen_task.cancel()
+            try:
+                await listen_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as err:
+                self.logger.warning("Home Assistant listener stopped with error: %s", err)
+        await self.hass.disconnect()
+
+    async def _cleanup_failed_init(self) -> None:
+        """Clean up the Home Assistant connection after initialization fails."""
+        try:
+            await self._disconnect_hass()
+        except Exception as err:
+            self.logger.warning("Failed to disconnect from Home Assistant: %s", err)
+
+    async def _resolve_startup_features(self) -> None:
+        """Resolve Home Assistant features while the listener remains active."""
+        assert self._listen_task is not None
+        feature_task = asyncio.create_task(self._resolve_feature_entities())
+        try:
+            try:
+                async with asyncio.timeout(FEATURE_DISCOVERY_TIMEOUT):
+                    await asyncio.wait(
+                        {feature_task, self._listen_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+            except TimeoutError as err:
+                msg = "Timed out while resolving Home Assistant feature entities"
+                raise SetupFailedError(msg) from err
+            if not feature_task.done():
+                msg = "Home Assistant listener stopped during startup"
+                raise SetupFailedError(msg)
+            if feature_task.cancelled():
+                if self._listen_task.done():
+                    msg = "Home Assistant listener stopped during startup"
+                else:
+                    msg = "Home Assistant feature resolution was cancelled"
+                raise SetupFailedError(msg)
+            await feature_task
+            if self._listen_task.done():
+                msg = "Home Assistant listener stopped during startup"
+                raise SetupFailedError(msg)
+            self._startup_complete = True
+        finally:
+            if not feature_task.done():
+                feature_task.cancel()
+                await asyncio.gather(feature_task, return_exceptions=True)
 
     async def _resolve_feature_entities(self) -> None:
         """Resolve configured or default Home Assistant feature entities."""
