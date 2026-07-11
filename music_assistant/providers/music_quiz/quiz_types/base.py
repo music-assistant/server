@@ -6,14 +6,17 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Album, ItemMapping, Playlist, Track
+from music_assistant_models.media_items import Album, ItemMapping
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import Track
+
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.music_quiz.models import MusicQuizConfig, MusicQuizRound
 
@@ -24,6 +27,15 @@ MAX_ANSWER_DURATION = 300
 MAX_SOURCE_COUNT = 200
 MAX_SUGGESTION_COUNT = 12
 MIN_RELEASE_YEAR = 1000
+SUPPORTED_SOURCE_MEDIA_TYPES = frozenset(
+    {
+        MediaType.TRACK,
+        MediaType.PLAYLIST,
+        MediaType.GENRE,
+        MediaType.ALBUM,
+        MediaType.ARTIST,
+    }
+)
 
 
 class QuizType(ABC):
@@ -136,17 +148,11 @@ class QuizType(ABC):
             # abort a round that other sources can still populate
             try:
                 media_item = await self.mass.music.get_item_by_uri(source_uri)
-                if isinstance(media_item, Track):
-                    if media_item.uri:
-                        pool[media_item.uri] = media_item
+                if media_item.media_type not in SUPPORTED_SOURCE_MEDIA_TYPES:
                     continue
-                if isinstance(media_item, Playlist):
-                    async for track in self.mass.music.playlists.tracks(
-                        item_id=media_item.item_id,
-                        provider_instance_id_or_domain=media_item.provider,
-                    ):
-                        if isinstance(track, Track) and track.uri:
-                            pool[track.uri] = track
+                for track in await self.mass.player_queues.get_tracks_for_playback(media_item):
+                    if track.uri:
+                        pool[track.uri] = track
             except Exception as err:
                 LOGGER.warning("Could not load Music Quiz source %s: %s", source_uri, err)
         if not pool:

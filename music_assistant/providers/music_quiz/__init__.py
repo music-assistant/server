@@ -320,7 +320,8 @@ class MusicQuizPlugin(PluginProvider):
         :param round_count: Number of rounds to play.
         :param suggestion_count: Number of answer suggestions per round.
         :param answer_duration: Answering duration in seconds.
-        :param source_uris: Track or playlist URIs to draw the rounds from.
+        :param source_uris: Track, playlist, genre, album or artist URIs to draw
+            the rounds from.
         :param name: Optional game name.
         :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
         :param artist_bonus_mode: Hitster artist bonus mode.
