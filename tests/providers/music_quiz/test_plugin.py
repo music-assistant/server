@@ -767,12 +767,9 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
         nonlocal initialize_call_count
         initialize_call_count += 1
         if initialize_call_count == 2:
-            pending_task.cancel.assert_called_once()
-            assert plugin._next_round_task is None
-            cancel_timer = cast("MagicMock", plugin.mass.cancel_timer)
-            cancel_timer.assert_any_call(plugin._reveal_timer_id)
-            cancel_timer.assert_any_call(plugin._advance_timer_id)
-            cancel_timer.assert_any_call(plugin._presence_timer_id)
+            pending_task.cancel.assert_not_called()
+            assert plugin._next_round_task is pending_task
+            cast("MagicMock", plugin.mass.cancel_timer).assert_not_called()
 
     initialize = AsyncMock(side_effect=_initialize)
     with (
@@ -795,12 +792,90 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
     game = plugin._game
     assert game is not None
     assert initialize.await_count == 2
+    pending_task.cancel.assert_called_once()
+    cancel_timer = cast("MagicMock", plugin.mass.cancel_timer)
+    cancel_timer.assert_any_call(plugin._reveal_timer_id)
+    cancel_timer.assert_any_call(plugin._advance_timer_id)
+    cancel_timer.assert_any_call(plugin._presence_timer_id)
     assert game.rounds == []
     assert state["phase"] == "lobby"
     assert state["quiz_type"] == "hitster"
     assert state["answer_type"] == "timeline"
     assert state["artist_bonus_mode"] == "off"
     assert state["title_bonus_mode"] == "off"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_phase",
+    [MusicQuizPhase.ANSWERING, MusicQuizPhase.REVEAL],
+)
+async def test_hitster_failed_reset_preserves_active_game(
+    initial_phase: MusicQuizPhase,
+) -> None:
+    """Keep the current game and its background work intact when initialization fails."""
+    plugin = _create_plugin()
+    initialize = AsyncMock(
+        side_effect=[
+            None,
+            InvalidDataError("Sources changed"),
+        ]
+    )
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            new=initialize,
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            new=AsyncMock(
+                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+            ),
+        ),
+    ):
+        await _create_started_hitster_game(plugin, round_count=2)
+        game = plugin._game
+        assert game is not None
+        if initial_phase == MusicQuizPhase.REVEAL:
+            await plugin.reveal()
+        old_quiz_type = plugin._quiz_type
+        old_answer_type = plugin._answer_type
+        old_rounds = list(game.rounds)
+        pending_prefetch = plugin._next_round_task
+        assert pending_prefetch is not None
+        timer_id = (
+            plugin._reveal_timer_id
+            if initial_phase == MusicQuizPhase.ANSWERING
+            else plugin._advance_timer_id
+        )
+        _, timer_callback, round_index = _round_timer_call(plugin, timer_id)
+        cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+        cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+        cast("AsyncMock", plugin._stop_playback).reset_mock()
+
+        with pytest.raises(InvalidDataError, match="Sources changed"):
+            await plugin.reset()
+
+        assert game.phase == initial_phase
+        assert game.rounds == old_rounds
+        assert plugin._game is game
+        assert plugin._quiz_type is old_quiz_type
+        assert plugin._answer_type is old_answer_type
+        assert plugin._next_round_task is pending_prefetch
+        assert pending_prefetch.cancelled() is False
+        cast("MagicMock", plugin.mass.cancel_timer).assert_not_called()
+        cast("MagicMock", plugin.mass.cancel_task).assert_not_called()
+        cast("AsyncMock", plugin._stop_playback).assert_not_awaited()
+
+        await timer_callback(round_index)
+        expected_phase = (
+            MusicQuizPhase.REVEAL
+            if initial_phase == MusicQuizPhase.ANSWERING
+            else MusicQuizPhase.ANSWERING
+        )
+        assert game.phase == expected_phase
+        if plugin._next_round_task is pending_prefetch:
+            plugin._cancel_next_round_task()
 
 
 @pytest.mark.asyncio

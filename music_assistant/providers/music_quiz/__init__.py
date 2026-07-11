@@ -407,10 +407,10 @@ class MusicQuizPlugin(PluginProvider):
         """Reset the current game for a new run with the same settings and players."""
         async with self._game_lock:
             game = self._require_game()
-            self._cancel_timers()
-            self._cancel_next_round_task()
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
             await quiz_strategy.initialize()
+            self._cancel_timers()
+            self._cancel_next_round_task()
             await self._stop_playback()
             reset_game(game)
             self._quiz_type = quiz_strategy

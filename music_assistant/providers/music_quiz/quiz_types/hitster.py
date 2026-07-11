@@ -163,6 +163,8 @@ class HitsterQuizType(QuizType):
         source_tracks = list((await self._get_source_track_pool()).values())
 
         async def _resolve_track(track: Track) -> Track | None:
+            if not track.available or not track.is_playable:
+                return None
             if self._track_is_eligible(track):
                 return track
             try:
@@ -406,7 +408,14 @@ class HitsterQuizType(QuizType):
     @classmethod
     def _track_is_eligible(cls, track: Track) -> bool:
         """Return whether a track has all metadata required by Hitster."""
-        return bool(track.uri and track.name and track.artist_str and cls._release_year(track))
+        return bool(
+            track.available
+            and track.is_playable
+            and track.uri
+            and track.name
+            and track.artist_str
+            and cls._release_year(track)
+        )
 
     @staticmethod
     def _release_year(track: Track) -> int | None:

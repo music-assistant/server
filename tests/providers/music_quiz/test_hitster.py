@@ -42,6 +42,8 @@ def _track(
     *,
     album_year: int | None = None,
     release_year: int | None = None,
+    available: bool = True,
+    is_playable: bool = True,
 ) -> Track:
     """Return a track with configurable album and metadata years."""
     provider = "prov"
@@ -49,6 +51,7 @@ def _track(
         item_id=item_id,
         provider=provider,
         name=name,
+        is_playable=is_playable,
         duration=180,
         artists=UniqueList(
             [
@@ -72,6 +75,7 @@ def _track(
                 item_id=item_id,
                 provider_domain=provider,
                 provider_instance=provider,
+                available=available,
             )
         },
     )
@@ -178,6 +182,41 @@ async def test_initialize_rejects_missing_or_insufficient_dated_tracks() -> None
 
 
 @pytest.mark.asyncio
+async def test_initialize_excludes_unavailable_and_unplayable_dated_tracks() -> None:
+    """Never count or select dated tracks that cannot actually be played."""
+    playable = [
+        _track("one", "Teardrop", "Massive Attack", album_year=1998),
+        _track("two", "Genesis", "Justice", album_year=2007),
+    ]
+    unavailable = _track(
+        "unavailable",
+        "Unavailable",
+        "Artist",
+        album_year=2001,
+        available=False,
+    )
+    unplayable = _track(
+        "unplayable",
+        "Unplayable",
+        "Artist",
+        album_year=2002,
+        is_playable=False,
+    )
+    quiz, mass = _quiz([*playable, unavailable, unplayable])
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    assert {track.item_id for track in quiz._eligible_tracks} == {"one", "two"}
+    mass.music.tracks.get.assert_not_awaited()
+
+    insufficient_quiz, _ = _quiz([playable[0], unavailable, unplayable])
+    with pytest.raises(InvalidDataError) as insufficient:
+        await insufficient_quiz.initialize()
+    assert insufficient.value.translation_key == "music_quiz_not_enough_dated_tracks"
+
+
+@pytest.mark.asyncio
 async def test_partial_playlist_tracks_are_enriched_through_track_api() -> None:
     """Fetch full track details when a playlist item lacks release metadata."""
     partial = _track("partial", "Teardrop", "Massive Attack")
@@ -191,6 +230,38 @@ async def test_partial_playlist_tracks_are_enriched_through_track_api() -> None:
     mass.music.tracks.get.assert_awaited_once_with(partial.item_id, partial.provider)
     assert quiz._eligible_tracks is not None
     assert {track.item_id for track in quiz._eligible_tracks} == {"partial", "other"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("available", "is_playable"),
+    [(False, True), (True, False)],
+)
+async def test_enriched_tracks_must_still_be_available_and_playable(
+    available: bool,
+    is_playable: bool,
+) -> None:
+    """Exclude enriched details when they reveal an unusable source track."""
+    partial = _track("partial", "Partial", "Artist")
+    enriched = _track(
+        "partial",
+        "Partial",
+        "Artist",
+        album_year=2000,
+        available=available,
+        is_playable=is_playable,
+    )
+    playable = [
+        _track("one", "Teardrop", "Massive Attack", album_year=1998),
+        _track("two", "Genesis", "Justice", album_year=2007),
+    ]
+    quiz, mass = _quiz([partial, *playable])
+    mass.music.tracks.get.return_value = enriched
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    assert {track.item_id for track in quiz._eligible_tracks} == {"one", "two"}
 
 
 @pytest.mark.asyncio
