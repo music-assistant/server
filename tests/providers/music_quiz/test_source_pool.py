@@ -65,7 +65,7 @@ async def test_source_pool_skips_failing_sources() -> None:
 
     pool = await quiz_type._get_source_track_pool()
 
-    assert list(pool.values()) == [_track("3")]
+    assert [track.item_id for track in pool.values()] == ["3"]
 
 
 async def test_source_pool_raises_when_nothing_resolves() -> None:
