@@ -520,7 +520,7 @@ class MusicQuizPlugin(PluginProvider):
     async def submit_answer(
         self,
         player_id: str,
-        submission: dict[str, object],
+        submission: dict[str, Any],
     ) -> dict[str, SerializableType]:
         """
         Submit a typed answer for the current round.
