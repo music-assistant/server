@@ -1343,6 +1343,80 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
 
 
 @pytest.mark.asyncio
+async def test_hitster_ready_cancels_intermediate_auto_advance() -> None:
+    """Advance once on Ready and ignore the stale reveal timer."""
+    plugin = _create_plugin()
+    prepare_round = AsyncMock(
+        side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+    )
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            new=AsyncMock(),
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            new=prepare_round,
+        ),
+    ):
+        player_ids = await _create_started_hitster_game(plugin, round_count=2)
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ),
+            patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
+        ):
+            await plugin.submit_answer(
+                player_ids["Alice"],
+                {
+                    "answer_type": "timeline",
+                    "action": "place",
+                    "previous_entry_id": "anchor",
+                    "next_entry_id": None,
+                },
+            )
+
+        game = plugin._game
+        assert game is not None
+        first_round = game.rounds[0]
+        advance_delay, stale_callback, stale_round_index = _round_timer_call(
+            plugin, plugin._advance_timer_id
+        )
+        assert _phase(plugin) == MusicQuizPhase.REVEAL
+        assert advance_delay == 30.0
+        assert first_round.auto_advance_at == 130.0
+        cast("AsyncMock", plugin._play_track).reset_mock()
+        cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ),
+            patch("music_assistant.providers.music_quiz.time.time", return_value=110.0),
+        ):
+            state = await plugin.ready(player_ids["Alice"])
+
+        assert _phase(plugin) == MusicQuizPhase.ANSWERING
+        assert game.current_round_index == 1
+        assert len(game.rounds) == 2
+        assert first_round.to_dict()["auto_advance_at"] is None
+        assert state["current_round"]["round_index"] == 1
+        cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._advance_timer_id)
+        cast("AsyncMock", plugin._play_track).assert_awaited_once_with("library://track/hitster-1")
+        assert prepare_round.await_count == 2
+
+        await stale_callback(stale_round_index)
+
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    assert game.current_round_index == 1
+    assert len(game.rounds) == 2
+    cast("AsyncMock", plugin._play_track).assert_awaited_once()
+    assert prepare_round.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_hitster_finish_skips_unanswered_bonus() -> None:
     """Keep finish as a backward-compatible way to skip a bonus."""
     definitions: list[TimelineBonusDefinition] = [
