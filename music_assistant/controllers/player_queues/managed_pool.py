@@ -18,10 +18,9 @@ source more than once weights it up) and gates every candidate against the share
 so a recently-heard track isn't pulled back in. A dynamic batch is offered least-recently-played
 first and de-prioritizes tracks whose artist is within the artist-recency window (a soft nudge, not
 a hard exclusion, so a single-artist station still plays); a finite source keeps its own
-(materialized) order so it plays through coherently. Once the batch is assembled it is passed
-through a seam-aware artist-spacing pass that best-effort keeps directly-adjacent tracks from
-sharing an artist, and the first added track is kept clear of the currently-queued tail's last
-artist.
+(materialized) order so it plays through coherently. The selected source groups are randomly
+interleaved across the batch before a seam-aware artist-spacing pass best-effort keeps
+directly-adjacent tracks from sharing an artist, including the currently-queued tail's last artist.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_SOURCE_CAP,
     MANAGED_POOL_TARGET,
 )
-from music_assistant.controllers.player_queues.helpers import space_by_artist
+from music_assistant.controllers.player_queues.helpers import interleave_groups, space_by_artist
 from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
@@ -377,8 +376,9 @@ def allocate_refill(
     the recency snapshot (a within-window track is excluded entirely). A dynamic batch is ordered
     least-recently-played first and de-prioritizes recently-heard artists; a finite (TRACKS) source
     keeps its own materialized order. If gating leaves nothing, an ungated least-recently-played
-    fallback is returned so playback never stalls. The assembled batch is finally spaced so no two
-    adjacent tracks share an artist.
+    fallback is returned so playback never stalls. The selected source groups are randomly
+    interleaved while retaining each source's candidate order, then spaced so no two adjacent tracks
+    share an artist.
 
     :param sources: The queue's dynamic sources, each with its already-fetched candidate tracks.
     :param slots: How many tracks to add (0 or fewer returns nothing).
@@ -402,7 +402,7 @@ def allocate_refill(
     shares = [slots * (weight or 0) / total_weight for weight in weights]
     taken = [0.0] * len(sources)
     pointers = [0] * len(sources)
-    chosen: list[Track] = []
+    chosen_by_source: list[list[Track]] = [[] for _ in sources]
     chosen_set: set[Track] = set()
     chosen_song_keys: set[tuple[str, str]] = set()
     for _ in range(slots):
@@ -424,12 +424,16 @@ def allocate_refill(
         if best_index == -1:
             break
         track = eligible[best_index][pointers[best_index]]
-        chosen.append(track)
+        chosen_by_source[best_index].append(track)
         chosen_set.add(track)
         chosen_song_keys.update(song_keys(track))
         taken[best_index] += 1
         pointers[best_index] += 1
-    batch = chosen or _ungated_fallback(sources, slots, pool_keys, pool_song_keys, snapshot)
+    batch = (
+        interleave_groups(chosen_by_source)
+        if chosen_set
+        else _ungated_fallback(sources, slots, pool_keys, pool_song_keys, snapshot)
+    )
     return _space_tracks(batch, preceding_artists)
 
 
