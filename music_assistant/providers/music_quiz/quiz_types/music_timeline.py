@@ -7,13 +7,13 @@ import logging
 import secrets
 from collections.abc import Sequence
 from dataclasses import replace
-from itertools import batched
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Artist, ItemMapping, Track
 
+from music_assistant.helpers.compare import compare_artist
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
@@ -51,6 +51,7 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_BONUS_OPTION_COUNT = 4
 COMPLETED_REVEAL_AUTO_ADVANCE_SECONDS = 30.0
 TRACK_ENRICHMENT_CONCURRENCY = 10
+PLAYBACK_REPLACEMENT_RESERVE = 4
 BONUS_CANDIDATE_LIMIT = 24
 AI_QUERY_TIMEOUT_SECONDS = 30.0
 MAX_AI_PROMPT_BYTES = 8192
@@ -72,6 +73,8 @@ class MusicTimelineQuizType(QuizType):
         """
         super().__init__(mass, config)
         self._eligible_tracks: list[Track] | None = None
+        self._title_top_track_candidates: dict[tuple[str, str], list[SuggestionCandidate]] = {}
+        self._title_search_candidates: dict[tuple[str, str], list[SuggestionCandidate]] = {}
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -180,18 +183,27 @@ class MusicTimelineQuizType(QuizType):
             self._eligible_tracks = [
                 track for track in self._eligible_tracks if track.uri != track_uri
             ]
+        for cache in (self._title_top_track_candidates, self._title_search_candidates):
+            for artist_key, candidates in cache.items():
+                cache[artist_key] = [
+                    candidate for candidate in candidates if candidate.uri != track_uri
+                ]
 
     async def _get_eligible_tracks(self) -> list[Track]:
         """Return unique source tracks with usable release metadata."""
         if self._eligible_tracks is not None:
             return self._eligible_tracks
         source_tracks = list((await self._get_source_track_pool()).values())
+        eligible_tracks: dict[str, Track] = {}
+        unresolved_tracks: list[Track] = []
+        for track in source_tracks:
+            if self._track_is_eligible(track):
+                assert track.uri is not None
+                eligible_tracks[track.uri] = track
+            elif track.available and track.is_playable:
+                unresolved_tracks.append(track)
 
         async def _resolve_track(track: Track) -> Track | None:
-            if not track.available or not track.is_playable:
-                return None
-            if self._track_is_eligible(track):
-                return track
             try:
                 enriched = await self.mass.music.tracks.get(track.item_id, track.provider)
             except Exception as err:
@@ -199,22 +211,24 @@ class MusicTimelineQuizType(QuizType):
                 return None
             return enriched if self._track_is_eligible(enriched) else None
 
-        resolved_tracks: list[Track | None] = []
-        for track_batch in batched(
-            source_tracks,
-            TRACK_ENRICHMENT_CONCURRENCY,
-            strict=False,
+        target_track_count = self.config.round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
+        unresolved_offset = 0
+        while len(eligible_tracks) < target_track_count and unresolved_offset < len(
+            unresolved_tracks
         ):
-            resolved_tracks.extend(
-                await asyncio.gather(*(_resolve_track(track) for track in track_batch))
+            batch_size = min(
+                TRACK_ENRICHMENT_CONCURRENCY,
+                target_track_count - len(eligible_tracks),
             )
-        self._eligible_tracks = list(
-            {
-                track.uri: track
-                for track in resolved_tracks
-                if track is not None and track.uri is not None
-            }.values()
-        )
+            track_batch = unresolved_tracks[unresolved_offset : unresolved_offset + batch_size]
+            unresolved_offset += len(track_batch)
+            resolved_tracks = await asyncio.gather(
+                *(_resolve_track(track) for track in track_batch)
+            )
+            for resolved_track in resolved_tracks:
+                if resolved_track is not None and resolved_track.uri is not None:
+                    eligible_tracks.setdefault(resolved_track.uri, resolved_track)
+        self._eligible_tracks = list(eligible_tracks.values())
         if not self._eligible_tracks:
             raise InvalidDataError(
                 "None of the configured tracks have usable release years",
@@ -392,45 +406,89 @@ class MusicTimelineQuizType(QuizType):
         if primary_artist is None:
             return []
         assert self._eligible_tracks is not None
-        candidates = [
-            self._bonus_candidate(candidate, TimelineBonusType.TITLE)
-            for candidate in self._eligible_tracks
-            if candidate.uri != track.uri and self._track_has_artist(candidate, primary_artist)
-        ]
+        candidates = self._filter_bonus_candidates(
+            track,
+            TimelineBonusType.TITLE,
+            [
+                self._bonus_candidate(candidate, TimelineBonusType.TITLE)
+                for candidate in self._eligible_tracks
+                if self._track_has_primary_artist(candidate, primary_artist)
+            ],
+        )
         if self._has_enough_bonus_candidates(track, TimelineBonusType.TITLE, candidates):
             return candidates
+        candidates = self._filter_bonus_candidates(
+            track,
+            TimelineBonusType.TITLE,
+            [
+                *candidates,
+                *(await self._get_top_track_title_candidates(primary_artist)),
+            ],
+        )
+        if self._has_enough_bonus_candidates(track, TimelineBonusType.TITLE, candidates):
+            return candidates
+        return self._filter_bonus_candidates(
+            track,
+            TimelineBonusType.TITLE,
+            [
+                *candidates,
+                *(await self._get_search_title_candidates(primary_artist)),
+            ],
+        )
+
+    async def _get_top_track_title_candidates(
+        self,
+        artist: Artist | ItemMapping,
+    ) -> list[SuggestionCandidate]:
+        """Return cached real title candidates from the artist's bounded top tracks."""
+        artist_key = (artist.provider, artist.item_id)
+        if artist_key in self._title_top_track_candidates:
+            return self._title_top_track_candidates[artist_key]
         try:
-            artist_tracks = await self.mass.music.artists.tracks(
-                item_id=primary_artist.item_id,
-                provider_instance_id_or_domain=primary_artist.provider,
+            top_tracks = await self.mass.music.artists.top_tracks(
+                item_id=artist.item_id,
+                provider_instance_id_or_domain=artist.provider,
             )
         except Exception as err:
-            LOGGER.debug("Could not fetch tracks for %s: %s", primary_artist.name, err)
-        else:
-            candidates.extend(
-                self._bonus_candidate(candidate, TimelineBonusType.TITLE)
-                for candidate in artist_tracks
-                if self._track_has_artist(candidate, primary_artist)
-            )
-        if self._has_enough_bonus_candidates(track, TimelineBonusType.TITLE, candidates):
-            return candidates
+            LOGGER.debug("Could not fetch top tracks for %s: %s", artist.name, err)
+            return []
+        candidates = self._title_candidates_for_artist(top_tracks, artist)
+        self._title_top_track_candidates[artist_key] = candidates
+        return candidates
+
+    async def _get_search_title_candidates(
+        self,
+        artist: Artist | ItemMapping,
+    ) -> list[SuggestionCandidate]:
+        """Return cached real title candidates from a bounded artist track search."""
+        artist_key = (artist.provider, artist.item_id)
+        if artist_key in self._title_search_candidates:
+            return self._title_search_candidates[artist_key]
         try:
             search_results = await self.mass.music.search(
-                search_query=primary_artist.name,
+                search_query=artist.name,
                 media_types=[MediaType.TRACK],
                 limit=BONUS_CANDIDATE_LIMIT,
                 library_only=False,
             )
         except Exception as err:
-            LOGGER.debug("Could not search for tracks by %s: %s", primary_artist.name, err)
-        else:
-            candidates.extend(
-                self._bonus_candidate(candidate, TimelineBonusType.TITLE)
-                for candidate in search_results.tracks
-                if isinstance(candidate, Track)
-                and self._track_has_artist(candidate, primary_artist)
-            )
+            LOGGER.debug("Could not search for tracks by %s: %s", artist.name, err)
+            return []
+        candidates = self._title_candidates_for_artist(search_results.tracks, artist)
+        self._title_search_candidates[artist_key] = candidates
         return candidates
+
+    def _title_candidates_for_artist(
+        self,
+        tracks: Sequence[Track | ItemMapping],
+        artist: Artist | ItemMapping,
+    ) -> list[SuggestionCandidate]:
+        """Convert real tracks by the requested primary artist to title candidates."""
+        return [
+            self._bonus_candidate(track, TimelineBonusType.TITLE)
+            for track in tracks
+            if isinstance(track, Track) and self._track_has_primary_artist(track, artist)
+        ]
 
     async def _rank_bonus_candidates(
         self,
@@ -614,14 +672,10 @@ class MusicTimelineQuizType(QuizType):
         return track.artists[0] if track.artists else None
 
     @staticmethod
-    def _track_has_artist(track: Track, artist: Artist | ItemMapping) -> bool:
-        """Return whether a track belongs to the given artist."""
-        normalized_name = normalize_answer_label(artist.name)
-        return any(
-            (track_artist.item_id == artist.item_id and track_artist.provider == artist.provider)
-            or normalize_answer_label(track_artist.name) == normalized_name
-            for track_artist in track.artists
-        )
+    def _track_has_primary_artist(track: Track, artist: Artist | ItemMapping) -> bool:
+        """Return whether a track has the requested primary artist."""
+        primary_artist = MusicTimelineQuizType._primary_artist(track)
+        return primary_artist is not None and bool(compare_artist(primary_artist, artist))
 
     def _timeline_from_previous_rounds(
         self,
