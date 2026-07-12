@@ -1318,7 +1318,7 @@ class SpotifyProvider(MusicProvider):
         """Get all items from a paged list."""
         offset = 0
         # single request to fetch the etag (used as cache checksum) and total
-        meta = await self._get_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
+        meta = await self._get_cached_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
         cache_checksum = meta["etag"]
         total = meta["total"]
         while True:
@@ -1354,6 +1354,11 @@ class SpotifyProvider(MusicProvider):
             cache_key, result, provider=self.instance_id, checksum=cache_checksum
         )
         return result
+
+    @use_cache(120, allow_bypass=False)  # short cache: repeated traversals reuse metadata
+    async def _get_cached_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        """Get cached pagination metadata for a paginated API endpoint."""
+        return await self._get_paginated_meta(endpoint, **kwargs)
 
     async def _get_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """Get etag and total item count for a paginated api endpoint."""
