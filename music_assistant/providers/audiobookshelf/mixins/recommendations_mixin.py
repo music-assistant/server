@@ -157,9 +157,6 @@ class RecommendationsMixin(MixinBase):
                     media_type = MediaType.AUDIOBOOK
                 case AbsShelfType.SERIES | AbsShelfType.AUTHORS:
                     media_type = MediaType.FOLDER
-                case _:
-                    # this would be authors, currently
-                    continue
 
             items: list[MediaItemType | BrowseFolder] = []
             # Recently added is the _only_ case, where we get a full podcast

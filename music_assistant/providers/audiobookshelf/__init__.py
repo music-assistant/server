@@ -9,6 +9,9 @@ from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import aioaudiobookshelf as aioabs
+from aioaudiobookshelf.client.session_configuration import (
+    SessionConfiguration as AbsSessionConfiguration,
+)
 from aioaudiobookshelf.exceptions import AbsError
 from aioaudiobookshelf.exceptions import (
     LoginError as AbsLoginError,

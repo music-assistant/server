@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     import asyncio
     from logging import Logger
 
-    import aioaudiobookshelf as aioabs
+    from aioaudiobookshelf.client import SocketClient, UserClient
     from music_assistant_models.config_entries import ProviderConfig
 
     from music_assistant.mass import MusicAssistant
@@ -42,8 +42,8 @@ class MixinBase:
         abs_username: str
         is_token_user: bool
         progress_guard: ProgressGuard
-        _client: aioabs.UserClient
-        _client_socket: aioabs.SocketClient
+        _client: UserClient
+        _client_socket: SocketClient
 
         playlist_lock: asyncio.Lock
         playlist_last: float

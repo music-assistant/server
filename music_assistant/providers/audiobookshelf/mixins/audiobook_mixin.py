@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
+from aioaudiobookshelf.schema.library import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
 from music_assistant_models.enums import MediaType
 
 from music_assistant.providers.audiobookshelf.constants import CONF_URL
@@ -14,7 +14,7 @@ from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
 from music_assistant.providers.audiobookshelf.parsers import parse_audiobook
 
 if TYPE_CHECKING:
-    from aioaudiobookshelf.schema.user import MediaProgress
+    from aioaudiobookshelf.schema.media_progress import MediaProgress
     from music_assistant_models.media_items import Audiobook
 
 

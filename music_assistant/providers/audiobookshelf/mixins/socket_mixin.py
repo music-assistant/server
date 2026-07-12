@@ -27,8 +27,10 @@ from music_assistant.providers.audiobookshelf.parsers import (
 )
 
 if TYPE_CHECKING:
-    from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
+    from aioaudiobookshelf.schema.library import (
+        LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
+    )
     from aioaudiobookshelf.schema.media_progress import MediaProgress
     from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 

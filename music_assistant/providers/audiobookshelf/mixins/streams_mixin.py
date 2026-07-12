@@ -6,14 +6,16 @@ import time
 from contextlib import suppress
 from datetime import datetime
 
-from aioaudiobookshelf.client.items import PlaybackSessionExpanded as AbsPlaybackSessionExpanded
-from aioaudiobookshelf.client.items import PlaybackSessionParameters as AbsPlaybackSessionParameters
-from aioaudiobookshelf.client.session import SyncOpenSessionParameters
 from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFoundError
 from aioaudiobookshelf.exceptions import (
     SessionSyncError as AbsSessionSyncError,
 )
+from aioaudiobookshelf.schema.calls_items import (
+    PlaybackSessionParameters as AbsPlaybackSessionParameters,
+)
+from aioaudiobookshelf.schema.calls_session import SyncOpenSessionParameters
 from aioaudiobookshelf.schema.session import DeviceInfo as AbsDeviceInfo
+from aioaudiobookshelf.schema.session import PlaybackSessionExpanded as AbsPlaybackSessionExpanded
 from aiohttp import web
 from music_assistant_models.enums import (
     ContentType,
@@ -333,9 +335,8 @@ class StreamsMixin(MixinBase):
             abs_session = await self._client.get_open_session(session_id=session_id)
         except AbsSessionNotFoundError as err:
             raise web.HTTPNotFound from err
-        part_id = int(part_id)  # type: ignore[assignment]
         try:
-            part_track = abs_session.audio_tracks[part_id]
+            part_track = abs_session.audio_tracks[int(part_id)]
         except IndexError:
             return web.Response(status=404, text="Part not found")
 

@@ -34,7 +34,9 @@ from music_assistant.providers.audiobookshelf.parsers import (
 )
 
 if TYPE_CHECKING:
-    from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
+    from aioaudiobookshelf.schema.library import (
+        LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
+    )
     from music_assistant_models.media_items import (
         MediaItemType,
         Playlist,
@@ -137,8 +139,8 @@ class PlaylistMixin(MixinBase):
                         cover_version=item.library_item.updated_at,
                     )
                 )
-        for cnt, item in enumerate(playlist_items):
-            item.position = cnt
+        for cnt, playlist_item in enumerate(playlist_items):
+            playlist_item.position = cnt
 
         return playlist_items
 
