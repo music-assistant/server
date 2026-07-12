@@ -205,7 +205,7 @@ def filter_suggestion_candidates(
     limit: int | None = None,
 ) -> list[SuggestionCandidate]:
     """
-    Return unique distractors that stay distinct from the correct answer.
+    Return ordered distractors that stay distinct from the answer and each other.
 
     :param correct: Correct answer candidate.
     :param distractors: Ordered wrong-answer candidates to filter.
