@@ -122,6 +122,42 @@ def test_parse_album_single_artist_compilation_keeps_rich_artist() -> None:
     assert result.artists[0].item_id == "artist0"
 
 
+def test_parse_album_compilation_keeps_catalog_artist_details() -> None:
+    """A compilation must keep complete catalog details for a library artist."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Eminem", "isCompilation": True},
+        {
+            "artists": {
+                "data": [
+                    {
+                        "id": "l.artist0",
+                        "type": "library-artists",
+                        "relationships": {
+                            "catalog": {
+                                "data": [
+                                    {
+                                        "id": "artist0",
+                                        "type": "artists",
+                                        "attributes": {"name": "Eminem"},
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ]
+            }
+        },
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert len(result.artists) == 1
+    assert result.artists[0].name == "Eminem"
+    assert result.artists[0].item_id == "artist0"
+
+
 def test_parse_album_dj_mix_compilation_keeps_multiple_artists() -> None:
     """A DJ-mix compilation with multiple related artists must keep them all."""
     provider = _create_provider_mock()
@@ -136,12 +172,26 @@ def test_parse_album_dj_mix_compilation_keeps_multiple_artists() -> None:
     assert [artist.name for artist in result.artists] == ["Pete Tong", "Boy George"]
 
 
-def test_parse_album_compilation_ignores_placeholder_artist_stub() -> None:
-    """An unresolvable artist stub (id only) must not become the album artist."""
+@pytest.mark.parametrize(
+    "artist_obj",
+    [
+        {"id": "80204262", "type": "artists"},
+        {"id": "80204262", "type": "artists", "attributes": {}},
+        {
+            "id": "l.artist.80204262",
+            "type": "library-artists",
+            "relationships": {"catalog": {"data": [{"id": "80204262", "type": "artists"}]}},
+        },
+    ],
+)
+def test_parse_album_compilation_ignores_placeholder_artist_stub(
+    artist_obj: dict[str, Any],
+) -> None:
+    """An unresolvable artist stub must not become the album artist."""
     provider = _create_provider_mock()
     album_obj = _make_album_obj(
         {"artistName": "Verschillende artiesten", "isCompilation": True},
-        {"artists": {"data": [{"id": "80204262", "type": "artists"}]}},
+        {"artists": {"data": [artist_obj]}},
     )
 
     result = parse_album(provider, album_obj)
