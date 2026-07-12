@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator, Sequence
@@ -89,6 +90,8 @@ class SpotifyProvider(MusicProvider):
     _sp_user: dict[str, Any] | None = None
     _librespot_bin: str | None = None
     _audiobooks_supported = False
+    _playlist_pagination_snapshot: tuple[str, bool, dict[str, Any]] | None = None
+    _playlist_pagination_lock: asyncio.Lock
     # True if user has configured a custom client ID with valid authentication
     dev_session_active: bool = False
     throttler: ThrottlerManager
@@ -96,6 +99,8 @@ class SpotifyProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
+        self._playlist_pagination_snapshot = None
+        self._playlist_pagination_lock = asyncio.Lock()
         # Default throttler for global session (heavy rate limited)
         self.throttler = ThrottlerManager(rate_limit=1, period=2)
         self.streamer = LibrespotStreamer(self)
@@ -582,7 +587,7 @@ class SpotifyProvider(MusicProvider):
         page_size = 50
         offset = page * page_size
 
-        meta = await self._get_paginated_meta(uri, limit=1, offset=0, use_global_session=use_global)
+        meta = await self._get_playlist_pagination_meta(uri, page, use_global)
         cache_checksum = meta["etag"]
         total = meta["total"]
 
@@ -1175,6 +1180,39 @@ class SpotifyProvider(MusicProvider):
 
         return liked_songs
 
+    async def _get_playlist_pagination_meta(
+        self, endpoint: str, page: int, use_global_session: bool
+    ) -> dict[str, Any]:
+        """
+        Return pagination metadata for a Spotify playlist traversal.
+
+        :param endpoint: Spotify API endpoint for the playlist items.
+        :param page: Requested playlist page.
+        :param use_global_session: Whether the global Spotify session is required.
+        """
+        observed_snapshot = self._playlist_pagination_snapshot
+        async with self._playlist_pagination_lock:
+            snapshot = self._playlist_pagination_snapshot
+            # A concurrent page may have populated this snapshot while this call waited.
+            if (
+                snapshot
+                and snapshot[0] == endpoint
+                and snapshot[1] == use_global_session
+                and (page > 0 or snapshot is not observed_snapshot)
+            ):
+                return snapshot[2]
+
+            if page == 0:
+                self._playlist_pagination_snapshot = None
+            meta = await self._get_paginated_meta(
+                endpoint,
+                limit=1,
+                offset=0,
+                use_global_session=use_global_session,
+            )
+            self._playlist_pagination_snapshot = (endpoint, use_global_session, meta)
+            return meta
+
     async def _playlist_requires_global_token(self, prov_playlist_id: str) -> bool:
         """
         Check if a playlist requires global token (cached).
@@ -1317,7 +1355,6 @@ class SpotifyProvider(MusicProvider):
         )
         return result
 
-    @use_cache(120, allow_bypass=False)  # short cache: subsequent calls reuse cached data
     async def _get_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """Get etag and total item count for a paginated api endpoint."""
         _res = await self._get_data(endpoint, **kwargs)
