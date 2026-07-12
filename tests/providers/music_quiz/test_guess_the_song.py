@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -84,12 +86,27 @@ def _quiz_type(
     return GuessTheSongQuizType(mass, config), mass
 
 
-def _ai_provider(response: str | None = None, error: Exception | None = None) -> MagicMock:
+def _ai_provider(response: object = None, error: Exception | None = None) -> MagicMock:
     """Return a mock AI_QUERY-capable plugin provider."""
     provider = MagicMock(spec=PluginProvider)
     provider.instance_id = "ai--1"
     provider.ai_query = AsyncMock(return_value=response, side_effect=error)
     return provider
+
+
+def _ai_response(
+    ranked_ids: list[str],
+    synthetic: list[tuple[str, str]],
+    **extra: object,
+) -> str:
+    """Return a structured AI distractor response."""
+    return json.dumps(
+        {
+            "ranked_ids": ranked_ids,
+            "synthetic": [{"kind": kind, "label": label} for kind, label in synthetic],
+            **extra,
+        }
+    )
 
 
 def test_reject_track_removes_it_from_the_source_pool() -> None:
@@ -108,7 +125,7 @@ def test_reject_track_removes_it_from_the_source_pool() -> None:
 @pytest.mark.asyncio
 async def test_normal_difficulty_uses_search_only() -> None:
     """Normal difficulty draws distractors from a catalog search and nothing else."""
-    quiz_type, mass = _quiz_type("normal")
+    quiz_type, mass = _quiz_type("normal", use_ai=True)
     mass.music.search.return_value = SimpleNamespace(
         tracks=[_track("s1", "One More Time", "Daft Punk"), _track("s2", "Genesis", "Justice")]
     )
@@ -172,6 +189,49 @@ async def test_hard_difficulty_enriches_with_similar_artists_when_tracks_sparse(
 
 
 @pytest.mark.asyncio
+async def test_hard_filters_unusable_similar_tracks_before_artist_enrichment() -> None:
+    """Enrich through similar artists when raw track results are only answer variants."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True)
+    correct_track, correct = _correct()
+    mass.music.tracks.similar_tracks.return_value = [
+        correct_track,
+        _track("remix", "Around the World (Remix)", "Daft Punk"),
+        _track("radio", "Around the World [Radio Edit]", "Daft Punk"),
+    ]
+    mass.music.artists.similar_artists.return_value = [
+        _artist("justice", "Justice"),
+        _artist("air", "Air"),
+        _artist("phoenix", "Phoenix"),
+    ]
+    top_tracks = {
+        "justice": [_track("j1", "Genesis", "Justice")],
+        "air": [_track("a1", "Sexy Boy", "Air")],
+        "phoenix": [_track("p1", "Lisztomania", "Phoenix")],
+    }
+    mass.music.artists.top_tracks.side_effect = lambda item_id, **_kwargs: top_tracks[item_id]
+    provider = _ai_provider(
+        _ai_response(
+            ["candidate_0", "candidate_1", "candidate_2"],
+            [
+                ("same_artist_title", "Daft Punk - Neon Horizon"),
+                ("context_track", "Lunar Circuit - Chrome Reverie"),
+            ],
+        )
+    )
+    mass.get_providers_supporting_feature.return_value = [provider]
+
+    result = await quiz_type._gather_distractors(correct_track, correct)
+
+    assert [item.label for item in result[:3]] == [
+        "Justice - Genesis",
+        "Daft Punk - Neon Horizon",
+        "Lunar Circuit - Chrome Reverie",
+    ]
+    mass.music.artists.similar_artists.assert_awaited_once()
+    provider.ai_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_hard_difficulty_falls_back_to_search_on_error() -> None:
     """A failing similar-tracks/artists lookup falls through to the search distractors."""
     quiz_type, mass = _quiz_type("hard")
@@ -194,7 +254,7 @@ async def test_hard_difficulty_falls_back_to_search_on_error() -> None:
 @pytest.mark.asyncio
 async def test_easy_difficulty_uses_source_pool() -> None:
     """Easy difficulty offers other tracks from the configured source pool."""
-    quiz_type, mass = _quiz_type("easy")
+    quiz_type, mass = _quiz_type("easy", use_ai=True)
     correct_track, correct = _correct()
     quiz_type._source_track_pool = _pool(
         [
@@ -211,72 +271,306 @@ async def test_easy_difficulty_uses_source_pool() -> None:
     assert {"Justice - Genesis", "Air - Sexy Boy", "Phoenix - 1901"} <= labels
     assert correct_track.uri not in {item.uri for item in result}
     mass.music.tracks.similar_tracks.assert_not_awaited()
+    mass.get_providers_supporting_feature.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_ai_distractors_used_when_enabled() -> None:
-    """AI-generated distractors are used first when the toggle is on and a provider responds."""
-    quiz_type, mass = _quiz_type("normal", use_ai=True)
-    mass.get_providers_supporting_feature.return_value = [
-        _ai_provider("Justice - Genesis\nAir - Sexy Boy\nPhoenix - 1901")
+async def test_hard_ai_distractors_mix_real_and_synthetic_context() -> None:
+    """Build the default hard mix from one real and two contextual synthetic choices."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True)
+    mass.music.tracks.similar_tracks.return_value = [
+        _track("st1", "Digital Love", "Daft Punk"),
+        _track("st2", "D.A.N.C.E.", "Justice"),
+        _track("st3", "Sexy Boy", "Air"),
     ]
-    mass.music.search.return_value = SimpleNamespace(tracks=[_track("s1", "Fallback", "Someone")])
+    provider = _ai_provider(
+        _ai_response(
+            ["candidate_2", "candidate_0", "candidate_1"],
+            [
+                ("same_artist_title", "Daft Punk - Neon Horizon"),
+                ("context_track", "Lunar Circuit - Chrome Reverie"),
+            ],
+        )
+    )
+    mass.get_providers_supporting_feature.return_value = [provider]
     correct_track, correct = _correct()
 
     result = await quiz_type._gather_distractors(correct_track, correct)
 
-    assert [item.label for item in result][:3] == [
-        "Justice - Genesis",
+    assert [(item.label, item.uri) for item in result[:3]] == [
+        ("Air - Sexy Boy", mass.music.tracks.similar_tracks.return_value[2].uri),
+        ("Daft Punk - Neon Horizon", None),
+        ("Lunar Circuit - Chrome Reverie", None),
+    ]
+    provider.ai_query.assert_awaited_once()
+    prompt = provider.ai_query.await_args.args[0]
+    assert CORRECT_LABEL in prompt
+    assert "Daft Punk - Digital Love" in prompt
+    assert "Justice - D.A.N.C.E." in prompt
+
+
+@pytest.mark.asyncio
+async def test_hard_ai_composition_scales_with_real_catalog_dominance() -> None:
+    """Retain two bounded synthetic roles while larger option sets add real tracks."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True, suggestion_count=6)
+    similar_tracks = [
+        _track("st0", "Genesis", "Justice"),
+        _track("st1", "Sexy Boy", "Air"),
+        _track("st2", "Lisztomania", "Phoenix"),
+        _track("st3", "Teardrop", "Massive Attack"),
+        _track("st4", "Midnight City", "M83"),
+    ]
+    mass.music.tracks.similar_tracks.return_value = similar_tracks
+    provider = _ai_provider(
+        _ai_response(
+            [f"candidate_{index}" for index in reversed(range(5))],
+            [
+                ("same_artist_title", "Daft Punk - Neon Horizon"),
+                ("context_track", "Lunar Circuit - Chrome Reverie"),
+            ],
+        )
+    )
+    mass.get_providers_supporting_feature.return_value = [provider]
+    correct_track, correct = _correct()
+
+    result = await quiz_type._gather_distractors(correct_track, correct)
+
+    selected = result[:5]
+    assert sum(item.uri is not None for item in selected) == 3
+    assert sum(item.uri is None for item in selected) == 2
+    assert {item.label for item in selected if item.uri is None} == {
+        "Daft Punk - Neon Horizon",
+        "Lunar Circuit - Chrome Reverie",
+    }
+    provider.ai_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_hard_ai_context_preserves_non_english_grounding() -> None:
+    """Pass non-English source/catalog data through the bounded untrusted context."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True)
+    source = _track("source", "Zoutelande", "BLØF")
+    correct = SuggestionCandidate(
+        "BLØF - Zoutelande",
+        source.uri,
+        title="Zoutelande",
+    )
+    mass.music.tracks.similar_tracks.return_value = [
+        _track("st1", "Het Is Een Nacht", "Guus Meeuwis"),
+        _track("st2", "Rood", "Marco Borsato"),
+        _track("st3", "Iedereen Is Van De Wereld", "The Scene"),
+    ]
+    provider = _ai_provider(
+        _ai_response(
+            ["candidate_0", "candidate_1", "candidate_2"],
+            [
+                ("same_artist_title", "BLØF - Mooie Dagen"),
+                ("context_track", "Noorderlicht - Aan Zee"),
+            ],
+        )
+    )
+    mass.get_providers_supporting_feature.return_value = [provider]
+
+    result = await quiz_type._gather_distractors(source, correct)
+
+    assert {item.label for item in result[:3]} == {
+        "Guus Meeuwis - Het Is Een Nacht",
+        "BLØF - Mooie Dagen",
+        "Noorderlicht - Aan Zee",
+    }
+    prompt = provider.ai_query.await_args.args[0]
+    assert "BLØF" in prompt
+    assert "Zoutelande" in prompt
+    assert "Guus Meeuwis - Het Is Een Nacht" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "synthetic",
+    [
+        [
+            ("same_artist_title", "Daft Punk - Around the World (Remix)"),
+            ("context_track", "Lunar Circuit - Chrome Reverie"),
+        ],
+        [
+            ("same_artist_title", "Neon Horizon"),
+            ("context_track", "Lunar Circuit - Chrome Reverie"),
+        ],
+        [
+            ("same_artist_title", "Daft Punk - Neon Horizon"),
+            ("context_track", "Daft Punk - Chrome Reverie"),
+        ],
+        [
+            ("same_artist_title", "Daft Punk - Neon Horizon"),
+            ("context_track", "Justice - Chrome Reverie"),
+        ],
+    ],
+)
+async def test_invalid_hard_ai_semantics_fall_back_to_real_catalog(
+    synthetic: list[tuple[str, str]],
+) -> None:
+    """Reject correct-title leakage and malformed synthetic track roles."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True)
+    real_tracks = [
+        _track("st1", "Digital Love", "Daft Punk"),
+        _track("st2", "D.A.N.C.E.", "Justice"),
+        _track("st3", "Sexy Boy", "Air"),
+    ]
+    mass.music.tracks.similar_tracks.return_value = real_tracks
+    provider = _ai_provider(
+        _ai_response(
+            ["candidate_0", "candidate_1", "candidate_2"],
+            synthetic,
+        )
+    )
+    mass.get_providers_supporting_feature.return_value = [provider]
+    correct_track, correct = _correct()
+
+    result = await quiz_type._gather_distractors(correct_track, correct)
+
+    assert [item.label for item in result[:3]] == [
+        "Daft Punk - Digital Love",
+        "Justice - D.A.N.C.E.",
         "Air - Sexy Boy",
-        "Phoenix - 1901",
     ]
+    assert all(item.uri is not None for item in result[:3])
+    provider.ai_query.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_ai_falls_back_when_no_provider_available() -> None:
-    """With no AI provider, distractors come from the difficulty/search source."""
-    quiz_type, mass = _quiz_type("normal", use_ai=True)
-    mass.get_providers_supporting_feature.return_value = []
-    mass.music.search.return_value = SimpleNamespace(
-        tracks=[_track("s1", "One More Time", "Daft Punk")]
+async def test_context_track_cannot_reuse_an_individual_source_contributor() -> None:
+    """Reject a context artist that is already a source-track contributor."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True)
+    correct_track, _ = _correct()
+    correct_track.artists.append(_artist("pharrell", "Pharrell Williams"))
+    correct = SuggestionCandidate(
+        f"{correct_track.artist_str} - {correct_track.name}",
+        correct_track.uri,
+        title=correct_track.name,
     )
-    correct_track, correct = _correct()
-
-    result = await quiz_type._gather_distractors(correct_track, correct)
-
-    assert [item.label for item in result] == ["Daft Punk - One More Time"]
-
-
-@pytest.mark.asyncio
-async def test_ai_falls_back_when_query_errors() -> None:
-    """A failing AI query falls back to the difficulty/search source."""
-    quiz_type, mass = _quiz_type("normal", use_ai=True)
-    mass.get_providers_supporting_feature.return_value = [_ai_provider(error=Exception("boom"))]
-    mass.music.search.return_value = SimpleNamespace(
-        tracks=[_track("s1", "One More Time", "Daft Punk")]
-    )
-    correct_track, correct = _correct()
-
-    result = await quiz_type._gather_distractors(correct_track, correct)
-
-    assert [item.label for item in result] == ["Daft Punk - One More Time"]
-
-
-@pytest.mark.asyncio
-async def test_ai_falls_back_when_output_unusable() -> None:
-    """Unusable AI output (no parseable answers) falls back to the difficulty/search source."""
-    quiz_type, mass = _quiz_type("normal", use_ai=True)
-    mass.get_providers_supporting_feature.return_value = [
-        _ai_provider("Sorry, I cannot help with that.")
+    real_tracks = [
+        _track("st1", "Digital Love", "Daft Punk"),
+        _track("st2", "D.A.N.C.E.", "Justice"),
+        _track("st3", "Sexy Boy", "Air"),
     ]
-    mass.music.search.return_value = SimpleNamespace(
-        tracks=[_track("s1", "One More Time", "Daft Punk")]
+    mass.music.tracks.similar_tracks.return_value = real_tracks
+    provider = _ai_provider(
+        _ai_response(
+            ["candidate_0", "candidate_1", "candidate_2"],
+            [
+                (
+                    "same_artist_title",
+                    f"{correct_track.artist_str} - Neon Horizon",
+                ),
+                ("context_track", "Pharrell Williams - Chrome Reverie"),
+            ],
+        )
     )
+    mass.get_providers_supporting_feature.return_value = [provider]
+
+    result = await quiz_type._gather_distractors(correct_track, correct)
+
+    assert [item.label for item in result[:3]] == [
+        "Daft Punk - Digital Love",
+        "Justice - D.A.N.C.E.",
+        "Air - Sexy Boy",
+    ]
+    provider.ai_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_invalid_primary_ai_response_does_not_try_another_provider() -> None:
+    """Use one deterministic provider request before falling back to real tracks."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True)
+    real_tracks = [
+        _track("st1", "Digital Love", "Daft Punk"),
+        _track("st2", "D.A.N.C.E.", "Justice"),
+        _track("st3", "Sexy Boy", "Air"),
+    ]
+    mass.music.tracks.similar_tracks.return_value = real_tracks
+    invalid = _ai_provider(
+        _ai_response(
+            ["candidate_0", "candidate_1", "candidate_2"],
+            [
+                ("same_artist_title", "Daft Punk - Neon Horizon"),
+                ("context_track", "Lunar Circuit - Chrome Reverie"),
+            ],
+            extra=True,
+        )
+    )
+    invalid.instance_id = "ai--a"
+    later = _ai_provider()
+    later.instance_id = "ai--b"
+    mass.get_providers_supporting_feature.return_value = [later, invalid]
     correct_track, correct = _correct()
 
     result = await quiz_type._gather_distractors(correct_track, correct)
 
-    assert [item.label for item in result] == ["Daft Punk - One More Time"]
+    assert [item.label for item in result[:3]] == [
+        "Daft Punk - Digital Love",
+        "Justice - D.A.N.C.E.",
+        "Air - Sexy Boy",
+    ]
+    invalid.ai_query.assert_awaited_once()
+    later.ai_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_ai_timeout_falls_back_to_real_catalog() -> None:
+    """Use only real candidates when the bounded AI request times out."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True)
+    real_tracks = [
+        _track("st1", "Digital Love", "Daft Punk"),
+        _track("st2", "D.A.N.C.E.", "Justice"),
+        _track("st3", "Sexy Boy", "Air"),
+    ]
+    mass.music.tracks.similar_tracks.return_value = real_tracks
+    provider = _ai_provider()
+
+    async def _stall(_prompt: str) -> str:
+        await asyncio.sleep(1)
+        return ""
+
+    provider.ai_query.side_effect = _stall
+    mass.get_providers_supporting_feature.return_value = [provider]
+    correct_track, correct = _correct()
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song.AI_QUERY_TIMEOUT_SECONDS",
+        0.001,
+    ):
+        result = await quiz_type._gather_distractors(correct_track, correct)
+
+    assert [item.label for item in result[:3]] == [
+        "Daft Punk - Digital Love",
+        "Justice - D.A.N.C.E.",
+        "Air - Sexy Boy",
+    ]
+    provider.ai_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_hard_ai_provider_failure_falls_back_to_real_catalog() -> None:
+    """Use only real candidates when the selected AI provider fails."""
+    quiz_type, mass = _quiz_type("hard", use_ai=True)
+    real_tracks = [
+        _track("st1", "Digital Love", "Daft Punk"),
+        _track("st2", "D.A.N.C.E.", "Justice"),
+        _track("st3", "Sexy Boy", "Air"),
+    ]
+    mass.music.tracks.similar_tracks.return_value = real_tracks
+    provider = _ai_provider(error=RuntimeError("provider unavailable"))
+    mass.get_providers_supporting_feature.return_value = [provider]
+    correct_track, correct = _correct()
+
+    result = await quiz_type._gather_distractors(correct_track, correct)
+
+    assert [item.label for item in result[:3]] == [
+        "Daft Punk - Digital Love",
+        "Justice - D.A.N.C.E.",
+        "Air - Sexy Boy",
+    ]
+    provider.ai_query.assert_awaited_once()
 
 
 @pytest.mark.asyncio
