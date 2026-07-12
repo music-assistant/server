@@ -115,6 +115,56 @@ async def test_multipage_traversal_reuses_pagination_metadata() -> None:
     assert pages[3] == []
 
 
+async def test_second_full_traversal_reuses_etag_page_cache() -> None:
+    """A repeated full traversal refreshes metadata but reuses every unchanged page."""
+    harness = _make_provider()
+    harness.provider.__dict__.pop("_get_paginated_meta")
+    harness.provider.__dict__.pop("_get_data_with_caching")
+    page_cache: dict[tuple[str, str | None], dict[str, Any]] = {}
+
+    async def cache_get(
+        key: str, *, checksum: str | None = None, **_kwargs: Any
+    ) -> dict[str, Any] | None:
+        return page_cache.get((key, checksum))
+
+    async def cache_set(
+        key: str,
+        data: dict[str, Any],
+        *,
+        checksum: str | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        page_cache[(key, checksum)] = data
+
+    async def get_data(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if kwargs["limit"] == 1:
+            return {"etag": "stable-etag", "total": 120}
+        return _playlist_page(120, f"track-{kwargs['offset']}")
+
+    harness.provider.mass.cache.get = AsyncMock(side_effect=cache_get)  # type: ignore[method-assign]
+    harness.provider.mass.cache.set = AsyncMock(side_effect=cache_set)  # type: ignore[method-assign]
+    get_data_mock = AsyncMock(side_effect=get_data)
+    harness.provider._get_data = get_data_mock  # type: ignore[method-assign]
+    get_playlist_tracks: Any = SpotifyProvider.get_playlist_tracks.__wrapped__  # type: ignore[attr-defined]
+
+    traversals = [
+        [await get_playlist_tracks(harness.provider, PLAYLIST_ID, page=page) for page in range(4)]
+        for _ in range(2)
+    ]
+
+    metadata_calls = [args for args in get_data_mock.await_args_list if args.kwargs["limit"] == 1]
+    page_calls = [args for args in get_data_mock.await_args_list if args.kwargs["limit"] == 50]
+    assert len(metadata_calls) == 2
+    assert [args.kwargs["offset"] for args in page_calls] == [0, 50, 100]
+    assert harness.provider.mass.cache.get.await_count == 6
+    assert harness.provider.mass.cache.set.await_count == 3
+    assert [[page[0].position for page in traversal[:3]] for traversal in traversals] == [
+        [1, 51, 101],
+        [1, 51, 101],
+    ]
+    assert traversals[0][3] == traversals[1][3] == []
+
+
 async def test_concurrent_cold_pages_share_inflight_pagination_metadata() -> None:
     """Concurrent cache refreshes share one in-flight metadata request."""
     harness = _make_provider()
