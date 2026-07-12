@@ -61,7 +61,7 @@ class MusicQuizConfig(DataClassDictMixin):
     answer_duration: int = 30
     source_uris: list[str] = field(default_factory=list)
     name: str | None = None
-    # guess-the-song specific; other quiz types ignore these
+    # difficulty is guess-the-song specific; AI distractors also apply to timeline bonuses
     difficulty: str = MusicQuizDifficulty.NORMAL.value
     use_ai_distractors: bool = False
     # trivia specific; other quiz types ignore this
