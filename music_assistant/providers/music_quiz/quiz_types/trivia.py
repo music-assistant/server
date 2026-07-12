@@ -56,6 +56,7 @@ MAX_METADATA_VALUE_LENGTH = 500
 MAX_ANSWER_LENGTH = 200
 MAX_QUESTION_LENGTH = 300
 MAX_TRIVIA_LANGUAGE_TAG_LENGTH = 16
+TRIVIA_REVEAL_AUTO_ADVANCE_SECONDS = 15.0
 SYSTEM_RANDOM = random.SystemRandom()
 _LANGUAGE_TAG_PATTERN = re.compile(
     r"(?P<language>[A-Za-z]{2,3})"
@@ -106,7 +107,7 @@ class TriviaQuizType(QuizType):
     """Quiz type with AI-worded questions grounded in selected track metadata."""
 
     answer_type = MusicQuizAnswerType.MULTIPLE_CHOICE
-    uses_audio = False
+    reveal_auto_advance_delay = TRIVIA_REVEAL_AUTO_ADVANCE_SECONDS
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
         """
@@ -117,6 +118,16 @@ class TriviaQuizType(QuizType):
         """
         super().__init__(mass, config)
         self._eligible_tracks: dict[str, TriviaTrackFacts] | None = None
+
+    @property
+    def plays_track_before_answering(self) -> bool:
+        """Return whether Trivia starts a track while players answer."""
+        return False
+
+    @property
+    def plays_track_on_reveal(self) -> bool:
+        """Return whether Trivia plays its grounded track after revealing the answer."""
+        return self.config.play_reveal_audio
 
     @classmethod
     def is_available(cls, mass: MusicAssistant) -> bool:
@@ -185,7 +196,10 @@ class TriviaQuizType(QuizType):
 
         :param game: Game whose configuration should be serialized.
         """
-        return {"language": _normalize_trivia_language(game.config.language)}
+        return {
+            "language": _normalize_trivia_language(game.config.language),
+            "play_reveal_audio": game.config.play_reveal_audio,
+        }
 
     async def initialize(self) -> None:
         """Validate AI availability and enough grounded content for the complete game."""
@@ -208,7 +222,7 @@ class TriviaQuizType(QuizType):
         :param round_index: Index of the round to prepare.
         :param previous_rounds: Rounds already prepared in earlier iterations.
         :raises InvalidDataError: If round history, source metadata or AI output is unusable.
-        :return: The prepared non-audio Trivia round.
+        :return: The prepared Trivia round.
         """
         if round_index < 0 or round_index >= self.config.round_count:
             raise InvalidDataError("Trivia round index is outside the configured game")
@@ -248,6 +262,7 @@ class TriviaQuizType(QuizType):
             question=generation.question,
             answer_label=fact.correct_answer,
             answer_state=MultipleChoiceRoundState(suggestions=suggestions),
+            track_uri=track_facts.source_uri if self.plays_track_on_reveal else None,
         )
 
     async def _get_eligible_tracks(self) -> dict[str, TriviaTrackFacts]:
@@ -424,7 +439,6 @@ class TriviaQuizType(QuizType):
         for expected_index, previous_round in enumerate(previous_rounds):
             if (
                 previous_round.round_index != expected_index
-                or previous_round.track_uri is not None
                 or previous_round.duration is not None
                 or previous_round.image_url is not None
                 or not previous_round.question
@@ -448,6 +462,11 @@ class TriviaQuizType(QuizType):
             ):
                 raise InvalidDataError("Trivia round history contains invalid source metadata")
             source_uri = correct_suggestions[0].uri
+            expected_track_uri = source_uri if self.plays_track_on_reveal else None
+            if previous_round.track_uri != expected_track_uri:
+                raise InvalidDataError(
+                    "Trivia round history contains incompatible playback metadata"
+                )
             if source_uri in used_source_uris:
                 raise InvalidDataError("Trivia round history contains duplicate source tracks")
             used_source_uris.add(source_uri)

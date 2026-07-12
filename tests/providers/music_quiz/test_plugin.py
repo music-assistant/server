@@ -164,9 +164,10 @@ def _make_trivia_round(
     round_index: int,
     _previous_rounds: list[MusicQuizRound],
 ) -> MusicQuizRound:
-    """Return a deterministic non-audio Trivia round."""
+    """Return a deterministic Trivia round with protected reveal audio."""
     return MusicQuizRound(
         round_index=round_index,
+        track_uri=f"library://track/trivia-{round_index}",
         question=f"Trivia question {round_index}?",
         answer_label=f"Correct answer {round_index}",
         answer_state=MultipleChoiceRoundState(
@@ -187,6 +188,16 @@ def _make_trivia_round(
             ]
         ),
     )
+
+
+def _make_text_trivia_round(
+    round_index: int,
+    previous_rounds: list[MusicQuizRound],
+) -> MusicQuizRound:
+    """Return a deterministic text-only Trivia round."""
+    game_round = _make_trivia_round(round_index, previous_rounds)
+    game_round.track_uri = None
+    return game_round
 
 
 def _create_plugin(
@@ -213,6 +224,7 @@ def _create_plugin(
     plugin._playback_session = None
     plugin._playback_lock = asyncio.Lock()
     plugin._next_round_task = None
+    plugin._reveal_playback_task = None
     plugin._unregister_handles = []
 
     def _create_task(target: Any, *args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
@@ -267,10 +279,21 @@ def _round_timer_call(plugin: MusicQuizPlugin, task_id: str) -> tuple[float, Any
     """Return the most recently scheduled timer for a game round."""
     for timer_call in reversed(cast("MagicMock", plugin.mass.call_later).call_args_list):
         if timer_call.kwargs.get("task_id") == task_id:
+            target = timer_call.args[1]
+            target_args = timer_call.args[2:]
+            round_index = cast("int", target_args[2])
+
+            async def _invoke(
+                _round_index: int,
+                _target: Any = target,
+                _target_args: tuple[Any, ...] = target_args,
+            ) -> None:
+                await _target(*_target_args)
+
             return (
                 cast("float", timer_call.args[0]),
-                timer_call.args[1],
-                cast("int", timer_call.args[2]),
+                _invoke,
+                round_index,
             )
     raise AssertionError(f"No round timer was scheduled for {task_id}")
 
@@ -336,6 +359,33 @@ async def _create_started_music_timeline_game(
         name="Timeline Quiz",
         artist_bonus_mode=artist_bonus_mode,
         title_bonus_mode=title_bonus_mode,
+    )
+    player_ids: dict[str, str] = {}
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        for player_name in player_names:
+            result = await plugin.join_game(player_name)
+            player_ids[player_name] = result["player_id"]
+    await plugin.start_game()
+    return player_ids
+
+
+async def _create_started_trivia_game(
+    plugin: MusicQuizPlugin,
+    player_names: tuple[str, ...] = ("Alice",),
+    round_count: int = 2,
+    *,
+    play_reveal_audio: bool = True,
+) -> dict[str, str]:
+    """Create and start a Trivia game, returning name-to-player credentials."""
+    await plugin.create_game(
+        quiz_type="trivia",
+        round_count=round_count,
+        source_uris=["library://playlist/1"],
+        name="Trivia Quiz",
+        play_reveal_audio=play_reveal_audio,
     )
     player_ids: dict[str, str] = {}
     with patch(
@@ -941,6 +991,7 @@ async def test_trivia_creation_initializes_with_ai_plugin() -> None:
     assert state["quiz_type"] == "trivia"
     assert state["answer_type"] == "multiple_choice"
     assert state["language"] == "en"
+    assert state["play_reveal_audio"] is True
     eligible_tracks.assert_awaited_once()
     assert plugin._next_round_task is not None
     plugin._cancel_next_round_task()
@@ -963,8 +1014,8 @@ async def test_trivia_creation_rejects_invalid_language() -> None:
 
 
 @pytest.mark.asyncio
-async def test_trivia_creation_closes_previous_audio_session() -> None:
-    """Detach existing audio listeners when replacing an audio lobby with Trivia."""
+async def test_trivia_creation_reuses_previous_audio_session() -> None:
+    """Keep existing audio listeners when replacing an audio lobby with audio Trivia."""
     plugin = _create_plugin()
     await plugin.create_game(source_uris=["library://playlist/1"])
     previous_game = plugin._game
@@ -987,8 +1038,9 @@ async def test_trivia_creation_closes_previous_audio_session() -> None:
 
     assert state["quiz_type"] == "trivia"
     assert plugin._game is not previous_game
-    assert vars(plugin)["_playback_session"] is None
-    playback_session.close.assert_awaited_once()
+    assert vars(plugin)["_playback_session"] is playback_session
+    cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
+    playback_session.close.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1013,7 +1065,7 @@ async def test_trivia_replacement_blocks_concurrent_listen_in_recreation() -> No
         patch.object(
             TriviaQuizType,
             "prepare_round",
-            new=AsyncMock(side_effect=_make_trivia_round),
+            new=AsyncMock(side_effect=_make_text_trivia_round),
         ),
         patch(
             "music_assistant.providers.music_quiz.get_current_user",
@@ -1025,11 +1077,11 @@ async def test_trivia_replacement_blocks_concurrent_listen_in_recreation() -> No
                 quiz_type="trivia",
                 round_count=1,
                 source_uris=["library://playlist/1"],
+                play_reveal_audio=False,
             )
         )
         await close_started.wait()
         listen_task = asyncio.create_task(plugin.listen_in("web-player"))
-        await asyncio.sleep(0)
         assert not listen_task.done()
         allow_close.set()
         state = await create_task
@@ -1042,11 +1094,11 @@ async def test_trivia_replacement_blocks_concurrent_listen_in_recreation() -> No
 
 
 @pytest.mark.asyncio
-async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
+async def test_disabled_trivia_serialization_and_listen_in_remain_non_audio() -> None:  # noqa: PLR0915
     """Expose flat redacted Trivia state without playback, lyrics, or listen-in."""
     plugin = _create_plugin(use_ai_distractors=True)
     plugin._warm_up_lyrics = MagicMock()  # type: ignore[method-assign]
-    prepare_round = AsyncMock(side_effect=_make_trivia_round)
+    prepare_round = AsyncMock(side_effect=_make_text_trivia_round)
     with (
         patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
         patch.object(TriviaQuizType, "prepare_round", new=prepare_round),
@@ -1064,6 +1116,7 @@ async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
             name="Music Trivia",
             difficulty="hard",
             language="pt_BR",
+            play_reveal_audio=False,
             artist_bonus_mode="free_text",
             title_bonus_mode="multiple_choice",
         )
@@ -1074,8 +1127,11 @@ async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
         assert game is not None
         assert game.config.difficulty == "hard"
         assert game.config.use_ai_distractors is False
-        assert game.config.artist_bonus_mode == "off"
-        assert game.config.title_bonus_mode == "off"
+        assert (
+            game.config.artist_bonus_mode,
+            game.config.title_bonus_mode,
+            game.config.play_reveal_audio,
+        ) == ("off", "off", False)
         assert _phase(plugin) == MusicQuizPhase.ANSWERING
         cast("AsyncMock", plugin._play_track).assert_not_awaited()
         plugin._warm_up_lyrics.assert_not_called()
@@ -1083,6 +1139,7 @@ async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
         public_state = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]["state"]
         assert public_state["quiz_type"] == "trivia"
         assert public_state["answer_type"] == "multiple_choice"
+        assert public_state["play_reveal_audio"] is False
         assert public_state["current_round"]["question"] == "Trivia question 0?"
         assert set(public_state["current_round"]) == {
             "round_index",
@@ -1116,11 +1173,23 @@ async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
             game_info["language"],
             personal_state["language"],
         } == {"pt-BR"}
+        assert {
+            public_state["play_reveal_audio"],
+            host_state["play_reveal_audio"],
+            game_info["play_reveal_audio"],
+            personal_state["play_reveal_audio"],
+        } == {False}
         assert personal_state["current_round"] == public_state["current_round"]
         assert alice not in str(personal_state)
-        assert await plugin.can_listen_in("web-player") is False
-        with pytest.raises(MusicQuizNoPlaybackTargetError):
-            await plugin.listen_in("web-player")
+        with patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
+            new=AsyncMock(),
+        ) as create_venue:
+            assert await plugin.can_listen_in("web-player") is False
+            with pytest.raises(MusicQuizNoPlaybackTargetError):
+                await plugin.listen_in("web-player")
+        create_venue.assert_not_awaited()
+        assert plugin._playback_session is None
         await plugin.answer(alice, "correct_0")
         revealed = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]["state"]
         assert revealed["current_round"]["answer_label"] == "Correct answer 0"
@@ -1136,10 +1205,510 @@ async def test_trivia_serialization_and_listen_in_remain_non_audio() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["venue", "remote"])
+async def test_enabled_trivia_uses_existing_playback_session_rules(mode: str) -> None:
+    """Offer Trivia listen-in through the configured playback mode when audio is enabled."""
+    plugin = _create_plugin(mode=mode)
+    session = MagicMock()
+    session.player_id = "quiz-player"
+    session.close = AsyncMock()
+    session.can_listen_in.return_value = True
+    factory_name = "create_remote" if mode == "remote" else "create_venue"
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+        patch(
+            f"music_assistant.providers.music_quiz.SharedPlaybackSession.{factory_name}",
+            new=AsyncMock(return_value=session),
+        ) as create_session,
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+    ):
+        await plugin.create_game(
+            quiz_type="trivia",
+            round_count=1,
+            source_uris=["library://playlist/1"],
+        )
+        assert await plugin.can_listen_in("web-player") is True
+
+    create_session.assert_awaited_once()
+    session.can_listen_in.assert_called_once_with("web-player")
+    assert plugin._playback_session is session
+
+
+@pytest.mark.asyncio
+async def test_cancelled_remote_reveal_adopts_created_session_before_advancing() -> None:
+    """Finish remote session creation safely when reveal startup is cancelled."""
+    plugin = _create_plugin(mode="remote")
+    session_creation_started = asyncio.Event()
+    allow_session_creation = asyncio.Event()
+    cancellation_started = asyncio.Event()
+    session = MagicMock()
+    session.player_id = "virtual-quiz-player"
+    session.queue_id = "virtual-quiz-player"
+    play_media = AsyncMock()
+    cast("MagicMock", plugin.mass.player_queues).play_media = play_media
+    cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace(extra_data={})
+    plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
+        plugin, MusicQuizPlugin
+    )
+    cancel_reveal_playback = plugin._cancel_reveal_playback_task
+
+    async def _create_remote_session(*_args: Any, **_kwargs: Any) -> MagicMock:
+        session_creation_started.set()
+        await allow_session_creation.wait()
+        return session
+
+    async def _cancel_reveal_playback() -> None:
+        cancellation_started.set()
+        await cancel_reveal_playback()
+
+    plugin._cancel_reveal_playback_task = (  # type: ignore[method-assign]
+        _cancel_reveal_playback
+    )
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_remote",
+            new=AsyncMock(side_effect=_create_remote_session),
+        ),
+    ):
+        await _create_started_trivia_game(plugin, player_names=(), round_count=2)
+        await plugin.reveal()
+        playback_task = plugin._reveal_playback_task
+        assert playback_task is not None
+        await session_creation_started.wait()
+
+        cancellation_started.clear()
+        advance_task = asyncio.create_task(plugin.next_round())
+        await cancellation_started.wait()
+        assert playback_task.cancelling()
+        playback_task.cancel()
+        allow_session_creation.set()
+        await advance_task
+
+    assert playback_task.cancelled()
+    assert plugin._playback_session is session
+    play_media.assert_not_awaited()
+    cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["all_complete", "deadline", "manual"])
+async def test_trivia_reveal_paths_schedule_one_fixed_deadline(  # noqa: PLR0915
+    trigger: str,
+) -> None:
+    """Give every Trivia reveal path the same authoritative 15-second deadline."""
+    plugin = _create_plugin()
+    prepare_round = AsyncMock(side_effect=_make_trivia_round)
+    playback_contexts: list[tuple[User | None, User | None]] = []
+
+    async def _play_reveal(track_uri: str) -> None:
+        playback_contexts.append((current_user.get(), impersonated_user.get()))
+        event = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]
+        assert event["state"]["phase"] == "reveal"
+        assert event["state"]["current_round"]["auto_advance_at"] == 215.0
+        assert track_uri == "library://track/trivia-0"
+
+    plugin._play_track = AsyncMock(side_effect=_play_reveal)  # type: ignore[method-assign]
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(TriviaQuizType, "prepare_round", new=prepare_round),
+        patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
+    ):
+        player_ids = await _create_started_trivia_game(plugin, round_count=1)
+
+    game = plugin._game
+    assert game is not None
+    hidden_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    assert hidden_state["phase"] == "answering"
+    assert "library://track/trivia-0" not in str(hidden_state)
+    plugin._play_track.assert_not_awaited()
+
+    requesting_user = cast("User", _guest_user())
+    requesting_impersonation = cast("User", _guest_user())
+    current_user_token = current_user.set(requesting_user)
+    impersonated_user_token = impersonated_user.set(requesting_impersonation)
+    try:
+        with (
+            patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ),
+            patch("music_assistant.providers.music_quiz.time.time", return_value=200.0),
+        ):
+            if trigger == "all_complete":
+                state = await plugin.answer(player_ids["Alice"], "correct_0")
+            elif trigger == "deadline":
+                _, deadline_callback, round_index = _round_timer_call(
+                    plugin, plugin._reveal_timer_id
+                )
+                await deadline_callback(round_index)
+                state = await plugin.get_player_state(player_ids["Alice"])
+            else:
+                state = await plugin.reveal()
+        playback_task = plugin._reveal_playback_task
+        assert playback_task is not None
+        await playback_task
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
+
+    delay, _, _ = _round_timer_call(plugin, plugin._advance_timer_id)
+    public_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    host_state = await plugin.get_game()
+    assert host_state is not None
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        personal_state = await plugin.get_player_state(player_ids["Alice"])
+
+    assert delay == 15.0
+    assert game.rounds[0].auto_advance_at == 215.0
+    assert {
+        state["current_round"]["auto_advance_at"],
+        public_state["current_round"]["auto_advance_at"],
+        host_state["current_round"]["auto_advance_at"],
+        personal_state["current_round"]["auto_advance_at"],
+    } == {215.0}
+    assert public_state["current_round"]["track_uri"] == "library://track/trivia-0"
+    assert playback_contexts == [(None, None)]
+    plugin._play_track.assert_awaited_once_with("library://track/trivia-0")
+    assert prepare_round.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advance", ["ready", "next", "automatic"])
+async def test_trivia_early_and_automatic_advance_cancel_pending_audio(
+    advance: str,
+) -> None:
+    """Cancel reveal startup and stop playback before the next answer window opens."""
+    plugin = _create_plugin()
+    prepare_round = AsyncMock(side_effect=_make_trivia_round)
+    playback_started = asyncio.Event()
+    keep_playback_pending = asyncio.Event()
+
+    async def _play_reveal(_track_uri: str) -> None:
+        playback_started.set()
+        await keep_playback_pending.wait()
+
+    stop_phases: list[MusicQuizPhase] = []
+
+    async def _stop_reveal() -> None:
+        stop_phases.append(_phase(plugin))
+
+    plugin._play_track = AsyncMock(side_effect=_play_reveal)  # type: ignore[method-assign]
+    plugin._stop_playback = AsyncMock(side_effect=_stop_reveal)  # type: ignore[method-assign]
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(TriviaQuizType, "prepare_round", new=prepare_round),
+    ):
+        player_ids = await _create_started_trivia_game(plugin, round_count=2)
+        await plugin.reveal()
+        playback_task = plugin._reveal_playback_task
+        assert playback_task is not None
+        await playback_started.wait()
+        _, stale_callback, stale_round_index = _round_timer_call(plugin, plugin._advance_timer_id)
+        cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+
+        if advance == "ready":
+            with patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ):
+                await plugin.ready(player_ids["Alice"])
+        elif advance == "next":
+            await plugin.next_round()
+        else:
+            await stale_callback(stale_round_index)
+
+        game = plugin._game
+        assert game is not None
+        assert playback_task.cancelled()
+        assert plugin._reveal_playback_task is None
+        assert stop_phases == [MusicQuizPhase.REVEAL]
+        assert game.phase == MusicQuizPhase.ANSWERING
+        assert game.current_round_index == 1
+        assert game.rounds[0].auto_advance_at is None
+        cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._advance_timer_id)
+        plugin._play_track.assert_awaited_once()
+        plugin._stop_playback.assert_awaited_once()
+        assert prepare_round.await_count == 2
+
+        await stale_callback(stale_round_index)
+
+    assert game.phase == MusicQuizPhase.ANSWERING
+    assert game.current_round_index == 1
+    assert len(game.rounds) == 2
+    plugin._play_track.assert_awaited_once()
+    plugin._stop_playback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advance", ["ready", "next", "automatic"])
+async def test_final_trivia_reveal_finishes_once(advance: str) -> None:
+    """Finish final Trivia results once through Ready or the reveal deadline."""
+    plugin = _create_plugin()
+    playback_started = asyncio.Event()
+    keep_playback_pending = asyncio.Event()
+
+    async def _play_reveal(_track_uri: str) -> None:
+        playback_started.set()
+        await keep_playback_pending.wait()
+
+    plugin._play_track = AsyncMock(side_effect=_play_reveal)  # type: ignore[method-assign]
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+    ):
+        player_ids = await _create_started_trivia_game(plugin, round_count=1)
+        await plugin.reveal()
+        playback_task = plugin._reveal_playback_task
+        assert playback_task is not None
+        await playback_started.wait()
+        _, stale_callback, stale_round_index = _round_timer_call(plugin, plugin._advance_timer_id)
+
+        if advance == "ready":
+            with patch(
+                "music_assistant.providers.music_quiz.get_current_user",
+                return_value=_guest_user(),
+            ):
+                state = await plugin.ready(player_ids["Alice"])
+        elif advance == "next":
+            state = await plugin.next_round()
+        else:
+            await stale_callback(stale_round_index)
+            state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+
+        game = plugin._game
+        assert game is not None
+        assert playback_task.cancelled()
+        assert game.phase == MusicQuizPhase.FINISHED
+        assert state["phase"] == "finished"
+        assert state["current_round"]["auto_advance_at"] is None
+        cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
+
+        await stale_callback(stale_round_index)
+
+    assert game.phase == MusicQuizPhase.FINISHED
+    cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle", ["reset", "delete", "unload", "replacement"])
+async def test_trivia_lifecycle_cancels_pending_reveal_playback(lifecycle: str) -> None:
+    """Cancel pending reveal startup and stop audio on every game teardown path."""
+    plugin = _create_plugin()
+    playback_started = asyncio.Event()
+    keep_playback_pending = asyncio.Event()
+
+    async def _play_reveal(_track_uri: str) -> None:
+        playback_started.set()
+        await keep_playback_pending.wait()
+
+    plugin._play_track = AsyncMock(side_effect=_play_reveal)  # type: ignore[method-assign]
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+    ):
+        await _create_started_trivia_game(plugin, player_names=(), round_count=1)
+        await plugin.reveal()
+        playback_task = plugin._reveal_playback_task
+        assert playback_task is not None
+        await playback_started.wait()
+        game = plugin._game
+        assert game is not None
+
+        if lifecycle == "reset":
+            await plugin.reset()
+        elif lifecycle == "delete":
+            await plugin.delete_game()
+        elif lifecycle == "unload":
+            await plugin.unload()
+        else:
+            game.phase = MusicQuizPhase.FINISHED
+            await plugin.create_game(source_uris=["library://playlist/2"])
+
+    assert playback_task.cancelled()
+    assert plugin._reveal_playback_task is None
+    cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
+    if lifecycle == "reset":
+        assert plugin._game is game
+        assert game.phase == MusicQuizPhase.LOBBY
+    elif lifecycle in ("delete", "unload"):
+        assert plugin._game is None
+    else:
+        assert plugin._game is not game
+        assert _phase(plugin) == MusicQuizPhase.LOBBY
+    plugin._cancel_next_round_task()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale_by", ["generation", "round", "phase"])
+async def test_stale_trivia_reveal_completion_stops_playback(stale_by: str) -> None:
+    """Stop audio when reveal startup completes outside its owning game state."""
+    plugin = _create_plugin()
+    playback_started = asyncio.Event()
+    release_playback = asyncio.Event()
+
+    async def _play_reveal(_track_uri: str) -> None:
+        playback_started.set()
+        await release_playback.wait()
+
+    plugin._play_track = AsyncMock(side_effect=_play_reveal)  # type: ignore[method-assign]
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+    ):
+        await _create_started_trivia_game(plugin, player_names=(), round_count=1)
+        await plugin.reveal()
+
+    playback_task = plugin._reveal_playback_task
+    game = plugin._game
+    assert playback_task is not None
+    assert game is not None
+    await playback_started.wait()
+    if stale_by == "generation":
+        plugin._game_generation += 1
+    elif stale_by == "round":
+        game.current_round_index = 1
+    else:
+        game.phase = MusicQuizPhase.ANSWERING
+    release_playback.set()
+    await playback_task
+
+    cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_trivia_reveal_playback_failure_keeps_game_authoritative() -> None:
+    """Keep reveal results and deadlines intact when optional playback cannot start."""
+    plugin = _create_plugin()
+    playback_error = MusicQuizNoPlaybackTargetError("No playback target")
+    plugin._play_track = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[playback_error, None]
+    )
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+    ):
+        await _create_started_trivia_game(plugin, player_names=(), round_count=2)
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+            first_state = await plugin.reveal()
+        first_task = plugin._reveal_playback_task
+        assert first_task is not None
+        await first_task
+
+        game = plugin._game
+        assert game is not None
+        assert _phase(plugin) == MusicQuizPhase.REVEAL
+        assert first_state["current_round"]["question"] == "Trivia question 0?"
+        assert first_state["current_round"]["answer_label"] == "Correct answer 0"
+        assert first_state["current_round"]["auto_advance_at"] == 115.0
+        cast("MagicMock", plugin.logger.warning).assert_called_once_with(
+            "Could not play Music Quiz reveal track %s: %s",
+            "library://track/trivia-0",
+            playback_error,
+        )
+
+        await plugin.next_round()
+        assert _phase(plugin) == MusicQuizPhase.ANSWERING
+        assert game.current_round_index == 1
+        plugin._play_track.assert_awaited_once()
+
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=200.0):
+            second_state = await plugin.reveal()
+        second_task = plugin._reveal_playback_task
+        assert second_task is not None
+        await second_task
+
+        assert _phase(plugin) == MusicQuizPhase.REVEAL
+        assert second_state["current_round"]["question"] == "Trivia question 1?"
+        assert second_state["current_round"]["auto_advance_at"] == 215.0
+        assert plugin._play_track.await_count == 2
+        _, finish_callback, round_index = _round_timer_call(plugin, plugin._advance_timer_id)
+        await finish_callback(round_index)
+
+    assert _phase(plugin) == MusicQuizPhase.FINISHED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timer_phase", ["answering", "reveal"])
+async def test_stale_trivia_timer_cannot_mutate_reset_generation(timer_phase: str) -> None:
+    """Ignore a fired round callback after reset reaches the same round and phase."""
+    plugin = _create_plugin()
+    prepare_round = AsyncMock(side_effect=_make_text_trivia_round)
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(TriviaQuizType, "prepare_round", new=prepare_round),
+    ):
+        await _create_started_trivia_game(
+            plugin,
+            player_names=(),
+            round_count=2,
+            play_reveal_audio=False,
+        )
+        timer_id = plugin._reveal_timer_id
+        if timer_phase == "reveal":
+            with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
+                await plugin.reveal()
+            timer_id = plugin._advance_timer_id
+        _, stale_callback, stale_round_index = _round_timer_call(plugin, timer_id)
+
+        await plugin.reset()
+        await plugin.start_game()
+        if timer_phase == "reveal":
+            with patch("music_assistant.providers.music_quiz.time.time", return_value=200.0):
+                await plugin.reveal()
+
+        game = plugin._game
+        assert game is not None
+        assert game.current_round_index == 0
+        expected_auto_advance = 215.0 if timer_phase == "reveal" else None
+        assert game.rounds[0].auto_advance_at == expected_auto_advance
+        await stale_callback(stale_round_index)
+
+    assert game.phase.value == timer_phase
+    assert game.current_round_index == 0
+    assert len(game.rounds) == 1
+    assert game.rounds[0].auto_advance_at == expected_auto_advance
+    assert prepare_round.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_trivia_reuses_full_multiplayer_flow_and_persisted_prefetch() -> None:
     """Reuse early reveal, eligibility, presence, scoring, deadlines and prefetch."""
     plugin = _create_plugin()
-    prepare_round = AsyncMock(side_effect=_make_trivia_round)
+    prepare_round = AsyncMock(side_effect=_make_text_trivia_round)
     with (
         patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
         patch.object(TriviaQuizType, "prepare_round", new=prepare_round),
@@ -1152,6 +1721,7 @@ async def test_trivia_reuses_full_multiplayer_flow_and_persisted_prefetch() -> N
             quiz_type="trivia",
             round_count=3,
             source_uris=["library://playlist/1"],
+            play_reveal_audio=False,
         )
         alice = (await plugin.join_game("Alice"))["player_id"]
         bob = (await plugin.join_game("Bob"))["player_id"]
@@ -1204,11 +1774,11 @@ async def test_trivia_reuses_full_multiplayer_flow_and_persisted_prefetch() -> N
 
 
 @pytest.mark.asyncio
-async def test_trivia_reset_delete_and_recreate_keep_lifecycle_non_audio() -> None:
+async def test_disabled_trivia_reset_delete_and_recreate_keep_lifecycle_non_audio() -> None:
     """Reset, delete and recreate Trivia transactionally without playback hooks."""
     plugin = _create_plugin()
     initialize = AsyncMock()
-    prepare_round = AsyncMock(side_effect=_make_trivia_round)
+    prepare_round = AsyncMock(side_effect=_make_text_trivia_round)
     with (
         patch.object(TriviaQuizType, "initialize", new=initialize),
         patch.object(TriviaQuizType, "prepare_round", new=prepare_round),
@@ -1218,6 +1788,7 @@ async def test_trivia_reset_delete_and_recreate_keep_lifecycle_non_audio() -> No
             round_count=1,
             source_uris=["library://playlist/1"],
             language="zh_hans_cn",
+            play_reveal_audio=False,
         )
         await plugin.start_game()
         game = plugin._game
@@ -1227,6 +1798,7 @@ async def test_trivia_reset_delete_and_recreate_keep_lifecycle_non_audio() -> No
         assert reset_state["quiz_type"] == "trivia"
         assert reset_state["answer_type"] == "multiple_choice"
         assert reset_state["language"] == "zh-Hans-CN"
+        assert reset_state["play_reveal_audio"] is False
         assert game.config.language == "zh-Hans-CN"
         assert game.rounds == []
         assert initialize.await_count == 2
@@ -1238,6 +1810,7 @@ async def test_trivia_reset_delete_and_recreate_keep_lifecycle_non_audio() -> No
             quiz_type="trivia",
             round_count=1,
             source_uris=["library://playlist/1"],
+            play_reveal_audio=False,
         )
         assert recreated["phase"] == "lobby"
         assert recreated["quiz_type"] == "trivia"
@@ -1269,22 +1842,30 @@ async def test_music_timeline_create_uses_flat_config_and_derived_answer_type() 
             source_uris=["library://playlist/1"],
             difficulty="not-used",
             language="nl",
+            play_reveal_audio=False,
             artist_bonus_mode="free_text",
             title_bonus_mode="multiple_choice",
         )
 
     game = plugin._game
+    quiz_type = plugin._quiz_type
     assert game is not None
+    assert quiz_type is not None
     assert game.quiz_type == "music_timeline"
     assert game.answer_type == "timeline"
     assert game.config.suggestion_count == 4
     assert game.config.difficulty == "normal"
     assert game.config.language == "en"
+    assert game.config.play_reveal_audio is True
+    assert quiz_type.uses_audio is True
+    assert quiz_type.plays_track_before_answering is True
+    assert quiz_type.plays_track_on_reveal is False
     assert game.config.use_ai_distractors is True
     assert created["artist_bonus_mode"] == "free_text"
     assert created["title_bonus_mode"] == "multiple_choice"
     assert "suggestion_count" not in created
     assert "language" not in created
+    assert "play_reveal_audio" not in created
 
 
 @pytest.mark.asyncio
@@ -2172,7 +2753,16 @@ async def test_game_info_exposes_game_identity_and_playback_mode() -> None:
         source_uris=["library://playlist/1"],
         name="Test Quiz",
         language="nl",
+        play_reveal_audio=False,
     )
+    game = plugin._game
+    quiz_type = plugin._quiz_type
+    assert game is not None
+    assert quiz_type is not None
+    assert game.config.play_reveal_audio is True
+    assert quiz_type.uses_audio is True
+    assert quiz_type.plays_track_before_answering is True
+    assert quiz_type.plays_track_on_reveal is False
 
     info = await plugin.get_game_info()
     assert info == {
@@ -3104,7 +3694,7 @@ async def test_answer_deadline_timer_reveals_round() -> None:
     game = plugin._game
     assert game is not None
 
-    delay, target, round_index = cast("MagicMock", plugin.mass.call_later).call_args[0]
+    delay, target, round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
     assert delay == 30  # configured answer_duration capped by track duration
     await target(round_index)
     assert game.phase == MusicQuizPhase.REVEAL
@@ -3123,7 +3713,7 @@ async def test_reveal_schedules_track_end_advance() -> None:
     assert game is not None
 
     await plugin.reveal()
-    delay, target, round_index = cast("MagicMock", plugin.mass.call_later).call_args[0]
+    delay, target, round_index = _round_timer_call(plugin, plugin._advance_timer_id)
     assert delay > 0
     await target(round_index)
     assert game.phase == MusicQuizPhase.ANSWERING

@@ -68,8 +68,8 @@ class QuizType(ABC):
     """
 
     answer_type: ClassVar[MusicQuizAnswerType]
-    uses_audio: ClassVar[bool] = True
     warm_up_lyrics: ClassVar[bool] = False
+    reveal_auto_advance_delay: ClassVar[float | None] = None
     completed_reveal_auto_advance_delay: ClassVar[float | None] = None
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
@@ -82,6 +82,21 @@ class QuizType(ABC):
         self.mass = mass
         self.config = config
         self._source_track_pool: dict[str, Track] | None = None
+
+    @property
+    def uses_audio(self) -> bool:
+        """Return whether this quiz type uses a shared playback session."""
+        return self.plays_track_before_answering or self.plays_track_on_reveal
+
+    @property
+    def plays_track_before_answering(self) -> bool:
+        """Return whether a prepared track must start before answering opens."""
+        return True
+
+    @property
+    def plays_track_on_reveal(self) -> bool:
+        """Return whether a prepared track should start when its answer is revealed."""
+        return False
 
     @classmethod
     def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003

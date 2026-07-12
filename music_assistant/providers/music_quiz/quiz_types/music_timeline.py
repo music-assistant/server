@@ -93,6 +93,7 @@ class MusicTimelineQuizType(QuizType):
             suggestion_count=DEFAULT_BONUS_OPTION_COUNT,
             difficulty=MusicQuizDifficulty.NORMAL.value,
             language=DEFAULT_TRIVIA_LANGUAGE,
+            play_reveal_audio=True,
         )
 
     @classmethod
