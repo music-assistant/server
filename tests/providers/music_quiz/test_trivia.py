@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -148,6 +149,7 @@ def _quiz(
     suggestion_count: int = 4,
     difficulty: str = MusicQuizDifficulty.NORMAL.value,
     language: str = DEFAULT_TRIVIA_LANGUAGE,
+    play_reveal_audio: bool = True,
 ) -> tuple[TriviaQuizType, MagicMock]:
     """Return a Trivia strategy backed by a selected-track pool."""
     mass = _mass(providers if providers is not None else [_ai_provider()])
@@ -157,6 +159,7 @@ def _quiz(
         source_uris=["prov://playlist/source"],
         difficulty=difficulty,
         language=language,
+        play_reveal_audio=play_reveal_audio,
     )
     quiz = TriviaQuizType(mass, config)
     quiz._source_track_pool = {track.uri: track for track in tracks if track.uri}
@@ -208,7 +211,6 @@ def test_registry_identity_and_config_are_trivia_specific() -> None:
     """Register stable Trivia identity and normalize unrelated settings."""
     assert get_quiz_type("trivia") is TriviaQuizType
     assert TriviaQuizType.answer_type is MusicQuizAnswerType.MULTIPLE_CHOICE
-    assert TriviaQuizType.uses_audio is False
 
     config = MusicQuizConfig(
         round_count=2,
@@ -228,6 +230,14 @@ def test_registry_identity_and_config_are_trivia_specific() -> None:
     assert normalized.use_ai_distractors is False
     assert normalized.artist_bonus_mode is TimelineBonusMode.OFF
     assert normalized.title_bonus_mode is TimelineBonusMode.OFF
+    quiz_type = TriviaQuizType(_mass(), normalized)
+    assert quiz_type.uses_audio is True
+    assert quiz_type.plays_track_before_answering is False
+    assert quiz_type.plays_track_on_reveal is True
+
+    text_only = TriviaQuizType(_mass(), replace(normalized, play_reveal_audio=False))
+    assert text_only.uses_audio is False
+    assert text_only.plays_track_on_reveal is False
 
 
 @pytest.mark.parametrize(
@@ -531,8 +541,8 @@ async def test_prepare_round_persists_unique_sources_across_fresh_strategies() -
     assert isinstance(second_round.answer_state, MultipleChoiceRoundState)
     assert _correct_source_uri(first_round.answer_state) == first_track.uri
     assert _correct_source_uri(second_round.answer_state) == second_track.uri
-    assert first_round.track_uri is None
-    assert second_round.track_uri is None
+    assert first_round.track_uri == first_track.uri
+    assert second_round.track_uri == second_track.uri
     assert not hasattr(first_quiz, "_selected_tracks")
     assert not hasattr(fresh_quiz, "_selected_tracks")
 
@@ -581,15 +591,15 @@ async def test_prepare_round_rejects_incompatible_or_duplicate_history() -> None
         side_effect=lambda candidates: candidates[0],
     ):
         first_round = await quiz.prepare_round(0, [])
-    first_round.track_uri = tracks[0].uri
+    first_round.track_uri = None
 
     with pytest.raises(InvalidDataError, match="incompatible"):
         await quiz.prepare_round(1, [first_round])
 
 
 @pytest.mark.asyncio
-async def test_prepare_round_builds_trusted_opaque_non_audio_suggestions() -> None:
-    """Inject the server truth into exact opaque suggestions without audio data."""
+async def test_prepare_round_builds_trusted_opaque_reveal_suggestions() -> None:
+    """Inject the server truth into exact opaque suggestions with protected reveal audio."""
     source_track = _track(
         "one",
         "Teardrop",
@@ -609,7 +619,7 @@ async def test_prepare_round_builds_trusted_opaque_non_audio_suggestions() -> No
 
     assert game_round.question == "Welke artiest heeft het geselecteerde nummer Teardrop opgenomen?"
     assert game_round.answer_label == "Massive Attack"
-    assert game_round.track_uri is None
+    assert game_round.track_uri == source_track.uri
     assert game_round.duration is None
     assert game_round.image_url is None
     assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
@@ -627,6 +637,23 @@ async def test_prepare_round_builds_trusted_opaque_non_audio_suggestions() -> No
         "Air",
     }
     assert all(suggestion.uri is None for suggestion in suggestions if not suggestion.is_correct)
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_omits_playback_track_when_reveal_audio_is_disabled() -> None:
+    """Keep disabled Trivia rounds text-only while retaining protected source identity."""
+    source_track = _track("one", "Teardrop", "Massive Attack")
+    quiz, _ = _quiz(
+        [source_track],
+        providers=[_ai_provider(_valid_response())],
+        play_reveal_audio=False,
+    )
+
+    game_round = await quiz.prepare_round(0, [])
+
+    assert game_round.track_uri is None
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    assert _correct_source_uri(game_round.answer_state) == source_track.uri
 
 
 def test_prompt_json_encodes_untrusted_metadata_without_source_identifiers() -> None:

@@ -67,6 +67,7 @@ class GuessTheSongQuizType(QuizType):
         return replace(
             config,
             language=DEFAULT_TRIVIA_LANGUAGE,
+            play_reveal_audio=True,
             artist_bonus_mode=TimelineBonusMode.OFF,
             title_bonus_mode=TimelineBonusMode.OFF,
         )

@@ -66,6 +66,7 @@ class MusicQuizConfig(DataClassDictMixin):
     use_ai_distractors: bool = False
     # trivia specific; other quiz types ignore this
     language: str = DEFAULT_TRIVIA_LANGUAGE
+    play_reveal_audio: bool = True
     # timeline specific; other answer types ignore these
     artist_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
     title_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
@@ -350,8 +351,8 @@ class MusicQuizRound(DataClassDictMixin):
     round_index: int
     answer_label: str
     answer_state: QuizRoundAnswerState
-    # a round plays a track (audio round) and/or poses a text question;
-    # non-audio quiz types leave track_uri unset
+    # a round may play its track while answering or after reveal, and/or pose
+    # a text question; fully text-only rounds leave track_uri unset
     track_uri: str | None = None
     question: str | None = None
     image_url: str | None = None
