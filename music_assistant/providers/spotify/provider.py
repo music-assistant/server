@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
@@ -75,9 +77,19 @@ from .parsers import (
 )
 from .streaming import LibrespotStreamer
 
+_PLAYLIST_PAGINATION_STATE_LIMIT = 32
+
 
 class NotModifiedError(Exception):
     """Exception raised when a resource has not been modified."""
+
+
+@dataclass(slots=True)
+class _PlaylistPaginationState:
+    """Hold the synchronization and metadata snapshot for one playlist endpoint."""
+
+    lock: asyncio.Lock
+    snapshot: dict[str, Any] | None = None
 
 
 class SpotifyProvider(MusicProvider):
@@ -90,8 +102,7 @@ class SpotifyProvider(MusicProvider):
     _sp_user: dict[str, Any] | None = None
     _librespot_bin: str | None = None
     _audiobooks_supported = False
-    _playlist_pagination_snapshot: tuple[str, bool, dict[str, Any]] | None = None
-    _playlist_pagination_lock: asyncio.Lock
+    _playlist_pagination_states: OrderedDict[tuple[str, bool], _PlaylistPaginationState]
     # True if user has configured a custom client ID with valid authentication
     dev_session_active: bool = False
     throttler: ThrottlerManager
@@ -99,8 +110,7 @@ class SpotifyProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
-        self._playlist_pagination_snapshot = None
-        self._playlist_pagination_lock = asyncio.Lock()
+        self._playlist_pagination_states = OrderedDict()
         # Default throttler for global session (heavy rate limited)
         self.throttler = ThrottlerManager(rate_limit=1, period=2)
         self.streamer = LibrespotStreamer(self)
@@ -1190,27 +1200,31 @@ class SpotifyProvider(MusicProvider):
         :param page: Requested playlist page.
         :param use_global_session: Whether the global Spotify session is required.
         """
-        observed_snapshot = self._playlist_pagination_snapshot
-        async with self._playlist_pagination_lock:
-            snapshot = self._playlist_pagination_snapshot
+        state_key = (endpoint, use_global_session)
+        if state := self._playlist_pagination_states.get(state_key):
+            self._playlist_pagination_states.move_to_end(state_key)
+        else:
+            state = _PlaylistPaginationState(lock=asyncio.Lock())
+            self._playlist_pagination_states[state_key] = state
+            while len(self._playlist_pagination_states) > _PLAYLIST_PAGINATION_STATE_LIMIT:
+                self._playlist_pagination_states.popitem(last=False)
+
+        observed_snapshot = state.snapshot
+        async with state.lock:
+            snapshot = state.snapshot
             # A concurrent page may have populated this snapshot while this call waited.
-            if (
-                snapshot
-                and snapshot[0] == endpoint
-                and snapshot[1] == use_global_session
-                and (page > 0 or snapshot is not observed_snapshot)
-            ):
-                return snapshot[2]
+            if snapshot and (page > 0 or snapshot is not observed_snapshot):
+                return snapshot
 
             if page == 0:
-                self._playlist_pagination_snapshot = None
+                state.snapshot = None
             meta = await self._get_paginated_meta(
                 endpoint,
                 limit=1,
                 offset=0,
                 use_global_session=use_global_session,
             )
-            self._playlist_pagination_snapshot = (endpoint, use_global_session, meta)
+            state.snapshot = meta
             return meta
 
     async def _playlist_requires_global_token(self, prov_playlist_id: str) -> bool:

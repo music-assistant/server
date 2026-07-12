@@ -1,11 +1,15 @@
 """Tests for Spotify playlist track pagination."""
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Coroutine
 from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock, call
 
-from music_assistant.providers.spotify.provider import SpotifyProvider
+from music_assistant.providers.spotify.provider import (
+    _PLAYLIST_PAGINATION_STATE_LIMIT,
+    SpotifyProvider,
+)
 
 PLAYLIST_ID = "private-playlist"
 
@@ -27,8 +31,7 @@ def _make_provider(instance_id: str = "spotify--test") -> SpotifyPlaylistHarness
     provider.manifest = MagicMock(domain="spotify")
     provider.logger = MagicMock()
     provider._sp_user = {"id": "test-user", "display_name": "Test User"}
-    provider._playlist_pagination_snapshot = None
-    provider._playlist_pagination_lock = asyncio.Lock()
+    provider._playlist_pagination_states = OrderedDict()
 
     mass = MagicMock()
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
@@ -140,6 +143,60 @@ async def test_concurrent_cold_pages_share_inflight_pagination_metadata() -> Non
     assert [args.args[1] for args in harness.get_page.await_args_list] == [
         "shared-etag",
         "shared-etag",
+    ]
+
+
+async def test_distinct_playlists_use_independent_pagination_states() -> None:
+    """Different playlists neither block nor replace each other's metadata."""
+    harness = _make_provider()
+    first_metadata_started = asyncio.Event()
+    release_first_metadata = asyncio.Event()
+
+    async def get_metadata(endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        if endpoint == "playlists/private-a/items":
+            first_metadata_started.set()
+            await release_first_metadata.wait()
+            return {"etag": "private-a-etag", "total": 100}
+        return {"etag": "private-b-etag", "total": 100}
+
+    async def get_page(_endpoint: str, cache_checksum: str | None, **kwargs: Any) -> dict[str, Any]:
+        return _playlist_page(100, f"{cache_checksum}-{kwargs['offset']}")
+
+    harness.get_metadata.side_effect = get_metadata
+    harness.get_page.side_effect = get_page
+
+    first_task = asyncio.create_task(harness.provider.get_playlist_tracks("private-a", page=0))
+    await first_metadata_started.wait()
+    try:
+        await asyncio.wait_for(
+            harness.provider.get_playlist_tracks("private-b", page=0),
+            timeout=1,
+        )
+    finally:
+        release_first_metadata.set()
+        await first_task
+    await harness.provider.get_playlist_tracks("private-a", page=1)
+    await harness.provider.get_playlist_tracks("private-b", page=1)
+
+    assert harness.get_metadata.await_args_list == [
+        call(
+            "playlists/private-a/items",
+            limit=1,
+            offset=0,
+            use_global_session=False,
+        ),
+        call(
+            "playlists/private-b/items",
+            limit=1,
+            offset=0,
+            use_global_session=False,
+        ),
+    ]
+    assert [args.args[1] for args in harness.get_page.await_args_list] == [
+        "private-b-etag",
+        "private-a-etag",
+        "private-a-etag",
+        "private-b-etag",
     ]
 
 
@@ -296,3 +353,14 @@ async def test_offset_guard_skips_invalid_playlist_page_request() -> None:
     harness.get_metadata.assert_awaited_once()
     harness.get_page.assert_not_awaited()
     assert tracks == []
+
+
+async def test_playlist_pagination_state_is_bounded() -> None:
+    """Pagination state retains only the most recently accessed playlists."""
+    harness = _make_provider()
+    harness.get_metadata.return_value = {"etag": "guard-etag", "total": 50}
+
+    for index in range(_PLAYLIST_PAGINATION_STATE_LIMIT + 1):
+        await harness.provider.get_playlist_tracks(f"playlist-{index}", page=1)
+
+    assert len(harness.provider._playlist_pagination_states) == _PLAYLIST_PAGINATION_STATE_LIMIT
