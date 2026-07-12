@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlayerFeature, PlayerType
@@ -14,12 +15,12 @@ from music_assistant.providers.sendspin.constants import (
     CONF_VIRTUAL_PLAYER_OWNER,
     VIRTUAL_PLAYER_ID_PREFIX,
 )
+from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.providers.sendspin.provider import SendspinProvider
 
 
 def _get_sendspin_provider(mass: MusicAssistant) -> SendspinProvider:
@@ -105,6 +106,70 @@ async def test_create_virtual_player_duplicate(mass: MusicAssistant) -> None:
         )
 
 
+async def test_create_virtual_player_cancellation_cleans_partial_player() -> None:
+    """Test cancellation rolls back a partially-created virtual player."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    sendspin._virtual_players = {}
+    owner = MagicMock(instance_id="owner--test")
+    sendspin.mass.get_provider.return_value = owner
+    client_registered = asyncio.Event()
+    creation_started = asyncio.Event()
+    never_finish = asyncio.Event()
+    client = MagicMock()
+
+    def _register_virtual_player_client(_player_id: str, _display_name: str) -> None:
+        client_registered.set()
+
+    async def _wait_for_virtual_player(_player_id: str) -> None:
+        creation_started.set()
+        await never_finish.wait()
+
+    sendspin.server_api.get_client.side_effect = lambda _player_id: (
+        client if client_registered.is_set() else None
+    )
+    sendspin.server_api.remove_client = AsyncMock()
+    sendspin.mass.players.unregister = AsyncMock()
+
+    with (
+        patch.object(
+            sendspin,
+            "_get_virtual_player_config_owner",
+            return_value=None,
+        ),
+        patch.object(
+            sendspin,
+            "_register_virtual_player_client",
+            side_effect=_register_virtual_player_client,
+        ),
+        patch.object(
+            sendspin,
+            "_wait_for_virtual_player",
+            new=AsyncMock(side_effect=_wait_for_virtual_player),
+        ),
+    ):
+        creation_task = asyncio.create_task(
+            sendspin.create_virtual_player(
+                owner_instance_id=owner.instance_id,
+                display_name="Test Session",
+                player_id="cancelled",
+            )
+        )
+        await creation_started.wait()
+        creation_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await creation_task
+
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}cancelled"
+    assert not sendspin.is_virtual_player(player_id)
+    sendspin.mass.players.unregister.assert_awaited_once_with(player_id, permanent=True)
+    sendspin.server_api.remove_client.assert_awaited_once_with(player_id)
+    sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
+
+
 async def test_create_virtual_player_owner_not_loaded(mass: MusicAssistant) -> None:
     """Test that creating a virtual player for an unknown owner raises."""
     sendspin = _get_sendspin_provider(mass)
@@ -147,6 +212,33 @@ async def test_remove_virtual_player(mass: MusicAssistant) -> None:
     assert mass.players.get_player(player_id) is None
     assert sendspin.server_api.get_client(player_id) is None
     assert mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None
+
+
+async def test_remove_virtual_player_retries_after_partial_failure() -> None:
+    """Retain virtual-player ownership until removal completes successfully."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}retry"
+    sendspin._virtual_players = {player_id: "owner--test"}
+    sendspin.mass.players.unregister = AsyncMock()
+    sendspin.server_api.get_client.return_value = MagicMock()
+    sendspin.server_api.remove_client = AsyncMock(
+        side_effect=[RuntimeError("client removal failed"), None]
+    )
+
+    with pytest.raises(RuntimeError, match="client removal failed"):
+        await sendspin.remove_virtual_player(player_id)
+
+    assert sendspin.is_virtual_player(player_id)
+
+    await sendspin.remove_virtual_player(player_id)
+
+    assert not sendspin.is_virtual_player(player_id)
+    assert sendspin.mass.players.unregister.await_count == 2
+    assert sendspin.server_api.remove_client.await_count == 2
+    sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
 
 
 async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant) -> None:
