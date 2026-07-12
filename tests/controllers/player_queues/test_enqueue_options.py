@@ -302,6 +302,9 @@ async def test_enter_dynamic_mode_play_on_idle_starts_playback() -> None:
 
     assert len(ctrl._queue_data["q1"].items) == 2
     play_index.assert_awaited_once_with("q1", 0)
+    ctrl.mass.call_later.assert_called_once_with(
+        2, ctrl._fill_dynamic_tracks, "q1", task_id="fill_dynamic_tracks_q1"
+    )
 
 
 async def test_enter_dynamic_mode_add_on_active_keeps_current_and_rebuilds_tail() -> None:

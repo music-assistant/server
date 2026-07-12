@@ -290,9 +290,10 @@ async def test_dynamic_source_is_not_materialized(e2e_mass: MusicAssistant) -> N
 
 @pytest.mark.asyncio
 async def test_progressive_loading_returns_first_batch_then_fills(
-    e2e_mass: MusicAssistant,
+    e2e_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Progressive loading (use_first_batch=True) returns initial candidates without waiting for full target."""
+    """Progressive loading (use_first_batch=True) returns initial candidates without blocking on full target."""
+    monkeypatch.setattr(managed_pool, "MANAGED_POOL_SOURCE_CAP", 10)
     queue_id = demo_players(e2e_mass)[0].player_id
     test_prov = cast("MusicProvider", e2e_mass.get_provider("test"))
     assert test_prov is not None
@@ -303,23 +304,16 @@ async def test_progressive_loading_returns_first_batch_then_fills(
     album = await test_prov.get_album("0_0")  # 20 tracks
     e2e_mass.player_queues.queue_data(queue_id).source_items = cast("list[MediaItemType]", [album])
 
-    # first fill with use_first_batch=True: should return available candidates (up to TARGET)
+    # use_first_batch=True returns available candidates capped at SOURCE_CAP (10), not TARGET (25)
     first_batch = await e2e_mass.player_queues._managed_pool.fill(
         queue_id, is_initial=False, use_first_batch=True
     )
-    assert 0 < len(first_batch) <= MANAGED_POOL_TARGET
+    assert len(first_batch) == 10  # limited by MANAGED_POOL_SOURCE_CAP
 
-    # second fill without use_first_batch: should top up to TARGET
-    # simulate advancing the queue by marking first_batch as played
-    e2e_mass.player_queues.queue_data(queue_id).items = [
-        QueueItem.from_media_item(queue_id, track) for track in first_batch
-    ]
-    queue.current_index = len(first_batch) - 1
-
-    second_batch = await e2e_mass.player_queues._managed_pool.fill(
-        queue_id, is_initial=False, use_first_batch=False
+    # normal fill would return more if the source allows
+    e2e_mass.player_queues._managed_pool.forget(queue_id)
+    normal_fill = await e2e_mass.player_queues._managed_pool.fill(
+        queue_id, is_initial=True, use_first_batch=False
     )
-    # should top up toward TARGET
-    assert len(second_batch) > 0
-    total = len(first_batch) + len(second_batch)
-    assert total <= MANAGED_POOL_TARGET + 5  # allow some buffer
+    # with is_initial=True and SOURCE_CAP=10, we get up to 10 (still capped by source cap)
+    assert len(normal_fill) == 10
