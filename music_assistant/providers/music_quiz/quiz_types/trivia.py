@@ -10,9 +10,12 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import AlbumType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import Album
 
+from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import (
     JSON_DECODE_EXCEPTIONS,
     SerializableType,
@@ -479,13 +482,18 @@ class TriviaQuizType(QuizType):
         if not track.uri or not (title := _bounded_metadata_value(track.name)):
             return None
         artist = _bounded_metadata_value(track.artist_str or None)
-        album = _bounded_metadata_value(track.album.name if track.album else None)
+        album = track.album
+        untrusted_compilation = isinstance(album, Album) and _is_untrusted_compilation_album(album)
         facts = TriviaTrackFacts(
             source_uri=track.uri,
             title=title,
             artist=artist,
-            album=album,
-            release_year=get_track_release_year(track),
+            album=(
+                None
+                if untrusted_compilation
+                else _bounded_metadata_value(album.name if album else None)
+            ),
+            release_year=None if untrusted_compilation else get_track_release_year(track),
         )
         return facts if TriviaQuizType._available_targets(facts) else None
 
@@ -527,6 +535,21 @@ def _bounded_metadata_value(value: str | None) -> str | None:
     if not value or not (cleaned := value.strip()):
         return None
     return cleaned if len(cleaned) <= MAX_METADATA_VALUE_LENGTH else None
+
+
+def _is_untrusted_compilation_album(album: Album) -> bool:
+    """
+    Return whether Trivia must omit release facts supplied with an album.
+
+    :param album: Full album metadata attached to a selected Trivia track.
+    """
+    if album.album_type == AlbumType.COMPILATION:
+        return True
+    return any(
+        artist.mbid == VARIOUS_ARTISTS_MBID
+        or compare_strings(artist.name, VARIOUS_ARTISTS_NAME, strict=False)
+        for artist in album.artists
+    )
 
 
 def _normalize_trivia_language(language: str) -> str:

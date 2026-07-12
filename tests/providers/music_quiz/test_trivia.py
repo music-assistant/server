@@ -10,9 +10,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     ItemMapping,
     Playlist,
@@ -21,6 +22,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
@@ -104,6 +106,50 @@ def _track(
     return track
 
 
+def _full_album(
+    item_id: str,
+    name: str,
+    *,
+    album_type: AlbumType = AlbumType.ALBUM,
+    artists: Sequence[Artist | ItemMapping] = (),
+    year: int | None = None,
+    provider: str = "prov",
+) -> Album:
+    """Return a full album with configurable compilation evidence."""
+    return Album(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        album_type=album_type,
+        artists=UniqueList(artists),
+        year=year,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
+            )
+        },
+    )
+
+
+def _album_artist(
+    item_id: str,
+    name: str,
+    *,
+    mbid: str | None = None,
+    provider: str = "prov",
+) -> Artist:
+    """Return a full album artist with optional MusicBrainz identity."""
+    return Artist(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        external_ids={(ExternalID.MB_ARTIST, mbid)} if mbid else set(),
+        provider_mappings=set(),
+    )
+
+
 def _playlist(item_id: str = "playlist", provider: str = "prov") -> Playlist:
     """Return a minimal playlist source."""
     return Playlist(
@@ -177,6 +223,15 @@ def _valid_response(
             "wrong_answers": wrong_answers or ["Portishead", "Radiohead", "Air"],
         }
     )
+
+
+def _prompt_payload(prompt: str) -> dict[str, Any]:
+    """Return the decoded grounded data block from a Trivia prompt."""
+    _, encoded_payload = prompt.split("BEGIN_UNTRUSTED_MUSIC_METADATA_JSON\n", 1)
+    encoded_block = encoded_payload.rsplit("\nEND_UNTRUSTED_MUSIC_METADATA_JSON", 1)[0]
+    payload = json_loads(encoded_block)
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _all_facts() -> TriviaTrackFacts:
@@ -496,6 +551,188 @@ def test_track_facts_use_earliest_valid_release_year_without_defaults() -> None:
     assert TriviaQuizType._track_facts(too_old_track).release_year == 2000  # type: ignore[union-attr]
     assert TriviaQuizType._track_facts(invalid).release_year is None  # type: ignore[union-attr]
     assert TriviaQuizType._track_facts(missing).release_year is None  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_compilation_album_omits_album_and_year_from_grounding() -> None:
+    """Exclude every release fact supplied with a typed compilation album."""
+    track = _track(
+        "everlasting-love",
+        "Everlasting Love",
+        "Sandra",
+        release_year=2012,
+    )
+    track.album = _full_album(
+        "party-hits-13",
+        "Party Hits 13",
+        album_type=AlbumType.COMPILATION,
+        artists=[_album_artist("album-artist", "Compilation Curator")],
+        year=2012,
+    )
+    quiz, mass = _quiz([track])
+    mass.music.albums.get = AsyncMock()
+    mass.music.tracks.get = AsyncMock()
+
+    eligible_tracks = await quiz._get_eligible_tracks()
+
+    assert track.uri is not None
+    facts = eligible_tracks[track.uri]
+    assert facts.album is None
+    assert facts.release_year is None
+    assert quiz._available_targets(facts) == (TriviaTarget.ARTIST, TriviaTarget.TITLE)
+    fact = quiz._select_fact(facts, 0)
+    assert fact.correct_answer == "Sandra"
+    assert _prompt_payload(quiz._build_prompt(fact))["track_metadata"] == {
+        "title": "Everlasting Love",
+        "artist": "Sandra",
+    }
+    mass.music.albums.get.assert_not_awaited()
+    mass.music.tracks.get.assert_not_awaited()
+    mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "album_artists",
+    [
+        [_album_artist("va-name", "VARIOUS-ARTISTS")],
+        [
+            _album_artist(
+                "va-mbid",
+                "Artistes divers",
+                mbid=VARIOUS_ARTISTS_MBID,
+            )
+        ],
+        [
+            _album_artist("primary", "Primary Artist"),
+            _album_artist("va-multiple", VARIOUS_ARTISTS_NAME),
+        ],
+    ],
+    ids=["normalized-name", "canonical-mbid", "multiple-artists"],
+)
+def test_various_artists_album_omits_album_and_year(
+    album_artists: list[Artist],
+) -> None:
+    """Treat any canonical Various Artists album credit as compilation evidence."""
+    track = _track("compilation", "Selected Track", "Track Artist", release_year=2012)
+    track.album = _full_album(
+        "album",
+        "Compilation Album",
+        artists=album_artists,
+        year=2012,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.album is None
+    assert facts.release_year is None
+    assert TriviaQuizType._available_targets(facts) == (
+        TriviaTarget.ARTIST,
+        TriviaTarget.TITLE,
+    )
+
+
+def test_normal_full_album_retains_release_grounding() -> None:
+    """Keep album and earliest release year facts for a normal full album."""
+    track = _track("normal", "Teardrop", "Massive Attack", release_year=2001)
+    track.album = _full_album(
+        "mezzanine",
+        "Mezzanine",
+        album_type=AlbumType.ALBUM,
+        year=1998,
+    )
+    quiz, _ = _quiz([])
+
+    facts = quiz._track_facts(track)
+
+    assert facts is not None
+    assert facts.album == "Mezzanine"
+    assert facts.release_year == 1998
+    assert quiz._available_targets(facts) == tuple(TriviaTarget)
+    fact = quiz._select_fact(facts, 2)
+    assert fact.correct_answer == "Mezzanine"
+    assert _prompt_payload(quiz._build_prompt(fact))["track_metadata"] == {
+        "title": "Teardrop",
+        "artist": "Massive Attack",
+        "album": "Mezzanine",
+        "release_year": 1998,
+    }
+
+
+def test_album_mapping_retains_release_grounding_without_compilation_evidence() -> None:
+    """Keep existing release facts when only an album mapping is available."""
+    track = _track(
+        "mapping",
+        "Mapped Track",
+        "Mapped Artist",
+        album=VARIOUS_ARTISTS_NAME,
+        album_year=2000,
+        release_year=2004,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.album == VARIOUS_ARTISTS_NAME
+    assert facts.release_year == 2000
+    assert TriviaQuizType._available_targets(facts) == tuple(TriviaTarget)
+
+
+@pytest.mark.asyncio
+async def test_compilation_rounds_only_generate_artist_and_title_targets() -> None:
+    """Generate valid rounds without selecting compilation album or year targets."""
+    first_track = _track("one", "First Song", "Artist One", release_year=2012)
+    first_track.album = _full_album(
+        "first-album",
+        "First Compilation",
+        album_type=AlbumType.COMPILATION,
+        year=2012,
+    )
+    second_track = _track("two", "Second Song", "Artist Two", release_year=2013)
+    second_track.album = _full_album(
+        "second-album",
+        "Second Compilation",
+        artists=[_album_artist("va", VARIOUS_ARTISTS_NAME)],
+        year=2013,
+    )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response(
+            "Who performs the selected song?",
+            ["Portishead", "Radiohead", "Air"],
+        ),
+        _valid_response(
+            "Which title was recorded by Artist Two?",
+            ["Teardrop", "Genesis", "Midnight City"],
+        ),
+    ]
+    quiz, _ = _quiz(
+        [first_track, second_track],
+        providers=[provider],
+        round_count=2,
+    )
+
+    facts_by_uri = await quiz._get_eligible_tracks()
+    for facts in facts_by_uri.values():
+        assert {quiz._select_fact(facts, round_index).target for round_index in range(8)} == {
+            TriviaTarget.ARTIST,
+            TriviaTarget.TITLE,
+        }
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda tracks: tracks[0],
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+
+    assert first_round.answer_label == "Artist One"
+    assert second_round.answer_label == "Second Song"
+    prompt_payloads = [_prompt_payload(call.args[0]) for call in provider.ai_query.await_args_list]
+    assert [payload["question_target"] for payload in prompt_payloads] == [
+        TriviaTarget.ARTIST,
+        TriviaTarget.TITLE,
+    ]
+    assert all(set(payload["track_metadata"]) == {"title", "artist"} for payload in prompt_payloads)
 
 
 @pytest.mark.asyncio
