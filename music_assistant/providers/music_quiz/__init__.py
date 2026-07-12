@@ -64,7 +64,7 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, PlayerFeature, PlayerType, QueueOption
+from music_assistant_models.enums import ConfigEntryType, PlayerType, QueueOption
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -430,10 +430,6 @@ class MusicQuizPlugin(PluginProvider):
                 if game_config.playback_mode == SharedPlaybackMode.VENUE
                 else playback_defaults.stored_venue_player_id
             )
-            await self._store_playback_preference(
-                game_config.playback_mode,
-                remembered_venue_player_id,
-            )
             previous_game = self._game
             previous_quiz_type = self._quiz_type
             await self._cancel_reveal_playback_task()
@@ -452,6 +448,10 @@ class MusicQuizPlugin(PluginProvider):
                 self._answer_type = answer_strategy
                 self._prefetch_round(0)
                 self._signal_game_updated()
+            await self._store_playback_preference(
+                game_config.playback_mode,
+                remembered_venue_player_id,
+            )
             return await self._host_state()
 
     async def get_game(self) -> dict[str, Any] | None:
@@ -1588,7 +1588,7 @@ class MusicQuizPlugin(PluginProvider):
             and not state.hide_in_ui
             and not state.needs_setup
             and state.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
-            and PlayerFeature.PLAY_MEDIA in state.supported_features
+            and player.is_native_player
             and player.provider.domain != SENDSPIN_DOMAIN
         )
 
@@ -1629,21 +1629,26 @@ class MusicQuizPlugin(PluginProvider):
         venue_player_id: str | None,
     ) -> None:
         """
-        Persist a successful playback selection for this provider instance.
+        Best-effort persist a successful playback selection for this provider instance.
 
         :param playback_mode: Effective mode selected for the game.
         :param venue_player_id: Last successful venue player, if any.
         """
-        await self.mass.cache.set(
-            PLAYBACK_PREFERENCE_CACHE_KEY,
-            {
-                "playback_mode": playback_mode.value,
-                "venue_player_id": venue_player_id,
-            },
-            expiration=PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
-            provider=self.instance_id,
-            persistent=True,
-        )
+        try:
+            await self.mass.cache.set(
+                PLAYBACK_PREFERENCE_CACHE_KEY,
+                {
+                    "playback_mode": playback_mode.value,
+                    "venue_player_id": venue_player_id,
+                },
+                expiration=PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
+                provider=self.instance_id,
+                persistent=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            self.logger.warning("Could not persist Music Quiz playback preference: %s", err)
 
     async def _migrate_legacy_playback_preference(self) -> None:
         """Persist legacy provider playback values when no preference exists yet."""

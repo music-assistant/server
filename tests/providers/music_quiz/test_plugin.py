@@ -114,10 +114,17 @@ def _make_venue_player(
     playback_state: PlaybackState = PlaybackState.IDLE,
 ) -> SimpleNamespace:
     """Return a player-shaped venue target for tests."""
+    supported_features = features if features is not None else {PlayerFeature.PLAY_MEDIA}
+    is_native_player = (
+        PlayerFeature.PLAY_MEDIA in supported_features
+        and player_type != PlayerType.PROTOCOL
+        and provider_domain != "universal_player"
+    )
     return SimpleNamespace(
         player_id=player_id,
         display_name=name,
         playback_state=playback_state,
+        is_native_player=is_native_player,
         provider=SimpleNamespace(domain=provider_domain),
         state=SimpleNamespace(
             available=available,
@@ -125,7 +132,7 @@ def _make_venue_player(
             hide_in_ui=hidden,
             needs_setup=needs_setup,
             type=player_type,
-            supported_features=features if features is not None else {PlayerFeature.PLAY_MEDIA},
+            supported_features=supported_features,
         ),
         extra_data={},
     )
@@ -598,6 +605,7 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         _make_venue_player("display", "Display", player_type=PlayerType.DISPLAY),
         _make_venue_player("no-play", "No Playback", features=set()),
         _make_venue_player("browser", "Browser", provider_domain="sendspin"),
+        _make_venue_player("universal", "Universal", provider_domain="universal_player"),
     ]
     cast("MagicMock", plugin.mass.players.all_players).return_value = [
         playing_bathroom,
@@ -1001,6 +1009,83 @@ async def test_replacing_game_with_different_playback_closes_previous_session() 
     previous_session.close.assert_awaited_once()
     assert vars(plugin)["_playback_session"] is None
     assert state["playback"]["mode"] == "remote"
+
+
+@pytest.mark.asyncio
+async def test_failed_session_close_preserves_game_and_playback_preference() -> None:
+    """Do not remember a replacement game when its session transition fails."""
+    plugin = _create_plugin()
+    cache_values: dict[tuple[str, str], Any] = {}
+    _install_shared_preference_cache(plugin, cache_values)
+    await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="venue_player",
+    )
+    existing_game = plugin._game
+    assert existing_game is not None
+    existing_state = existing_game.to_dict()
+    existing_preference = cache_values[(INSTANCE_ID, PLAYBACK_PREFERENCE_CACHE_KEY)].copy()
+    cache_set = cast("AsyncMock", plugin.mass.cache.set)
+    cache_set.reset_mock()
+    previous_session = MagicMock()
+    previous_session.close = AsyncMock(side_effect=RuntimeError("Listener detach failed"))
+    plugin._playback_session = previous_session
+
+    with pytest.raises(RuntimeError, match="Listener detach failed"):
+        await plugin.create_game(
+            source_uris=["library://playlist/2"],
+            playback_mode="remote",
+        )
+
+    assert plugin._game is existing_game
+    assert existing_game.to_dict() == existing_state
+    assert cache_values[(INSTANCE_ID, PLAYBACK_PREFERENCE_CACHE_KEY)] == existing_preference
+    cache_set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_preference_write_does_not_fail_game_creation() -> None:
+    """Publish a valid game when optional preference persistence is unavailable."""
+    plugin = _create_plugin()
+    cache_error = RuntimeError("Cache database unavailable")
+    cache_set = cast("AsyncMock", plugin.mass.cache.set)
+    cache_set.side_effect = cache_error
+
+    state = await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="venue_player",
+    )
+
+    game = plugin._game
+    assert game is not None
+    assert game.config.venue_player_id == "venue_player"
+    assert state["playback"]["venue_player_id"] == "venue_player"
+    cache_set.assert_awaited_once()
+    cast("MagicMock", plugin.logger.warning).assert_called_once_with(
+        "Could not persist Music Quiz playback preference: %s",
+        cache_error,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_preference_write_propagates_after_game_commit() -> None:
+    """Propagate cancellation instead of treating it as a cache failure."""
+    plugin = _create_plugin()
+    cache_set = cast("AsyncMock", plugin.mass.cache.set)
+    cache_set.side_effect = asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await plugin.create_game(
+            source_uris=["library://playlist/1"],
+            playback_mode="venue",
+            venue_player_id="venue_player",
+        )
+
+    assert plugin._game is not None
+    cast("MagicMock", plugin.signal_provider_event).assert_called()
+    cast("MagicMock", plugin.logger.warning).assert_not_called()
 
 
 @pytest.mark.parametrize(
