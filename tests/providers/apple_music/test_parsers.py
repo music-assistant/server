@@ -55,6 +55,178 @@ def test_parse_album_keeps_album_without_catalog_url() -> None:
     assert mapping.url is None
 
 
+def _make_album_obj(attributes: dict[str, Any], relationships: dict[str, Any]) -> dict[str, Any]:
+    """Create a catalog album object for parse_album."""
+    return {
+        "id": "1234567890",
+        "type": "albums",
+        "attributes": {"name": "Test Album", **attributes},
+        "relationships": relationships,
+    }
+
+
+def _artists_relationship(*names: str) -> dict[str, Any]:
+    """Create an artists relationship payload with the given artist names."""
+    return {
+        "artists": {
+            "data": [
+                {"id": f"artist{idx}", "type": "artists", "attributes": {"name": name}}
+                for idx, name in enumerate(names)
+            ]
+        }
+    }
+
+
+def test_parse_album_compilation_uses_album_level_artist_name() -> None:
+    """Compilations must show the album-level artist, not a contributing artist."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Various Artists", "isCompilation": True},
+        _artists_relationship("Paul McCartney"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert [artist.name for artist in result.artists] == ["Various Artists"]
+
+
+def test_parse_album_compilation_without_artist_name_keeps_related_artists() -> None:
+    """A compilation without artistName must fall back to the related artists."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"isCompilation": True},
+        _artists_relationship("Paul McCartney"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert [artist.name for artist in result.artists] == ["Paul McCartney"]
+
+
+def test_parse_album_single_artist_compilation_keeps_rich_artist() -> None:
+    """A greatest-hits compilation by one artist must keep the full artist object."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Eminem", "isCompilation": True},
+        _artists_relationship("Eminem"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert len(result.artists) == 1
+    assert result.artists[0].name == "Eminem"
+    assert result.artists[0].item_id == "artist0"
+
+
+def test_parse_album_compilation_keeps_catalog_artist_details() -> None:
+    """A compilation must keep complete catalog details for a library artist."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Eminem", "isCompilation": True},
+        {
+            "artists": {
+                "data": [
+                    {
+                        "id": "l.artist0",
+                        "type": "library-artists",
+                        "relationships": {
+                            "catalog": {
+                                "data": [
+                                    {
+                                        "id": "artist0",
+                                        "type": "artists",
+                                        "attributes": {"name": "Eminem"},
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                ]
+            }
+        },
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert len(result.artists) == 1
+    assert result.artists[0].name == "Eminem"
+    assert result.artists[0].item_id == "artist0"
+
+
+def test_parse_album_dj_mix_compilation_keeps_multiple_artists() -> None:
+    """A DJ-mix compilation with multiple related artists must keep them all."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Pete Tong & Boy George", "isCompilation": True},
+        _artists_relationship("Pete Tong", "Boy George"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert [artist.name for artist in result.artists] == ["Pete Tong", "Boy George"]
+
+
+@pytest.mark.parametrize(
+    "artist_obj",
+    [
+        {"id": "80204262", "type": "artists"},
+        {"id": "80204262", "type": "artists", "attributes": {}},
+        {
+            "id": "l.artist.80204262",
+            "type": "library-artists",
+            "relationships": {"catalog": {"data": [{"id": "80204262", "type": "artists"}]}},
+        },
+    ],
+)
+def test_parse_album_compilation_ignores_placeholder_artist_stub(
+    artist_obj: dict[str, Any],
+) -> None:
+    """An unresolvable artist stub must not become the album artist."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Verschillende artiesten", "isCompilation": True},
+        {"artists": {"data": [artist_obj]}},
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert [artist.name for artist in result.artists] == ["Verschillende artiesten"]
+
+
+def test_parse_album_compilation_with_empty_artists_uses_artist_name() -> None:
+    """A compilation without any related artists must use the album-level artist."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Various Artists", "isCompilation": True},
+        {"artists": {"data": []}},
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert [artist.name for artist in result.artists] == ["Various Artists"]
+
+
+def test_parse_album_regular_album_keeps_related_artists() -> None:
+    """A regular album must keep the artists from the relationships."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Paul McCartney"},
+        _artists_relationship("Paul McCartney"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert [artist.name for artist in result.artists] == ["Paul McCartney"]
+
+
 def test_parse_track_falls_back_to_album_name_when_relationship_missing() -> None:
     """Track parsing should keep album info from albumName if no album relation is present."""
     provider = _create_provider_mock()
