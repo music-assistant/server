@@ -31,7 +31,9 @@ from music_assistant.providers.music_quiz.models import (
 )
 from music_assistant.providers.music_quiz.quiz_types.music_timeline import (
     AI_QUERY_TIMEOUT_SECONDS,
+    BONUS_CANDIDATE_LIMIT,
     DEFAULT_BONUS_OPTION_COUNT,
+    PLAYBACK_REPLACEMENT_RESERVE,
     TRACK_ENRICHMENT_CONCURRENCY,
     MusicTimelineQuizType,
 )
@@ -117,6 +119,7 @@ def _mass() -> MagicMock:
     mass.music.tracks.get = AsyncMock()
     mass.music.tracks.similar_tracks = AsyncMock(return_value=[])
     mass.music.artists.similar_artists = AsyncMock(return_value=[])
+    mass.music.artists.top_tracks = AsyncMock(return_value=[])
     mass.music.artists.tracks = AsyncMock(return_value=[])
     mass.music.search = AsyncMock(return_value=SimpleNamespace(tracks=[]))
     mass.get_providers_supporting_feature = MagicMock(return_value=[])
@@ -247,6 +250,26 @@ async def test_initialize_excludes_unavailable_and_unplayable_dated_tracks() -> 
 
 
 @pytest.mark.asyncio
+async def test_large_eligible_pool_skips_enrichment_and_remains_available() -> None:
+    """Preserve every ready source track without requesting redundant details."""
+    tracks = [
+        _track(
+            f"track-{index}",
+            f"Track {index}",
+            f"Artist {index}",
+            album_year=1980 + index,
+        )
+        for index in range(40)
+    ]
+    quiz, mass = _quiz(tracks, round_count=5)
+
+    await quiz.initialize()
+
+    mass.music.tracks.get.assert_not_awaited()
+    assert quiz._eligible_tracks == tracks
+
+
+@pytest.mark.asyncio
 async def test_partial_playlist_tracks_are_enriched_through_track_api() -> None:
     """Fetch full track details when a playlist item lacks release metadata."""
     partial = _track("partial", "Teardrop", "Massive Attack")
@@ -260,6 +283,64 @@ async def test_partial_playlist_tracks_are_enriched_through_track_api() -> None:
     mass.music.tracks.get.assert_awaited_once_with(partial.item_id, partial.provider)
     assert quiz._eligible_tracks is not None
     assert {track.item_id for track in quiz._eligible_tracks} == {"partial", "other"}
+
+
+@pytest.mark.asyncio
+async def test_track_enrichment_stops_after_game_requirement_and_reserve() -> None:
+    """Stop requesting details once the complete game has replacement capacity."""
+    ready = [
+        _track("ready-one", "Ready One", "Artist One", album_year=1990),
+        _track("ready-two", "Ready Two", "Artist Two", album_year=1991),
+    ]
+    partial = [
+        _track(f"partial-{index}", f"Partial {index}", f"Artist {index}") for index in range(20)
+    ]
+    enriched = {
+        track.item_id: _track(
+            track.item_id,
+            track.name,
+            track.artist_str,
+            album_year=2000 + index,
+        )
+        for index, track in enumerate(partial)
+    }
+    round_count = 3
+    target_count = round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
+    expected_enrichments = target_count - len(ready)
+    quiz, mass = _quiz([*ready, *partial], round_count=round_count)
+    mass.music.tracks.get.side_effect = lambda item_id, _provider: enriched[item_id]
+
+    await quiz.initialize()
+
+    assert mass.music.tracks.get.await_count == expected_enrichments
+    assert [await_call.args[0] for await_call in mass.music.tracks.get.await_args_list] == [
+        track.item_id for track in partial[:expected_enrichments]
+    ]
+    assert quiz._eligible_tracks is not None
+    assert len(quiz._eligible_tracks) == target_count
+    assert quiz._eligible_tracks[: len(ready)] == ready
+
+
+@pytest.mark.asyncio
+async def test_insufficient_enrichment_exhausts_unresolved_tracks() -> None:
+    """Check every unresolved source track before reporting an insufficient pool."""
+    ready = [
+        _track("ready-one", "Ready One", "Artist One", album_year=1990),
+        _track("ready-two", "Ready Two", "Artist Two", album_year=1991),
+    ]
+    unresolved = [
+        _track(f"partial-{index}", f"Partial {index}", f"Artist {index}") for index in range(12)
+    ]
+    quiz, mass = _quiz([*ready, *unresolved], round_count=4)
+    mass.music.tracks.get.side_effect = lambda item_id, _provider: next(
+        track for track in unresolved if track.item_id == item_id
+    )
+
+    with pytest.raises(InvalidDataError) as insufficient:
+        await quiz.initialize()
+
+    assert insufficient.value.translation_key == "music_quiz_not_enough_dated_tracks"
+    assert mass.music.tracks.get.await_count == len(unresolved)
 
 
 @pytest.mark.asyncio
@@ -386,11 +467,24 @@ def test_reject_track_removes_it_from_music_timeline_caches() -> None:
     assert available.uri is not None
     quiz._source_track_pool = {failed.uri: failed, available.uri: available}
     quiz._eligible_tracks = [failed, available]
+    artist_key = ("prov", "artist")
+    failed_candidate = SuggestionCandidate(failed.name, uri=failed.uri)
+    available_candidate = SuggestionCandidate(available.name, uri=available.uri)
+    quiz._title_top_track_candidates[artist_key] = [
+        failed_candidate,
+        available_candidate,
+    ]
+    quiz._title_search_candidates[artist_key] = [
+        available_candidate,
+        failed_candidate,
+    ]
 
     quiz.reject_track(failed.uri)
 
     assert quiz._source_track_pool == {available.uri: available}
     assert quiz._eligible_tracks == [available]
+    assert quiz._title_top_track_candidates[artist_key] == [available_candidate]
+    assert quiz._title_search_candidates[artist_key] == [available_candidate]
 
 
 @pytest.mark.asyncio
@@ -475,7 +569,8 @@ async def test_prepare_round_builds_free_text_and_opaque_multiple_choice_bonuses
     assert sum(option.is_correct for option in title_definition.options) == 1
     assert len({option.option_id for option in title_definition.options}) == 4
     assert all("correct" not in option.option_id for option in title_definition.options)
-    mass.music.artists.tracks.assert_awaited_once()
+    mass.music.artists.top_tracks.assert_awaited_once()
+    mass.music.artists.tracks.assert_not_awaited()
     mass.music.search.assert_awaited_once()
 
 
@@ -597,22 +692,30 @@ async def test_title_bonus_prefers_same_artist_source_tracks_and_excludes_versio
         "Phantom",
         "Audio, Video, Disco",
     }
+    mass.music.artists.top_tracks.assert_not_awaited()
     mass.music.artists.tracks.assert_not_awaited()
     mass.music.search.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_title_bonus_uses_artist_catalog_before_unrelated_source_tracks() -> None:
-    """Fill sparse same-artist source titles from the artist controller first."""
+async def test_title_bonus_uses_filtered_top_tracks_before_unrelated_sources() -> None:
+    """Supplement source titles with real primary-artist top tracks only."""
     current = _track("current", "Genesis", "Justice", album_year=2007)
     source_same_artist = _track("source-same", "D.A.N.C.E.", "Justice", album_year=2007)
     unrelated = _track("unrelated", "Teardrop", "Massive Attack", album_year=1998)
+    secondary_artist = _track("secondary", "Waters of Nazareth", "Mr. Oizo")
+    secondary_artist.artists.append(_artist("justice", "Justice"))
     quiz, mass = _quiz(
         [current, source_same_artist, unrelated],
         title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
     )
     quiz._eligible_tracks = [current, source_same_artist, unrelated]
-    mass.music.artists.tracks.return_value = [
+    mass.music.artists.top_tracks.return_value = [
+        current,
+        _track("close", "Genesis (Remix)", "Justice"),
+        _track("duplicate", "D.A.N.C.E.", "Justice"),
+        secondary_artist,
+        _artist("not-a-track", "Not a track"),
         _track("catalog-one", "Phantom", "Justice"),
         _track("catalog-two", "Audio, Video, Disco", "Justice"),
     ]
@@ -625,8 +728,85 @@ async def test_title_bonus_uses_artist_catalog_before_unrelated_source_tracks() 
         "Audio, Video, Disco",
     }
     assert "Teardrop" not in {option.label for option in options}
-    mass.music.artists.tracks.assert_awaited_once()
+    mass.music.artists.top_tracks.assert_awaited_once_with(
+        item_id=current.artists[0].item_id,
+        provider_instance_id_or_domain=current.artists[0].provider,
+    )
+    mass.music.artists.tracks.assert_not_awaited()
     mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_title_bonus_search_is_bounded_and_cached_per_artist() -> None:
+    """Reuse one top-track and bounded search result for repeated artist rounds."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    other = _track("other", "Stress", "Justice", album_year=2007)
+    other.artists = UniqueList([current.artists[0]])
+    unrelated = _track("unrelated", "Teardrop", "Massive Attack", album_year=1998)
+    quiz, mass = _quiz(
+        [current, other, unrelated],
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, other, unrelated]
+    mass.music.artists.top_tracks.return_value = [
+        _track("top", "Phantom", "Justice"),
+    ]
+    mass.music.search.return_value = SimpleNamespace(
+        tracks=[
+            _track("wrong-artist", "Sexy Boy", "Air"),
+            _track("search-one", "Audio, Video, Disco", "Justice"),
+            _track("search-two", "Civilization", "Justice"),
+        ]
+    )
+
+    current_options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+    other_options = await quiz._create_bonus_options(other, TimelineBonusType.TITLE)
+
+    assert "Teardrop" not in {option.label for option in current_options}
+    assert "Teardrop" not in {option.label for option in other_options}
+    assert "Sexy Boy" not in {option.label for option in current_options}
+    assert "Sexy Boy" not in {option.label for option in other_options}
+    mass.music.artists.top_tracks.assert_awaited_once()
+    mass.music.search.assert_awaited_once_with(
+        search_query="Justice",
+        media_types=[MediaType.TRACK],
+        limit=BONUS_CANDIDATE_LIMIT,
+        library_only=False,
+    )
+    mass.music.artists.tracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_title_bonus_uses_unrelated_source_only_when_grounded_pool_is_sparse() -> None:
+    """Use unrelated source titles only after bounded same-artist sources run out."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    source_same_artist = _track("source-same", "D.A.N.C.E.", "Justice", album_year=2007)
+    unrelated = _track("unrelated", "Teardrop", "Massive Attack", album_year=1998)
+    unused_fallback = _track("other", "Glory Box", "Portishead", album_year=1994)
+    quiz, mass = _quiz(
+        [current, source_same_artist, unrelated, unused_fallback],
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [
+        current,
+        source_same_artist,
+        unrelated,
+        unused_fallback,
+    ]
+    mass.music.artists.top_tracks.return_value = [
+        _track("top", "Phantom", "Justice"),
+    ]
+
+    options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "D.A.N.C.E.",
+        "Phantom",
+        "Teardrop",
+    }
+    mass.music.artists.top_tracks.assert_awaited_once()
+    mass.music.search.assert_awaited_once()
+    mass.music.artists.tracks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
