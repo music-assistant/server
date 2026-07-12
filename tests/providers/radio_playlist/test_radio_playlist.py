@@ -115,21 +115,26 @@ async def test_multiple_seeds_dedup_base_tracks() -> None:
     shared = _track("shared")
     prov = _make_provider(
         {"a": [shared, _track("a-only")], "b": [shared, _track("b-only")]},
-        [_track("sim1"), _track("sim2")],
+        [],
     )
+    similar_tracks = cast("Any", prov.mass.music.tracks.similar_tracks)
+    similar_tracks.side_effect = lambda item_id, _provider, **_kwargs: [
+        _track(f"similar-{item_id}")
+    ]
 
     await prov.get_dynamic_tracks([seed_a, seed_b], target_size=5)
     # Three unique base tracks remain after deduplication, each with a successful direct lookup.
-    assert cast("Any", prov.mass.music.tracks.similar_tracks).call_count == 3
+    assert similar_tracks.call_count == 3
 
 
 @pytest.mark.asyncio
-async def test_cross_provider_lookup_only_retries_empty_results() -> None:
-    """A cross-provider lookup is only used when the direct lookup has no result."""
+async def test_cross_provider_lookup_only_retries_without_usable_results() -> None:
+    """A cross-provider lookup is only used when the direct lookup has no usable result."""
     seed = _seed(MediaType.ALBUM, "seed")
     direct_base = _track("direct")
     fallback_base = _track("fallback")
-    prov = _make_provider({"seed": [direct_base, fallback_base]}, [])
+    filtered_base = _track("filtered")
+    prov = _make_provider({"seed": [direct_base, fallback_base, filtered_base]}, [])
     similar_tracks = cast("Any", prov.mass.music.tracks.similar_tracks)
 
     def get_similar(
@@ -137,6 +142,12 @@ async def test_cross_provider_lookup_only_retries_empty_results() -> None:
     ) -> list[MagicMock]:
         if item_id == "direct":
             return [_track("direct-result")]
+        if item_id == "filtered":
+            return (
+                [_track("filtered-fallback")]
+                if allow_lookup
+                else [_track("too-long", RADIO_TRACK_MAX_DURATION_SECS + 1)]
+            )
         if allow_lookup:
             return [_track("fallback-result")]
         return []
@@ -152,7 +163,13 @@ async def test_cross_provider_lookup_only_retries_empty_results() -> None:
     assert ("direct", True) not in lookups
     assert ("fallback", False) in lookups
     assert ("fallback", True) in lookups
-    assert {track.item_id for track in result} == {"direct-result", "fallback-result"}
+    assert ("filtered", False) in lookups
+    assert ("filtered", True) in lookups
+    assert {track.item_id for track in result} == {
+        "direct-result",
+        "fallback-result",
+        "filtered-fallback",
+    }
 
 
 @pytest.mark.asyncio

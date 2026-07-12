@@ -168,17 +168,17 @@ class RadioPlaylistProvider(PluginProvider):
                     )
                 except MusicAssistantError:
                     continue
-                if similar:
+                eligible_tracks = {
+                    track
+                    for track in similar
+                    if track not in base_tracks
+                    and track not in dynamic_tracks
+                    and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
+                    and (active_filter is None or active_filter.allows(track))
+                }
+                if eligible_tracks:
+                    dynamic_tracks.update(eligible_tracks)
                     break
-            else:
-                # A base track without a similar-tracks-capable provider should not abort generation.
-                continue
-            for track in similar:
-                if track in base_tracks or track.duration > RADIO_TRACK_MAX_DURATION_SECS:
-                    continue
-                if active_filter is not None and not active_filter.allows(track):
-                    continue
-                dynamic_tracks.add(track)
             if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
                 break
 
