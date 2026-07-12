@@ -23,6 +23,18 @@ from music_assistant.providers.music_quiz.suggestions import SuggestionCandidate
 CORRECT_LABEL = "Daft Punk - Around the World"
 
 
+def test_config_normalization_preserves_similar_music() -> None:
+    """Keep the shared source-expansion setting for Guess the Song."""
+    config = MusicQuizConfig(
+        source_uris=["prov://playlist/1"],
+        include_similar_music=True,
+    )
+
+    normalized = GuessTheSongQuizType.normalize_config(config)
+
+    assert normalized.include_similar_music is True
+
+
 def _track(item_id: str, name: str, artist: str, provider: str = "prov") -> Track:
     """Return a minimal Track with a single artist mapping."""
     return Track(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar, Final, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
@@ -18,6 +18,8 @@ from music_assistant_models.media_items import (
     Track,
 )
 
+from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.controllers.music.constants import DYNAMIC_RADIO_DYNAMIC_TARGET
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.uri import parse_uri
@@ -25,12 +27,15 @@ from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import MediaItemType
+
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.music_quiz.models import (
         MusicQuizConfig,
         MusicQuizGame,
         MusicQuizRound,
     )
+    from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +45,7 @@ MAX_SOURCE_COUNT = 200
 GENRE_TRACK_PAGE_SIZE = 100
 MAX_GENRE_TRACK_COUNT = 500
 MAX_SUGGESTION_COUNT = 12
+PLAYBACK_REPLACEMENT_RESERVE = 4
 MIN_RELEASE_YEAR = 1000
 SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
     {
@@ -178,14 +184,14 @@ class QuizType(ABC):
     @classmethod
     def serialize_game_config(
         cls,
-        game: MusicQuizGame,  # noqa: ARG003
+        game: MusicQuizGame,
     ) -> dict[str, SerializableType]:
         """
         Serialize quiz-specific game configuration.
 
         :param game: Game whose configuration should be serialized.
         """
-        return {}
+        return {"include_similar_music": game.config.include_similar_music}
 
     def reject_track(self, track_uri: str) -> None:
         """
@@ -201,6 +207,7 @@ class QuizType(ABC):
         if self._source_track_pool is not None:
             return self._source_track_pool
         pool: dict[str, Track] = {}
+        seeds: list[MediaItemType] = []
         for source_uri in self.config.source_uris:
             # skip individual unavailable sources so one bad source does not
             # abort a round that other sources can still populate
@@ -228,6 +235,7 @@ class QuizType(ABC):
                         media_item.media_type,
                     )
                     continue
+                seeds.append(media_item)
                 async for track in self._iter_source_tracks(media_item):
                     if track.uri:
                         pool[track.uri] = track
@@ -239,6 +247,8 @@ class QuizType(ABC):
                 translation_key="music_quiz_sources_unavailable",
                 translation_owner=TRANSLATION_OWNER,
             )
+        if self.config.include_similar_music:
+            await self._expand_source_track_pool(pool, seeds)
         self._source_track_pool = pool
         return pool
 
@@ -287,6 +297,63 @@ class QuizType(ABC):
         for track in tracks:
             if isinstance(track, Track):
                 yield track
+
+    async def _expand_source_track_pool(
+        self,
+        pool: dict[str, Track],
+        seeds: list[MediaItemType],
+    ) -> None:
+        """
+        Add playable similar tracks to a resolved Music Quiz source pool.
+
+        :param pool: Exact selected source tracks keyed by URI.
+        :param seeds: Resolved selected media items used to find similar music.
+        """
+        radio_provider = self.mass.get_provider("radio_playlist")
+        if radio_provider is None:
+            LOGGER.debug(
+                "Music Quiz similar-music expansion is unavailable without radio playlists"
+            )
+            return
+        target_size = min(
+            DYNAMIC_RADIO_DYNAMIC_TARGET,
+            max(
+                DYNAMIC_PLAYLIST_SAMPLE_SIZE,
+                self.config.round_count
+                + PLAYBACK_REPLACEMENT_RESERVE
+                + max(self.config.suggestion_count - 1, 0),
+            ),
+        )
+        preferred_provider_instances = sorted(
+            {
+                provider_instance
+                for seed in seeds
+                for provider_instance in (
+                    seed.provider,
+                    *(mapping.provider_instance for mapping in seed.provider_mappings),
+                )
+                if provider_instance != "library"
+            }
+        )
+        try:
+            similar_tracks = await cast("RadioPlaylistProvider", radio_provider).get_dynamic_tracks(
+                seeds,
+                include_base_tracks=False,
+                target_size=target_size,
+                preferred_provider_instances=preferred_provider_instances or None,
+            )
+        except Exception as err:
+            LOGGER.warning("Could not expand Music Quiz sources with similar music: %s", err)
+            return
+        if not similar_tracks:
+            LOGGER.debug("Radio playlists returned no similar tracks for Music Quiz")
+            return
+        initial_pool_size = len(pool)
+        for track in similar_tracks:
+            if isinstance(track, Track) and track.uri and track.available and track.is_playable:
+                pool.setdefault(track.uri, track)
+        if len(pool) == initial_pool_size:
+            LOGGER.debug("Radio playlists returned no new playable tracks for Music Quiz")
 
 
 def get_track_release_year(track: Track) -> int | None:

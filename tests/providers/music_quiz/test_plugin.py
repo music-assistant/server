@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +12,7 @@ import pytest
 from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, QueueOption
 from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
+from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
@@ -55,6 +56,7 @@ from music_assistant.providers.music_quiz.models import (
     TimelineMultipleChoiceBonusDefinition,
     TimelineRoundState,
 )
+from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
 from music_assistant.providers.music_quiz.quiz_types.trivia import TriviaQuizType
 
 INSTANCE_ID = "music_quiz--test"
@@ -1140,6 +1142,7 @@ async def test_disabled_trivia_serialization_and_listen_in_remain_non_audio() ->
             suggestion_count=4,
             answer_duration=20,
             source_uris=["library://playlist/1"],
+            include_similar_music=True,
             name="Music Trivia",
             difficulty="hard",
             language="pt_BR",
@@ -1206,6 +1209,12 @@ async def test_disabled_trivia_serialization_and_listen_in_remain_non_audio() ->
             game_info["play_reveal_audio"],
             personal_state["play_reveal_audio"],
         } == {False}
+        assert {
+            public_state["include_similar_music"],
+            host_state["include_similar_music"],
+            game_info["include_similar_music"],
+            personal_state["include_similar_music"],
+        } == {True}
         assert personal_state["current_round"] == public_state["current_round"]
         assert alice not in str(personal_state)
         with patch(
@@ -1953,6 +1962,7 @@ async def test_disabled_trivia_reset_delete_and_recreate_keep_lifecycle_non_audi
             quiz_type="trivia",
             round_count=1,
             source_uris=["library://playlist/1"],
+            include_similar_music=True,
             language="zh_hans_cn",
             play_reveal_audio=False,
         )
@@ -1965,6 +1975,7 @@ async def test_disabled_trivia_reset_delete_and_recreate_keep_lifecycle_non_audi
         assert reset_state["answer_type"] == "multiple_choice"
         assert reset_state["language"] == "zh-Hans-CN"
         assert reset_state["play_reveal_audio"] is False
+        assert reset_state["include_similar_music"] is True
         assert game.config.language == "zh-Hans-CN"
         assert game.rounds == []
         assert initialize.await_count == 2
@@ -2006,6 +2017,7 @@ async def test_music_timeline_create_uses_flat_config_and_derived_answer_type() 
             round_count=2,
             suggestion_count=9,
             source_uris=["library://playlist/1"],
+            include_similar_music=True,
             difficulty="not-used",
             language="nl",
             play_reveal_audio=False,
@@ -2023,12 +2035,14 @@ async def test_music_timeline_create_uses_flat_config_and_derived_answer_type() 
     assert game.config.difficulty == "normal"
     assert game.config.language == "en"
     assert game.config.play_reveal_audio is True
+    assert game.config.include_similar_music is True
     assert quiz_type.uses_audio is True
     assert quiz_type.plays_track_before_answering is True
     assert quiz_type.plays_track_on_reveal is False
     assert game.config.use_ai_distractors is True
     assert created["artist_bonus_mode"] == "free_text"
     assert created["title_bonus_mode"] == "multiple_choice"
+    assert created["include_similar_music"] is True
     assert "suggestion_count" not in created
     assert "language" not in created
     assert "play_reveal_audio" not in created
@@ -2817,6 +2831,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "round_count",
         "suggestion_count",
         "answer_duration",
+        "include_similar_music",
         "auto_start_at",
         "players",
         "current_round",
@@ -2824,7 +2839,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     assert state["phase"] == "answering"
     assert state["quiz_type"] == "guess_the_song"
     assert state["answer_type"] == "multiple_choice"
-    assert state["mode"] == "venue"
+    assert (state["mode"], state["include_similar_music"]) == ("venue", False)
     public_player_keys = {
         "name",
         "score",
@@ -2939,6 +2954,7 @@ async def test_game_info_exposes_game_identity_and_playback_mode() -> None:
         "mode": "remote",
         "player_count": 0,
         "round_count": 5,
+        "include_similar_music": False,
         "auto_start_at": None,
     }
 
@@ -2975,6 +2991,7 @@ async def test_create_and_get_expose_persisted_quiz_type() -> None:
     created = await plugin.create_game(
         quiz_type="guess_the_song",
         source_uris=["library://playlist/1"],
+        include_similar_music=True,
         language="nl",
     )
     game = plugin._game
@@ -2982,13 +2999,16 @@ async def test_create_and_get_expose_persisted_quiz_type() -> None:
     assert game.quiz_type == "guess_the_song"
     assert game.answer_type == "multiple_choice"
     assert game.config.language == "en"
+    assert game.config.include_similar_music is True
     assert created["quiz_type"] == game.quiz_type
     assert created["answer_type"] == game.answer_type
+    assert created["include_similar_music"] is True
     assert "language" not in created
     host_state = await plugin.get_game()
     assert host_state is not None
     assert host_state["quiz_type"] == game.quiz_type
     assert host_state["answer_type"] == game.answer_type
+    assert host_state["include_similar_music"] is True
     assert "language" not in host_state
 
 
@@ -3939,6 +3959,122 @@ async def test_create_game_replaces_finished_game() -> None:
     assert result["phase"] == "lobby"
     assert plugin._game is not game
     cast("MagicMock", plugin.mass.cancel_task).assert_called_once_with(plugin._presence_timer_id)
+
+
+@pytest.mark.asyncio
+async def test_similar_music_pool_cache_follows_game_strategy_lifecycle() -> None:  # noqa: PLR0915
+    """Expand once per strategy while reset and replacement initialize fresh pools."""
+    plugin = _create_plugin()
+    source = Playlist(
+        item_id="source",
+        provider="provider",
+        name="Source",
+        provider_mappings=set(),
+    )
+    exact = Track(
+        item_id="exact",
+        provider="provider",
+        name="Exact",
+        provider_mappings={
+            ProviderMapping(
+                item_id="exact",
+                provider_domain="provider",
+                provider_instance="provider",
+            )
+        },
+    )
+    expanded = Track(
+        item_id="expanded",
+        provider="provider",
+        name="Expanded",
+        provider_mappings={
+            ProviderMapping(
+                item_id="expanded",
+                provider_domain="provider",
+                provider_instance="provider",
+            )
+        },
+    )
+    cast("AsyncMock", plugin.mass.music.get_item).return_value = source
+    assert source.uri is not None
+
+    async def _playlist_tracks(**_kwargs: object) -> AsyncGenerator[Track]:
+        yield exact
+
+    cast("MagicMock", plugin.mass.music.playlists.tracks).side_effect = _playlist_tracks
+    expansion_contexts: list[object | None] = []
+
+    async def _dynamic_tracks(
+        seeds: list[object],
+        *,
+        include_base_tracks: bool,
+        target_size: int,
+        preferred_provider_instances: list[str] | None,
+    ) -> list[Track]:
+        assert seeds == [source]
+        assert include_base_tracks is False
+        assert target_size == 25
+        assert preferred_provider_instances == ["provider"]
+        expansion_contexts.append(get_auth_current_user())
+        return [expanded]
+
+    radio_provider = MagicMock()
+    radio_provider.get_dynamic_tracks = AsyncMock(side_effect=_dynamic_tracks)
+    cast("MagicMock", plugin.mass.get_provider).return_value = radio_provider
+
+    async def _prepare_round(
+        strategy: GuessTheSongQuizType,
+        round_index: int,
+        _previous_rounds: list[MusicQuizRound],
+    ) -> MusicQuizRound:
+        await strategy._get_source_track_pool()
+        return _make_round(round_index)
+
+    requesting_user = cast("User", _guest_user())
+    requesting_impersonation = cast("User", _guest_user())
+    current_user_token = current_user.set(requesting_user)
+    impersonated_user_token = impersonated_user.set(requesting_impersonation)
+    try:
+        with patch.object(GuessTheSongQuizType, "prepare_round", new=_prepare_round):
+            first_state = await plugin.create_game(
+                source_uris=[source.uri],
+                include_similar_music=True,
+            )
+            assert plugin._next_round_task is not None
+            await plugin._next_round_task
+            first_strategy = plugin._quiz_type
+            assert first_strategy is not None
+            await first_strategy._get_source_track_pool()
+            assert radio_provider.get_dynamic_tracks.await_count == 1
+
+            reset_state = await plugin.reset()
+            assert plugin._next_round_task is not None
+            await plugin._next_round_task
+            reset_strategy = plugin._quiz_type
+            assert reset_strategy is not first_strategy
+            assert radio_provider.get_dynamic_tracks.await_count == 2
+
+            replacement_state = await plugin.create_game(
+                source_uris=[source.uri],
+                include_similar_music=True,
+            )
+            assert plugin._next_round_task is not None
+            await plugin._next_round_task
+            assert plugin._quiz_type is not reset_strategy
+            assert radio_provider.get_dynamic_tracks.await_count == 3
+            assert current_user.get() is requesting_user
+            assert impersonated_user.get() is requesting_impersonation
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
+
+    assert {
+        first_state["include_similar_music"],
+        reset_state["include_similar_music"],
+        replacement_state["include_similar_music"],
+    } == {True}
+    assert expansion_contexts == [None, None, None]
+    assert cast("MagicMock", plugin.mass.player_queues).mock_calls == []
 
 
 @pytest.mark.asyncio
