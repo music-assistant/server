@@ -1,0 +1,29 @@
+{
+  "config_entries": {
+    "label": {
+      "label": "Connect Music Assistant to your self-hosted TeddyCloud server to browse and stream the audio from your own Tonies as audiobooks. Username and password are only needed if TeddyCloud sits behind HTTP basic auth."
+    },
+    "url": {
+      "label": "Server",
+      "description": "The base URL of your TeddyCloud server, for example http://teddycloud.local or http://192.168.1.50"
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "Only required if TeddyCloud is behind HTTP basic auth."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "[%key:common::config_entries::password::description%]"
+    },
+    "verify_ssl": {
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
+    }
+  },
+  "manifest": {
+    "description": "Browse and stream the audiobooks from your self-hosted TeddyCloud (Toniebox) library."
+  },
+  "errors": {
+    "login_failed": "Could not connect to the TeddyCloud server at {0}."
+  }
+}
