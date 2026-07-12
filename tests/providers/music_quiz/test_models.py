@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from mashumaro.exceptions import ExtraKeysError, InvalidFieldValue
 
+from music_assistant.helpers.shared_playback import SharedPlaybackMode
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceAnswer,
     MultipleChoiceRoundState,
@@ -41,6 +42,23 @@ def test_config_defaults_and_round_trips_similar_music() -> None:
     assert default_config.include_similar_music is False
     assert MusicQuizConfig().to_dict()["include_similar_music"] is False
     assert MusicQuizConfig.from_dict(enabled_config.to_dict()) == enabled_config
+
+
+def test_config_round_trips_game_playback_selection() -> None:
+    """Preserve the effective playback selection with persisted game settings."""
+    config = MusicQuizConfig(
+        playback_mode=SharedPlaybackMode.VENUE,
+        venue_player_id="living_room",
+        venue_player_name="Living Room",
+    )
+
+    serialized = config.to_dict()
+
+    assert serialized["playback_mode"] == "venue"
+    assert serialized["venue_player_id"] == "living_room"
+    assert serialized["venue_player_name"] == "Living Room"
+    assert MusicQuizConfig.from_dict(serialized) == config
+    assert MusicQuizConfig.from_dict({}).playback_mode == SharedPlaybackMode.VENUE
 
 
 def test_round_answer_state_round_trips_with_discriminator() -> None:

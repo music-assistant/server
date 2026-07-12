@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, TypedDict
 
 from mashumaro import DataClassDictMixin, field_options
 from mashumaro.config import BaseConfig
 from mashumaro.types import Discriminator
+
+from music_assistant.helpers.shared_playback import SharedPlaybackMode
 
 DEFAULT_TRIVIA_LANGUAGE = "en"
 
@@ -52,6 +54,31 @@ class TimelineBonusType(StrEnum):
     TITLE = "title"
 
 
+class MusicQuizVenuePlayerOption(TypedDict):
+    """A venue player available for Music Quiz playback."""
+
+    player_id: str
+    name: str
+
+
+class MusicQuizPlaybackOptions(TypedDict):
+    """Host-visible options for configuring Music Quiz playback."""
+
+    default_playback_mode: str
+    default_venue_player_id: str | None
+    venue_available: bool
+    remote_available: bool
+    venue_players: list[MusicQuizVenuePlayerOption]
+
+
+class MusicQuizPlaybackSummary(TypedDict):
+    """Host-only summary of a game's playback selection."""
+
+    mode: str
+    venue_player_id: str | None
+    venue_player_name: str | None
+
+
 @dataclass
 class MusicQuizConfig(DataClassDictMixin):
     """Configuration for a Music Quiz game."""
@@ -62,6 +89,9 @@ class MusicQuizConfig(DataClassDictMixin):
     source_uris: list[str] = field(default_factory=list)
     include_similar_music: bool = False
     name: str | None = None
+    playback_mode: SharedPlaybackMode = SharedPlaybackMode.VENUE
+    venue_player_id: str | None = None
+    venue_player_name: str | None = None
     # difficulty is guess-the-song specific; AI distractors also apply to timeline bonuses
     difficulty: str = MusicQuizDifficulty.NORMAL.value
     use_ai_distractors: bool = False

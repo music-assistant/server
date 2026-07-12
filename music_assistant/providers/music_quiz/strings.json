@@ -45,6 +45,7 @@
     "music_quiz_invalid_difficulty": "The selected difficulty is not valid.",
     "music_quiz_invalid_language": "The selected Trivia language is not valid.",
     "music_quiz_invalid_bonus_mode": "The selected timeline bonus mode is not valid.",
+    "music_quiz_invalid_playback_mode": "The selected playback mode is not valid.",
     "music_quiz_no_unused_source_tracks": "No unused source tracks are available.",
     "music_quiz_no_dated_tracks": "None of the selected tracks have a usable release year.",
     "music_quiz_not_enough_dated_tracks": "At least {0} unique tracks with release years are required for this game.",
