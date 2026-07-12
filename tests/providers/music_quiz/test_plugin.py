@@ -10,7 +10,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope, User, UserRole
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, QueueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    QueueOption,
+)
 from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
@@ -22,9 +29,12 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
 )
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.shared_playback import SharedPlaybackMode
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz import (
     MUSIC_QUIZ_GUEST_USER,
+    PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
+    PLAYBACK_PREFERENCE_CACHE_KEY,
     PLAYER_RECONNECT_GRACE_SECONDS,
     REPLAY_AUTO_START_SECONDS,
     MusicQuizPlugin,
@@ -43,6 +53,8 @@ from music_assistant.providers.music_quiz.game import finish_game as finish_game
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
     MultipleChoiceSuggestion,
+    MusicQuizAnswerType,
+    MusicQuizConfig,
     MusicQuizGame,
     MusicQuizPhase,
     MusicQuizRound,
@@ -63,6 +75,7 @@ INSTANCE_ID = "music_quiz--test"
 
 HOST_COMMANDS = (
     "music_quiz/available_quiz_types",
+    "music_quiz/playback_options",
     "music_quiz/create",
     "music_quiz/get",
     "music_quiz/start",
@@ -85,6 +98,44 @@ LISTEN_IN_COMMANDS = (
     "music_quiz/stop_listen_in",
     "music_quiz/can_listen_in",
 )
+
+
+def _make_venue_player(
+    player_id: str,
+    name: str,
+    *,
+    available: bool = True,
+    enabled: bool = True,
+    hidden: bool = False,
+    needs_setup: bool = False,
+    player_type: PlayerType = PlayerType.PLAYER,
+    features: set[PlayerFeature] | None = None,
+    provider_domain: str = "test_player",
+    playback_state: PlaybackState = PlaybackState.IDLE,
+) -> SimpleNamespace:
+    """Return a player-shaped venue target for tests."""
+    supported_features = features if features is not None else {PlayerFeature.PLAY_MEDIA}
+    is_native_player = (
+        PlayerFeature.PLAY_MEDIA in supported_features
+        and player_type != PlayerType.PROTOCOL
+        and provider_domain != "universal_player"
+    )
+    return SimpleNamespace(
+        player_id=player_id,
+        display_name=name,
+        playback_state=playback_state,
+        is_native_player=is_native_player,
+        provider=SimpleNamespace(domain=provider_domain),
+        state=SimpleNamespace(
+            available=available,
+            enabled=enabled,
+            hide_in_ui=hidden,
+            needs_setup=needs_setup,
+            type=player_type,
+            supported_features=supported_features,
+        ),
+        extra_data={},
+    )
 
 
 def _make_round(round_index: int, suggestion_count: int = 4) -> MusicQuizRound:
@@ -204,7 +255,7 @@ def _make_text_trivia_round(
 
 
 def _create_plugin(
-    mode: str = "venue",
+    mode: str | None = "venue",
     player: str | None = "venue_player",
     use_ai_distractors: bool = False,
 ) -> MusicQuizPlugin:
@@ -214,11 +265,12 @@ def _create_plugin(
     plugin.logger = MagicMock()
     plugin.config = MagicMock()
     plugin.config.instance_id = INSTANCE_ID
-    plugin.config.get_value.side_effect = {
+    config_values = {
         "mode": mode,
         "player": player,
         "use_ai_distractors": use_ai_distractors,
-    }.__getitem__
+    }
+    plugin.config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
     plugin._game = None
     plugin._quiz_type = None
     plugin._answer_type = None
@@ -229,6 +281,23 @@ def _create_plugin(
     plugin._next_round_task = None
     plugin._reveal_playback_task = None
     plugin._unregister_handles = []
+    plugin.mass.cache.get = AsyncMock(return_value=None)
+    plugin.mass.cache.set = AsyncMock()
+    plugin.mass.get_provider.return_value = MagicMock()
+    plugin.mass.players.all_players.return_value = (
+        [_make_venue_player(player, "Venue Player")] if player and player != "__auto__" else []
+    )
+
+    def _get_player(player_id: str) -> SimpleNamespace | None:
+        players = cast("MagicMock", plugin.mass.players.all_players).return_value
+        if isinstance(players, list):
+            return next(
+                (player for player in players if player.player_id == player_id),
+                None,
+            )
+        return None
+
+    plugin.mass.players.get_player.side_effect = _get_player
 
     def _create_task(target: Any, *args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
         if asyncio.iscoroutine(target):
@@ -247,9 +316,37 @@ def _create_plugin(
     return plugin
 
 
-def _fake_game() -> MusicQuizGame:
+def _install_shared_preference_cache(
+    plugin: MusicQuizPlugin,
+    values: dict[tuple[str, str], Any],
+) -> None:
+    """Attach a provider-scoped in-memory cache to a plugin."""
+
+    async def _get(key: str, *, provider: str, **_kwargs: Any) -> Any:
+        return values.get((provider, key))
+
+    async def _set(key: str, data: Any, *, provider: str, **_kwargs: Any) -> None:
+        values[(provider, key)] = data
+
+    cache = cast("Any", plugin.mass.cache)
+    cache.get = AsyncMock(side_effect=_get)
+    cache.set = AsyncMock(side_effect=_set)
+
+
+def _fake_game(
+    mode: SharedPlaybackMode = SharedPlaybackMode.VENUE,
+    venue_player_id: str | None = "venue_player",
+) -> MusicQuizGame:
     """Return a minimal active-game stub for playback-session tests."""
-    return cast("MusicQuizGame", SimpleNamespace(config=SimpleNamespace(name=None)))
+    return MusicQuizGame(
+        config=MusicQuizConfig(
+            playback_mode=mode,
+            venue_player_id=venue_player_id,
+            venue_player_name="Venue Player" if venue_player_id else None,
+        ),
+        quiz_type="guess_the_song",
+        answer_type=MusicQuizAnswerType.MULTIPLE_CHOICE,
+    )
 
 
 def _guest_user() -> SimpleNamespace:
@@ -460,6 +557,537 @@ async def test_api_command_scopes_lock_out_guests_from_host_commands() -> None:
         assert registered[command] == Scope.PLAYERS_CONTROL
 
 
+@pytest.mark.asyncio
+async def test_create_api_accepts_additive_playback_fields() -> None:
+    """Parse the explicit playback selection through the registered API contract."""
+    plugin = _create_plugin()
+    registered: dict[str, APICommandHandler] = {}
+
+    def _register(command: str, handler: Any, **kwargs: Any) -> Any:
+        registered[command] = APICommandHandler.parse(command, handler, **kwargs)
+        return MagicMock()
+
+    cast("MagicMock", plugin.mass.register_api_command).side_effect = _register
+    await plugin.loaded_in_mass()
+
+    handler = registered["music_quiz/create"]
+    arguments = parse_arguments(
+        handler.signature,
+        handler.type_hints,
+        {
+            "source_uris": ["library://playlist/1"],
+            "playback_mode": "venue",
+            "venue_player_id": "venue_player",
+        },
+    )
+
+    assert arguments["playback_mode"] == "venue"
+    assert arguments["venue_player_id"] == "venue_player"
+
+
+@pytest.mark.asyncio
+async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
+    """Recommend a concrete playable target without using current playback activity."""
+    plugin = _create_plugin(player="__auto__")
+    alpha = _make_venue_player("alpha", "Alpha Room")
+    group = _make_venue_player("group", "House Group", player_type=PlayerType.GROUP)
+    playing_bathroom = _make_venue_player(
+        "bathroom",
+        "Z Bathroom",
+        playback_state=PlaybackState.PLAYING,
+    )
+    excluded = [
+        _make_venue_player("unavailable", "Unavailable", available=False),
+        _make_venue_player("disabled", "Disabled", enabled=False),
+        _make_venue_player("hidden", "Hidden", hidden=True),
+        _make_venue_player("needs-setup", "Needs Setup", needs_setup=True),
+        _make_venue_player("protocol", "Protocol", player_type=PlayerType.PROTOCOL),
+        _make_venue_player("display", "Display", player_type=PlayerType.DISPLAY),
+        _make_venue_player("no-play", "No Playback", features=set()),
+        _make_venue_player("browser", "Browser", provider_domain="sendspin"),
+        _make_venue_player("universal", "Universal", provider_domain="universal_player"),
+    ]
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [
+        playing_bathroom,
+        *excluded,
+        group,
+        alpha,
+    ]
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
+            new=AsyncMock(),
+        ) as create_venue,
+        patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_remote",
+            new=AsyncMock(),
+        ) as create_remote,
+    ):
+        options = await plugin.playback_options()
+
+    assert options == {
+        "default_playback_mode": "venue",
+        "default_venue_player_id": "alpha",
+        "venue_available": True,
+        "remote_available": True,
+        "venue_players": [
+            {"player_id": "alpha", "name": "Alpha Room"},
+            {"player_id": "group", "name": "House Group"},
+            {"player_id": "bathroom", "name": "Z Bathroom"},
+        ],
+    }
+    create_venue.assert_not_awaited()
+    create_remote.assert_not_awaited()
+    assert cast("MagicMock", plugin.mass.player_queues).mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_playback_options_report_mode_availability() -> None:
+    """Expose unavailable modes while retaining a stable default value."""
+    plugin = _create_plugin(mode="remote", player=None)
+    cast("MagicMock", plugin.mass.players.all_players).return_value = []
+    cast("MagicMock", plugin.mass.get_provider).return_value = None
+
+    options = await plugin.playback_options()
+
+    assert options == {
+        "default_playback_mode": "remote",
+        "default_venue_player_id": None,
+        "venue_available": False,
+        "remote_available": False,
+        "venue_players": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_remembered_playback_survives_plugin_instances_and_remote_keeps_venue() -> None:
+    """Reuse provider-scoped choices and retain the venue target after a remote game."""
+    cache_values: dict[tuple[str, str], Any] = {}
+    speaker = _make_venue_player("living_room", "Living Room")
+    first_plugin = _create_plugin(mode="venue", player="__auto__")
+    cast("MagicMock", first_plugin.mass.players.all_players).return_value = [speaker]
+    _install_shared_preference_cache(first_plugin, cache_values)
+
+    await first_plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="living_room",
+    )
+
+    second_plugin = _create_plugin(mode="venue", player=None)
+    cast("MagicMock", second_plugin.mass.players.all_players).return_value = [speaker]
+    _install_shared_preference_cache(second_plugin, cache_values)
+    options = await second_plugin.playback_options()
+    assert options["default_playback_mode"] == "venue"
+    assert options["default_venue_player_id"] == "living_room"
+
+    await second_plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="remote",
+        venue_player_id="ignored",
+    )
+
+    assert cache_values[(INSTANCE_ID, PLAYBACK_PREFERENCE_CACHE_KEY)] == {
+        "playback_mode": "remote",
+        "venue_player_id": "living_room",
+    }
+    third_plugin = _create_plugin(mode="venue", player=None)
+    cast("MagicMock", third_plugin.mass.players.all_players).return_value = [speaker]
+    _install_shared_preference_cache(third_plugin, cache_values)
+    remembered = await third_plugin.playback_options()
+    assert remembered["default_playback_mode"] == "remote"
+    assert remembered["default_venue_player_id"] == "living_room"
+
+
+@pytest.mark.parametrize(
+    ("mode", "player_id", "expected"),
+    [
+        (
+            "remote",
+            "legacy_player",
+            {"playback_mode": "remote", "venue_player_id": "legacy_player"},
+        ),
+        ("venue", "__auto__", {"playback_mode": "venue", "venue_player_id": None}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_loaded_provider_migrates_legacy_playback_settings(
+    mode: str,
+    player_id: str,
+    expected: dict[str, str | None],
+) -> None:
+    """Persist hidden legacy values before provider reconfiguration can discard them."""
+    plugin = _create_plugin(mode=mode, player=player_id)
+
+    await plugin.loaded_in_mass()
+
+    cast("AsyncMock", plugin.mass.cache.set).assert_awaited_once_with(
+        PLAYBACK_PREFERENCE_CACHE_KEY,
+        expected,
+        expiration=PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
+        provider=INSTANCE_ID,
+        persistent=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_provider_does_not_seed_a_legacy_playback_preference() -> None:
+    """Leave first-use recommendation unclaimed when no legacy values exist."""
+    plugin = _create_plugin(mode=None, player=None)
+
+    await plugin.loaded_in_mass()
+
+    cast("AsyncMock", plugin.mass.cache.set).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_explicit_venue_create_persists_game_authoritative_playback() -> None:
+    """Validate and persist the selected venue target in game and host state."""
+    plugin = _create_plugin(mode="remote", player=None)
+    speaker = _make_venue_player("living_room", "Living Room")
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [speaker]
+
+    state = await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="living_room",
+    )
+
+    game = plugin._game
+    assert game is not None
+    assert game.config.playback_mode == SharedPlaybackMode.VENUE
+    assert game.config.venue_player_id == "living_room"
+    assert game.config.venue_player_name == "Living Room"
+    assert state["mode"] == "venue"
+    assert state["playback"] == {
+        "mode": "venue",
+        "venue_player_id": "living_room",
+        "venue_player_name": "Living Room",
+    }
+    public_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    info = await plugin.get_game_info()
+    assert "living_room" not in str(public_state)
+    assert "Living Room" not in str(public_state)
+    assert info is not None
+    assert "playback" not in info
+    assert "living_room" not in str(info)
+    cast("AsyncMock", plugin.mass.cache.set).assert_awaited_once_with(
+        PLAYBACK_PREFERENCE_CACHE_KEY,
+        {"playback_mode": "venue", "venue_player_id": "living_room"},
+        expiration=PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
+        provider=INSTANCE_ID,
+        persistent=True,
+    )
+    session = MagicMock()
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
+            new=AsyncMock(return_value=session),
+        ) as create_venue,
+        patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_remote",
+            new=AsyncMock(),
+        ) as create_remote,
+    ):
+        assert await plugin._get_playback_session() is session
+    create_venue.assert_awaited_once_with(plugin.mass, "living_room")
+    create_remote.assert_not_awaited()
+
+
+@pytest.mark.parametrize("venue_player_id", [None, "unknown", "unavailable"])
+@pytest.mark.asyncio
+async def test_invalid_explicit_venue_create_preserves_existing_game(
+    venue_player_id: str | None,
+) -> None:
+    """Reject missing or ineligible venue targets without mutating game state."""
+    plugin = _create_plugin()
+    valid_player = _make_venue_player("valid", "Valid")
+    unavailable_player = _make_venue_player("unavailable", "Unavailable", available=False)
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [
+        valid_player,
+        unavailable_player,
+    ]
+    await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="valid",
+    )
+    existing_game = plugin._game
+    assert existing_game is not None
+    existing_state = existing_game.to_dict()
+    cast("AsyncMock", plugin.mass.cache.set).reset_mock()
+
+    with pytest.raises(MusicQuizNoPlaybackTargetError):
+        await plugin.create_game(
+            source_uris=["library://playlist/2"],
+            playback_mode="venue",
+            venue_player_id=venue_player_id,
+        )
+
+    assert plugin._game is existing_game
+    assert existing_game.to_dict() == existing_state
+    cast("AsyncMock", plugin.mass.cache.set).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_venue_player_is_revalidated_before_game_publication() -> None:
+    """Keep a finished game when the selected player vanishes during creation."""
+    plugin = _create_plugin()
+    speaker = _make_venue_player("speaker", "Speaker")
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [speaker]
+    await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="speaker",
+    )
+    existing_game = plugin._game
+    assert existing_game is not None
+    existing_game.phase = MusicQuizPhase.FINISHED
+    existing_state = existing_game.to_dict()
+    cast("AsyncMock", plugin.mass.cache.set).reset_mock()
+    cast("MagicMock", plugin.mass.players.all_players).side_effect = [[speaker], []]
+
+    with pytest.raises(MusicQuizNoPlaybackTargetError):
+        await plugin.create_game(
+            source_uris=["library://playlist/2"],
+            playback_mode="venue",
+            venue_player_id="speaker",
+        )
+
+    assert plugin._game is existing_game
+    assert existing_game.to_dict() == existing_state
+    cast("AsyncMock", plugin.mass.cache.set).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_explicit_remote_ignores_player_and_keeps_it_private() -> None:
+    """Use remote game state while preserving the prior venue preference."""
+    plugin = _create_plugin(mode="venue", player="legacy_player")
+    speaker = _make_venue_player("legacy_player", "Legacy Room")
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [speaker]
+    cast("AsyncMock", plugin.mass.cache.get).return_value = {
+        "playback_mode": "venue",
+        "venue_player_id": "legacy_player",
+    }
+
+    state = await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="remote",
+        venue_player_id="untrusted-player",
+    )
+
+    game = plugin._game
+    assert game is not None
+    assert game.config.playback_mode == SharedPlaybackMode.REMOTE
+    assert game.config.venue_player_id is None
+    assert game.config.venue_player_name is None
+    assert state["playback"] == {
+        "mode": "remote",
+        "venue_player_id": None,
+        "venue_player_name": None,
+    }
+    public_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    info = await plugin.get_game_info()
+    assert public_state["mode"] == "remote"
+    assert info is not None
+    assert info["mode"] == "remote"
+    assert "legacy_player" not in str(public_state)
+    assert "legacy_player" not in str(info)
+    cast("AsyncMock", plugin.mass.cache.set).assert_awaited_once_with(
+        PLAYBACK_PREFERENCE_CACHE_KEY,
+        {"playback_mode": "remote", "venue_player_id": "legacy_player"},
+        expiration=PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
+        provider=INSTANCE_ID,
+        persistent=True,
+    )
+    session = MagicMock()
+    session.can_listen_in.return_value = True
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_remote",
+            new=AsyncMock(return_value=session),
+        ) as create_remote,
+        patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
+            new=AsyncMock(),
+        ) as create_venue,
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+    ):
+        assert await plugin.can_listen_in("web-player") is True
+    create_remote.assert_awaited_once()
+    create_venue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_omitted_playback_fields_use_safe_concrete_recommendation() -> None:
+    """Keep old create payloads compatible without retaining the auto sentinel."""
+    plugin = _create_plugin(mode="venue", player="__auto__")
+    beta = _make_venue_player("beta", "Beta")
+    alpha = _make_venue_player("alpha", "Alpha")
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [beta, alpha]
+
+    await plugin.create_game(source_uris=["library://playlist/1"])
+
+    game = plugin._game
+    assert game is not None
+    assert game.config.playback_mode == SharedPlaybackMode.VENUE
+    assert game.config.venue_player_id == "alpha"
+    assert game.config.venue_player_name == "Alpha"
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_unknown_or_unavailable_playback_mode() -> None:
+    """Return localized create errors for invalid and unavailable modes."""
+    plugin = _create_plugin()
+    with pytest.raises(InvalidDataError) as invalid_mode:
+        await plugin.create_game(
+            source_uris=["library://playlist/1"],
+            playback_mode="surround",
+        )
+    assert invalid_mode.value.translation_key == "music_quiz_invalid_playback_mode"
+    assert plugin._game is None
+
+    cast("MagicMock", plugin.mass.get_provider).return_value = None
+    with pytest.raises(MusicQuizNoPlaybackTargetError):
+        await plugin.create_game(
+            source_uris=["library://playlist/1"],
+            playback_mode="remote",
+            venue_player_id="ignored",
+        )
+    assert plugin._game is None
+    cast("AsyncMock", plugin.mass.cache.set).assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("mode", "venue_player_id"),
+    [("venue", "venue_player"), ("remote", None)],
+)
+@pytest.mark.asyncio
+async def test_reset_preserves_game_playback_selection(
+    mode: str,
+    venue_player_id: str | None,
+) -> None:
+    """Keep mode and venue target unchanged when replaying a game."""
+    plugin = _create_plugin()
+
+    created = await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode=mode,
+        venue_player_id=venue_player_id,
+    )
+    reset = await plugin.reset()
+
+    game = plugin._game
+    assert game is not None
+    assert game.config.playback_mode.value == mode
+    assert game.config.venue_player_id == venue_player_id
+    assert reset["playback"] == created["playback"]
+
+
+@pytest.mark.asyncio
+async def test_replacing_game_with_different_playback_closes_previous_session() -> None:
+    """Tear down listeners before publishing a game on a different playback target."""
+    plugin = _create_plugin()
+    await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="venue_player",
+    )
+    previous_session = MagicMock()
+    previous_session.close = AsyncMock()
+    plugin._playback_session = previous_session
+
+    state = await plugin.create_game(
+        source_uris=["library://playlist/2"],
+        playback_mode="remote",
+    )
+
+    previous_session.close.assert_awaited_once()
+    assert vars(plugin)["_playback_session"] is None
+    assert state["playback"]["mode"] == "remote"
+
+
+@pytest.mark.asyncio
+async def test_failed_session_close_preserves_game_and_playback_preference() -> None:
+    """Do not remember a replacement game when its session transition fails."""
+    plugin = _create_plugin()
+    cache_values: dict[tuple[str, str], Any] = {}
+    _install_shared_preference_cache(plugin, cache_values)
+    await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="venue_player",
+    )
+    existing_game = plugin._game
+    assert existing_game is not None
+    existing_state = existing_game.to_dict()
+    existing_preference = cache_values[(INSTANCE_ID, PLAYBACK_PREFERENCE_CACHE_KEY)].copy()
+    cache_set = cast("AsyncMock", plugin.mass.cache.set)
+    cache_set.reset_mock()
+    previous_session = MagicMock()
+    previous_session.close = AsyncMock(side_effect=RuntimeError("Listener detach failed"))
+    plugin._playback_session = previous_session
+
+    with pytest.raises(RuntimeError, match="Listener detach failed"):
+        await plugin.create_game(
+            source_uris=["library://playlist/2"],
+            playback_mode="remote",
+        )
+
+    assert plugin._game is existing_game
+    assert existing_game.to_dict() == existing_state
+    assert cache_values[(INSTANCE_ID, PLAYBACK_PREFERENCE_CACHE_KEY)] == existing_preference
+    cache_set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_preference_write_does_not_fail_game_creation() -> None:
+    """Publish a valid game when optional preference persistence is unavailable."""
+    plugin = _create_plugin()
+    cache_error = RuntimeError("Cache database unavailable")
+    cache_set = cast("AsyncMock", plugin.mass.cache.set)
+    cache_set.side_effect = cache_error
+
+    state = await plugin.create_game(
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="venue_player",
+    )
+
+    game = plugin._game
+    assert game is not None
+    assert game.config.venue_player_id == "venue_player"
+    assert state["playback"]["venue_player_id"] == "venue_player"
+    cache_set.assert_awaited_once()
+    cast("MagicMock", plugin.logger.warning).assert_called_once_with(
+        "Could not persist Music Quiz playback preference: %s",
+        cache_error,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_preference_write_propagates_after_game_commit() -> None:
+    """Propagate cancellation instead of treating it as a cache failure."""
+    plugin = _create_plugin()
+    cache_set = cast("AsyncMock", plugin.mass.cache.set)
+    cache_set.side_effect = asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await plugin.create_game(
+            source_uris=["library://playlist/1"],
+            playback_mode="venue",
+            venue_player_id="venue_player",
+        )
+
+    assert plugin._game is not None
+    cast("MagicMock", plugin.signal_provider_event).assert_called()
+    cast("MagicMock", plugin.logger.warning).assert_not_called()
+
+
 @pytest.mark.parametrize(
     "username",
     [MUSIC_QUIZ_GUEST_USER, "party_guest", "temporary_guest"],
@@ -591,8 +1219,10 @@ async def test_guest_ready_advances_and_prefetches_in_system_context() -> None:
         plugin._get_playback_session = AsyncMock(  # type: ignore[method-assign]
             return_value=SimpleNamespace(queue_id="quiz_queue", player_id="quiz_player")
         )
-        cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace(
-            extra_data={}
+        get_player = cast("MagicMock", plugin.mass.players.get_player)
+        get_player.side_effect = None
+        get_player.return_value = SimpleNamespace(
+            state=SimpleNamespace(available=True), extra_data={}
         )
         play_media = AsyncMock(side_effect=_play_media)
         cast("MagicMock", plugin.mass.player_queues).play_media = play_media
@@ -796,7 +1426,9 @@ async def test_final_guest_ready_stops_playback_in_system_context(
     plugin._stop_playback = MusicQuizPlugin._stop_playback.__get__(  # type: ignore[method-assign]
         plugin, MusicQuizPlugin
     )
-    cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace()
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.side_effect = None
+    get_player.return_value = SimpleNamespace()
     stop = AsyncMock(side_effect=_stop)
     cast("MagicMock", plugin.mass.player_queues).stop = stop
     requesting_user = cast("User", _guest_user())
@@ -831,8 +1463,10 @@ async def test_play_track_rejects_busy_announcement_target() -> None:
     plugin._get_playback_session = AsyncMock(  # type: ignore[method-assign]
         return_value=SimpleNamespace(queue_id="quiz_queue", player_id="quiz_player")
     )
-    cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace(
-        extra_data={"announcement_in_progress": True}
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.side_effect = None
+    get_player.return_value = SimpleNamespace(
+        state=SimpleNamespace(available=True), extra_data={"announcement_in_progress": True}
     )
     play_media = AsyncMock()
     cast("MagicMock", plugin.mass.player_queues).play_media = play_media
@@ -1290,7 +1924,9 @@ async def test_cancelled_remote_reveal_adopts_created_session_before_advancing()
     session.queue_id = "virtual-quiz-player"
     play_media = AsyncMock()
     cast("MagicMock", plugin.mass.player_queues).play_media = play_media
-    cast("MagicMock", plugin.mass.players.get_player).return_value = SimpleNamespace(extra_data={})
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.side_effect = None
+    get_player.return_value = SimpleNamespace(extra_data={})
     plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
         plugin, MusicQuizPlugin
     )
@@ -4292,7 +4928,8 @@ async def test_config_validation() -> None:
 async def test_playback_session_remote_mode() -> None:
     """Remote mode creates a virtual-player session keyed to the instance."""
     plugin = _create_plugin(mode="remote")
-    plugin._game = _fake_game()
+    plugin._game = _fake_game(SharedPlaybackMode.REMOTE, None)
+    cast("MagicMock", plugin.mass).players.get_player.side_effect = None
     cast("MagicMock", plugin.mass).players.get_player.return_value = None
     session = MagicMock()
     with patch(
@@ -4312,11 +4949,12 @@ async def test_playback_session_remote_mode() -> None:
 async def test_playback_session_recreated_when_player_vanished() -> None:
     """A session whose player disappeared (e.g. sendspin reload) is recreated."""
     plugin = _create_plugin(mode="remote")
-    plugin._game = _fake_game()
+    plugin._game = _fake_game(SharedPlaybackMode.REMOTE, None)
     stale_session = MagicMock()
     stale_session.player_id = "gone"
     stale_session.close = AsyncMock()
     plugin._playback_session = stale_session
+    cast("MagicMock", plugin.mass).players.get_player.side_effect = None
     cast("MagicMock", plugin.mass).players.get_player.return_value = None
     fresh_session = MagicMock()
     with patch(
@@ -4342,33 +4980,73 @@ async def test_playback_session_venue_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_playback_session_venue_mode_auto_prefers_playing_player() -> None:
-    """Venue mode with the auto player picks a currently playing player."""
-    plugin = _create_plugin(mode="venue", player="__auto__")
-    plugin._game = _fake_game()
-    paused = SimpleNamespace(player_id="paused_player", playback_state=PlaybackState.PAUSED)
-    playing = SimpleNamespace(player_id="playing_player", playback_state=PlaybackState.PLAYING)
-    cast("MagicMock", plugin.mass).players.all_players.return_value = [paused, playing]
+async def test_playback_session_venue_mode_never_switches_to_active_player() -> None:
+    """A selected venue player never changes based on current playback activity."""
+    plugin = _create_plugin(mode="venue", player="selected_player")
+    plugin._game = _fake_game(venue_player_id="selected_player")
+    selected = _make_venue_player("selected_player", "Selected", playback_state=PlaybackState.IDLE)
+    playing = _make_venue_player(
+        "playing_player",
+        "Playing",
+        playback_state=PlaybackState.PLAYING,
+    )
+    cast("MagicMock", plugin.mass).players.all_players.return_value = [playing, selected]
     session = MagicMock()
     with patch(
         "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
         new=AsyncMock(return_value=session),
     ) as create_venue:
         assert await plugin._get_playback_session() is session
-    create_venue.assert_awaited_once_with(plugin.mass, "playing_player")
+    create_venue.assert_awaited_once_with(plugin.mass, "selected_player")
 
 
 @pytest.mark.asyncio
-async def test_playback_session_venue_mode_auto_without_players() -> None:
-    """Venue mode with the auto player yields no session when no player is available."""
-    plugin = _create_plugin(mode="venue", player="__auto__")
-    plugin._game = _fake_game()
+async def test_playback_session_venue_mode_missing_selected_player_has_no_fallback() -> None:
+    """A vanished selected player yields no session instead of changing rooms."""
+    plugin = _create_plugin(mode="venue", player="selected_player")
+    plugin._game = _fake_game(venue_player_id="selected_player")
     cast("MagicMock", plugin.mass).players.all_players.return_value = []
     with patch(
         "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
         new=AsyncMock(),
     ) as create_venue:
         assert await plugin._get_playback_session() is None
+    create_venue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_selected_venue_player_disappearing_keeps_game_recoverable() -> None:
+    """Fail round start without silently moving an existing game to another room."""
+    plugin = _create_plugin()
+    selected = _make_venue_player("selected", "Selected")
+    fallback = _make_venue_player("fallback", "Fallback")
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [selected, fallback]
+    await plugin.create_game(
+        round_count=1,
+        source_uris=["library://playlist/1"],
+        playback_mode="venue",
+        venue_player_id="selected",
+    )
+    game = plugin._game
+    assert game is not None
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [fallback]
+    plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
+        plugin,
+        MusicQuizPlugin,
+    )
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.SharedPlaybackSession.create_venue",
+            new=AsyncMock(),
+        ) as create_venue,
+        pytest.raises(MusicQuizNoPlaybackTargetError),
+    ):
+        await plugin.start_game()
+
+    assert game.phase == MusicQuizPhase.LOBBY
+    assert game.rounds == []
+    assert game.config.venue_player_id == "selected"
     create_venue.assert_not_awaited()
 
 
@@ -4389,8 +5067,13 @@ async def test_playback_session_requires_active_game() -> None:
 async def test_listen_in_joins_session_under_playback_lock() -> None:
     """listen_in joins the guest while holding the playback lock so teardown cannot race it."""
     plugin = _create_plugin(mode="remote")
-    plugin._game = _fake_game()
+    plugin._game = _fake_game(SharedPlaybackMode.REMOTE, None)
     session = MagicMock()
+    session.player_id = "remote-player"
+    session.close = AsyncMock()
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.side_effect = None
+    get_player.return_value = MagicMock()
 
     async def _assert_locked(_web_player_id: str) -> None:
         assert plugin._playback_lock.locked()
@@ -4402,6 +5085,30 @@ async def test_listen_in_joins_session_under_playback_lock() -> None:
         return_value=SimpleNamespace(username=MUSIC_QUIZ_GUEST_USER, role=UserRole.GUEST),
     ):
         await plugin.listen_in("web-1")
+    session.add_guest_listener.assert_awaited_once_with("web-1")
+
+
+@pytest.mark.asyncio
+async def test_venue_listen_in_does_not_depend_on_guest_player_filter() -> None:
+    """Keep the selected venue target valid when guest topology is filtered."""
+    plugin = _create_plugin()
+    plugin._game = _fake_game(venue_player_id="venue-player")
+    cast("MagicMock", plugin.mass.players.all_players).return_value = []
+    selected = _make_venue_player("venue-player", "Venue")
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.side_effect = None
+    get_player.return_value = selected
+    session = MagicMock()
+    session.player_id = "venue-player"
+    session.add_guest_listener = AsyncMock()
+    plugin._playback_session = session
+
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        await plugin.listen_in("web-1")
+
     session.add_guest_listener.assert_awaited_once_with("web-1")
 
 
@@ -4441,14 +5148,14 @@ async def test_create_game_rejects_invalid_difficulty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_config_entries_includes_ai_distractor_toggle() -> None:
-    """The provider exposes an off-by-default AI distractor toggle."""
+async def test_get_config_entries_only_exposes_provider_level_settings() -> None:
+    """Keep per-game playback choices out of provider configuration."""
     mass = MagicMock()
-    mass.players.all_players.return_value = []
 
     entries = await get_config_entries(mass)
 
-    ai_entry = next(entry for entry in entries if entry.key == "use_ai_distractors")
+    assert [entry.key for entry in entries] == ["use_ai_distractors"]
+    ai_entry = entries[0]
     assert ai_entry.type == ConfigEntryType.BOOLEAN
     assert ai_entry.default_value is False
     assert ai_entry.required is False
