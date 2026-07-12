@@ -286,16 +286,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # refill the queue (dynamic mode or autoplay) when running low on tracks
         if "current_item_id" in changed_keys:
             running_low = (
-                queue.current_index is not None and (queue.items - queue.current_index) < 5
+                queue.current_index is not None and (queue.items - queue.current_index) < 10
             )
             if queue.is_dynamic and running_low:
-                # a dynamic queue tops up its bounded managed pool from its (dynamic + finite) sources
                 task_id = f"fill_dynamic_tracks_{queue_id}"
-                self.mass.call_later(5, self._fill_dynamic_tracks, queue_id, task_id=task_id)
+                self.mass.call_later(2, self._fill_dynamic_tracks, queue_id, task_id=task_id)
             elif queue.autoplay_enabled and queue_data.enqueued_media_items and running_low:
-                # autoplay refills using the per-queue configured Autoplay mode
                 task_id = f"fill_autoplay_tracks_{queue_id}"
-                self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
+                self.mass.call_later(2, self._fill_autoplay_tracks, queue_id, task_id=task_id)
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player

@@ -729,7 +729,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # head only (the tail we are discarding must not exclude its own tracks from the new pool)
         queue_data.items = queue_data.items[:insert_at]
         queue.items = len(queue_data.items)
-        pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
+        # Progressive loading: when starting playback on an empty queue, use the provider's natural
+        # first-batch size (could be 2-5 tracks) for fast startup, then fill the rest in background.
+        # Use target_size=1 to signal "take the first available batch without waiting for more".
+        is_empty_queue = len(queue_data.items) == 0
+        initial_batch_size = 1 if (start_playing and is_empty_queue) else None
+        pool_tracks = await self._managed_pool.fill(
+            queue_id, is_initial=False, target_size=initial_batch_size
+        )
         queue_items = [
             build_queue_item(queue_id, track) for track in pool_tracks if track.available
         ]
@@ -739,8 +746,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         await self.load(queue_id, queue_items, insert_at_index=insert_at, keep_remaining=False)
         if start_playing:
             await self.play_index(queue_id, insert_at)
+            if is_empty_queue:
+                self.mass.call_later(
+                    2,
+                    self._fill_dynamic_tracks,
+                    queue_id,
+                    task_id=f"fill_dynamic_tracks_{queue_id}",
+                )
         else:
-            # give an idle/empty queue a current item without starting playback
             self._ensure_current_index(queue_id)
 
     async def _get_similar_tracks(

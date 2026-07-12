@@ -116,12 +116,15 @@ class ManagedPool:
         # finite-source materialized state, keyed by queue id then source uri; see _MaterializedSource
         self._materialized: dict[str, dict[str, _MaterializedSource]] = {}
 
-    async def fill(self, queue_id: str, *, is_initial: bool) -> list[Track]:
+    async def fill(
+        self, queue_id: str, *, is_initial: bool, target_size: int | None = None
+    ) -> list[Track]:
         """
         Build (or top up) the managed pool and return the tracks to add.
 
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
+        :param target_size: Override the batch size (for progressive loading).
         """
         queue_data = self.queues.queue_data(queue_id)
         queue = queue_data.queue
@@ -147,11 +150,18 @@ class ManagedPool:
             if isinstance(item.media_item, Track):
                 pool_keys.add(item.media_item)
                 pool_song_keys.update(song_keys(item.media_item))
-        slots = (
-            MANAGED_POOL_TARGET
-            if is_initial
-            else max(MANAGED_POOL_TARGET - self._unplayed(queue), 0)
-        )
+        if target_size is not None:
+            if target_size == 1:
+                total_candidates = sum(len(s.candidates) for s in sources)
+                slots = min(total_candidates, MANAGED_POOL_TARGET) if total_candidates > 0 else 1
+            else:
+                slots = target_size
+        else:
+            slots = (
+                MANAGED_POOL_TARGET
+                if is_initial
+                else max(MANAGED_POOL_TARGET - self._unplayed(queue), 0)
+            )
         # the batch is appended after the current tail, so keep its first track clear of the last
         # queued item's artist (the seam the listener actually hears)
         preceding = (
