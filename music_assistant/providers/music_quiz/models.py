@@ -371,6 +371,7 @@ class MusicQuizGame(DataClassDictMixin):
     answer_type: MusicQuizAnswerType
     phase: MusicQuizPhase = MusicQuizPhase.LOBBY
     created_at: float = 0
+    auto_start_at: float | None = None
     players: dict[str, MusicQuizPlayer] = field(default_factory=dict)
     rounds: list[MusicQuizRound] = field(default_factory=list)
     sources: list[MusicQuizSource] = field(default_factory=list)

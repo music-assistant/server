@@ -199,6 +199,7 @@ def reset_game(game: MusicQuizGame) -> None:
     :param game: Game to mutate.
     """
     game.phase = MusicQuizPhase.LOBBY
+    game.auto_start_at = None
     game.rounds.clear()
     game.current_round_index = None
     for player in game.players.values():
