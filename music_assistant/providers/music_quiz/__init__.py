@@ -25,11 +25,11 @@ contract (all payloads are JSON objects)::
 The public game state is guest-safe by construction. Common state contains:
 
 - always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``quiz_type``,
-  ``answer_type``, ``mode`` (venue/remote), ``round_count``, ``answer_duration``
-  and public player progress. ``auto_start_at`` contains the authoritative replay
-  deadline while a lobby countdown is active. Private player IDs never appear
-  in broadcasts. Trivia additionally exposes its canonical ``language`` and
-  ``play_reveal_audio`` setting.
+  ``answer_type``, ``mode`` (venue/remote), ``round_count``, ``answer_duration``,
+  ``include_similar_music`` and public player progress. ``auto_start_at`` contains
+  the authoritative replay deadline while a lobby countdown is active. Private
+  player IDs never appear in broadcasts. Trivia additionally exposes its canonical
+  ``language`` and ``play_reveal_audio`` setting.
 - answering rounds expose common timing and question fields plus a strategy
   fragment. Multiple-choice exposes opaque ``suggestions``. Timeline exposes
   the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
@@ -337,6 +337,7 @@ class MusicQuizPlugin(PluginProvider):
         suggestion_count: int = 4,
         answer_duration: int = 30,
         source_uris: list[str] | None = None,
+        include_similar_music: bool = False,
         name: str | None = None,
         difficulty: str = MusicQuizDifficulty.NORMAL.value,
         language: str = DEFAULT_TRIVIA_LANGUAGE,
@@ -352,6 +353,7 @@ class MusicQuizPlugin(PluginProvider):
         :param suggestion_count: Number of answer suggestions per round.
         :param answer_duration: Answering duration in seconds.
         :param source_uris: Track, playlist, album, artist or genre URIs to draw rounds from.
+        :param include_similar_music: Add bounded similar tracks to the selected source pool.
         :param name: Optional game name.
         :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
         :param language: Language tag for Trivia question content.
@@ -376,6 +378,7 @@ class MusicQuizPlugin(PluginProvider):
                 suggestion_count=suggestion_count,
                 answer_duration=answer_duration,
                 source_uris=source_uris or [],
+                include_similar_music=include_similar_music,
                 name=_clean_game_name(name),
                 difficulty=difficulty,
                 use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),

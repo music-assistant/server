@@ -31,10 +31,10 @@ from music_assistant.providers.music_quiz.models import (
     TimelineMultipleChoiceBonusDefinition,
     TimelineRoundState,
 )
+from music_assistant.providers.music_quiz.quiz_types.base import PLAYBACK_REPLACEMENT_RESERVE
 from music_assistant.providers.music_quiz.quiz_types.music_timeline import (
     BONUS_CANDIDATE_LIMIT,
     DEFAULT_BONUS_OPTION_COUNT,
-    PLAYBACK_REPLACEMENT_RESERVE,
     TRACK_ENRICHMENT_CONCURRENCY,
     MusicTimelineQuizType,
 )
@@ -173,6 +173,7 @@ def test_config_normalization_and_validation_are_music_timeline_specific() -> No
         round_count=2,
         suggestion_count=9,
         source_uris=["prov://playlist/1"],
+        include_similar_music=True,
         difficulty="not-used",
         use_ai_distractors=True,
         artist_bonus_mode=TimelineBonusMode.FREE_TEXT,
@@ -185,6 +186,7 @@ def test_config_normalization_and_validation_are_music_timeline_specific() -> No
     assert normalized.suggestion_count == DEFAULT_BONUS_OPTION_COUNT
     assert normalized.difficulty == MusicQuizDifficulty.NORMAL.value
     assert normalized.use_ai_distractors is True
+    assert normalized.include_similar_music is True
     with pytest.raises(InvalidDataError, match="bonus mode"):
         MusicTimelineQuizType.validate_config(
             MusicQuizConfig(

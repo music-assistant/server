@@ -15,6 +15,7 @@ from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
     MultipleChoiceSuggestion,
     MusicQuizAnswerType,
+    MusicQuizConfig,
     MusicQuizPlayer,
     MusicQuizRound,
     TimelineAnswerResult,
@@ -30,6 +31,16 @@ from music_assistant.providers.music_quiz.models import (
     TimelinePlacementResult,
     TimelineRoundState,
 )
+
+
+def test_config_defaults_and_round_trips_similar_music() -> None:
+    """Preserve default and explicit similar-music settings in persisted config."""
+    default_config = MusicQuizConfig.from_dict({})
+    enabled_config = MusicQuizConfig(include_similar_music=True)
+
+    assert default_config.include_similar_music is False
+    assert MusicQuizConfig().to_dict()["include_similar_music"] is False
+    assert MusicQuizConfig.from_dict(enabled_config.to_dict()) == enabled_config
 
 
 def test_round_answer_state_round_trips_with_discriminator() -> None:

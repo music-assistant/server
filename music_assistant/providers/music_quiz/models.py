@@ -60,6 +60,7 @@ class MusicQuizConfig(DataClassDictMixin):
     suggestion_count: int = 4
     answer_duration: int = 30
     source_uris: list[str] = field(default_factory=list)
+    include_similar_music: bool = False
     name: str | None = None
     # difficulty is guess-the-song specific; AI distractors also apply to timeline bonuses
     difficulty: str = MusicQuizDifficulty.NORMAL.value
