@@ -39,7 +39,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 34
+API_SCHEMA_VERSION: Final[int] = 36
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -87,6 +87,8 @@ MASS_LOGO: Final[str] = str(RESOURCES_DIR.joinpath("logo.png"))
 # config keys
 CONF_ONBOARD_DONE: Final[str] = "onboard_done"
 CONF_SERVER_ID: Final[str] = "server_id"
+CONF_ENCRYPTION_KEY: Final[str] = "encryption_key"
+CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
@@ -111,6 +113,7 @@ CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
 CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
+WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
@@ -144,6 +147,9 @@ CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast 
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
     "protocol_parent_id"  # cached native player ID for protocol player
 )
+CONF_UNDERLYING_PLAYER_ID: Final[str] = (
+    "underlying_player_id"  # player this (bridge) protocol player is derived from
+)
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
@@ -168,6 +174,11 @@ CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
 CONF_VALUE_GLOBAL: Final[str] = "global"
 CONF_VALUE_ENABLED: Final[str] = "enabled"
 CONF_VALUE_DISABLED: Final[str] = "disabled"
+
+# Sentinel option VALUE for network settings that are resolved at runtime when not explicitly
+# set (e.g. streams publish_ip / webserver base_url resolve to the server's primary IP at
+# startup), keeping the config entry defaults static/deterministic.
+CONF_VALUE_AUTO: Final[str] = "auto"
 
 
 def _default_background_scan_concurrency() -> int:
@@ -198,6 +209,7 @@ DB_TABLE_CACHE: Final[str] = "cache"
 DB_TABLE_SETTINGS: Final[str] = "settings"
 DB_TABLE_THUMBS: Final[str] = "thumbnails"
 DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
+DB_TABLE_EXTERNAL_ID_LOOKUP: Final[str] = "external_id_lookup"
 DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
@@ -208,6 +220,19 @@ DB_TABLE_AUDIO_ANALYSIS_FAILURES: Final[str] = "audio_analysis_failures"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
+
+# all media item tables, each of which has a search_name column
+# backed by a {table}_fts FTS5 index table
+MEDIA_ITEM_DB_TABLES: Final[tuple[str, ...]] = (
+    DB_TABLE_ARTISTS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_TRACKS,
+    DB_TABLE_PLAYLISTS,
+    DB_TABLE_RADIOS,
+    DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_PODCASTS,
+    DB_TABLE_GENRES,
+)
 
 # Min fraction of a database file reclaimable before a startup VACUUM is worth running.
 VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
@@ -961,6 +986,9 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("smart_fades", False),
     ("lastfm_recommendations", False),
     ("playlist_metadata", False),
+    # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
+    # audio overlay feature) at zero resource cost until actually used
+    ("ambient_sounds", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

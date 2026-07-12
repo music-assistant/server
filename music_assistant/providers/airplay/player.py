@@ -644,9 +644,7 @@ class AirPlayPlayer(Player):
         """Handle logic when the player config is updated."""
         await super().on_config_updated()
         prov = cast("AirPlayProvider", self.provider)
-        bridge_manager = prov.bridge_manager
-        if bridge_manager.get_bridge(self.player_id) is None:
-            await bridge_manager.setup_bridge(self)
+        await prov.bridge_manager.evaluate_bridge(self)
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""

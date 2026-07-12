@@ -2,6 +2,7 @@
 
 import base64
 from unittest.mock import AsyncMock, Mock, patch
+from urllib.parse import urlparse
 
 import pytest
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection
@@ -386,3 +387,51 @@ async def test_create_peer_connection_with_certificate() -> None:
         assert certificates[0] is certificate
     finally:
         await pc.close()
+
+
+@pytest.mark.parametrize(
+    "malicious_path",
+    [
+        "@evil.com",  # netloc becomes basic-auth creds, evil.com becomes the host
+        "//evil.com",  # protocol-relative URL pointing at another host
+        "@evil.com/foo",
+        "//evil.com/foo",
+    ],
+)
+async def test_http_proxy_request_cannot_change_host(
+    mock_certificate: Mock, malicious_path: str
+) -> None:
+    """An attacker-controlled proxy path must never change the target host (SSRF guard)."""
+    mock_session = Mock()
+    captured_url: dict[str, str] = {}
+
+    def fake_request(_method: str, url: str, **_kwargs: object) -> AsyncMock:
+        captured_url["url"] = url
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(return_value=b"")
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        local_ws_url="ws://localhost:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", peer_connection=Mock())
+
+    await gateway._handle_http_proxy_request(
+        session, {"id": "1", "method": "GET", "path": malicious_path}
+    )
+
+    parsed = urlparse(captured_url["url"])
+    assert parsed.hostname == "localhost"
+    assert parsed.port == 8095
+    assert parsed.username is None
+    assert "evil.com" not in (parsed.netloc or "")

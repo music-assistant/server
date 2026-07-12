@@ -52,6 +52,7 @@ def provider_mock() -> Mock:
     provider.mass.metadata.locale = "en_US"
     provider.mass.cache = AsyncMock()
     provider.mass.cache.get = AsyncMock(return_value=None)  # Cache always misses
+    provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
 
     # Mix recommendation folders look up a tag's English label via _media_label; stub it to

@@ -12,6 +12,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
     CONF_LINKED_PROTOCOL_IDS,
+    CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PROTOCOL_PARENT_ID,
@@ -32,7 +33,7 @@ from music_assistant.controllers.player_queues.constants import (
 LOGGER = logging.getLogger(__name__)
 
 
-async def migrate(data: dict[str, Any]) -> bool:
+async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
 
@@ -144,6 +145,12 @@ async def migrate(data: dict[str, Any]) -> bool:
     # above so any values it just landed are picked up here.
     # TODO: remove after 2.10 release
     if _migrate_global_queue_settings(data):
+        changed = True
+
+    # Promote local_audio attribution stubs to regular players and fold the settings of
+    # their (now obsolete) universal player wrappers back onto them.
+    # TODO: remove after 2.11 release
+    if _migrate_local_audio_attribution_stubs(data):
         changed = True
 
     return changed
@@ -321,6 +328,126 @@ def _migrate_volume_normalization_target(data: dict[str, Any]) -> bool:
                 player_id,
             )
     return True
+
+
+def _migrate_local_audio_attribution_stubs(data: dict[str, Any]) -> bool:
+    """
+    Promote local_audio attribution-stub players to regular players.
+
+    The local_audio provider used to register a hidden PROTOCOL "attribution stub"
+    per audio device, which got wrapped (together with the Sendspin bridge player)
+    in an auto-created universal player. The stub is now a regular, visible player
+    that parents the Sendspin bridge directly, making the universal player wrapper
+    obsolete: its user settings move onto the stub's config (same bare device-uuid
+    player_id) and the wrapper is removed.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in list(all_player_configs.items()):
+        if not isinstance(player_cfg, dict):
+            continue
+        if player_cfg.get("provider") != "local_audio":
+            continue
+        if player_cfg.get("player_type") != "protocol":
+            continue
+        player_cfg["player_type"] = "player"
+        values = player_cfg.setdefault("values", {})
+        values.pop(CONF_PROTOCOL_PARENT_ID, None)
+        changed = True
+
+        # the universal player wrapper was keyed on the stub's player_id
+        # (the stub had no device identifiers to derive a device key from)
+        universal_id = f"up{player_id.replace('-', '').lower()}"
+        universal_cfg = all_player_configs.get(universal_id)
+        if isinstance(universal_cfg, dict) and universal_cfg.get("provider") == "universal_player":
+            del all_player_configs[universal_id]
+            _absorb_universal_player_config(
+                data, player_id, player_cfg, universal_id, universal_cfg
+            )
+            LOGGER.info(
+                "Migrated universal player %s settings to local_audio player %s",
+                universal_id,
+                player_id,
+            )
+        LOGGER.info("Promoted local_audio player %s to a regular player", player_id)
+    return changed
+
+
+def _absorb_universal_player_config(
+    data: dict[str, Any],
+    player_id: str,
+    player_cfg: dict[str, Any],
+    universal_id: str,
+    universal_cfg: dict[str, Any],
+) -> None:
+    """
+    Fold the user settings of an obsolete universal player onto its replacement.
+
+    The universal player was the visible device the user configured, so its
+    settings win over anything stored on the (hidden) stub. Everything keyed on
+    the old universal player_id (protocol parent links, queue settings, DSP
+    config, group memberships) is re-pointed to the new player_id.
+    """
+    player_cfg["enabled"] = universal_cfg.get("enabled", True)
+    # only carry an actual user rename, not the auto-generated default name
+    if universal_cfg.get("name") and universal_cfg.get("name") != universal_cfg.get("default_name"):
+        player_cfg["name"] = universal_cfg["name"]
+
+    values = player_cfg.setdefault("values", {})
+    universal_values = universal_cfg.get("values")
+    universal_values = universal_values if isinstance(universal_values, dict) else {}
+    # bookkeeping only relevant to the universal player wrapper itself
+    internal_keys = (
+        CONF_LINKED_PROTOCOL_IDS,
+        CONF_PROTOCOL_PARENT_ID,
+        "device_identifiers",
+        "device_info",
+    )
+    for key, value in universal_values.items():
+        if key in internal_keys:
+            continue
+        values[key] = value
+
+    # carry the linked protocols (minus the stub itself, it is the parent now)
+    # and re-point their cached parent so they restore fast on the next start
+    linked_ids = [
+        pid for pid in (universal_values.get(CONF_LINKED_PROTOCOL_IDS) or []) if pid != player_id
+    ]
+    if linked_ids:
+        existing_ids = list(values.get(CONF_LINKED_PROTOCOL_IDS) or [])
+        values[CONF_LINKED_PROTOCOL_IDS] = existing_ids + [
+            pid for pid in linked_ids if pid not in existing_ids
+        ]
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    for protocol_id in linked_ids:
+        protocol_cfg = all_player_configs.get(protocol_id)
+        if not isinstance(protocol_cfg, dict):
+            continue
+        protocol_values = protocol_cfg.setdefault("values", {})
+        if protocol_values.get(CONF_PROTOCOL_PARENT_ID) == universal_id:
+            protocol_values[CONF_PROTOCOL_PARENT_ID] = player_id
+
+    # move per-queue settings and DSP configuration to the new player_id
+    for tree_key in (CONF_PLAYER_QUEUES, CONF_PLAYER_DSP):
+        tree = data.get(tree_key)
+        if isinstance(tree, dict) and universal_id in tree and player_id not in tree:
+            tree[player_id] = tree.pop(universal_id)
+            if tree_key == CONF_PLAYER_QUEUES and isinstance(tree[player_id], dict):
+                tree[player_id]["queue_id"] = player_id
+
+    # re-point group memberships that referenced the universal player
+    for other_cfg in all_player_configs.values():
+        if not isinstance(other_cfg, dict):
+            continue
+        other_values = other_cfg.get("values")
+        if not isinstance(other_values, dict):
+            continue
+        for key in ("group_members", "dynamic_group_members", "allowed_members"):
+            members = other_values.get(key)
+            if isinstance(members, list) and universal_id in members:
+                other_values[key] = [player_id if pid == universal_id else pid for pid in members]
 
 
 def _migrate_self_referential_protocol_links(data: dict[str, Any]) -> bool:

@@ -8,10 +8,12 @@ from pathlib import PurePosixPath
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import check_output
 from music_assistant.providers.filesystem_local import (
     LocalFileSystemProvider,
     exists,
+    ismount,
     makedirs,
 )
 
@@ -58,6 +60,13 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
         await self.unmount(ignore_error=True)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            **await super().get_diagnostics(),
+            "mounted": await ismount(self.base_path),
+        }
 
     async def mount(self) -> None:
         """Mount the NFS export to a temporary folder."""

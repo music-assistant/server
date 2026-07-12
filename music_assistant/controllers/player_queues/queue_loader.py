@@ -36,7 +36,6 @@ from music_assistant_models.media_items import (
     UniqueList,
     media_from_dict,
 )
-from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues.autoplay import (
@@ -48,6 +47,7 @@ from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_MAX,
 )
 from music_assistant.controllers.player_queues.helpers import (
+    build_queue_item,
     handle_play_action,
     has_dynamic_source,
 )
@@ -62,6 +62,7 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
     from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
@@ -363,9 +364,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         played = 0 if queue.current_index is None else queue.current_index + 1
         unplayed = max(len(self._queue_data[queue_id].items) - played, 0)
         headroom = max(MANAGED_POOL_MAX - unplayed, 0)
-        queue_items = [
-            QueueItem.from_media_item(queue_id, x) for x in pool_tracks[:headroom] if x.available
-        ]
+        queue_items = [build_queue_item(queue_id, x) for x in pool_tracks[:headroom] if x.available]
         if not queue_items:
             return
         await self.load(
@@ -429,7 +428,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         tracks = gate_tracks(
             [track for track in tracks if isinstance(track, Track)], snapshot, windows
         )
-        queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
+        queue_items = [build_queue_item(queue_id, x) for x in tracks if x.available]
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
             return
@@ -613,7 +612,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
                     else:
                         config_key = f"default_enqueue_option_{media_item.media_type.value}"
-                    config_value = cast("str", self.config.get_value(config_key))
+                    config_value = self.get_config_value(config_key, return_type=str)
                     option = QueueOption(config_value)
                     if option == QueueOption.REPLACE:
                         self.clear(queue_id, skip_stop=True)
@@ -686,7 +685,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         # only add valid/available items
         queue_items: list[QueueItem] = [
-            QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
+            build_queue_item(queue_id, cast("PlayableMediaItemType", x))
             for x in media_items
             if x and x.available
         ]
@@ -732,7 +731,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.items = len(queue_data.items)
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
         queue_items = [
-            QueueItem.from_media_item(queue_id, track) for track in pool_tracks if track.available
+            build_queue_item(queue_id, track) for track in pool_tracks if track.available
         ]
         if not queue_items:
             raise MediaNotFoundError("No playable items found")

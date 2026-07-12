@@ -20,7 +20,9 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     FadeOutTrimFilter,
     Filter,
     GradualTimeStretchFilter,
+    PeakFilter,
     ShelfFilter,
+    ShelfType,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
@@ -89,25 +91,44 @@ class TransitionRenderer:
                 )
             )
         # outgoing shelves before the stretch keep their schedules in musical input time
-        filters.append(self._shelf_filter(plan.eq_plan.low_out, "fadeout"))
-        filters.append(self._shelf_filter(plan.eq_plan.high_out, "fadeout"))
+        self._append_shelf(filters, plan.eq_plan.low_out, "fadeout")
+        self._append_shelf(filters, plan.eq_plan.high_out, "fadeout")
+        self._append_shelf(filters, plan.eq_plan.mid_out, "fadeout")
         if plan.tempo_plan:
             filters.append(GradualTimeStretchFilter(self.logger, plan.tempo_plan.steps))
         if plan.fadein_trim_start is not None:
             filters.append(
                 FadeInTrimFilter(logger=self.logger, fadein_start_pos=plan.fadein_trim_start)
             )
-        filters.append(self._shelf_filter(plan.eq_plan.low_in, "fadein"))
-        filters.append(self._shelf_filter(plan.eq_plan.high_in, "fadein"))
+        self._append_shelf(filters, plan.eq_plan.low_in, "fadein")
+        self._append_shelf(filters, plan.eq_plan.high_in, "fadein")
+        self._append_shelf(filters, plan.eq_plan.mid_in, "fadein")
         filters.append(CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples))
         return filters
 
-    def _shelf_filter(self, schedule: ShelfSchedule, stream_type: str) -> ShelfFilter:
-        """Instantiate a ShelfFilter from a shelf schedule."""
-        return ShelfFilter(
-            logger=self.logger,
-            shelf_type=schedule.shelf_type,
-            frequency=schedule.frequency,
-            gain_steps=schedule.steps,
-            stream_type=stream_type,
+    def _append_shelf(
+        self, filters: list[Filter], schedule: ShelfSchedule | None, stream_type: str
+    ) -> None:
+        """Append the matching filter for ``schedule``, or nothing when bypassed (None)."""
+        if schedule is None:
+            return
+        if schedule.shelf_type is ShelfType.PEAK:
+            filters.append(
+                PeakFilter(
+                    logger=self.logger,
+                    frequency=schedule.frequency,
+                    width_oct=schedule.width_oct,
+                    gain_steps=schedule.steps,
+                    stream_type=stream_type,
+                )
+            )
+            return
+        filters.append(
+            ShelfFilter(
+                logger=self.logger,
+                shelf_type=schedule.shelf_type,
+                frequency=schedule.frequency,
+                gain_steps=schedule.steps,
+                stream_type=stream_type,
+            )
         )

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import aiofiles
+import aiofiles.os
 import aiohttp
 import shortuuid
 from aiohttp import ClientConnectorSSLError, ClientResponseError, ClientTimeout
@@ -105,7 +106,7 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
 )
 from music_assistant.helpers.dsp import filter_to_ffmpeg_params
-from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_stream
+from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_overlay_stream, get_ffmpeg_stream
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
@@ -189,6 +190,11 @@ def _pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
         and a.bit_depth == b.bit_depth
         and a.channels == b.channels
     )
+
+
+def overlay_active(queue: PlayerQueue) -> bool:
+    """Return True if the given queue has an audio overlay enabled and a source selected."""
+    return queue.overlay_enabled and queue.overlay_source is not None
 
 
 class StreamsAudio:
@@ -360,7 +366,7 @@ class StreamsAudio:
 
         streamdetails.prefer_album_loudness = prefer_album_loudness
         conf_volume_normalization_target = float(
-            str(mass.streams.config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
+            mass.streams.get_config_value(CONF_VOLUME_NORMALIZATION_TARGET, return_type=int)
         )
         # guard against invalid volume normalization values
         # range and default_value are guaranteed to be set for this constant
@@ -837,6 +843,9 @@ class StreamsAudio:
                 async for chunk in self.get_icy_radio_stream(current_url, streamdetails):
                     delivered_audio = True
                     failed_rotations = 0
+                    # release the previous failure while healthy: it pins the full
+                    # exception traceback (with frames) for the lifetime of the stream
+                    last_err = None
                     yield chunk
                 return
             except RADIO_MIRROR_FAILOVER_ERRORS as err:
@@ -1331,6 +1340,7 @@ class StreamsAudio:
         player: Player,
         start_streamdetails: StreamDetails | None = None,
         crossfade_enabled: bool = False,
+        overlay_active: bool = False,
     ) -> AudioFormat:
         """
         Select the internal PCM format for a Queue Flow Mode stream.
@@ -1352,6 +1362,7 @@ class StreamsAudio:
             bit-depth optimization. May be omitted for the fixed-rate modes — when
             omitted the bit depth defaults to F32.
         :param crossfade_enabled: Whether the queue will use crossfade transitions.
+        :param overlay_active: Whether an audio overlay will be mixed into the stream.
         """
         if start_streamdetails is not None and (
             start_streamdetails.media_type == MediaType.AUDIO_SOURCE
@@ -1383,7 +1394,7 @@ class StreamsAudio:
             output_sample_rate = _snap_supported_rate_up(target_rate, supported_sample_rates)
 
         content_type, bit_depth = self._pick_pcm_bit_depth(
-            player, start_streamdetails, crossfade_enabled
+            player, start_streamdetails, crossfade_enabled, overlay_active
         )
         return AudioFormat(
             content_type=content_type,
@@ -1541,7 +1552,7 @@ class StreamsAudio:
                 if streamdetails.media_type == MediaType.TRACK
                 else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO
             )
-            gain_value = float(str(self.mass.streams.config.get_value(config_key, 0.0)))
+            gain_value = self.mass.streams.get_config_value(config_key, return_type=float)
             gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
@@ -2423,6 +2434,38 @@ class StreamsAudio:
             # so it can handle the case where new items were added after the flow stream ended
             self.mass.player_queues.queue_buffer_completed(queue.queue_id)
 
+    async def get_overlay_mixed_stream(
+        self,
+        queue: PlayerQueue,
+        audio_input: AsyncGenerator[bytes],
+        pcm_format: AudioFormat,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Mix the queue's audio overlay (looping sound effect) into the given PCM stream.
+
+        The mixed output has the exact same PCM format, duration and chunking as the
+        input stream. If the overlay source can not be resolved, the original stream
+        is passed through unchanged so playback is never interrupted.
+
+        :param queue: The PlayerQueue holding the overlay source and volume.
+        :param audio_input: The audio stream (raw PCM in ``pcm_format``) to mix into.
+        :param pcm_format: PCM format of both the input and the mixed output.
+        """
+        overlay_input = await self._resolve_overlay_input(queue)
+        if overlay_input is None:
+            # overlay source unavailable: degrade gracefully to music-only
+            async for chunk in audio_input:
+                yield chunk
+            return
+        async for chunk in get_ffmpeg_overlay_stream(
+            audio_input=audio_input,
+            overlay_input=overlay_input,
+            pcm_format=pcm_format,
+            overlay_volume=queue.overlay_volume,
+            chunk_size=pcm_format.pcm_sample_size,
+        ):
+            yield chunk
+
     def crossfade_allowed(
         self,
         queue_item: QueueItem,
@@ -2614,11 +2657,7 @@ class StreamsAudio:
             else CONF_VOLUME_NORMALIZATION_TRACKS
         )
         return VolumeNormalizationMode(
-            str(
-                self.mass.streams.config.get_value(
-                    conf_key, VolumeNormalizationMode.FALLBACK_DYNAMIC.value
-                )
-            )
+            self.mass.streams.get_config_value(conf_key, return_type=str)
         )
 
     def _update_radio_stream_metadata(
@@ -2933,21 +2972,23 @@ class StreamsAudio:
         player: Player,
         streamdetails: StreamDetails | None,
         crossfade_enabled: bool,
+        overlay_active: bool = False,
     ) -> tuple[ContentType, int]:
         """
         Return ``(content_type, bit_depth)`` for an internal PCM stream.
 
-        F32 is chosen when audio processing (crossfade, volume normalization, DSP)
-        will run on the stream — those need the extra headroom to avoid clipping
-        and precision loss. Otherwise the source's native bit depth is reused so
-        we don't waste memory upcasting a 16-bit stream to 32-bit just to pass it
-        through. When the source is unknown (no streamdetails) we fall back to
-        F32 conservatively.
+        F32 is chosen when audio processing (crossfade, audio overlay, volume
+        normalization, DSP) will run on the stream — those need the extra
+        headroom to avoid clipping and precision loss. Otherwise the source's
+        native bit depth is reused so we don't waste memory upcasting a 16-bit
+        stream to 32-bit just to pass it through. When the source is unknown
+        (no streamdetails) we fall back to F32 conservatively.
         """
         if streamdetails is None:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
         needs_headroom = (
             crossfade_enabled
+            or overlay_active
             or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
             or self._resolve_player_dsp_config(player).enabled
         )
@@ -3195,3 +3236,49 @@ class StreamsAudio:
             msg = "Radio stream requires at least one URL"
             raise InvalidDataError(msg)
         return [part.path for part in url]
+
+    async def _resolve_overlay_input(self, queue: PlayerQueue) -> str | None:
+        """
+        Resolve the queue's overlay source to a file path or URL for ffmpeg.
+
+        Returns None (with a warning logged) when the source can not be resolved,
+        so the caller can degrade to music-only playback.
+        """
+        if not (mapping := queue.overlay_source):
+            return None
+        try:
+            provider = self.mass.get_provider(mapping.provider)
+            if provider is None:
+                raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
+            provider = cast("MusicProvider", provider)
+            streamdetails = await provider.get_stream_details(
+                mapping.item_id, MediaType.SOUND_EFFECT
+            )
+        except Exception as err:
+            self.logger.warning(
+                "Audio overlay source %s is unavailable (%s) - continuing without overlay",
+                mapping.uri,
+                str(err) or err.__class__.__name__,
+            )
+            return None
+        if streamdetails.stream_type not in (StreamType.LOCAL_FILE, StreamType.HTTP) or not (
+            isinstance(streamdetails.path, str)
+        ):
+            self.logger.warning(
+                "Audio overlay source %s uses unsupported stream type %s "
+                "- continuing without overlay",
+                mapping.uri,
+                streamdetails.stream_type,
+            )
+            return None
+        if streamdetails.stream_type == StreamType.LOCAL_FILE and not await aiofiles.os.path.isfile(
+            streamdetails.path
+        ):
+            # guard against stale sources: feeding a missing file to the mixer would
+            # kill the whole (music) stream instead of just the overlay
+            self.logger.warning(
+                "Audio overlay source %s does not exist - continuing without overlay",
+                streamdetails.path,
+            )
+            return None
+        return streamdetails.path

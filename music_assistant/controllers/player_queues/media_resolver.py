@@ -15,7 +15,7 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -507,12 +507,22 @@ class MediaResolver:
             "Fetching tracks to play for folder %s",
             folder.name,
         )
+        try:
+            folder_items = await self.mass.music.browse(folder.path)
+        except OSError as err:
+            # e.g. the (top-level) folder URI points at a path that no longer exists
+            raise MediaNotFoundError(f"Folder '{folder.path}' could not be found") from err
         tracks: list[Track] = []
-        for item in await self.mass.music.browse(folder.path):
+        for item in folder_items:
             if not item.is_playable:
                 continue
-            # recursively fetch tracks from all media types
-            resolved = await self._resolve_media_items(item)
+            try:
+                # recursively fetch tracks from all media types
+                resolved = await self._resolve_media_items(item)
+            except MediaNotFoundError:
+                # best-effort: skip child items/subfolders that are empty or unreachable
+                # so a single bad entry does not abort playback of the whole folder
+                continue
             tracks += [x for x in resolved if isinstance(x, Track)]
 
         return tracks

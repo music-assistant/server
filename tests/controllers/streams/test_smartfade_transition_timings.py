@@ -108,9 +108,9 @@ def _analysis(
     return AudioAnalysisData(
         duration=duration,
         bpm=bpm,
-        beats=beats,
-        downbeats=downbeats,
-        rms_energy=rms_energy,
+        beats=beats.tolist(),
+        downbeats=downbeats.tolist(),
+        rms_energy=rms_energy.tolist() if rms_energy is not None else None,
     )
 
 
@@ -938,6 +938,7 @@ class TestStretchSavings:
         fade = self._stretched_fade()
         assert fade.plan is not None
         low_out = fade.plan.eq_plan.low_out
+        assert low_out is not None
         assert low_out.steps[-1][1] == pytest.approx(-26.0)
         assert low_out.steps[-1][0] <= fade.effective_end + 0.05
 

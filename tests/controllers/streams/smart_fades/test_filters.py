@@ -9,6 +9,7 @@ import pytest
 from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
     FadeOutTrimFilter,
+    PeakFilter,
     ShelfFilter,
     ShelfType,
 )
@@ -103,3 +104,46 @@ class TestShelfFilter:
         assert a.output_fadeout_label != b.output_fadeout_label
         c = ShelfFilter(LOGGER, ShelfType.LOW, 100, [(0.0, -26.0)], "fadeout")
         assert a.output_fadein_label != c.output_fadein_label
+
+
+class TestPeakFilter:
+    """asendcmd-driven parametric peak EQ (mid swap) on one stream, passthrough on the other."""
+
+    def test_fadeout_peak_strings(self) -> None:
+        """A fadeout peak emits an asendcmd gain schedule and a fadein passthrough."""
+        f = PeakFilter(
+            LOGGER,
+            1200,
+            2.5,
+            [(0.0, 0.0), (30.0, -4.0), (31.0, -8.0)],
+            "fadeout",
+        )
+        strings = f.apply("[1]", "[0]")
+        assert len(strings) == 2
+        assert any("anull" in s and "[1]" in s for s in strings)  # codespell:ignore anull
+        chain = next(s for s in strings if "[0]" in s)
+        assert "asendcmd=" in chain
+        assert "equalizer@fadeout_mid" in chain
+        assert "g=0.00" in chain
+        assert "f=1200:width_type=o:width=2.5" in chain
+        assert "30.000 equalizer@fadeout_mid g -4.00" in chain
+
+    def test_fadein_peak_processes_other_stream(self) -> None:
+        """A fadein peak processes the incoming stream and passes the outgoing through."""
+        f = PeakFilter(LOGGER, 1200, 2.5, [(0.0, -8.0), (5.0, 0.0)], "fadein")
+        strings = f.apply("[1]", "[0]")
+        chain = next(s for s in strings if "[1]" in s)
+        assert "equalizer@fadein_mid" in chain
+        assert "g=-8.00" in chain
+        passthrough = next(s for s in strings if "[0]" in s)
+        assert "anull" in passthrough  # codespell:ignore anull
+
+    def test_labels_unique_and_no_collision_with_shelf(self) -> None:
+        """Peak labels differ per stream and don't collide with ShelfFilter's labels."""
+        a = PeakFilter(LOGGER, 1200, 2.5, [(0.0, -8.0)], "fadein")
+        b = PeakFilter(LOGGER, 1200, 2.5, [(0.0, -8.0)], "fadeout")
+        assert a.output_fadein_label != b.output_fadein_label
+        low = ShelfFilter(LOGGER, ShelfType.LOW, 100, [(0.0, -26.0)], "fadein")
+        high = ShelfFilter(LOGGER, ShelfType.HIGH, 13000, [(0.0, -20.0)], "fadein")
+        assert a.output_fadein_label not in {low.output_fadein_label, high.output_fadein_label}
+        assert a.output_fadeout_label not in {low.output_fadeout_label, high.output_fadeout_label}

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import logging
-from typing import TYPE_CHECKING, Any, final
+from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
+from music_assistant_models.config_entries import ConfigValueType
+from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
@@ -18,7 +21,11 @@ if TYPE_CHECKING:
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
+
+# TypeVar for config value type inference
+_ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
 
 class Provider:
@@ -97,6 +104,15 @@ class Provider:
             task_id = f"provider_reload_{self.instance_id}"
             self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
 
+    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
+        """
+        Return optional diagnostics info for this provider to include in diagnostics reports.
+
+        Return None (the default) when this provider has nothing to contribute.
+        Keep the returned data small, JSON serializable and free of sensitive values.
+        """
+        return None
+
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
@@ -168,9 +184,14 @@ class Provider:
         """Return the stage of this provider."""
         return self.manifest.stage
 
-    def unload_with_error(self, error: str) -> None:
-        """Unload provider with error message."""
-        self.mass.call_later(1, self.mass.unload_provider, self.instance_id, error)
+    def unload_with_error(self, error: str | Exception) -> None:
+        """
+        Unload this provider and record an error for the user to act on.
+
+        :param error: The originating exception (preferred, so its error code and localized
+            message are preserved) or a plain string for a generic error message.
+        """
+        self.mass.call_later(1, self.mass.unload_provider_with_error, self.instance_id, error)
 
     def to_dict(self) -> dict[str, Any]:
         """Return Provider(instance) as serializable dict."""
@@ -196,10 +217,79 @@ class Provider:
                 f"Provider {self.name} does not support feature {feature.name}"
             )
 
-    def _update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
-        """Update a config value."""
-        # the config controller also updates the cached copy within this provider instance
-        self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
+    @final
+    def signal_provider_event(self, data: SerializableType, sub_scope: str | None = None) -> None:
+        """
+        Signal a custom provider event to all subscribers (e.g. connected clients).
+
+        Emits a PROVIDER_EVENT with this provider's instance_id as object_id,
+        optionally suffixed with /sub_scope to allow clients to distinguish
+        multiple event streams from the same provider.
+
+        :param data: The JSON serializable event payload, defined by the provider.
+        :param sub_scope: Optional sub scope to append to the object_id.
+        """
+        object_id = f"{self.instance_id}/{sub_scope}" if sub_scope else self.instance_id
+        self.mass.signal_event(EventType.PROVIDER_EVENT, object_id=object_id, data=data)
+
+    @overload
+    def get_config_value(
+        self, key: str, default: _ConfigValueT, *, return_type: builtins.type[_ConfigValueT] = ...
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: builtins.type[_ConfigValueT]
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: None = ...
+    ) -> ConfigValueType: ...
+
+    def get_config_value(
+        self,
+        key: str,
+        default: ConfigValueType = None,
+        *,
+        return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
+    ) -> _ConfigValueT | ConfigValueType:
+        """
+        Return the current persisted config value for this provider.
+
+        Falls back to the active config entry value or default when no value is persisted.
+
+        :param key: The config key to retrieve.
+        :param default: Value to return when the key is not present in the active config.
+        :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
+        """
+        if (entry := self.config.values.get(key)) is None:
+            return self.config.get_value(key, default)
+        value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
+        if value is None:
+            return self.config.get_value(key, default)
+        if entry.type == ConfigEntryType.SECURE_STRING:
+            assert isinstance(value, str)
+            return self.mass.config.decrypt_string(value)
+        return value
+
+    def _update_config_value(
+        self, key: str, value: ConfigValueType, encrypted: bool = False, immediate: bool = False
+    ) -> None:
+        """
+        Update a config value.
+
+        :param immediate: Persist to disk right away instead of on the debounced save timer;
+            use for critical values (e.g. a rotated auth token) that must survive a crash.
+        """
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, key, value, encrypted=encrypted, immediate=immediate
+        )
+        if (entry := self.config.values.get(key)) is not None:
+            entry.value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
 
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
         """Set log level from config."""

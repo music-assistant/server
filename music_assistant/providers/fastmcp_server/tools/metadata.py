@@ -6,13 +6,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastmcp import Context, FastMCP
-from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from music_assistant_models.enums import MediaType
 
 from ..models import RecommendationFolderBrief, TrackBrief
 from ..tags import Tag
-from ._common import TIMEOUT_QUERY, page_args, to_brief_track
+from ._common import TIMEOUT_QUERY, page_args, resolve_typed_uri, to_brief_track
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -110,13 +109,13 @@ def build_metadata_server(mass: MusicAssistant) -> FastMCP:
         :param track_uri: Music Assistant track URI (e.g. as found on
             ``TrackBrief.uri``).
         """
-        item = await mass.music.get_item_by_uri(track_uri)
-        media_type = getattr(item, "media_type", None)
-        if media_type != MediaType.TRACK:
-            raise ToolError(
-                f"URI {track_uri!r} is not a track (got media_type={media_type!r}); "
-                f"lyrics only apply to tracks."
-            )
+        item = await resolve_typed_uri(
+            mass,
+            track_uri,
+            MediaType.TRACK,
+            type_label="track",
+            hint="lyrics only apply to tracks.",
+        )
         metadata = getattr(item, "metadata", None)
         lyrics = getattr(metadata, "lyrics", None) if metadata else None
         return str(lyrics) if lyrics else None

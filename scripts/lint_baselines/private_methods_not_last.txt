@@ -2,7 +2,7 @@
 # Private methods must live at the bottom of the class (see AGENTS.md).
 # Regenerate with: uv run -m scripts.check_method_order --update-baseline
 music_assistant/models/music_provider.py	5
-music_assistant/models/player.py	57
+music_assistant/models/player.py	58
 music_assistant/providers/_demo_audio_analysis_provider/__init__.py	3
 music_assistant/providers/alexa/__init__.py	1
 music_assistant/providers/apple_music/api_client.py	8
@@ -14,7 +14,7 @@ music_assistant/providers/audible/__init__.py	12
 music_assistant/providers/audible/audible_helper.py	21
 music_assistant/providers/audiobookshelf/helpers.py	4
 music_assistant/providers/bandcamp/__init__.py	12
-music_assistant/providers/bbc_sounds/__init__.py	12
+music_assistant/providers/bbc_sounds/__init__.py	10
 music_assistant/providers/bbc_sounds/adaptor.py	5
 music_assistant/providers/bluesound/player.py	3
 music_assistant/providers/deezer/browse.py	4
@@ -23,8 +23,6 @@ music_assistant/providers/deezer/media.py	27
 music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
 music_assistant/providers/emby/__init__.py	16
-music_assistant/providers/fastmcp_server/debug/log_reader.py	2
-music_assistant/providers/fastmcp_server/server.py	2
 music_assistant/providers/filesystem_nfs/provider.py	1
 music_assistant/providers/gpodder/client.py	4
 music_assistant/providers/heos/player.py	11
@@ -56,7 +54,7 @@ music_assistant/providers/nugs/__init__.py	3
 music_assistant/providers/opensubsonic/sonic_provider.py	28
 music_assistant/providers/orf_radiothek/__init__.py	9
 music_assistant/providers/pandora/provider.py	6
-music_assistant/providers/party/__init__.py	6
+music_assistant/providers/party/__init__.py	4
 music_assistant/providers/phishin/provider.py	4
 music_assistant/providers/plex_connect/gdm.py	2
 music_assistant/providers/plex_connect/playback.py	10

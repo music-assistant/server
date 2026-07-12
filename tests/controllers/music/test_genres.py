@@ -11,6 +11,8 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
@@ -889,6 +891,27 @@ class TestSyncMediaItemGenres:
         assert int(genre_a.item_id) in mapped_genre_ids
         assert int(genre_b.item_id) in mapped_genre_ids
 
+    async def test_sync_picks_up_genre_created_between_syncs(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A genre created between syncs re-routes an already-stored alias mapping."""
+        electro = await genre_ctrl.add_item_to_library(_make_genre("SyncElectro"))
+        await genre_ctrl.add_alias(electro.item_id, "SyncWaveAlias")
+        track = await _add_test_track(mass, "Sync Track NewGenre")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncWaveAlias"})
+        # user now creates a genre whose primary name matches the stored alias;
+        # primary-name resolution takes priority, so a re-sync must remap the item
+        new_genre = await genre_ctrl.add_item_to_library(_make_genre("SyncWaveAlias"))
+        genre_ctrl._sync_lookup_cache.clear()  # simulate the cached lookup expiring
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"SyncWaveAlias"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert {int(r["genre_id"]) for r in rows} == {int(new_genre.item_id)}
+
 
 # ===================================================================
 # Group F: promote_alias_to_genre (4 tests)
@@ -1256,7 +1279,9 @@ class TestRestoreDefaultGenres:
         if not entries_with_aliases:
             pytest.skip("No default genres with aliases configured")
         entry = entries_with_aliases[0]
-        items = await genre_ctrl.library_items(search=entry["genre"], hide_empty=False)
+        items = await genre_ctrl.library_items(
+            search=entry["genre"], hide_empty=False, summary=False
+        )
         assert len(items) > 0
         genre = items[0]
         assert genre.genre_aliases is not None
@@ -1507,8 +1532,8 @@ class TestBaseClassIntegration:
         """genre_aliases column populates genre_aliases on fetched Genre."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("InlineTest"))
         await genre_ctrl.add_alias(genre.item_id, "Inline Alias")
-        # Fetch via library_items (uses base_query)
-        items = await genre_ctrl.library_items(search="InlineTest", hide_empty=False)
+        # Fetch via library_items (uses base_query); request full items so genre_aliases hydrates
+        items = await genre_ctrl.library_items(search="InlineTest", hide_empty=False, summary=False)
         assert len(items) >= 1
         fetched = items[0]
         assert fetched.genre_aliases is not None
@@ -2812,3 +2837,55 @@ class TestDefaultTaxonomySeeding:
         podcast = await genre_ctrl.library_items(content_type="podcast", hide_empty=False, limit=0)
         music_ids = {g.item_id for g in music}
         assert not any(g.item_id in music_ids for g in podcast)
+
+
+class TestGenreIconMetadata:
+    """_get_genre_icon_metadata prefers a taxonomy subfolder icon, falling back to flat."""
+
+    @staticmethod
+    def _make_icons(tmp_path: Path, *rel_paths: str) -> None:
+        for rel in rel_paths:
+            icon = tmp_path / "genres" / rel
+            icon.parent.mkdir(parents=True, exist_ok=True)
+            icon.write_text("<svg/>")
+
+    def test_subfolder_icon_preferred(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """A taxonomy-specific icon wins over the flat one."""
+        self._make_icons(tmp_path, "history.svg", "podcast/history.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("history", MediaType.PODCAST)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/podcast/history.svg"
+
+    def test_falls_back_to_flat(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Without a taxonomy override, the flat/shared icon is used."""
+        self._make_icons(tmp_path, "history.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("history", MediaType.PODCAST)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/history.svg"
+
+    def test_music_uses_flat(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Music genres (content_type None) resolve to the flat path."""
+        self._make_icons(tmp_path, "blues.svg")
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        md = GenreController._get_genre_icon_metadata("blues", None)
+        assert md is not None
+        assert md.images is not None
+        assert md.images[0].path == "genres/blues.svg"
+
+    def test_missing_icon_returns_none(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """No matching SVG (subfolder or flat) yields no metadata."""
+        self._make_icons(tmp_path)
+        monkeypatch.setattr(
+            "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
+        )
+        assert GenreController._get_genre_icon_metadata("nope", MediaType.PODCAST) is None

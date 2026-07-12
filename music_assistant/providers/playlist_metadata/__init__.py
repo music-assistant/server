@@ -28,6 +28,7 @@ import math
 import os
 import random
 import tempfile
+from collections import Counter
 from io import BytesIO
 from pathlib import Path
 from time import time
@@ -64,6 +65,9 @@ SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.PLAYLIST_META
 
 CONF_TEMPLATE: Final[str] = "template"
 CONF_SKIP_PROVIDER_PLAYLISTS: Final[str] = "skip_provider_playlists"
+CONF_ENABLE_GENRE_DETECTION: Final[str] = "enable_genre_detection"
+CONF_GENRE_MIN_THRESHOLD: Final[str] = "genre_min_threshold"
+CONF_GENRE_MAX_COUNT: Final[str] = "genre_max_count"
 
 TEMPLATE_ARTIST_MOSAIC: Final[str] = "artist_mosaic"
 TEMPLATE_ARTIST_GRID: Final[str] = "artist_grid"
@@ -114,6 +118,31 @@ async def get_config_entries(
             required=False,
             default_value=True,
             value=values.get(CONF_SKIP_PROVIDER_PLAYLISTS, True) if values else True,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_GENRE_DETECTION,
+            type=ConfigEntryType.BOOLEAN,
+            required=False,
+            default_value=False,
+            value=values.get(CONF_ENABLE_GENRE_DETECTION, False) if values else False,
+        ),
+        ConfigEntry(
+            key=CONF_GENRE_MIN_THRESHOLD,
+            type=ConfigEntryType.INTEGER,
+            required=False,
+            default_value=10,
+            range=(5, 50),
+            advanced=True,
+            value=values.get(CONF_GENRE_MIN_THRESHOLD, 10) if values else 10,
+        ),
+        ConfigEntry(
+            key=CONF_GENRE_MAX_COUNT,
+            type=ConfigEntryType.INTEGER,
+            required=False,
+            default_value=3,
+            range=(1, 10),
+            advanced=True,
+            value=values.get(CONF_GENRE_MAX_COUNT, 3) if values else 3,
         ),
     )
 
@@ -181,6 +210,7 @@ class PlaylistMetadataProvider(MetadataProvider):
                             return None
 
         generated_images: list[MediaItemImage] = []
+        detected_genres: set[str] | None = None
 
         if thumb_image := await self._generate_and_write(playlist, fanart=False):
             generated_images.append(thumb_image)
@@ -188,12 +218,72 @@ class PlaylistMetadataProvider(MetadataProvider):
         if fanart_image := await self._generate_and_write(playlist, fanart=True):
             generated_images.append(fanart_image)
 
-        if generated_images:
-            await self._cleanup_old_playlist_images(playlist)
+        # Aggregate genres from playlist tracks if enabled
+        if self.config.get_value(CONF_ENABLE_GENRE_DETECTION):
+            detected_genres = await self._analyze_playlist_genres(playlist)
+
+        if generated_images or detected_genres:
+            # Only clean up old images when we have new ones to replace them
+            if generated_images:
+                await self._cleanup_old_playlist_images(playlist)
             metadata = MediaItemMetadata()
-            metadata.images = UniqueList(generated_images)
+            if generated_images:
+                metadata.images = UniqueList(generated_images)
+            if detected_genres:
+                metadata.genres = detected_genres
             return metadata
         return None
+
+    async def _analyze_playlist_genres(self, playlist: Playlist) -> set[str] | None:
+        """
+        Analyze playlist tracks and aggregate most common genres.
+
+        :param playlist: The playlist to analyze.
+        :return: Set of detected genres or None if not enough data.
+        """
+        genre_counter: Counter[str] = Counter()
+        track_count = 0
+        max_tracks = 500  # Analyze up to 500 tracks to avoid performance issues
+
+        try:
+            async for track in self.mass.music.playlists.tracks(
+                playlist.item_id,
+                playlist.provider,
+            ):
+                if not isinstance(track, Track):
+                    continue
+
+                track_count += 1
+                if track.metadata and track.metadata.genres:
+                    genre_counter.update(track.metadata.genres)
+
+                if track_count >= max_tracks:
+                    break
+
+            if track_count == 0:
+                return None
+
+            # Calculate threshold and get top genres
+            min_threshold_val = self.config.get_value(CONF_GENRE_MIN_THRESHOLD) or 10
+            max_genre_val = self.config.get_value(CONF_GENRE_MAX_COUNT) or 3
+            min_threshold_pct = (
+                int(min_threshold_val) if isinstance(min_threshold_val, int | float) else 10
+            )
+            max_genre_count = int(max_genre_val) if isinstance(max_genre_val, int | float) else 3
+            required_count = math.ceil(track_count * min_threshold_pct / 100)
+
+            # Get most common genres that meet the threshold
+            detected = {
+                genre
+                for genre, count in genre_counter.most_common(max_genre_count)
+                if count >= required_count
+            }
+
+            return detected if detected else None
+
+        except (KeyError, AttributeError, TypeError, ValueError) as err:
+            LOGGER.debug("Failed to analyze genres for playlist %s: %s", playlist.name, err)
+            return None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -586,6 +676,7 @@ class PlaylistMetadataProvider(MetadataProvider):
             results = await self.mass.music.artists.library_items(
                 search=artist.name,
                 limit=1,
+                summary=False,
             )
             if results and results[0].image:
                 return results[0].image

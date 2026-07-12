@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, cast, overload
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -40,7 +41,7 @@ class CoreConfigMixin:
 
         def save(self, immediate: bool = False) -> None: ...  # noqa: D102
 
-    @api_command("config/core")
+    @api_command("config/core", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
         """Return all core controllers config options."""
         return [
@@ -56,7 +57,7 @@ class CoreConfigMixin:
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
 
-    @api_command("config/core/get")
+    @api_command("config/core/get", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
         raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
@@ -100,7 +101,7 @@ class CoreConfigMixin:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/core/get_value")
+    @api_command("config/core/get_value", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_config_value(
         self,
         domain: str,
@@ -135,7 +136,7 @@ class CoreConfigMixin:
             else conf.values[key].default_value
         )
 
-    @api_command("config/core/get_entries")
+    @api_command("config/core/get_entries", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_config_entries(
         self,
         domain: str,
@@ -163,7 +164,7 @@ class CoreConfigMixin:
                     entry.options = playlist_options
         return _with_translation_owner(all_entries, f"core.{domain}", action, values)
 
-    @api_command("config/core/save", required_role="admin")
+    @api_command("config/core/save", required_scope=Scope.CONFIG_CORE_WRITE)
     async def save_core_config(
         self,
         domain: str,

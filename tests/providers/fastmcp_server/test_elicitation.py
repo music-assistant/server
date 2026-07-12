@@ -104,7 +104,7 @@ async def test_get_active_queue_clamps_include_items(mock_mass: MagicMock) -> No
             "queue_get_active_queue",
             {"player_id": "p1", "include_items": 10_000},
         )
-    mock_mass.player_queues.items.assert_called_once_with("q1", limit=500)
+    mock_mass.player_queues.items.assert_called_once_with("q1", limit=500, offset=0)
 
 
 async def test_get_active_queue_passes_small_limit_through(mock_mass: MagicMock) -> None:
@@ -119,7 +119,7 @@ async def test_get_active_queue_passes_small_limit_through(mock_mass: MagicMock)
             "queue_get_active_queue",
             {"player_id": "p1", "include_items": 10},
         )
-    mock_mass.player_queues.items.assert_called_once_with("q1", limit=10)
+    mock_mass.player_queues.items.assert_called_once_with("q1", limit=10, offset=0)
 
 
 async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:

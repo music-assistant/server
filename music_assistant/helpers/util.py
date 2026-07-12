@@ -574,6 +574,16 @@ def filename_from_string(string: str) -> str:
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
 
 
+# aiohttp rejects the full C0 control character range plus DEL in response headers
+# to prevent header injection attacks (see aiohttp http_writer._FORBIDDEN_HEADER_CHARS_RE)
+_FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def sanitize_http_header_value(value: str) -> str:
+    """Replace control characters that are not allowed in HTTP header values."""
+    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+
+
 def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
     """Try to parse an int."""
     try:
@@ -878,8 +888,10 @@ _ip_addresses_pending: dict[bool, asyncio.Task[tuple[str, ...]]] = {}
 
 async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     """
-    Return all IP-adresses of all network interfaces.
+    Return all IP addresses of all network interfaces.
 
+    Always returns at least one address: when no routable address is found
+    (e.g. offline host), the loopback address is returned as fallback.
     Results are cached for a short while, so an IP/interface change may take up to
     IP_ADDRESSES_CACHE_TTL seconds to be reflected.
 
@@ -909,7 +921,7 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
 
 
 def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
-    """Enumerate all IP-adresses of all network interfaces (blocking)."""
+    """Enumerate all IP addresses of all network interfaces (blocking)."""
     result: list[tuple[int, str]] = []
     # try to get the primary IP address
     # this is the IP address of the default route
@@ -964,6 +976,10 @@ def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
                 score = 0
             result.append((score, ip_str))
     result.sort(key=lambda x: x[0], reverse=True)
+    if not result:
+        # no routable addresses found (e.g. offline host with only loopback/link-local):
+        # fall back to loopback so callers that rely on at least one address keep working
+        return ("127.0.0.1",)
     return tuple(ip[1] for ip in result)
 
 

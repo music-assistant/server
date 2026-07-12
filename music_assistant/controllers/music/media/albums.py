@@ -6,10 +6,12 @@ import contextlib
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
+    AlbumSummary,
     Artist,
     ItemMapping,
     MediaItemImage,
@@ -19,6 +21,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
+from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_album,
@@ -34,6 +37,8 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant import MusicAssistant
 
 
@@ -43,33 +48,28 @@ class AlbumsController(MediaControllerBase[Album]):
     db_table = DB_TABLE_ALBUMS
     media_type = MediaType.ALBUM
     item_cls = Album
+    summary_item_cls = AlbumSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
-        self.mass.register_api_command(f"music/{api_base}/album_versions", self.versions)
+        self.mass.register_api_command(
+            f"music/{api_base}/album_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/album_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
 
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:
         """Return the base SELECT query for albums and its bound query params."""
-        query = """
+        query = f"""
         SELECT
             albums.*,
-            (SELECT JSON_GROUP_ARRAY(
-                json_object(
-                'item_id', album_pm.provider_item_id,
-                    'provider_domain', album_pm.provider_domain,
-                        'provider_instance', album_pm.provider_instance,
-                        'available', album_pm.available,
-                        'audio_format', json(album_pm.audio_format),
-                        'url', album_pm.url,
-                        'details', album_pm.details,
-                        'in_library', album_pm.in_library,
-                        'is_unique', album_pm.is_unique
-                )) FROM provider_mappings album_pm WHERE album_pm.item_id = albums.item_id AND album_pm.media_type = 'album') AS provider_mappings,
+            {self._external_ids_query()} AS external_ids,
+            {self._provider_mappings_query()} AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
                 'item_id', artists.item_id,
@@ -78,6 +78,21 @@ class AlbumsController(MediaControllerBase[Album]):
                     'sort_name', artists.sort_name,
                     'media_type', 'artist'
                 )) FROM artists JOIN album_artists on album_artists.album_id = albums.item_id  WHERE artists.item_id = album_artists.artist_id) AS artists
+            FROM albums"""
+        return query, {}
+
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for album summary listings."""
+        artists_query = self._artist_mappings_summary_query(DB_TABLE_ALBUM_ARTISTS, "album_id")
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            albums.version,
+            albums.year,
+            albums.album_type,
+            {self._provider_mappings_query()} AS provider_mappings,
+            {artists_query} AS artists
             FROM albums"""
         return query, {}
 
@@ -123,6 +138,8 @@ class AlbumsController(MediaControllerBase[Album]):
         genre: int | list[int] | None = None,
         played_only: bool = False,
         album_types: list[AlbumType] | None = None,
+        *,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Album]:
         """
@@ -136,6 +153,8 @@ class AlbumsController(MediaControllerBase[Album]):
         :param provider: Filter by provider instance ID (single string or list).
         :param album_types: Filter by album types.
         :param genre: Filter by genre id(s).
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
@@ -158,18 +177,20 @@ class AlbumsController(MediaControllerBase[Album]):
             search = None
             title_str = create_safe_string(title_str, True, True)
             artist_str = create_safe_string(artist_str, True, True)
-            extra_query_parts.append("albums.search_name LIKE :search_title")
-            extra_query_params["search_title"] = f"%{title_str}%"
+            extra_query_parts.append(
+                search_name_match_clause("albums", title_str, "search_title", extra_query_params)
+            )
+            artist_clause = "AND " + search_name_match_clause(
+                "artists", artist_str, "search_artist", extra_query_params
+            )
             # use join with artists table to filter on artist name
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-                "AND artists.search_name LIKE :search_artist"
+                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
                 if not artist_table_joined
-                else "AND artists.search_name LIKE :search_artist"
+                else artist_clause
             )
             artist_table_joined = True
-            extra_query_params["search_artist"] = f"%{artist_str}%"
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -183,6 +204,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_join_parts=extra_join_parts,
             played_only=played_only,
             in_library_only=True,
+            summary=summary,
         )
 
         # Calculate how many more items we need to reach the original limit
@@ -191,14 +213,15 @@ class AlbumsController(MediaControllerBase[Album]):
         if search and len(result) < 25 and not offset and remaining_limit > 0:
             # append artist items to result
             search = create_safe_string(search, True, True)
+            artist_clause = "AND " + search_name_match_clause(
+                "artists", search, "search_artist", extra_query_params
+            )
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-                "AND artists.search_name LIKE :search_artist"
+                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
                 if not artist_table_joined
-                else "AND artists.search_name LIKE :search_artist"
+                else artist_clause
             )
-            extra_query_params["search_artist"] = f"%{search}%"
             existing_uris = {item.uri for item in result}
 
             for album in await self.get_library_items_by_query(
@@ -211,6 +234,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
                 in_library_only=True,
+                summary=summary,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if album.uri not in existing_uris:
@@ -408,9 +432,15 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
         db_id = int(item_id)  # ensure integer
+        # pass the album id as preferred album so the track_album subquery in the
+        # base query returns this album's disc/track numbers for tracks that
+        # appear on multiple albums
         return await self.mass.music.tracks.get_library_items_by_query(
-            extra_query_parts=["WHERE album_tracks.album_id = :album_id"],
-            extra_query_params={"album_id": db_id},
+            extra_query_parts=[
+                f"tracks.item_id IN (SELECT track_id FROM {DB_TABLE_ALBUM_TRACKS} "
+                "WHERE album_id = :album_id)"
+            ],
+            extra_query_params={"album_id": db_id, "preferred_album_id": db_id},
         )
 
     async def add_item_mapping_as_album_to_library(self, item: ItemMapping) -> Album:
@@ -521,12 +551,13 @@ class AlbumsController(MediaControllerBase[Album]):
                 "album_type": item.album_type,
                 "year": item.year,
                 "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         # update/set provider_mappings table
         await self.set_provider_mappings(db_id, item.provider_mappings)
         # set track artist(s)
@@ -558,15 +589,16 @@ class AlbumsController(MediaControllerBase[Album]):
                 "year": update.year if overwrite else cur_item.year or update.year,
                 "album_type": album_type.value,
                 "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,
             },
+        )
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
         provider_mappings = (
@@ -651,3 +683,12 @@ class AlbumsController(MediaControllerBase[Album]):
                 "disc_number": track.disc_number,
             },
         )
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AlbumSummary:
+        """Parse a raw summary db row into an AlbumSummary object."""
+        item = cast("AlbumSummary", super()._parse_summary_row(db_row))
+        item.version = db_row["version"] or ""
+        item.year = db_row["year"]
+        item.album_type = AlbumType(db_row["album_type"])
+        item.artists = self._parse_summary_artist_mappings(db_row)
+        return item

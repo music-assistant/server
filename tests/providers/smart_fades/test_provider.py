@@ -178,6 +178,9 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125, f"Expected BPM ~120, got {analysis.bpm:.1f}"
 
+    # the 120 BPM fixture is common time
+    assert analysis.beats_per_bar == 4
+
 
 async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock: Mock) -> None:
     """Test that extended analysis fields (energy, centroid, key) are populated."""
@@ -215,8 +218,8 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     # Energy curve should be 1800 bins, normalized to [0, 1]
     assert analysis.rms_energy is not None
     assert len(analysis.rms_energy) == 1800
-    assert analysis.rms_energy.max() <= 1.0
-    assert analysis.rms_energy.min() >= 0.0
+    assert max(analysis.rms_energy) <= 1.0
+    assert min(analysis.rms_energy) >= 0.0
 
     # Spectral centroid should be 1800 bins with positive Hz values
     assert analysis.spectral_centroid is not None
@@ -245,6 +248,17 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     # BPM and beats should still be correct
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125
+
+    # v2: per-band RMS envelopes in extra_data, normalized by the full-band peak
+    assert analysis.extra_data is not None
+    band_rms = analysis.extra_data["band_rms"]
+    assert set(band_rms) == {"low", "low_mid", "mid", "high"}
+    for band in band_rms.values():
+        assert len(band) == 1800
+        assert all(v >= 0.0 for v in band)
+    # music with drums has real low-band content; bands are lists (JSON-safe)
+    assert isinstance(band_rms["low"], list)
+    assert max(band_rms["low"]) > 0.05
 
 
 async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider) -> None:
@@ -313,11 +327,29 @@ async def test_finalize_raises_when_not_enough_beats(provider: SmartFadesProvide
         patch.object(
             provider,
             "_infer_beat_timings",
-            return_value=(np.array([0.5]), np.array([])),
+            return_value=(np.array([0.5]), np.array([]), 4),
         ),
         pytest.raises(AudioAnalysisError, match="beat"),
     ):
         await provider._finalize(session_id)
+
+
+async def test_digital_silence_yields_finite_spectral_centroid(
+    provider: SmartFadesProvider,
+) -> None:
+    """Digitally-silent audio yields 0 Hz centroid frames instead of non-finite values."""
+    sample_rate = 22050
+    tone = np.sin(2 * np.pi * 440 * np.arange(sample_rate, dtype=np.float32) / sample_rate)
+    pcm = np.concatenate([tone.astype(np.float32), np.zeros(sample_rate, dtype=np.float32)])
+    data = Mock()
+    data.energy_chunks = []
+    data.frequency_band_chunks = {}
+    data.centroid_chunks = []
+
+    provider._compute_energy_and_spectral_centroids(pcm, data)
+
+    assert data.centroid_chunks
+    assert np.isfinite(np.concatenate(data.centroid_chunks)).all()
 
 
 async def test_setup_raises_when_requirements_not_met(
@@ -334,3 +366,8 @@ async def test_setup_raises_when_requirements_not_met(
         pytest.raises(SetupFailedError),
     ):
         await smart_fades.setup(mass_mock, manifest_mock, config_mock)
+
+
+async def test_analysis_version_is_2(provider: SmartFadesProvider) -> None:
+    """v2 = anti-aliased bins + band_rms extra_data + beats_per_bar."""
+    assert provider.analysis_version == 2

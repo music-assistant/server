@@ -20,7 +20,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import EventType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    InvalidDataError,
+    PlayerCommandFailed,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players import PlayerController
@@ -1167,6 +1171,94 @@ class TestCurrentMediaTimeUpdates:
         # (current_media already holds the fresh position in the same pass)
         mock_mass.player_queues.on_player_elapsed_time_corrected.assert_called_once_with(player)
         assert self._player_updated_signalled(mock_mass)
+
+
+class TestPlayAnnouncementCleanup:
+    """Test announcement data cleanup after play_announcement."""
+
+    def _make_player(
+        self, mock_mass: MagicMock, announcements: dict[str, object]
+    ) -> tuple[PlayerController, MockPlayer]:
+        """Create a controller and a player with native announcement support."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        player._cache.clear()
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+
+        # mimic the real streams controller: register announce data on url request
+        def _get_announcement_url(player_id: str, announce_data: object, **_kwargs: object) -> str:
+            announcements[player_id] = announce_data
+            return f"http://ma/announcement/{player_id}.mp3"
+
+        mock_mass.streams.announcements = announcements
+        mock_mass.streams.get_announcement_url = MagicMock(side_effect=_get_announcement_url)
+        player.update_state(signal_event=False)
+        return controller, player
+
+    async def test_announcement_data_removed_after_playback(self, mock_mass: MagicMock) -> None:
+        """The registered announcement data is released once playback finished."""
+        announcements: dict[str, object] = {}
+        controller, player = self._make_player(mock_mass, announcements)
+
+        async def _play_announcement(*_args: object, **_kwargs: object) -> None:
+            # entry must exist while the announcement is being played/served
+            assert "player_1" in announcements
+
+        player.play_announcement = AsyncMock(side_effect=_play_announcement)  # type: ignore[method-assign]
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        player.play_announcement.assert_awaited_once()
+        assert announcements == {}
+
+    async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
+        """The registered announcement data is released even when playback fails."""
+        announcements: dict[str, object] = {}
+        controller, player = self._make_player(mock_mass, announcements)
+        player.play_announcement = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+
+        with pytest.raises(PlayerCommandFailed):
+            await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        assert announcements == {}
+
+
+class TestScheduleActiveOutputProtocolClear:
+    """Test the deferred clear of a player's active output protocol."""
+
+    def test_schedule_starts_cancellable_clear_task(self, mock_mass: MagicMock) -> None:
+        """Scheduling defers the clear to a single, per-player, cancellable task."""
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.player_id = "player_1"
+
+        controller.schedule_active_output_protocol_clear(player)
+
+        mock_mass.create_task.assert_called_once()
+        # close the coroutine passed to the mocked create_task to avoid a
+        # "coroutine was never awaited" warning
+        mock_mass.create_task.call_args.args[0].close()
+        # no abort_existing: a duplicate schedule must reuse the pending clear
+        # (deduped by task_id) instead of replacing it with an untracked task
+        assert mock_mass.create_task.call_args.kwargs == {
+            "task_id": "clear_active_protocol_player_1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_clears_protocol_once_player_idle(self, mock_mass: MagicMock) -> None:
+        """The protocol is cleared after waiting for the player to reach IDLE."""
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.player_id = "player_1"
+
+        with patch.object(controller, "_wait_for_playback_state", new=AsyncMock()) as wait_mock:
+            await controller._clear_active_output_protocol_when_idle(player)
+
+        wait_mock.assert_awaited_once_with(player, PlaybackState.IDLE, timeout=10)
+        player.set_active_output_protocol.assert_called_once_with(None)
 
 
 if __name__ == "__main__":

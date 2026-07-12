@@ -28,6 +28,7 @@ from .constants import (
     PHISH_ARTIST_ID,
     PHISH_ARTIST_NAME,
     PHISH_DISCOGS_ID,
+    PHISH_GENRES,
     PHISH_MUSICBRAINZ_ID,
     PHISH_TADB_ID,
     REQUEST_TIMEOUT,
@@ -286,23 +287,19 @@ def track_to_ma_track(
     # Build details string
     details = _build_track_details(track_data, song_data, show_date, set_name, venue_name)
 
-    # Create metadata with image
-    metadata = MediaItemMetadata()
-    if show_data:
-        image_url = show_data.get("album_cover_url")
-        if image_url:
-            metadata = MediaItemMetadata(
-                images=UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=image_url,
-                            provider=provider.instance_id,
-                            remotely_accessible=True,
-                        )
-                    ]
+    # Create metadata with genres and image
+    metadata = MediaItemMetadata(genres=set(PHISH_GENRES))
+    if show_data and (image_url := show_data.get("album_cover_url")):
+        metadata.images = UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                    provider=provider.instance_id,
+                    remotely_accessible=True,
                 )
-            )
+            ]
+        )
 
     return Track(
         item_id=track_id,

@@ -11,6 +11,7 @@ from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     get_source_ip_for_target,
     load_provider_module,
+    sanitize_http_header_value,
     select_free_port,
 )
 
@@ -176,6 +177,11 @@ class TestGetIpAddresses:
         ) as mock:
             yield mock
 
+    def test_falls_back_to_loopback_without_routable_addresses(self) -> None:
+        """With no routable addresses at all, loopback is returned instead of an empty tuple."""
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=[]):
+            assert util._enumerate_ip_addresses(include_ipv6=True) == ("127.0.0.1",)
+
     @pytest.mark.asyncio
     async def test_concurrent_callers_share_a_single_probe(self, enumerate_mock: MagicMock) -> None:
         """Concurrent callers within the TTL all get the result of one enumeration."""
@@ -234,3 +240,36 @@ class TestGetIpAddresses:
                 await task_a
             assert await task_b == ("192.168.1.10",)
         assert enumerate_mock.call_count == 1
+
+
+class TestSanitizeHttpHeaderValue:
+    """sanitize_http_header_value strips characters aiohttp forbids in response headers."""
+
+    def test_clean_value_unchanged(self) -> None:
+        """A regular track name passes through untouched."""
+        assert sanitize_http_header_value("AC/DC - Thunderstruck") == "AC/DC - Thunderstruck"
+
+    def test_newline_and_carriage_return_replaced(self) -> None:
+        """CR/LF (the classic header injection vector) are replaced with spaces."""
+        assert sanitize_http_header_value("Artist -\r\nEvil: header") == "Artist -  Evil: header"
+
+    def test_all_c0_control_chars_and_del_replaced(self) -> None:
+        r"""
+        Every char aiohttp's _FORBIDDEN_HEADER_CHARS_RE rejects is replaced.
+
+        Regression test for https://github.com/music-assistant/support/issues/5791
+        where a control char (other than \n, \r, \t) in a FLAC tag crashed
+        serve_queue_item_stream with a 500.
+        """
+        for codepoint in [*range(0x20), 0x7F]:
+            value = f"Artist - Some{chr(codepoint)}Track"
+            sanitized = sanitize_http_header_value(value)
+            assert sanitized == "Artist - Some Track", f"codepoint {codepoint:#04x} not replaced"
+
+    def test_non_ascii_preserved(self) -> None:
+        """Non-ASCII text is allowed in headers and must be preserved."""
+        assert sanitize_http_header_value("Björk - Jóga") == "Björk - Jóga"
+
+    def test_leading_trailing_whitespace_stripped(self) -> None:
+        """Control chars at the edges don't leave dangling whitespace."""
+        assert sanitize_http_header_value("\x00Artist - Track\x1f") == "Artist - Track"

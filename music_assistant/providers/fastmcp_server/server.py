@@ -12,6 +12,7 @@ from .constants import (
     CONF_DEBUG_EVENTS,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
+    CONF_LEAN_ADMIN_SCHEMA,
     CONF_MOUNT_PATH,
     CONF_REQUIRE_AUTH,
     CONF_REQUIRE_CONFIRMATION,
@@ -96,158 +97,6 @@ class MCPServerRuntime:
                 await self.stop()
             raise
 
-    async def _start_impl(self) -> None:
-        """Mount the runtime; see :meth:`start` for the public-facing wrapper."""
-        from fastmcp import FastMCP  # noqa: PLC0415
-
-        from .auth import MASTokenVerifier  # noqa: PLC0415
-        from .http_bridge import mount_into_mass  # noqa: PLC0415
-        from .prompts import register_prompts  # noqa: PLC0415
-        from .resources import register_resources  # noqa: PLC0415
-        from .tools import (  # noqa: PLC0415
-            build_library_server,
-            build_media_server,
-            build_metadata_server,
-            build_playback_server,
-            build_players_server,
-            build_playlists_server,
-            build_queue_server,
-            build_volume_server,
-        )
-
-        require_auth = bool(self._config.get_value(CONF_REQUIRE_AUTH))
-        base_url = str(self._mass.webserver.base_url or "").rstrip("/")
-        public_resource_uri = f"{base_url}{self._mount_path}" if base_url else None
-        enforce_audience = bool(self._config.get_value(CONF_ENFORCE_AUDIENCE))
-        verifier = (
-            MASTokenVerifier(
-                self._mass,
-                base_url=base_url or None,
-                public_resource_uri=public_resource_uri,
-                enforce_audience=enforce_audience,
-            )
-            if require_auth
-            else None
-        )
-
-        mcp = FastMCP(
-            name="music-assistant",
-            instructions=(
-                "Music Assistant MCP server: control playback, browse the library, "
-                "manage queues, and inspect players. Tools are namespaced by category "
-                "(library_, queue_, playback_, players_, playlists_, volume_, media_, "
-                "metadata_). Resources expose URI-addressable views: library://artist/{id}, "
-                "library://album/{id}, library://track/{id}, library://playlist/{id}, "
-                "player://{id}, queue://{id}."
-            ),
-            auth=verifier,
-        )
-
-        require_confirmation = bool(self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False)
-        mcp.mount(build_library_server(self._mass), namespace="library")
-        mcp.mount(
-            build_queue_server(self._mass, require_confirmation=require_confirmation),
-            namespace="queue",
-        )
-        mcp.mount(build_playback_server(self._mass), namespace="playback")
-        mcp.mount(build_players_server(self._mass), namespace="players")
-        mcp.mount(
-            build_playlists_server(self._mass, require_confirmation=require_confirmation),
-            namespace="playlists",
-        )
-        mcp.mount(build_volume_server(self._mass), namespace="volume")
-        mcp.mount(
-            build_media_server(self._mass, require_confirmation=require_confirmation),
-            namespace="media",
-        )
-        mcp.mount(build_metadata_server(self._mass), namespace="metadata")
-
-        from .debug.event_buffer import EventBuffer  # noqa: PLC0415
-        from .tags import Tag  # noqa: PLC0415
-        from .tools import build_debug_server  # noqa: PLC0415
-
-        if bool(self._config.get_value(CONF_DEBUG_EVENTS)):
-            cap_value = self._config.get_value(CONF_DEBUG_EVENT_BUFFER_CAPACITY)
-            capacity = int(cap_value) if isinstance(cap_value, int | float | str) else 500
-            self._event_buffer = EventBuffer(self._mass, capacity=capacity)
-            self._event_buffer.start()
-
-        mcp.mount(
-            build_debug_server(
-                self._mass,
-                require_confirmation=require_confirmation,
-                event_buffer=self._event_buffer,
-                logs_enabled=Tag.DEBUG_LOGS in enabled_tags(self._config),
-                reload_lock=self._reload_lock,
-            ),
-            namespace="debug",
-        )
-
-        from .constants import CONF_CONFIG_WRITE_SECRET  # noqa: PLC0415
-        from .tools import build_config_server  # noqa: PLC0415
-
-        mcp.mount(
-            build_config_server(
-                self._mass,
-                require_confirmation=require_confirmation,
-                secret_writes_enabled=lambda: bool(
-                    self._config.get_value(CONF_CONFIG_WRITE_SECRET)
-                ),
-            ),
-            namespace="config",
-        )
-
-        register_resources(mcp, self._mass, self._config)
-        register_prompts(mcp, self._config)
-
-        self._apply_tag_filter(mcp, enabled_tags(self._config))
-
-        self._mcp = mcp
-        extra_origins = str(self._config.get_value(CONF_EXTRA_ALLOWED_ORIGINS) or "")
-        self._unmount = await mount_into_mass(
-            self._mass, mcp, self._mount_path, extra_origins_csv=extra_origins
-        )
-
-        # Publish RFC 9728 protected-resource metadata at the well-known URL
-        # advertised by FastMCP in WWW-Authenticate. Skipped when require_auth
-        # is off (no metadata to serve) or base_url is missing (no canonical URI).
-        if require_auth and public_resource_uri:
-            from .http_bridge import mount_well_known  # noqa: PLC0415
-
-            self._unmount_well_known = await mount_well_known(
-                self._mass,
-                mount_path=self._mount_path,
-                resource_uri=public_resource_uri,
-                authorization_servers=[base_url],
-                # Lazy provider so hot-swapped permissions update the
-                # advertised `scopes_supported` immediately, without
-                # rebuilding the runtime.
-                scopes_supported=lambda: [str(t) for t in enabled_tags(self._config)],
-                resource_name="Music Assistant MCP",
-            )
-
-        # Mount the Connect Wizard. Failure here is non-fatal — the MCP server
-        # itself is unaffected; the user just falls back to manual onboarding.
-        try:
-            from .connect import mount_connect_wizard  # noqa: PLC0415
-
-            self._unmount_connect = await mount_connect_wizard(
-                self._mass,
-                self._mount_path,
-                enabled_tags_provider=lambda: [str(t) for t in enabled_tags(self._config)],
-                extra_origins_csv=extra_origins,
-                trust_forwarded_proto=bool(self._config.get_value(CONF_TRUST_FORWARDED_PROTO)),
-            )
-        except Exception:
-            self._logger.warning("Connect Wizard: mount failed", exc_info=True)
-
-        self._logger.debug(
-            "MCP runtime started: mount=%s, auth=%s, tags=%d",
-            self._mount_path,
-            bool(verifier),
-            len(enabled_tags(self._config)),
-        )
-
     async def stop(self) -> None:
         """Unregister the HTTP route and drop references."""
         if self._event_buffer is not None:
@@ -311,6 +160,166 @@ class MCPServerRuntime:
 
         await self.stop()
         await self.start()
+
+    async def _start_impl(self) -> None:
+        """Mount the runtime; see :meth:`start` for the public-facing wrapper."""
+        from fastmcp import FastMCP  # noqa: PLC0415
+
+        from .auth import MASTokenVerifier  # noqa: PLC0415
+        from .http_bridge import mount_into_mass  # noqa: PLC0415
+        from .prompts import register_prompts  # noqa: PLC0415
+        from .resources import register_resources  # noqa: PLC0415
+        from .tools import (  # noqa: PLC0415
+            build_library_server,
+            build_media_server,
+            build_metadata_server,
+            build_playback_server,
+            build_players_server,
+            build_playlists_server,
+            build_queue_server,
+            build_volume_server,
+        )
+
+        require_auth = bool(self._config.get_value(CONF_REQUIRE_AUTH))
+        base_url = str(self._mass.webserver.base_url or "").rstrip("/")
+        public_resource_uri = f"{base_url}{self._mount_path}" if base_url else None
+        enforce_audience = bool(self._config.get_value(CONF_ENFORCE_AUDIENCE))
+        verifier = (
+            MASTokenVerifier(
+                self._mass,
+                base_url=base_url or None,
+                public_resource_uri=public_resource_uri,
+                enforce_audience=enforce_audience,
+            )
+            if require_auth
+            else None
+        )
+
+        mcp = FastMCP(
+            name="music-assistant",
+            instructions=(
+                "Music Assistant MCP server: control playback, browse the library, "
+                "manage queues, and inspect players. Tools are namespaced by category "
+                "(library_, queue_, playback_, players_, playlists_, volume_, media_, "
+                "metadata_). Resources expose URI-addressable views: library://artist/{id}, "
+                "library://album/{id}, library://track/{id}, library://playlist/{id}, "
+                "player://{id}, queue://{id}."
+            ),
+            auth=verifier,
+        )
+
+        require_confirmation = bool(self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False)
+        lean_admin_schema = bool(self._config.get_value(CONF_LEAN_ADMIN_SCHEMA) or False)
+        from .tags import Tag  # noqa: PLC0415
+
+        mcp.mount(build_library_server(self._mass), namespace="library")
+        mcp.mount(
+            build_queue_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                delete_queue_enabled=Tag.DELETE_QUEUE in enabled_tags(self._config),
+            ),
+            namespace="queue",
+        )
+        mcp.mount(build_playback_server(self._mass), namespace="playback")
+        mcp.mount(build_players_server(self._mass), namespace="players")
+        mcp.mount(
+            build_playlists_server(self._mass, require_confirmation=require_confirmation),
+            namespace="playlists",
+        )
+        mcp.mount(build_volume_server(self._mass), namespace="volume")
+        mcp.mount(
+            build_media_server(self._mass, require_confirmation=require_confirmation),
+            namespace="media",
+        )
+        mcp.mount(build_metadata_server(self._mass), namespace="metadata")
+
+        from .debug.event_buffer import EventBuffer  # noqa: PLC0415
+        from .tools import build_debug_server  # noqa: PLC0415
+
+        if bool(self._config.get_value(CONF_DEBUG_EVENTS)):
+            cap_value = self._config.get_value(CONF_DEBUG_EVENT_BUFFER_CAPACITY)
+            capacity = int(cap_value) if isinstance(cap_value, int | float | str) else 500
+            self._event_buffer = EventBuffer(self._mass, capacity=capacity)
+            self._event_buffer.start()
+
+        mcp.mount(
+            build_debug_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                event_buffer=self._event_buffer,
+                logs_enabled=Tag.DEBUG_LOGS in enabled_tags(self._config),
+                reload_lock=self._reload_lock,
+                lean_schema=lean_admin_schema,
+            ),
+            namespace="debug",
+        )
+
+        from .constants import CONF_CONFIG_WRITE_SECRET  # noqa: PLC0415
+        from .tools import build_config_server  # noqa: PLC0415
+
+        mcp.mount(
+            build_config_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                secret_writes_enabled=lambda: bool(
+                    self._config.get_value(CONF_CONFIG_WRITE_SECRET)
+                ),
+                lean_schema=lean_admin_schema,
+            ),
+            namespace="config",
+        )
+
+        register_resources(mcp, self._mass, self._config)
+        register_prompts(mcp, self._config)
+
+        self._apply_tag_filter(mcp, enabled_tags(self._config))
+
+        self._mcp = mcp
+        extra_origins = str(self._config.get_value(CONF_EXTRA_ALLOWED_ORIGINS) or "")
+        self._unmount = await mount_into_mass(
+            self._mass, mcp, self._mount_path, extra_origins_csv=extra_origins
+        )
+
+        # Publish RFC 9728 protected-resource metadata at the well-known URL
+        # advertised by FastMCP in WWW-Authenticate. Skipped when require_auth
+        # is off (no metadata to serve) or base_url is missing (no canonical URI).
+        if require_auth and public_resource_uri:
+            from .http_bridge import mount_well_known  # noqa: PLC0415
+
+            self._unmount_well_known = await mount_well_known(
+                self._mass,
+                mount_path=self._mount_path,
+                resource_uri=public_resource_uri,
+                authorization_servers=[base_url],
+                # Lazy provider so hot-swapped permissions update the
+                # advertised `scopes_supported` immediately, without
+                # rebuilding the runtime.
+                scopes_supported=lambda: [str(t) for t in enabled_tags(self._config)],
+                resource_name="Music Assistant MCP",
+            )
+
+        # Mount the Connect Wizard. Failure here is non-fatal — the MCP server
+        # itself is unaffected; the user just falls back to manual onboarding.
+        try:
+            from .connect import mount_connect_wizard  # noqa: PLC0415
+
+            self._unmount_connect = await mount_connect_wizard(
+                self._mass,
+                self._mount_path,
+                enabled_tags_provider=lambda: [str(t) for t in enabled_tags(self._config)],
+                extra_origins_csv=extra_origins,
+                trust_forwarded_proto=bool(self._config.get_value(CONF_TRUST_FORWARDED_PROTO)),
+            )
+        except Exception:
+            self._logger.warning("Connect Wizard: mount failed", exc_info=True)
+
+        self._logger.debug(
+            "MCP runtime started: mount=%s, auth=%s, tags=%d",
+            self._mount_path,
+            bool(verifier),
+            len(enabled_tags(self._config)),
+        )
 
     def _apply_tag_filter(self, mcp: Any, allowed: set[Any]) -> None:
         """Install the tag-filter middleware on the given FastMCP server."""

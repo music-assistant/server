@@ -372,4 +372,4 @@ async def test_queue_get_active_queue_external_item_title(mock_mass: Any) -> Non
     async with Client(mcp) as client:
         result = await client.call_tool("queue_get_active_queue", {"player_id": "lenco"})
     assert result.data.items[0].name == "Behind Your Walls"
-    mock_mass.player_queues.items.assert_called_with("lenco", limit=25)
+    mock_mass.player_queues.items.assert_called_with("lenco", limit=25, offset=0)

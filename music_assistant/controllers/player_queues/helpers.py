@@ -6,16 +6,16 @@ import functools
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
 
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.media_items import MediaItemMetadata, Playlist, Track
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
-    from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.media_items import MediaItemType, PlayableMediaItemType
     from music_assistant_models.player_queue import PlayerQueue
-    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -101,6 +101,26 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
 def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
     """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
     return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
+
+
+def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:
+    """
+    Build a QueueItem for enqueueing, keeping its media item slim.
+
+    The returned item only carries the media details needed for the queue listing and stream
+    resolution. For tracks the full metadata is dropped; it is restored from the library when
+    the item becomes the queue's current or next item, so large queues stay light on memory
+    and persisted-cache size.
+
+    :param queue_id: The id of the queue the item is created for.
+    :param media_item: The source media item to enqueue.
+    """
+    queue_item = QueueItem.from_media_item(queue_id, media_item)
+    if isinstance(queue_item.media_item, Track):
+        # the list-row artwork is already captured on QueueItem.image, so dropping the
+        # track's metadata here does not lose anything the queue listing still needs
+        queue_item.media_item.metadata = MediaItemMetadata()
+    return queue_item
 
 
 def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -41,9 +42,9 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     ProviderMapping,
-    Radio,
     RecommendationFolder,
     SearchResults,
+    SoundEffect,
     Track,
 )
 
@@ -58,12 +59,18 @@ from music_assistant.controllers.music.constants import (
     CONF_DELETED_PROVIDERS,
     CONF_RESET_DB,
     DATABASE_CLEANUP_TASK_ID,
+    DB_SCHEMA_VERSION,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     RECOMMENDATIONS_PROVIDER_TIMEOUT,
+    SEARCH_CACHE_EXPIRATION_COMBINED,
+    SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
+    SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
+    SEARCH_PROVIDER_HARD_TIMEOUT,
+    SEARCH_PROVIDER_SOFT_TIMEOUT,
 )
 from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
-from music_assistant.controllers.music.helpers import sort_search_result
+from music_assistant.controllers.music.helpers import filter_search_results, sort_search_result
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.audiobooks import AudiobooksController
@@ -74,10 +81,7 @@ from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.controllers.music.recency import RecencyEngine
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    ImpersonatedUser,
-    get_current_user,
-)
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.database import UNSET, DatabaseConnection
@@ -102,6 +106,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
@@ -194,6 +199,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if self._database:
             await self._database.close()
 
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        return {
+            "db_schema_version": DB_SCHEMA_VERSION,
+            "sync_tasks_active": len(self.active_sync_tasks),
+        }
+
     async def on_provider_loaded(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is loaded."""
         await self.schedule_provider_sync(provider.instance_id)
@@ -218,7 +230,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ],
         )
 
-    @api_command("music/sync")
+    @api_command("music/sync", required_scope=Scope.LIBRARY_MANAGE)
     async def start_sync(
         self,
         media_types: list[MediaType] | None = None,
@@ -279,13 +291,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
         ]
 
-    @api_command("music/search")
+    @api_command("music/search", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def search(
         self,
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 25,
         library_only: bool = False,
+        providers: list[str] | None = None,
     ) -> SearchResults:
         """
         Perform global search for media items on all providers.
@@ -293,8 +306,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
+        :param library_only: Deprecated - use providers=["library"] instead.
+        :param providers: Optionally restrict the search to the given providers
+            (by instance id or domain), where the special value "library" selects
+            the library. Omit to search the library and all available providers.
         """
-        # use cache to avoid repeated searches
+        if not media_types:
+            media_types = MediaType.ALL
+        if library_only and providers is None:
+            # handle deprecated library_only flag
+            providers = ["library"]
+        # resolve the search targets: all (unique) music providers plus plugin
+        # providers with search support, optionally filtered by the providers argument
         plugin_search_providers = [
             p.instance_id
             for p in self.mass.get_providers_supporting_feature(
@@ -302,9 +325,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 priority=(ProviderType.PLUGIN,),
             )
         ]
-        search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
-        cache_provider_key = "library" if library_only else ",".join(search_providers)
-        cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"
+        all_search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
+        if providers is None:
+            include_library = True
+            search_providers = all_search_providers
+        else:
+            include_library = "library" in providers
+            requested_providers = set(providers)
+            search_providers = [
+                instance_id
+                for instance_id in all_search_providers
+                if (prov := self.mass.get_provider(instance_id))
+                and (prov.instance_id in requested_providers or prov.domain in requested_providers)
+            ]
+        # use cache to avoid repeated searches
+        cache_key = (
+            f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
+            f"{int(include_library)}-{','.join(search_providers)}"
+        )
         if cache := await self.mass.cache.get(
             key=cache_key,
             provider=self.domain,
@@ -312,50 +350,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             base_class=SearchResults,
         ):
             return cast("SearchResults", cache)
-        if not media_types:
-            media_types = MediaType.ALL
         # Check if the search query is a streaming provider public shareable URL
-        try:
-            media_type, provider_instance_id_or_domain, item_id = await parse_uri(
-                search_query, validate_id=True
-            )
-        except InvalidProviderURI:
-            pass
-        except InvalidProviderID as err:
-            self.logger.warning("%s", str(err))
-            return SearchResults()
-        else:
-            # handle special case of direct shareable url search
-            if provider_instance_id_or_domain in PROVIDERS_WITH_SHAREABLE_URLS:
-                try:
-                    item = await self.get_item(
-                        media_type=media_type,
-                        item_id=item_id,
-                        provider_instance_id_or_domain=provider_instance_id_or_domain,
-                    )
-                except MusicAssistantError as err:
-                    self.logger.warning("%s", str(err))
-                    return SearchResults()
-                else:
-                    if media_type == MediaType.ARTIST:
-                        return SearchResults(artists=[cast("Artist", item)])
-                    if media_type == MediaType.ALBUM:
-                        return SearchResults(albums=[cast("Album", item)])
-                    if media_type == MediaType.TRACK:
-                        return SearchResults(tracks=[cast("Track", item)])
-                    if media_type == MediaType.PLAYLIST:
-                        return SearchResults(playlists=[cast("Playlist", item)])
-                    if media_type == MediaType.AUDIOBOOK:
-                        return SearchResults(audiobooks=[cast("Audiobook", item)])
-                    if media_type == MediaType.PODCAST:
-                        return SearchResults(podcasts=[cast("Podcast", item)])
-                    return SearchResults()
-        # handle normal global search by querying all providers
-        results_per_provider: list[SearchResults] = []
-        # always first search the library
+        if (url_result := await self._search_shareable_url(search_query)) is not None:
+            return url_result
+        # handle normal global search by querying the library and all providers
+        # the library is always searched first: it is fast and its results are used
+        # to deduplicate provider results and to skip provider searches for media
+        # types that already have a (near) exact match in the library
         library_results = await self.search_library(search_query, media_types, limit=limit)
-        results_per_provider.append(library_results)
-        if not library_only:
+        results_per_provider: list[SearchResults] = []
+        if include_library:
+            results_per_provider.append(library_results)
+        all_results_complete = True
+        if search_providers:
             # create a set of all provider item ids already in library
             # this way we can avoid returning duplicates in the search results
             all_prov_item_ids = {
@@ -371,19 +378,49 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for item in items
                 for prov_mapping in cast("MediaItemType", item).provider_mappings
             }
-            # include results from library + all (unique) music providers
-            results_per_provider += await asyncio.gather(
-                *[
+            # only apply the exact match shortcut on a regular global search;
+            # an explicit providers selection must always search those providers
+            covered_media_types = (
+                self._get_covered_media_types(library_results, search_query)
+                if providers is None
+                else set()
+            )
+            provider_searches: list[Coroutine[Any, Any, SearchResults | None]] = []
+            for provider_instance in search_providers:
+                if not (prov := self.mass.get_provider(provider_instance)):
+                    continue
+                # skip media types for which the library already holds a (near)
+                # exact match that is mapped to this provider: searching the
+                # provider again for that media type will not add anything new
+                prov_media_types = [
+                    mt
+                    for mt in media_types
+                    if (mt, prov.domain) not in covered_media_types
+                    and (mt, prov.instance_id) not in covered_media_types
+                ]
+                if not prov_media_types:
+                    continue
+                provider_searches.append(
                     self._search_provider(
                         search_query,
                         provider_instance,
-                        media_types,
+                        prov_media_types,
                         limit=limit,
                         skip_item_ids=all_prov_item_ids,
                     )
-                    for provider_instance in search_providers
-                ],
-            )
+                )
+            # include results from all (unique) music providers
+            # one failing provider must not break the entire search,
+            # so exceptions are logged and excluded from the results
+            gather_results = await asyncio.gather(*provider_searches, return_exceptions=True)
+            for res in gather_results:
+                if isinstance(res, SearchResults):
+                    results_per_provider.append(res)
+                    continue
+                # a provider that failed or timed out contributes no results
+                all_results_complete = False
+                if isinstance(res, BaseException):
+                    self.logger.error("Search on provider failed", exc_info=res)
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
         result = SearchResults(
@@ -396,6 +433,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             albums=[
                 item
                 for sublist in zip_longest(*[x.albums for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
+            genres=[
+                item
+                for sublist in zip_longest(*[x.genres for x in results_per_provider])
                 for item in sublist
                 if item is not None
             ][:limit],
@@ -429,25 +472,35 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for item in sublist
                 if item is not None
             ][:limit],
+            sound_effects=[
+                item
+                for sublist in zip_longest(*[x.sound_effects for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
         )
 
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
         # matches and library items first
-        result.artists = sort_search_result(search_query, result.artists)
-        result.albums = sort_search_result(search_query, result.albums)
-        result.tracks = sort_search_result(search_query, result.tracks)
-        result.playlists = sort_search_result(search_query, result.playlists)
-        result.radio = sort_search_result(search_query, result.radio)
-        result.audiobooks = sort_search_result(search_query, result.audiobooks)
-        result.podcasts = sort_search_result(search_query, result.podcasts)
-        await self.mass.cache.set(
-            key=cache_key,
-            data=result.to_dict(),
-            expiration=600,
-            provider=self.domain,
-            category=CACHE_CATEGORY_SEARCH_RESULTS,
-        )
+        for field in (
+            "artists",
+            "albums",
+            "genres",
+            "tracks",
+            "playlists",
+            "radio",
+            "audiobooks",
+            "podcasts",
+            "sound_effects",
+        ):
+            setattr(result, field, sort_search_result(search_query, getattr(result, field)))
+        # only cache the combined result if all providers contributed,
+        # so a failed or timed out provider is retried on a next search
+        if all_results_complete:
+            await self._cache_search_results(
+                cache_key, result, SEARCH_CACHE_EXPIRATION_COMBINED, self.domain
+            )
         return result
 
     async def search_library(
@@ -463,28 +516,31 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
+        result_fields: dict[MediaType, str] = {
+            MediaType.ARTIST: "artists",
+            MediaType.ALBUM: "albums",
+            MediaType.GENRE: "genres",
+            MediaType.TRACK: "tracks",
+            MediaType.PLAYLIST: "playlists",
+            MediaType.RADIO: "radio",
+            MediaType.AUDIOBOOK: "audiobooks",
+            MediaType.PODCAST: "podcasts",
+        }
         result = SearchResults()
-        for media_type in media_types:
-            ctrl = self.get_controller(media_type)
-            search_results = await ctrl.search(search_query, "library", limit=limit)
-            if search_results:
-                if media_type == MediaType.ARTIST:
-                    result.artists = cast("list[Artist]", search_results)
-                elif media_type == MediaType.ALBUM:
-                    result.albums = cast("list[Album]", search_results)
-                elif media_type == MediaType.TRACK:
-                    result.tracks = cast("list[Track]", search_results)
-                elif media_type == MediaType.PLAYLIST:
-                    result.playlists = cast("list[Playlist]", search_results)
-                elif media_type == MediaType.RADIO:
-                    result.radio = cast("list[Radio]", search_results)
-                elif media_type == MediaType.AUDIOBOOK:
-                    result.audiobooks = cast("list[Audiobook]", search_results)
-                elif media_type == MediaType.PODCAST:
-                    result.podcasts = cast("list[Podcast]", search_results)
+        # search all media types in parallel, each is an independent db query
+        searchable_media_types = [x for x in media_types if x in result_fields]
+        search_results = await asyncio.gather(
+            *[
+                self.get_controller(media_type).search(search_query, "library", limit=limit)
+                for media_type in searchable_media_types
+            ]
+        )
+        for media_type, items in zip(searchable_media_types, search_results, strict=True):
+            if items:
+                setattr(result, result_fields[media_type], items)
         return result
 
-    @api_command("music/browse")
+    @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
     async def browse(
         self, path: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -567,7 +623,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         prov_items = await cast("MusicProvider", browse_prov).browse(path=path)
         return [*prepend_items, *prov_items]
 
-    @api_command("music/recently_played_items")
+    @api_command("music/recently_played_items", required_scope=Scope.LIBRARY_READ)
     async def recently_played(
         self,
         limit: int = 10,
@@ -647,12 +703,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         return result
 
-    @api_command("music/recently_added_tracks")
+    @api_command("music/recently_added_tracks", required_scope=Scope.LIBRARY_READ)
     async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
-        return await self.tracks.library_items(limit=limit, order_by="timestamp_added_desc")
+        return await self.tracks.library_items(
+            limit=limit, order_by="timestamp_added_desc", summary=False
+        )
 
-    @api_command("music/in_progress_items")
+    @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
     async def in_progress_items(
         self, limit: int = 10, all_users: bool = False
     ) -> list[ItemMapping]:
@@ -767,7 +825,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         return result
 
-    @api_command("music/item_by_uri")
+    @api_command("music/item_by_uri", required_scope=Scope.LIBRARY_READ)
     async def get_item_by_uri(
         self, uri: str, allow_update_metadata: bool = False
     ) -> MediaItemType | BrowseFolder:
@@ -780,7 +838,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/recommendations")
+    @api_command("music/recommendations", required_scope=Scope.LIBRARY_READ)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations."""
         providers_with_recommendations = self.mass.get_providers_supporting_feature(
@@ -800,7 +858,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # so the result is sorted as each provider delivered
         return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
 
-    @api_command("music/item")
+    @api_command("music/sound_effects", required_scope=Scope.LIBRARY_READ)
+    async def sound_effects(self) -> list[SoundEffect]:
+        """Return all sound effect items from providers supporting them."""
+        providers = self._apply_user_provider_filter(
+            self.mass.get_providers_supporting_feature(ProviderFeature.SOUND_EFFECTS)
+        )
+        results_per_provider: list[list[SoundEffect]] = await asyncio.gather(
+            *[
+                self._get_provider_sound_effects(cast("MusicProvider", provider))
+                for provider in providers
+            ]
+        )
+        return [item for sublist in results_per_provider for item in sublist]
+
+    @api_command("music/item", required_scope=Scope.LIBRARY_READ)
     async def get_item(
         self,
         media_type: MediaType,
@@ -838,6 +910,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise MediaNotFoundError(
                 f"AudioSource {provider_instance_id_or_domain}/{item_id} not found"
             )
+        if media_type == MediaType.SOUND_EFFECT:
+            # Sound effects are not library-backed; resolve them live from the
+            # owning music provider. Returning the live MediaItem lets play_media
+            # create a queue item the standard way.
+            prov = self.mass.get_provider(provider_instance_id_or_domain)
+            if isinstance(prov, MusicProvider) and (
+                ProviderFeature.SOUND_EFFECTS in prov.supported_features
+            ):
+                return await prov.get_sound_effect(item_id)
+            raise MediaNotFoundError(
+                f"SoundEffect {provider_instance_id_or_domain}/{item_id} not found"
+            )
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
@@ -845,7 +929,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             allow_update_metadata=allow_update_metadata,
         )
 
-    @api_command("music/get_library_item")
+    @api_command("music/get_library_item", required_scope=Scope.LIBRARY_READ)
     async def get_library_item_by_prov_id(
         self,
         media_type: MediaType,
@@ -859,7 +943,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
 
-    @api_command("music/favorites/add_item")
+    @api_command("music/favorites/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_favorites(
         self,
         item: str | MediaItemType | ItemMapping,
@@ -873,15 +957,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 uri_media_type, _, _ = await parse_uri(item)
             except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
-            if uri_media_type == MediaType.AUDIO_SOURCE:
-                raise UnsupportedFeaturedException("AudioSource items can not be favorites")
+            if uri_media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+                raise UnsupportedFeaturedException(
+                    f"{uri_media_type.value} items can not be favorites"
+                )
             # a favorite URI always resolves to a media item, never a BrowseFolder
             item = cast("MediaItemType", await self.get_item_by_uri(item))
-        if item.media_type == MediaType.AUDIO_SOURCE:
-            # AudioSources are dynamic plugin surfaces (existence depends on a
-            # running plugin and its current device state) and have no stable
-            # library identity, so they can not be persisted as favorites.
-            raise UnsupportedFeaturedException("AudioSource items can not be favorites")
+        if item.media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+            # AudioSources and SoundEffects are live provider content (existence
+            # depends on a loaded provider) and have no stable library identity,
+            # so they can not be persisted as favorites.
+            raise UnsupportedFeaturedException(
+                f"{item.media_type.value} items can not be favorites"
+            )
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = cast(
@@ -911,7 +999,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
 
-    @api_command("music/favorites/remove_item")
+    @api_command("music/favorites/remove_item", required_scope=Scope.LIBRARY_WRITE)
     async def remove_item_from_favorites(
         self,
         media_type: MediaType,
@@ -935,7 +1023,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
 
-    @api_command("music/library/remove_item")
+    @api_command("music/library/remove_item", required_scope=Scope.LIBRARY_WRITE)
     async def remove_item_from_library(
         self, media_type: MediaType, library_item_id: str | int, recursive: bool = True
     ) -> None:
@@ -962,7 +1050,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # remove from library
         await ctrl.remove_item_from_library(library_item_id, recursive)
 
-    @api_command("music/library/add_item")
+    @api_command("music/library/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_library(
         self, item: str | MediaItemType | ItemMapping, overwrite_existing: bool = False
     ) -> MediaItemType:
@@ -981,8 +1069,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 uri_media_type, _, _ = await parse_uri(item)
             except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
-            if uri_media_type == MediaType.AUDIO_SOURCE:
-                raise UnsupportedFeaturedException("AudioSource items can not be library items")
+            if uri_media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+                raise UnsupportedFeaturedException(
+                    f"{uri_media_type.value} items can not be library items"
+                )
             full_item = await self.get_item_by_uri(item)
         # For builtin provider (manual URLs), use the provided item directly
         # to preserve custom modifications (name, images, etc.)
@@ -996,11 +1086,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 item.provider,
             )
         full_item = cast("MediaItemType", full_item)
-        if full_item.media_type == MediaType.AUDIO_SOURCE:
-            # AudioSources are dynamic plugin surfaces (existence depends on a
-            # running plugin and its current device state) and have no stable
-            # library identity, so they can not be persisted as library items.
-            raise UnsupportedFeaturedException("AudioSource items can not be library items")
+        if full_item.media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+            # AudioSources and SoundEffects are live provider content (existence
+            # depends on a loaded provider) and have no stable library identity,
+            # so they can not be persisted as library items.
+            raise UnsupportedFeaturedException(
+                f"{full_item.media_type.value} items can not be library items"
+            )
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
             # we optimistically set in library to True to prevent items
@@ -1042,7 +1134,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for media_item in items:
                 tg.create_task(self.refresh_item(media_item))
 
-    @api_command("music/refresh_item")
+    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_MANAGE)
     async def refresh_item(  # noqa: PLR0915
         self,
         media_item: str | MediaItemType,
@@ -1151,7 +1243,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         return library_item
 
-    @api_command("music/mark_played")
+    @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_played(
         self,
         media_item: MediaItemType,
@@ -1193,6 +1285,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "media_type": media_item.media_type.value,
             "name": media_item.name,
             "image": serialize_to_json(media_item.image.to_dict()) if media_item.image else None,
+            # store lightweight artist mappings so playlog rows can later be matched or
+            # resolved by artist without an extra provider lookup
+            "artists": serialize_to_json(
+                [ItemMapping.from_item(artist).to_dict() for artist in artists]
+            )
+            if (artists := getattr(media_item, "artists", None))
+            else None,
             "fully_played": fully_played,
             "seconds_played": seconds_played,
             "timestamp": timestamp,
@@ -1323,7 +1422,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 ids.add(db_artist.item_id)
         return ids
 
-    @api_command("music/mark_unplayed")
+    @api_command("music/mark_unplayed", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_unplayed(
         self,
         media_item: MediaItemType,
@@ -1393,7 +1492,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
             await self.database.commit()
 
-    @api_command("music/track_by_name")
+    @api_command("music/track_by_name", required_scope=Scope.LIBRARY_READ)
     async def get_track_by_name(
         self,
         track_name: str,
@@ -1621,7 +1720,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return self.podcasts
         if media_type == MediaType.GENRE:
             return self.genres
-        raise NotImplementedError
+        raise NotImplementedError(
+            f"No media controller available for media type: {media_type.value}"
+        )
 
     def get_provider_instances(
         self, domain: str, return_unavailable: bool = False
@@ -1844,7 +1945,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 mappings_added = True
         return mappings_added
 
-    @api_command("music/add_provider_mapping")
+    @api_command("music/add_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)
     async def add_provider_mapping(
         self, media_type: MediaType, db_id: str, mapping: ProviderMapping
     ) -> None:
@@ -1852,7 +1953,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.add_provider_mappings(db_id, [mapping])
 
-    @api_command("music/remove_provider_mapping")
+    @api_command("music/remove_provider_mapping", required_scope=Scope.LIBRARY_MANAGE)
     async def remove_provider_mapping(
         self, media_type: MediaType, db_id: str, mapping: ProviderMapping
     ) -> None:
@@ -1860,7 +1961,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         await ctrl.remove_provider_mapping(db_id, mapping.provider_instance, mapping.item_id)
 
-    @api_command("music/match_providers")
+    @api_command("music/match_providers", required_scope=Scope.LIBRARY_MANAGE)
     async def match_providers(self, media_type: MediaType, db_id: str) -> None:
         """Search for mappings on all providers for the given library item."""
         ctrl = self.get_controller(media_type)
@@ -1999,30 +2100,27 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         return bool(conf_value)
 
-    @api_command("music/item_by_name")
+    @api_command("music/item_by_name", required_scope=Scope.LIBRARY_READ, allow_impersonation=True)
     async def get_item_by_name(
         self,
         name: str,
         artist: str | None = None,
         album: str | None = None,
         media_type: MediaType | None = None,
-        username: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name."""
-        async with ImpersonatedUser(self.mass, username):
-            return await self._get_item_by_name(name, artist, album, media_type)
+        return await self._get_item_by_name(name, artist, album, media_type)
 
-    @api_command("music/verify_item_uri")
-    async def verify_item_uri(self, uri: str, username: str | None = None) -> bool:
+    @api_command(
+        "music/verify_item_uri", required_scope=Scope.LIBRARY_READ, allow_impersonation=True
+    )
+    async def verify_item_uri(self, uri: str) -> bool:
         """
         Verify whether a uri points to a valid, accessible item.
 
         :param uri: The uri to verify.
-        :param username: Optional user to additionally verify access for. Requires
-            the authenticated caller to also have access to the item.
         """
-        async with ImpersonatedUser(self.mass, username):
-            return await self._handle_verify_item_uri(uri)
+        return await self._handle_verify_item_uri(uri)
 
     def _apply_user_provider_filter(
         self,
@@ -2039,6 +2137,46 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if p.type != ProviderType.MUSIC or p.instance_id in user_provider_filter
         ]
 
+    async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
+        """
+        Handle a search query that is a streaming provider public shareable URL.
+
+        Returns None if the query is not such a URL and a regular search must be done.
+        """
+        try:
+            media_type, provider_instance_id_or_domain, item_id = await parse_uri(
+                search_query, validate_id=True
+            )
+        except InvalidProviderURI:
+            return None
+        except InvalidProviderID as err:
+            self.logger.warning("%s", str(err))
+            return SearchResults()
+        if provider_instance_id_or_domain not in PROVIDERS_WITH_SHAREABLE_URLS:
+            return None
+        try:
+            item = await self.get_item(
+                media_type=media_type,
+                item_id=item_id,
+                provider_instance_id_or_domain=provider_instance_id_or_domain,
+            )
+        except MusicAssistantError as err:
+            self.logger.warning("%s", str(err))
+            return SearchResults()
+        if media_type == MediaType.ARTIST:
+            return SearchResults(artists=[cast("Artist", item)])
+        if media_type == MediaType.ALBUM:
+            return SearchResults(albums=[cast("Album", item)])
+        if media_type == MediaType.TRACK:
+            return SearchResults(tracks=[cast("Track", item)])
+        if media_type == MediaType.PLAYLIST:
+            return SearchResults(playlists=[cast("Playlist", item)])
+        if media_type == MediaType.AUDIOBOOK:
+            return SearchResults(audiobooks=[cast("Audiobook", item)])
+        if media_type == MediaType.PODCAST:
+            return SearchResults(podcasts=[cast("Podcast", item)])
+        return SearchResults()
+
     async def _search_provider(
         self,
         search_query: str,
@@ -2046,15 +2184,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_types: list[MediaType],
         limit: int = 10,
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
-    ) -> SearchResults:
+    ) -> SearchResults | None:
         """
-        Perform search on given provider.
+        Perform search on given provider, returns None if the search failed or timed out.
 
         :param search_query: Search query
         :param provider_instance_id_or_domain: instance_id or domain of the provider
                                                to perform the search on.
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
+        :param skip_item_ids: Optional set of (media_type, provider_domain, item_id)
+                              tuples to filter out of the results.
         """
         prov = self.mass.get_provider(provider_instance_id_or_domain, provider_type=MusicProvider)
         if not prov:
@@ -2064,48 +2204,142 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
-        try:
-            prov_search_results = await prov.search(
-                search_query,
-                media_types,
-                limit,
+        # use the per-provider cache so repeated and overlapping searches
+        # do not hit the provider again
+        cache_key = f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}"
+        if (
+            cache := await self.mass.cache.get(
+                key=cache_key,
+                provider=prov.instance_id,
+                category=CACHE_CATEGORY_SEARCH_RESULTS,
+                base_class=SearchResults,
             )
+        ) is not None:
+            return filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
+        # run the provider search as a separate task (deduplicated by task_id so
+        # identical concurrent searches share a single provider call) and wait for
+        # it a limited amount of time only: a slow provider then contributes no
+        # results now, while its search continues in the background so the result
+        # is cached and available for a next search request
+        task = self.mass.create_task(
+            self._execute_provider_search(prov, search_query, media_types, limit, cache_key),
+            task_id=f"provider_search_{prov.instance_id}_{cache_key}",
+        )
+        try:
+            async with asyncio.timeout(SEARCH_PROVIDER_SOFT_TIMEOUT):
+                prov_search_results = await asyncio.shield(task)
+        except TimeoutError:
+            self.logger.warning(
+                "Search on provider %s did not return in time, "
+                "the search continues in the background",
+                prov.name,
+            )
+            return None
+        if prov_search_results is None:
+            return None
+        return filter_search_results(prov_search_results, prov.domain, skip_item_ids)
+
+    async def _execute_provider_search(
+        self,
+        prov: MusicProvider,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int,
+        cache_key: str,
+    ) -> SearchResults | None:
+        """
+        Execute the actual search on a provider and cache the result.
+
+        Returns None if the provider search failed or timed out. All errors are
+        handled here (and not raised) as this coroutine runs as a background task
+        that may outlive the request that started it.
+        """
+        try:
+            async with asyncio.timeout(SEARCH_PROVIDER_HARD_TIMEOUT):
+                result = await prov.search(search_query, media_types, limit)
+        except TimeoutError:
+            self.logger.warning("Search on provider %s timed out", prov.name)
+            return None
         except MusicAssistantError as err:
-            self.logger.warning("Search on provider %s failed: %s", prov.name, err)
-            raise MusicAssistantError(f"Search failed due to an error on {prov.name}") from err
-        if skip_item_ids:
-            # filter out items already in skip_item_ids
-            prov_search_results.artists = [
-                item
-                for item in prov_search_results.artists
-                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
-            ]
-            prov_search_results.albums = [
-                item
-                for item in prov_search_results.albums
-                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
-            ]
-            prov_search_results.tracks = [
-                item
-                for item in prov_search_results.tracks
-                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
-            ]
-            prov_search_results.playlists = [
-                item
-                for item in prov_search_results.playlists
-                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
-            ]
-            prov_search_results.audiobooks = [
-                item
-                for item in prov_search_results.audiobooks
-                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
-            ]
-            prov_search_results.podcasts = [
-                item
-                for item in prov_search_results.podcasts
-                if (item.media_type, prov.domain, item.item_id) not in skip_item_ids
-            ]
-        return prov_search_results
+            self.logger.warning("Search on provider %s failed: %s", prov.name, str(err))
+            return None
+        except Exception as err:
+            self.logger.error("Search on provider %s failed: %s", prov.name, str(err), exc_info=err)
+            return None
+        # only successful results are cached, so failed or timed out
+        # provider searches are simply retried on a next search
+        await self._cache_search_results(
+            cache_key,
+            result,
+            # plugin providers do not declare is_streaming_provider,
+            # treat them as local so their results only get the short expiration
+            SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER
+            if getattr(prov, "is_streaming_provider", False)
+            else SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
+            prov.instance_id,
+        )
+        return result
+
+    async def _cache_search_results(
+        self, cache_key: str, result: SearchResults, expiration: int, provider: str
+    ) -> None:
+        """Store search results in the cache, logging (instead of raising) any cache errors."""
+        try:
+            await self.mass.cache.set(
+                key=cache_key,
+                data=result.to_dict(),
+                expiration=expiration,
+                provider=provider,
+                category=CACHE_CATEGORY_SEARCH_RESULTS,
+            )
+        except Exception as err:
+            self.logger.warning("Failed to cache search results for %s: %s", provider, str(err))
+
+    def _get_covered_media_types(
+        self, library_results: SearchResults, search_query: str
+    ) -> set[tuple[MediaType, str]]:
+        """
+        Return the (media_type, provider domain/instance) pairs covered by the library.
+
+        A pair is considered covered when the library holds a (near) exact name match
+        for the search query that is mapped to that provider.
+        """
+        covered: set[tuple[MediaType, str]] = set()
+        # extract the artist and title part in case the
+        # query is formatted as "artist - title"
+        if " - " in search_query:
+            artist_part, title_part = search_query.split(" - ", 1)
+        else:
+            artist_part, title_part = None, search_query
+        items: Sequence[MediaItemType | ItemMapping]
+        for items in (
+            library_results.artists,
+            library_results.albums,
+            library_results.tracks,
+            library_results.playlists,
+            library_results.radio,
+            library_results.audiobooks,
+            library_results.podcasts,
+        ):
+            for item in items:
+                if compare_strings(item.name, search_query, strict=False):
+                    pass
+                elif artist_part and compare_strings(item.name, title_part, strict=False):
+                    # the item name matches the title part only,
+                    # so the artist part must match one of the item artists
+                    if not any(
+                        compare_strings(artist.name, artist_part, strict=False)
+                        for artist in getattr(item, "artists", [])
+                    ):
+                        continue
+                else:
+                    continue
+                for prov_mapping in cast("MediaItemType", item).provider_mappings:
+                    if not prov_mapping.available:
+                        continue
+                    covered.add((item.media_type, prov_mapping.provider_domain))
+                    covered.add((item.media_type, prov_mapping.provider_instance))
+        return covered
 
     def _import_album_tracks_if_enabled(self, album: Album) -> None:
         """Import all album tracks into the library for providers that have this enabled."""
@@ -2155,7 +2389,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="music-note-plus",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
+                    await self.tracks.library_items(
+                        limit=10, order_by="timestamp_added_desc", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2166,7 +2402,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="music-note-plus",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
+                    await self.albums.library_items(
+                        limit=10, order_by="timestamp_added_desc", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2177,7 +2415,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-account-music",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.artists.library_items(limit=10, order_by="random_play_count"),
+                    await self.artists.library_items(
+                        limit=10, order_by="random_play_count", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2188,7 +2428,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-album",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(limit=10, order_by="random_play_count"),
+                    await self.albums.library_items(
+                        limit=10, order_by="random_play_count", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2200,7 +2442,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
                     await self.tracks.library_items(
-                        favorite=True, limit=10, order_by="timestamp_modified_desc"
+                        favorite=True, limit=10, order_by="timestamp_modified_desc", summary=False
                     ),
                 ),
             ),
@@ -2212,7 +2454,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 icon="mdi-playlist-music",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.playlists.library_items(favorite=True, limit=10, order_by="random"),
+                    await self.playlists.library_items(
+                        favorite=True, limit=10, order_by="random", summary=False
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2224,7 +2468,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
                     await self.radio.library_items(
-                        favorite=True, limit=10, order_by="play_count_desc"
+                        favorite=True, limit=10, order_by="play_count_desc", summary=False
                     ),
                 ),
             ),
@@ -2246,6 +2490,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         except Exception as err:
             self.logger.warning(
                 "Error while fetching recommendations from %s: %s",
+                provider.name,
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
+            return []
+
+    async def _get_provider_sound_effects(self, provider: MusicProvider) -> list[SoundEffect]:
+        """Return all sound effect items from a single provider."""
+        try:
+            return [item async for item in provider.get_sound_effects()]
+        except Exception as err:
+            self.logger.warning(
+                "Error while fetching sound effects from %s: %s",
                 provider.name,
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,

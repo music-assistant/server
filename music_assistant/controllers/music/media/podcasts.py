@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
-from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping, UniqueList
+from music_assistant_models.media_items import (
+    Podcast,
+    PodcastEpisode,
+    PodcastSummary,
+    ProviderMapping,
+    UniqueList,
+)
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -24,6 +31,8 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant_models.auth import User
 
     from music_assistant import MusicAssistant
@@ -35,15 +44,35 @@ class PodcastsController(MediaControllerBase[Podcast]):
     db_table = DB_TABLE_PODCASTS
     media_type = MediaType.PODCAST
     item_cls = Podcast
+    summary_item_cls = PodcastSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/podcast_episodes", self.episodes)
-        self.mass.register_api_command(f"music/{api_base}/podcast_episode", self.episode)
-        self.mass.register_api_command(f"music/{api_base}/podcast_versions", self.versions)
+        self.mass.register_api_command(
+            f"music/{api_base}/podcast_episodes", self.episodes, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/podcast_episode", self.episode, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/podcast_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
+
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for podcast summary listings."""
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            podcasts.version,
+            podcasts.publisher,
+            podcasts.total_episodes,
+            {self._provider_mappings_query()} AS provider_mappings
+            FROM podcasts"""
+        return query, {}
 
     async def library_items(
         self,
@@ -55,6 +84,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        *,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Podcast]:
         """
@@ -67,6 +98,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         result = await self.get_library_items_by_query(
             favorite=favorite,
@@ -78,6 +111,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             provider_filter=self._ensure_provider_filter(provider),
             played_only=played_only,
             in_library_only=True,
+            summary=summary,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -97,6 +131,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,
+                summary=summary,
             )
         return result
 
@@ -228,7 +263,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "version": item.version,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
                 "publisher": item.publisher,
                 "total_episodes": item.total_episodes or 0,
                 "search_name": create_safe_string(item.name, True, True),
@@ -236,6 +270,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         # update/set provider_mappings table
         await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -263,9 +299,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "sort_name": sort_name,
                 "version": update.version if overwrite else cur_item.version or update.version,
                 "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "publisher": cur_item.publisher or update.publisher,
                 "total_episodes": cur_item.total_episodes or update.total_episodes or 0,
                 "search_name": create_safe_string(name, True, True),
@@ -274,6 +307,10 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 if update.date_added
                 else UNSET,
             },
+        )
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
         provider_mappings = (
@@ -334,3 +371,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         async for item in prov.get_podcast_episodes(item_id):
             await set_resume_position(item)
             yield item
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PodcastSummary:
+        """Parse a raw summary db row into a PodcastSummary object."""
+        item = cast("PodcastSummary", super()._parse_summary_row(db_row))
+        item.version = db_row["version"] or ""
+        item.publisher = db_row["publisher"]
+        item.total_episodes = db_row["total_episodes"]
+        return item

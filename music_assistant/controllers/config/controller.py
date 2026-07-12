@@ -17,6 +17,8 @@ from music_assistant_models import config_entries
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_ENCRYPTION_KEY,
+    CONF_ENCRYPTION_KEY_MIGRATED,
     CONF_ONBOARD_DONE,
     CONF_SERVER_ID,
     ENCRYPT_SUFFIX,
@@ -65,12 +67,9 @@ class ConfigController(
         """Async initialize of controller."""
         await self._load()
         self.initialized = True
-        # create default server ID if needed (also used for encrypting passwords)
+        # create default server ID if needed
         self.set_default(CONF_SERVER_ID, uuid4().hex)
-        server_id: str = self.get(CONF_SERVER_ID)
-        assert server_id
-        fernet_key = base64.urlsafe_b64encode(server_id.encode()[:32])
-        self._fernet = Fernet(fernet_key)
+        self._init_encryption()
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
         if not self.onboard_done:
@@ -130,7 +129,7 @@ class ConfigController(
             parent = parent[subkey]
         return default
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, immediate: bool = False) -> None:
         """Set value(s) for a specific key/path in persistent storage."""
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
@@ -143,7 +142,7 @@ class ConfigController(
             else:
                 parent.setdefault(subkey, {})
                 parent = parent[subkey]
-        self.save()
+        self.save(immediate=immediate)
 
     def set_default(self, key: str, default_value: Any) -> None:
         """Set default value(s) for a specific key/path in persistent storage."""
@@ -204,6 +203,54 @@ class ConfigController(
         except InvalidToken as err:
             msg = "Password decryption failed"
             raise InvalidDataError(msg) from err
+
+    def _init_encryption(self) -> None:
+        """Set up encryption for SECURE_STRING config values."""
+        self._fernet = self._load_or_create_encryption_key()
+        if not self.get(CONF_ENCRYPTION_KEY_MIGRATED):
+            self._migrate_legacy_secrets()
+            self.set(CONF_ENCRYPTION_KEY_MIGRATED, True)
+
+    def _load_or_create_encryption_key(self) -> Fernet:
+        """Return the stored encryption key, generating a new one if it is absent or invalid."""
+        encryption_key: Any = self.get(CONF_ENCRYPTION_KEY, "")
+        if isinstance(encryption_key, str) and encryption_key:
+            try:
+                return Fernet(encryption_key.encode())
+            except ValueError:
+                LOGGER.warning("Stored encryption key is invalid; generating a new one")
+                self.set(CONF_ENCRYPTION_KEY_MIGRATED, False)
+        encryption_key = Fernet.generate_key().decode()
+        self.set(CONF_ENCRYPTION_KEY, encryption_key)
+        return Fernet(encryption_key.encode())
+
+    def _migrate_legacy_secrets(self) -> None:
+        """One-time re-encryption of secrets that were encrypted with the server_id-derived key."""
+        server_id: str = self.get(CONF_SERVER_ID)
+        assert server_id
+        legacy_fernet = Fernet(base64.urlsafe_b64encode(server_id.encode()[:32]))
+        migrated = self._rotate_encrypted_values(self._data, legacy_fernet)
+        if migrated:
+            LOGGER.info("Re-encrypted %s secret(s) with the dedicated encryption key", migrated)
+            self.save(immediate=True)
+
+    def _rotate_encrypted_values(self, node: Any, legacy_fernet: Fernet) -> int:
+        """Recursively re-encrypt legacy-encrypted values, returning the count."""
+        assert self._fernet is not None
+        count = 0
+        values = node.items() if isinstance(node, dict) else enumerate(node)
+        for key, value in values:
+            if isinstance(value, (dict, list)):
+                count += self._rotate_encrypted_values(value, legacy_fernet)
+            elif isinstance(value, str) and value.startswith(ENCRYPT_SUFFIX):
+                token = value[len(ENCRYPT_SUFFIX) :].encode()
+                try:
+                    decrypted = legacy_fernet.decrypt(token)
+                except InvalidToken:
+                    continue
+                node[key] = ENCRYPT_SUFFIX + self._fernet.encrypt(decrypted).decode()
+                count += 1
+        return count
 
     async def _load(self) -> None:
         """Load data from persistent storage."""

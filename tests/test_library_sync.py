@@ -75,6 +75,7 @@ def create_mock_album(
     album.media_type = MediaType.ALBUM
     album.favorite = favorite
     album.provider_mappings = UniqueList(provider_mappings or [])
+    album.metadata = Mock(images=None)
     return album
 
 
@@ -682,20 +683,18 @@ def _create_controller_for_filter_tests() -> Mock:
 
 async def test_apply_filters_in_library_only_without_provider_filter() -> None:
     """
-    Test that in_library_only adds a JOIN on provider_mappings with in_library=1.
+    Test that in_library_only adds an EXISTS filter on provider_mappings with in_library=1.
 
-    When no provider_filter is set but in_library_only=True, a JOIN on
+    When no provider_filter is set but in_library_only=True, an EXISTS subquery on
     provider_mappings should be added with the in_library=1 condition.
     """
     ctrl = _create_controller_for_filter_tests()
     query_parts: list[str] = []
     query_params: dict[str, object] = {}
-    join_parts: list[str] = []
 
     ctrl._apply_filters(
         query_parts=query_parts,
         query_params=query_params,
-        join_parts=join_parts,
         favorite=None,
         search=None,
         genre_ids=None,
@@ -703,27 +702,26 @@ async def test_apply_filters_in_library_only_without_provider_filter() -> None:
         in_library_only=True,
     )
 
-    assert len(join_parts) == 1
-    assert "provider_mappings.in_library = 1" in join_parts[0]
+    assert len(query_parts) == 1
+    assert query_parts[0].startswith("EXISTS(")
+    assert "provider_mappings.in_library = 1" in query_parts[0]
     assert "provider_media_type" in query_params
 
 
 async def test_apply_filters_in_library_only_with_provider_filter() -> None:
     """
-    Test that in_library_only with provider_filter adds both conditions to the JOIN.
+    Test that in_library_only with provider_filter adds both conditions to the EXISTS.
 
-    When both in_library_only=True and a provider_filter are set, the JOIN should
-    include both the provider condition and the in_library=1 condition.
+    When both in_library_only=True and a provider_filter are set, the EXISTS subquery
+    should include both the provider condition and the in_library=1 condition.
     """
     ctrl = _create_controller_for_filter_tests()
     query_parts: list[str] = []
     query_params: dict[str, object] = {}
-    join_parts: list[str] = []
 
     ctrl._apply_filters(
         query_parts=query_parts,
         query_params=query_params,
-        join_parts=join_parts,
         favorite=None,
         search=None,
         genre_ids=None,
@@ -731,28 +729,27 @@ async def test_apply_filters_in_library_only_with_provider_filter() -> None:
         in_library_only=True,
     )
 
-    assert len(join_parts) == 1
-    assert "provider_mappings.in_library = 1" in join_parts[0]
+    assert len(query_parts) == 1
+    assert query_parts[0].startswith("EXISTS(")
+    assert "provider_mappings.in_library = 1" in query_parts[0]
     assert "provider_filter_0" in query_params
     assert query_params["provider_filter_0"] == "spotify_1"
 
 
 async def test_apply_filters_no_in_library_filter_by_default() -> None:
     """
-    Test that no provider_mappings JOIN is added when in_library_only is False.
+    Test that no provider_mappings filter is added when in_library_only is False.
 
-    Without a provider_filter or in_library_only flag, no JOIN on
+    Without a provider_filter or in_library_only flag, no filter on
     provider_mappings should be added.
     """
     ctrl = _create_controller_for_filter_tests()
     query_parts: list[str] = []
     query_params: dict[str, object] = {}
-    join_parts: list[str] = []
 
     ctrl._apply_filters(
         query_parts=query_parts,
         query_params=query_params,
-        join_parts=join_parts,
         favorite=None,
         search=None,
         genre_ids=None,
@@ -760,25 +757,23 @@ async def test_apply_filters_no_in_library_filter_by_default() -> None:
         in_library_only=False,
     )
 
-    assert len(join_parts) == 0
+    assert len(query_parts) == 0
 
 
 async def test_apply_filters_provider_filter_without_in_library() -> None:
     """
     Test that provider_filter without in_library_only omits the in_library clause.
 
-    When a provider_filter is set but in_library_only is False, the JOIN should
-    filter by provider but NOT include the in_library=1 condition.
+    When a provider_filter is set but in_library_only is False, the EXISTS subquery
+    should filter by provider but NOT include the in_library=1 condition.
     """
     ctrl = _create_controller_for_filter_tests()
     query_parts: list[str] = []
     query_params: dict[str, object] = {}
-    join_parts: list[str] = []
 
     ctrl._apply_filters(
         query_parts=query_parts,
         query_params=query_params,
-        join_parts=join_parts,
         favorite=None,
         search=None,
         genre_ids=None,
@@ -786,8 +781,9 @@ async def test_apply_filters_provider_filter_without_in_library() -> None:
         in_library_only=False,
     )
 
-    assert len(join_parts) == 1
-    assert "in_library" not in join_parts[0]
+    assert len(query_parts) == 1
+    assert query_parts[0].startswith("EXISTS(")
+    assert "in_library" not in query_parts[0]
     assert "provider_filter_0" in query_params
 
 
@@ -878,6 +874,19 @@ async def test_library_items_default_filters_in_library_only() -> None:
     ctrl.get_library_items_by_query.assert_called_once()
     call_kwargs = ctrl.get_library_items_by_query.call_args[1]
     assert call_kwargs["in_library_only"] is True
+
+
+async def test_library_items_defaults_to_summary() -> None:
+    """library_items defaults to summary=True so list endpoints return slim rows."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl._ensure_provider_filter = Mock(return_value=None)
+    ctrl.get_library_items_by_query = AsyncMock(return_value=[])
+    ctrl.library_items = MediaControllerBase.library_items.__get__(ctrl)
+
+    await ctrl.library_items()
+
+    call_kwargs = ctrl.get_library_items_by_query.call_args[1]
+    assert call_kwargs["summary"] is True
 
 
 def test_ensure_provider_filter_keeps_plugin_provider_mappings() -> None:
@@ -1071,6 +1080,7 @@ async def test_update_item_in_library_skips_non_music_providers() -> None:
                     item_id="abc",
                 )
             ],
+            metadata=Mock(images=None),
         )
     )
 

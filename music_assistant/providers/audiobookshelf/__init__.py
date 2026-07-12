@@ -176,7 +176,7 @@ class Audiobookshelf(  # type: ignore[misc]
         token_old = self.config.get_value(CONF_OLD_TOKEN)
         token_api = self.config.get_value(CONF_API_TOKEN)
         verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
-        session_config = aioabs.SessionConfiguration(
+        session_config = AbsSessionConfiguration(
             session=self.mass.http_session,
             url=base_url,
             verify_ssl=verify_ssl,

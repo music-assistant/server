@@ -428,7 +428,8 @@ class AudioDbMetadataProvider(MetadataProvider):
             return value, "en"
         return None, None
 
-    @use_cache(86400 * 90, persistent=True)  # Cache for 90 days
+    # None here only signals a failed request (a miss still returns a body), so don't cache it
+    @use_cache(86400 * 90, persistent=True, cache_none=False)  # Cache for 90 days
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var('theaudiodb_api_key')}/{endpoint}"

@@ -515,7 +515,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             media_type=streamdetails.media_type,
         )
 
-    @use_cache(ACOUSTID_LOOKUP_CACHE_TTL)
+    # None can signal an auth/bad-request failure as well as "no match", so don't cache it
+    @use_cache(ACOUSTID_LOOKUP_CACHE_TTL, cache_none=False)
     @throttle_with_retries
     async def _lookup(self, api_key: str, fingerprint: str, duration: int) -> dict[str, Any] | None:
         """

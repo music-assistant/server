@@ -652,13 +652,13 @@ class MusicCastPlayer(Player):
             return
 
         # skip zone handling if disabled via setting
-        if bool(mass_player.config.get_value(CONF_PLAYER_HANDLE_SOURCE_DISABLED)):
+        if mass_player.get_config_value(CONF_PLAYER_HANDLE_SOURCE_DISABLED):
             self.logger.debug("Ignoring zone handling for player %s.", player_id)
             return
 
         self.logger.debug("Handling zone for player %s.", player_id)
 
-        _source = str(mass_player.config.get_value(CONF_PLAYER_SWITCH_SOURCE_NON_NET))
+        _source = mass_player.get_config_value(CONF_PLAYER_SWITCH_SOURCE_NON_NET, return_type=str)
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
         if _source not in _allowed_sources:
@@ -673,7 +673,7 @@ class MusicCastPlayer(Player):
             _source = _allowed_sources.pop()
 
         await mass_player.select_source(_source)
-        _turn_off = bool(mass_player.config.get_value(CONF_PLAYER_TURN_OFF_ON_LEAVE))
+        _turn_off = mass_player.get_config_value(CONF_PLAYER_TURN_OFF_ON_LEAVE, return_type=bool)
         if _turn_off:
             await asyncio.sleep(2)
             await mass_player.power(powered=False)

@@ -462,6 +462,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': '2024-06-10T12:00:00+00:00',
     'disc_number': 1,
     'duration': 180,

@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
+from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_SOURCE_CAP,
     MANAGED_POOL_TARGET,
@@ -135,12 +136,17 @@ class ManagedPool:
         if not sources:
             return []
         # dedupe only against the active (current + unplayed) tail; played history is left out so
-        # recency, not permanent exclusion, decides when a track may return
+        # recency, not permanent exclusion, decides when a track may return. Besides exact item
+        # identity we also dedupe on fuzzy same-song keys (title + artist) so a different
+        # release/version of an already-queued song is not pulled in as well.
         items = self.queues.queue_data(queue_id).items
         start = queue.current_index if queue.current_index is not None else 0
-        pool_keys = {
-            item.media_item for item in items[start:] if isinstance(item.media_item, Track)
-        }
+        pool_keys: set[Track] = set()
+        pool_song_keys: set[tuple[str, str]] = set()
+        for item in items[start:]:
+            if isinstance(item.media_item, Track):
+                pool_keys.add(item.media_item)
+                pool_song_keys.update(song_keys(item.media_item))
         slots = (
             MANAGED_POOL_TARGET
             if is_initial
@@ -157,6 +163,7 @@ class ManagedPool:
             sources,
             slots=slots,
             pool_keys=pool_keys,
+            pool_song_keys=pool_song_keys,
             snapshot=snapshot,
             windows=windows,
             preceding_artists=preceding,
@@ -361,6 +368,7 @@ def allocate_refill(
     windows: RecencyWindows,
     weight_model: PoolWeightModel = POOL_WEIGHT_MODEL,
     preceding_artists: set[str] | None = None,
+    pool_song_keys: set[tuple[str, str]] | None = None,
 ) -> list[Track]:
     """
     Pick the next batch of tracks for the managed pool, weighted per source and recency-gated.
@@ -380,10 +388,15 @@ def allocate_refill(
     :param weight_model: How to weight sources against each other.
     :param preceding_artists: Artist names of the track that will sit directly before the batch (the
         seam with the current tail); the first added track is kept clear of it.
+    :param pool_song_keys: Fuzzy same-song keys of the tracks already in the queue, so a different
+        release/version of an already-queued song is skipped as well.
     """
     if slots <= 0 or not sources:
         return []
-    eligible = [_eligible(source, pool_keys, snapshot, windows) for source in sources]
+    pool_song_keys = pool_song_keys or set()
+    eligible = [
+        _eligible(source, pool_keys, pool_song_keys, snapshot, windows) for source in sources
+    ]
     weights = [max(_weight(source, weight_model), 0) for source in sources]
     total_weight = sum(weights) or len(sources)
     shares = [slots * (weight or 0) / total_weight for weight in weights]
@@ -391,13 +404,16 @@ def allocate_refill(
     pointers = [0] * len(sources)
     chosen: list[Track] = []
     chosen_set: set[Track] = set()
+    chosen_song_keys: set[tuple[str, str]] = set()
     for _ in range(slots):
         best_index = -1
         best_deficit = 0.0
         for index in range(len(sources)):
-            # skip candidates already chosen for another source this round
+            # skip candidates already chosen for another source this round (also as a
+            # different release/version of the same song)
             while pointers[index] < len(eligible[index]) and (
                 eligible[index][pointers[index]] in chosen_set
+                or not chosen_song_keys.isdisjoint(song_keys(eligible[index][pointers[index]]))
             ):
                 pointers[index] += 1
             if pointers[index] >= len(eligible[index]):
@@ -410,9 +426,10 @@ def allocate_refill(
         track = eligible[best_index][pointers[best_index]]
         chosen.append(track)
         chosen_set.add(track)
+        chosen_song_keys.update(song_keys(track))
         taken[best_index] += 1
         pointers[best_index] += 1
-    batch = chosen or _ungated_fallback(sources, slots, pool_keys, snapshot)
+    batch = chosen or _ungated_fallback(sources, slots, pool_keys, pool_song_keys, snapshot)
     return _space_tracks(batch, preceding_artists)
 
 
@@ -443,6 +460,7 @@ def gate_tracks(
 def _eligible(
     source: DynamicSource,
     pool_keys: set[Track],
+    pool_song_keys: set[tuple[str, str]],
     snapshot: RecencySnapshot,
     windows: RecencyWindows,
 ) -> list[Track]:
@@ -459,11 +477,13 @@ def _eligible(
         return [
             track
             for track in source.candidates
-            if track not in pool_keys and not snapshot.track_recent(track, window)
+            if track not in pool_keys
+            and pool_song_keys.isdisjoint(song_keys(track))
+            and not snapshot.track_recent(track, window)
         ]
     scored: list[tuple[int, int, int, Track]] = []
     for track in source.candidates:
-        if track in pool_keys:
+        if track in pool_keys or not pool_song_keys.isdisjoint(song_keys(track)):
             continue
         last_played = snapshot.last_played(track)
         if window and last_played is not None and last_played >= snapshot.now - window:
@@ -490,16 +510,26 @@ def _weight(source: DynamicSource, weight_model: PoolWeightModel) -> int:
 
 
 def _ungated_fallback(
-    sources: list[DynamicSource], slots: int, pool_keys: set[Track], snapshot: RecencySnapshot
+    sources: list[DynamicSource],
+    slots: int,
+    pool_keys: set[Track],
+    pool_song_keys: set[tuple[str, str]],
+    snapshot: RecencySnapshot,
 ) -> list[Track]:
     """Return the globally least-recently-played candidates, ignoring the recency gate."""
     seen: set[Track] = set()
+    seen_song_keys = set(pool_song_keys)
     pool: list[Track] = []
     for source in sources:
         for track in source.candidates:
-            if track in pool_keys or track in seen:
+            if (
+                track in pool_keys
+                or track in seen
+                or not seen_song_keys.isdisjoint(track_song_keys := song_keys(track))
+            ):
                 continue
             seen.add(track)
+            seen_song_keys.update(track_song_keys)
             pool.append(track)
     pool.sort(
         key=lambda track: (

@@ -1156,7 +1156,18 @@ class PlexProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             plex_artist = await self._get_data(prov_artist_id, PlexArtist)
-            plex_albums = cast("list[PlexAlbum]", await self._run_async(plex_artist.albums))
+            try:
+                plex_albums = cast("list[PlexAlbum]", await self._run_async(plex_artist.albums))
+            except plexapi.exceptions.NotFound:
+                # PlexArtist.albums() relies on Plex's advanced filters API.
+                # Some Plex servers return no filtering metadata, making plexapi
+                # raise 'Unknown libtype "artist"'. Fall back to the artist's
+                # /children endpoint, which does not depend on the filters API.
+                albums_key = f"{plex_artist.key}/children"
+                plex_albums = cast(
+                    "list[PlexAlbum]",
+                    await self._run_async(plex_artist.fetchItems, albums_key, PlexAlbum),
+                )
             if plex_albums:
                 albums = []
                 for album_obj in plex_albums:
@@ -1739,7 +1750,8 @@ class PlexProvider(MusicProvider):
                 url, headers={"Accept": "application/json"}, timeout=30
             )
             response.raise_for_status()
-            return response.text
+            # plexapi's untyped session makes the response Any for mypy; force str
+            return str(response.text)
 
         try:
             content = await self._run_async(_fetch)

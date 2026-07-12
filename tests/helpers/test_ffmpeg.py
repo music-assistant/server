@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import subprocess
+from collections.abc import AsyncGenerator
+from pathlib import Path
+
+import pytest
 from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.ffmpeg import (
     FFMpegStreamInfo,
+    get_ffmpeg_overlay_stream,
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
 )
@@ -158,3 +165,134 @@ def test_parse_duration_unrelated_line_returns_none() -> None:
     """Random log lines must return None."""
     assert parse_ffmpeg_duration("Stream #0:0: Audio: mp3, 44100 Hz") is None
     assert parse_ffmpeg_duration("") is None
+
+
+# -- get_ffmpeg_overlay_stream (end-to-end with a real ffmpeg process) --
+
+_PCM_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
+)
+_BYTES_PER_SECOND = _PCM_FORMAT.pcm_sample_size  # 1 second of PCM audio
+
+
+@pytest.fixture
+def overlay_file(tmp_path: Path) -> Path:
+    """Generate a 1 second sine-tone wav file to use as overlay source."""
+    overlay_path = tmp_path / "overlay.wav"
+    subprocess.run(  # noqa: S603
+        ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(overlay_path)],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    return overlay_path
+
+
+@pytest.fixture
+def overlay_file_with_silent_intro(tmp_path: Path) -> Path:
+    """Generate a 2 second overlay wav that starts with 1s of silence then a 1s tone."""
+    overlay_path = tmp_path / "overlay_silent_intro.wav"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-af",
+            "adelay=1000:all=1",
+            str(overlay_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return overlay_path
+
+
+async def _silence(seconds: int) -> AsyncGenerator[bytes]:
+    """Yield the given amount of seconds of PCM silence in 1-second chunks."""
+    for _ in range(seconds):
+        yield b"\x00" * _BYTES_PER_SECOND
+
+
+async def _collect_chunks(stream: AsyncGenerator[bytes]) -> list[bytes]:
+    return [chunk async for chunk in stream]
+
+
+async def test_overlay_stream_mixes_loops_and_preserves_length(overlay_file: Path) -> None:
+    """The overlay is looped and mixed in while length, format and chunking stay intact."""
+    chunks = await _collect_chunks(
+        get_ffmpeg_overlay_stream(
+            audio_input=_silence(3),
+            overlay_input=str(overlay_file),
+            pcm_format=_PCM_FORMAT,
+            chunk_size=_BYTES_PER_SECOND,
+        )
+    )
+    output = b"".join(chunks)
+    # duration=first: output length exactly matches the 3s main input
+    assert len(output) == 3 * _BYTES_PER_SECOND
+    # all chunks except the last are exactly chunk_size
+    assert all(len(chunk) == _BYTES_PER_SECOND for chunk in chunks[:-1])
+    # the main input was pure silence, so any signal proves the overlay was mixed in;
+    # signal in the third second proves the 1s overlay file was looped
+    assert any(output[:_BYTES_PER_SECOND])
+    assert any(output[2 * _BYTES_PER_SECOND :])
+
+
+async def test_overlay_stream_does_not_mutate_pcm_format(overlay_file: Path) -> None:
+    """Mixing an overlay leaves the caller's PCM format unchanged."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        sample_rate=48000,
+        bit_depth=32,
+        channels=2,
+    )
+    original_format = pcm_format.to_dict()
+
+    async def silence() -> AsyncGenerator[bytes]:
+        yield b"\x00" * pcm_format.pcm_sample_size
+
+    await _collect_chunks(
+        get_ffmpeg_overlay_stream(
+            audio_input=silence(),
+            overlay_input=str(overlay_file),
+            pcm_format=pcm_format,
+        )
+    )
+
+    assert pcm_format.to_dict() == original_format
+
+
+async def test_overlay_stream_applies_volume(overlay_file: Path) -> None:
+    """Overlay volume 0% silences the overlay entirely (gain is applied)."""
+    output = b"".join(
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=_silence(1),
+                overlay_input=str(overlay_file),
+                pcm_format=_PCM_FORMAT,
+                overlay_volume=0,
+            )
+        )
+    )
+    assert len(output) == _BYTES_PER_SECOND
+    assert not any(output)
+
+
+async def test_overlay_stream_trims_leading_silence(
+    overlay_file_with_silent_intro: Path,
+) -> None:
+    """A near-silent intro on the overlay source is trimmed so it plays immediately."""
+    output = b"".join(
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=_silence(1),
+                overlay_input=str(overlay_file_with_silent_intro),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+    )
+    assert len(output) == _BYTES_PER_SECOND
+    # without trimming, the first second would be the overlay's silent intro;
+    # the trim makes the tone play from the start, so the first second has signal
+    assert any(output)

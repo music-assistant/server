@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import shortuuid
+from music_assistant_models.auth import Scope
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset
 from music_assistant_models.enums import EventType
 
@@ -26,7 +27,7 @@ class DSPConfigMixin:
 
         def set(self, key: str, value: Any) -> None: ...  # noqa: D102
 
-    @api_command("config/players/dsp/get")
+    @api_command("config/players/dsp/get", required_scope=Scope.CONFIG_PLAYERS_READ)
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """
         Return the DSP Configuration for a player.
@@ -41,7 +42,7 @@ class DSPConfigMixin:
         dsp_config.enabled = False
         return dsp_config
 
-    @api_command("config/players/dsp/save", required_role="admin")
+    @api_command("config/players/dsp/save", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def save_dsp_config(self, player_id: str, config: DSPConfig) -> DSPConfig:
         """
         Save/update DSPConfig for a player.
@@ -64,13 +65,13 @@ class DSPConfigMixin:
         )
         return config
 
-    @api_command("config/dsp_presets/get")
+    @api_command("config/dsp_presets/get", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_dsp_presets(self) -> list[DSPConfigPreset]:
         """Return all user-defined DSP presets."""
         raw_presets = self.get(CONF_PLAYER_DSP_PRESETS, {})
         return [DSPConfigPreset.from_dict(preset) for preset in raw_presets.values()]
 
-    @api_command("config/dsp_presets/save", required_role="admin")
+    @api_command("config/dsp_presets/save", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def save_dsp_presets(self, preset: DSPConfigPreset) -> DSPConfigPreset:
         """
         Save/update a user-defined DSP presets.
@@ -95,7 +96,7 @@ class DSPConfigMixin:
 
         return preset
 
-    @api_command("config/dsp_presets/remove", required_role="admin")
+    @api_command("config/dsp_presets/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_dsp_preset(self, preset_id: str) -> None:
         """Remove a user-defined DSP preset."""
         self.mass.config.remove(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset_id}")

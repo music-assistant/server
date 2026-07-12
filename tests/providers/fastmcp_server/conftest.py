@@ -122,8 +122,6 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
     mass.webserver.register_dynamic_route = MagicMock(return_value=lambda: None)
 
-    # No catalog in the mock: translation resolution returns None so callers (e.g. the MCP
-    # config dump) fall back to the in-code label/description or the entry key.
     mass.translations.get_translation = MagicMock(return_value=None)
 
     mass.music = MagicMock()
@@ -137,8 +135,10 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.music.tracks.get_library_item = AsyncMock()
     mass.music.albums.library_items = AsyncMock(return_value=[])
     mass.music.albums.get_library_item = AsyncMock()
+    mass.music.albums.tracks = AsyncMock(return_value=[])
     mass.music.artists.library_items = AsyncMock(return_value=[])
     mass.music.artists.get_library_item = AsyncMock()
+    mass.music.artists.albums = AsyncMock(return_value=[])
     mass.music.playlists.library_items = AsyncMock(return_value=[])
     mass.music.playlists.get_library_item = AsyncMock()
     mass.music.playlists.create_playlist = AsyncMock()

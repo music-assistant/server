@@ -6,12 +6,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastmcp import Context, FastMCP
-from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from music_assistant_models.enums import MediaType
 
 from ..models import (
     AlbumBrief,
+    AlbumTracksResult,
+    ArtistAlbumsResult,
     ArtistBrief,
     PlaylistBrief,
     RadioBrief,
@@ -20,6 +21,9 @@ from ..models import (
 from ..tags import Tag
 from ._common import (
     TIMEOUT_QUERY,
+    album_tracks_from_uri,
+    artist_albums_from_uri,
+    brief_from_uri,
     page_args,
     to_brief_album,
     to_brief_artist,
@@ -41,6 +45,189 @@ def _readonly(title: str) -> ToolAnnotations:
         idempotentHint=True,
         openWorldHint=False,
     )
+
+
+def _register_uri_tools(sub: FastMCP, mass: MusicAssistant) -> None:
+    """Register URI resolver and drill-down library tools."""
+
+    @sub.tool(
+        tags={Tag.QUERY_LIBRARY},
+        annotations=_readonly("Get track by URI"),
+        timeout=TIMEOUT_QUERY,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def get_track_by_uri(uri: str) -> TrackBrief:
+        """
+        Resolve a track by its Music Assistant URI to a brief summary.
+
+        Returns the same ``TrackBrief`` shape that search and list tools emit.
+        Raises ``ToolError`` if the URI does not resolve, or if it resolves
+        to a non-track (album, playlist, …) — otherwise the brief would
+        silently carry the wrong shape and downstream tools would
+        misinterpret it. Use ``search_tracks`` first if you only have a
+        name or partial identifier.
+
+        :param uri: A Music Assistant track URI of the form
+            ``<provider>://track/<id>`` (e.g. as found on
+            ``TrackBrief.uri``).
+        """
+        return await brief_from_uri(
+            mass,
+            uri,
+            MediaType.TRACK,
+            to_brief=to_brief_track,
+            type_label="track",
+        )
+
+    @sub.tool(
+        tags={Tag.QUERY_LIBRARY},
+        annotations=_readonly("Get album by URI"),
+        timeout=TIMEOUT_QUERY,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def get_album_by_uri(uri: str) -> AlbumBrief:
+        """
+        Resolve an album by its Music Assistant URI to a brief summary.
+
+        Returns the same ``AlbumBrief`` shape that search and list tools emit.
+        Raises ``ToolError`` if the URI does not resolve, or if it resolves
+        to a non-album. Use ``search_albums`` first if you only have a
+        name or partial identifier. For the track listing, use
+        ``get_album_tracks`` with the same URI.
+
+        :param uri: A Music Assistant album URI of the form
+            ``<provider>://album/<id>`` (e.g. as found on ``AlbumBrief.uri``).
+        """
+        return await brief_from_uri(
+            mass,
+            uri,
+            MediaType.ALBUM,
+            to_brief=to_brief_album,
+            type_label="album",
+        )
+
+    @sub.tool(
+        tags={Tag.QUERY_LIBRARY},
+        annotations=_readonly("Get artist by URI"),
+        timeout=TIMEOUT_QUERY,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def get_artist_by_uri(uri: str) -> ArtistBrief:
+        """
+        Resolve an artist by its Music Assistant URI to a brief summary.
+
+        Returns the same ``ArtistBrief`` shape that search and list tools emit.
+        Raises ``ToolError`` if the URI does not resolve, or if it resolves
+        to a non-artist. Use ``search_artists`` first if you only have a
+        name or partial identifier. For the artist's albums, use
+        ``get_artist_albums`` with the same URI.
+
+        :param uri: A Music Assistant artist URI of the form
+            ``<provider>://artist/<id>`` (e.g. as found on ``ArtistBrief.uri``).
+        """
+        return await brief_from_uri(
+            mass,
+            uri,
+            MediaType.ARTIST,
+            to_brief=to_brief_artist,
+            type_label="artist",
+        )
+
+    @sub.tool(
+        tags={Tag.QUERY_LIBRARY},
+        annotations=_readonly("Get artist albums"),
+        timeout=TIMEOUT_QUERY,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def get_artist_albums(uri: str, ctx: Context | None = None) -> ArtistAlbumsResult:
+        """
+        List albums by an artist, newest first.
+
+        Returns an ``ArtistAlbumsResult`` with a brief artist header and one
+        ``AlbumBrief`` per album (including ``uri`` for drill-down or playback).
+        This is a summary — not full metadata (genres, artwork URLs, etc.).
+
+        Typical flow: ``search_artists`` → ``get_artist_albums`` →
+        ``get_album_tracks`` or ``playback_play_media``.
+
+        Raises ``ToolError`` if the URI does not resolve or is not an artist.
+
+        :param uri: A Music Assistant artist URI of the form
+            ``<provider>://artist/<id>`` (e.g. as found on ``ArtistBrief.uri``).
+        """
+        if ctx is not None:
+            await ctx.info(f"Fetching albums for artist {uri!r}")
+        return await artist_albums_from_uri(mass, uri)
+
+    @sub.tool(
+        tags={Tag.QUERY_LIBRARY},
+        annotations=_readonly("Get playlist by URI"),
+        timeout=TIMEOUT_QUERY,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def get_playlist_by_uri(uri: str) -> PlaylistBrief:
+        """
+        Resolve a playlist by its Music Assistant URI to a brief summary.
+
+        Returns the same ``PlaylistBrief`` shape that list tools emit.
+        Raises ``ToolError`` if the URI does not resolve, or if it resolves
+        to a non-playlist.
+
+        :param uri: A Music Assistant playlist URI of the form
+            ``<provider>://playlist/<id>`` (e.g. as found on
+            ``PlaylistBrief.uri``).
+        """
+        return await brief_from_uri(
+            mass,
+            uri,
+            MediaType.PLAYLIST,
+            to_brief=to_brief_playlist,
+            type_label="playlist",
+        )
+
+    @sub.tool(
+        tags={Tag.QUERY_LIBRARY},
+        annotations=_readonly("Get radio by URI"),
+        timeout=TIMEOUT_QUERY,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def get_radio_by_uri(uri: str) -> RadioBrief:
+        """
+        Resolve a radio station by its Music Assistant URI to a brief summary.
+
+        Returns the same ``RadioBrief`` shape that list tools emit.
+        Raises ``ToolError`` if the URI does not resolve, or if it resolves
+        to a non-radio station.
+
+        :param uri: A Music Assistant radio URI of the form
+            ``<provider>://radio/<id>`` (e.g. as found on ``RadioBrief.uri``).
+        """
+        return await brief_from_uri(
+            mass,
+            uri,
+            MediaType.RADIO,
+            to_brief=to_brief_radio,
+            type_label="radio",
+        )
+
+    @sub.tool(
+        tags={Tag.QUERY_LIBRARY},
+        annotations=_readonly("Get album tracks"),
+        timeout=TIMEOUT_QUERY,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def get_album_tracks(uri: str, ctx: Context | None = None) -> AlbumTracksResult:
+        """
+        List the tracks on an album, in disc and track order.
+
+        Returns an ``AlbumTracksResult`` with a brief album header and one
+        ``TrackBrief`` per track (including ``uri`` for playback). This is a
+        summary — not full album metadata (genres, artwork URLs, etc.).
+
+        Typical flow: ``search_albums`` → ``get_album_tracks`` → pick a track
+        URI or pass the album URI to ``playback_play_media`` for the full album.
+
+        Raises ``ToolError`` if the URI does not resolve or is not an album.
+
+        :param uri: A Music Assistant album URI of the form
+            ``<provider>://album/<id>`` (e.g. as found on ``AlbumBrief.uri``).
+        """
+        if ctx is not None:
+            await ctx.info(f"Fetching tracks for album {uri!r}")
+        return await album_tracks_from_uri(mass, uri)
 
 
 def build_library_server(mass: MusicAssistant) -> FastMCP:
@@ -153,7 +340,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.tracks.library_items(limit=limit, offset=offset)
+        items = await mass.music.tracks.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_track(t) for t in items]
 
     @sub.tool(
@@ -172,7 +359,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.albums.library_items(limit=limit, offset=offset)
+        items = await mass.music.albums.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_album(a) for a in items]
 
     @sub.tool(
@@ -191,7 +378,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.artists.library_items(limit=limit, offset=offset)
+        items = await mass.music.artists.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_artist(a) for a in items]
 
     @sub.tool(
@@ -209,7 +396,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.playlists.library_items(limit=limit, offset=offset)
+        items = await mass.music.playlists.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_playlist(p) for p in items]
 
     @sub.tool(
@@ -227,37 +414,8 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         :param limit: Page size (clamped to ``[1, 200]``).
         """
         offset, limit = page_args(offset, limit)
-        items = await mass.music.radio.library_items(limit=limit, offset=offset)
+        items = await mass.music.radio.library_items(limit=limit, offset=offset, summary=False)
         return [to_brief_radio(r) for r in items]
-
-    @sub.tool(
-        tags={Tag.QUERY_LIBRARY},
-        annotations=_readonly("Get track by URI"),
-        timeout=TIMEOUT_QUERY,
-    )  # type: ignore[untyped-decorator, unused-ignore]
-    async def get_track_by_uri(uri: str) -> TrackBrief:
-        """
-        Resolve a track by its Music Assistant URI to a brief summary.
-
-        Returns the same ``TrackBrief`` shape that search and list tools emit.
-        Raises ``ToolError`` if the URI does not resolve, or if it resolves
-        to a non-track (album, playlist, …) — otherwise the brief would
-        silently carry the wrong shape and downstream tools would
-        misinterpret it. Use ``search_tracks`` first if you only have a
-        name or partial identifier.
-
-        :param uri: A Music Assistant track URI of the form
-            ``<provider>://track/<id>`` (e.g. as found on
-            ``TrackBrief.uri``).
-        """
-        item = await mass.music.get_item_by_uri(uri)
-        media_type = getattr(item, "media_type", None)
-        if media_type != MediaType.TRACK:
-            raise ToolError(
-                f"URI {uri!r} is not a track (got media_type={media_type!r}); "
-                f"pass a `library://track/<n>` URI instead."
-            )
-        return to_brief_track(item)
 
     @sub.tool(
         tags={Tag.QUERY_LIBRARY},
@@ -276,5 +434,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         _, limit = page_args(0, limit)
         items = await mass.music.recently_added_tracks(limit=limit)
         return [to_brief_track(t) for t in items]
+
+    _register_uri_tools(sub, mass)
 
     return sub
