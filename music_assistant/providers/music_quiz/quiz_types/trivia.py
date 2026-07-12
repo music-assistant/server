@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import re
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -38,8 +39,8 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
 )
 from music_assistant.providers.music_quiz.suggestions import (
     SuggestionCandidate,
-    answer_labels_are_too_close,
     build_suggestions,
+    filter_suggestion_candidates,
     normalize_answer_label,
 )
 
@@ -285,6 +286,8 @@ class TriviaQuizType(QuizType):
         prompt = self._build_prompt(fact)
         if len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES:
             raise self._generation_error()
+        grounded_tracks = list(self._eligible_tracks.values()) if self._eligible_tracks else []
+        SYSTEM_RANDOM.shuffle(grounded_tracks)
         for provider in self._require_ai_providers():
             for _attempt in range(AI_ATTEMPTS_PER_PROVIDER):
                 try:
@@ -298,7 +301,7 @@ class TriviaQuizType(QuizType):
                     )
                     continue
                 try:
-                    return self._parse_generation(response, fact)
+                    return self._parse_generation(response, fact, grounded_tracks)
                 except (TypeError, ValueError) as err:
                     LOGGER.debug(
                         "Trivia provider %s returned an invalid response: %s",
@@ -369,7 +372,12 @@ class TriviaQuizType(QuizType):
             "END_UNTRUSTED_MUSIC_METADATA_JSON"
         )
 
-    def _parse_generation(self, response: object, fact: TriviaFact) -> TriviaGeneration:
+    def _parse_generation(
+        self,
+        response: object,
+        fact: TriviaFact,
+        grounded_tracks: Sequence[TriviaTrackFacts] = (),
+    ) -> TriviaGeneration:
         """Parse and validate one strict AI Trivia response."""
         if not isinstance(response, str):
             raise TypeError("response must be a string")
@@ -410,13 +418,11 @@ class TriviaQuizType(QuizType):
                 raise ValueError("wrong answer exceeds the length limit")
             if "\n" in answer or "\r" in answer:
                 raise ValueError("wrong answers must be single-line strings")
-            if any(
-                answer_labels_are_too_close(answer, existing_answer)
-                for existing_answer in (fact.correct_answer, *parsed_answers)
-            ):
-                raise ValueError("wrong answers must be distinct from every answer")
             parsed_answers.append(answer)
-        return TriviaGeneration(question=question, wrong_answers=tuple(parsed_answers))
+        return TriviaGeneration(
+            question=question,
+            wrong_answers=self._repair_wrong_answers(parsed_answers, fact, grounded_tracks),
+        )
 
     def _select_fact(self, track: TriviaTrackFacts, round_index: int) -> TriviaFact:
         """Select a supported factual target deterministically for a round."""
@@ -424,18 +430,51 @@ class TriviaQuizType(QuizType):
         if not targets:
             raise InvalidDataError("Trivia track has no supported factual targets")
         target = targets[round_index % len(targets)]
+        correct_answer = self._target_value(track, target)
+        assert correct_answer is not None
+        return TriviaFact(target=target, correct_answer=correct_answer, track=track)
+
+    @classmethod
+    def _repair_wrong_answers(
+        cls,
+        wrong_answers: Sequence[str],
+        fact: TriviaFact,
+        grounded_tracks: Sequence[TriviaTrackFacts],
+    ) -> tuple[str, ...]:
+        """Return distinct wrong answers completed with same-target grounded facts."""
+
+        def iter_candidates() -> Iterator[SuggestionCandidate]:
+            for answer in wrong_answers:
+                yield SuggestionCandidate(label=answer)
+            for track in grounded_tracks:
+                if (value := cls._target_value(track, fact.target)) is not None:
+                    yield SuggestionCandidate(label=value)
+
+        expected_count = len(wrong_answers)
+        candidates = filter_suggestion_candidates(
+            SuggestionCandidate(label=fact.correct_answer),
+            iter_candidates(),
+            limit=expected_count,
+        )
+        if len(candidates) != expected_count:
+            raise ValueError("wrong answers could not be completed from grounded metadata")
+        return tuple(candidate.label for candidate in candidates)
+
+    @staticmethod
+    def _target_value(track: TriviaTrackFacts, target: TriviaTarget) -> str | None:
+        """Return the available value for one Trivia target."""
+        if target not in TriviaQuizType._available_targets(track):
+            return None
         if target == TriviaTarget.ARTIST:
             assert track.artist is not None
-            correct_answer = track.artist
-        elif target == TriviaTarget.TITLE:
-            correct_answer = track.title
-        elif target == TriviaTarget.ALBUM:
+            return track.artist
+        if target == TriviaTarget.TITLE:
+            return track.title
+        if target == TriviaTarget.ALBUM:
             assert track.album is not None
-            correct_answer = track.album
-        else:
-            assert track.release_year is not None
-            correct_answer = str(track.release_year)
-        return TriviaFact(target=target, correct_answer=correct_answer, track=track)
+            return track.album
+        assert track.release_year is not None
+        return str(track.release_year)
 
     def _used_source_uris(self, previous_rounds: list[MusicQuizRound]) -> set[str]:
         """Return source URIs persisted in validated Trivia round history."""

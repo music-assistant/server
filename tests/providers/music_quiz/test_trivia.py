@@ -245,6 +245,33 @@ def _all_facts() -> TriviaTrackFacts:
     )
 
 
+def _grounded_fallback_facts() -> tuple[TriviaTrackFacts, ...]:
+    """Return distinct bounded facts supporting every Trivia target."""
+    return (
+        TriviaTrackFacts(
+            source_uri="prov://track/genesis",
+            title="Genesis",
+            artist="Justice",
+            album="Cross",
+            release_year=2007,
+        ),
+        TriviaTrackFacts(
+            source_uri="prov://track/midnight-city",
+            title="Midnight City",
+            artist="M83",
+            album="Hurry Up, We're Dreaming",
+            release_year=2011,
+        ),
+        TriviaTrackFacts(
+            source_uri="prov://track/roads",
+            title="Roads",
+            artist="Portishead",
+            album="Dummy",
+            release_year=1994,
+        ),
+    )
+
+
 def _artist_fact() -> TriviaFact:
     """Return a server-selected artist fact for parser and prompt tests."""
     return TriviaFact(
@@ -990,6 +1017,279 @@ def test_strict_generation_parser_accepts_exact_valid_shape() -> None:
         question="Which artist recorded this selected track?",
         wrong_answers=("Portishead", "Radiohead", "Air"),
     )
+
+
+@pytest.mark.asyncio
+async def test_generation_repairs_duplicate_answers_from_cached_grounding() -> None:
+    """Keep valid AI answers and fill duplicate slots without another AI or source call."""
+    tracks = [
+        _track("correct", "Teardrop", "Massive Attack"),
+        _track("fallback-1", "Roads", "Portishead"),
+        _track("fallback-2", "All I Need", "Air"),
+        _track("fallback-3", "Hell Is Round the Corner", "Tricky"),
+    ]
+    provider = _ai_provider(
+        _valid_response(
+            wrong_answers=["Massive Attack", "Radiohead", "radio-head"],
+        )
+    )
+    quiz, mass = _quiz(tracks, providers=[provider])
+    mass.music.albums.get = AsyncMock()
+    mass.music.tracks.get = AsyncMock()
+    facts_by_uri = await quiz._get_eligible_tracks()
+    assert tracks[0].uri is not None
+    fact = TriviaFact(TriviaTarget.ARTIST, "Massive Attack", facts_by_uri[tracks[0].uri])
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.shuffle",
+        side_effect=lambda _tracks: None,
+    ) as shuffle:
+        result = await quiz._generate_question(fact)
+
+    assert result.wrong_answers == ("Radiohead", "Portishead", "Air")
+    provider.ai_query.assert_awaited_once()
+    shuffle.assert_called_once()
+    prompt = provider.ai_query.await_args.args[0]
+    assert "Portishead" not in prompt
+    assert "Air" not in prompt
+    assert "Tricky" not in prompt
+    mass.music.albums.get.assert_not_awaited()
+    mass.music.tracks.get.assert_not_awaited()
+    mass.music.search.assert_not_awaited()
+
+
+def test_generation_repair_skips_normalized_near_and_fallback_collisions() -> None:
+    """Continue scanning grounded facts after normalized and near-answer collisions."""
+    quiz, _ = _quiz([])
+    colliding_facts = tuple(
+        replace(
+            _all_facts(),
+            source_uri=f"prov://track/{index}",
+            artist=artist,
+        )
+        for index, artist in enumerate(
+            ["PORTISHEAD!", "Portishead Live at Roseland", "Radiohead", "Air"]
+        )
+    )
+    response = _valid_response(
+        wrong_answers=["massive-attack", "Portishead", "Portishead Live"],
+    )
+
+    result = quiz._parse_generation(response, _artist_fact(), colliding_facts)
+
+    assert result.wrong_answers == ("Portishead", "Radiohead", "Air")
+
+
+@pytest.mark.parametrize(
+    ("target", "correct_answer", "expected"),
+    [
+        (TriviaTarget.ARTIST, "Massive Attack", ("Justice", "M83", "Portishead")),
+        (TriviaTarget.TITLE, "Teardrop", ("Genesis", "Midnight City", "Roads")),
+        (
+            TriviaTarget.ALBUM,
+            "Mezzanine",
+            ("Cross", "Hurry Up, We're Dreaming", "Dummy"),
+        ),
+        (TriviaTarget.YEAR, "1998", ("2007", "2011", "1994")),
+    ],
+)
+def test_generation_repair_uses_only_same_target_grounding(
+    target: TriviaTarget,
+    correct_answer: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Fill every Trivia target only from grounded values of that target."""
+    quiz, _ = _quiz([])
+    fact = TriviaFact(target, correct_answer, _all_facts())
+    response = _valid_response(
+        question="Which answer matches the selected metadata?",
+        wrong_answers=[correct_answer, correct_answer.upper(), correct_answer],
+    )
+
+    result = quiz._parse_generation(response, fact, _grounded_fallback_facts())
+
+    assert result.wrong_answers == expected
+
+
+@pytest.mark.parametrize(
+    ("target", "correct_answer", "excluded_value", "expected"),
+    [
+        (
+            TriviaTarget.ALBUM,
+            "Mezzanine",
+            "Party Hits 13",
+            ("Cross", "Hurry Up, We're Dreaming", "Dummy"),
+        ),
+        (TriviaTarget.YEAR, "1998", "2012", ("2007", "2011", "1994")),
+    ],
+)
+def test_generation_repair_excludes_compilation_release_facts(
+    target: TriviaTarget,
+    correct_answer: str,
+    excluded_value: str,
+    expected: tuple[str, ...],
+) -> None:
+    """Keep compilation-suppressed album and year values out of grounded fallback."""
+    compilation = _track(
+        "compilation-fallback",
+        "Everlasting Love",
+        "Sandra",
+        release_year=2012,
+    )
+    compilation.album = _full_album(
+        "party-hits-13",
+        "Party Hits 13",
+        album_type=AlbumType.COMPILATION,
+        year=2012,
+    )
+    compilation_facts = TriviaQuizType._track_facts(compilation)
+    assert compilation_facts is not None
+    response = _valid_response(
+        question="Which answer matches the selected metadata?",
+        wrong_answers=[correct_answer, correct_answer, correct_answer],
+    )
+    quiz, _ = _quiz([])
+
+    result = quiz._parse_generation(
+        response,
+        TriviaFact(target, correct_answer, _all_facts()),
+        (compilation_facts, *_grounded_fallback_facts()),
+    )
+
+    assert result.wrong_answers == expected
+    assert excluded_value not in result.wrong_answers
+
+
+@pytest.mark.asyncio
+async def test_generation_retries_when_grounded_repair_is_insufficient() -> None:
+    """Retry after a valid response cannot be completed from grounded metadata."""
+    insufficient = _valid_response(
+        wrong_answers=["Massive Attack", "massive-attack", "MASSIVE ATTACK"],
+    )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [insufficient, _valid_response()]
+    quiz, _ = _quiz([], providers=[provider])
+    quiz._eligible_tracks = {
+        _all_facts().source_uri: _all_facts(),
+        "prov://track/one-fallback": replace(
+            _all_facts(),
+            source_uri="prov://track/one-fallback",
+            artist="Justice",
+        ),
+    }
+
+    result = await quiz._generate_question(_artist_fact())
+
+    assert result.wrong_answers == ("Portishead", "Radiohead", "Air")
+    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+
+
+@pytest.mark.asyncio
+async def test_generation_fails_when_all_grounded_repairs_are_insufficient() -> None:
+    """Keep the localized failure after every semantic repair exhausts its grounding."""
+    insufficient = _valid_response(
+        wrong_answers=["Massive Attack", "massive-attack", "MASSIVE ATTACK"],
+    )
+    provider = _ai_provider(insufficient)
+    quiz, _ = _quiz([], providers=[provider])
+    quiz._eligible_tracks = {
+        "prov://track/one-fallback": replace(
+            _all_facts(),
+            source_uri="prov://track/one-fallback",
+            artist="Justice",
+        )
+    }
+
+    with pytest.raises(InvalidDataError) as error:
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_generation_failed"
+    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+
+
+@pytest.mark.parametrize(
+    "wrong_answers",
+    [
+        "Portishead",
+        ["Portishead", "Radiohead"],
+        ["Portishead", "Radiohead", "Air", "Tricky"],
+        ["Portishead", 42, "Air"],
+        ["Portishead", " ", "Air"],
+        ["Portishead\nLive", "Radiohead", "Air"],
+        ["x" * (MAX_ANSWER_LENGTH + 1), "Radiohead", "Air"],
+    ],
+)
+def test_generation_does_not_repair_malformed_wrong_answer_lists(
+    wrong_answers: object,
+) -> None:
+    """Reject malformed answer lists even when grounded fallback is sufficient."""
+    quiz, _ = _quiz([])
+    response = json_dumps(
+        {
+            "question": "Which artist recorded this selected track?",
+            "wrong_answers": wrong_answers,
+        }
+    )
+
+    with pytest.raises((TypeError, ValueError)):
+        quiz._parse_generation(response, _artist_fact(), _grounded_fallback_facts())
+
+
+@pytest.mark.asyncio
+async def test_next_round_repairs_duplicate_answers_without_extra_source_calls() -> None:
+    """Prepare the next Trivia round from cached grounding without an AI retry."""
+    tracks = [
+        _track("1", "Teardrop", "Massive Attack"),
+        _track("2", "Genesis", "Justice"),
+        _track("3", "Midnight City", "M83"),
+        _track("4", "Roads", "Portishead"),
+    ]
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response(
+            "Who performs the selected track?",
+            ["Portishead", "Radiohead", "Air"],
+        ),
+        _valid_response(
+            "Which title was recorded by Justice?",
+            ["Genesis", "Teardrop", "teardrop!"],
+        ),
+    ]
+    quiz, mass = _quiz(tracks, providers=[provider], round_count=2)
+    mass.music.albums.get = AsyncMock()
+    mass.music.tracks.get = AsyncMock()
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+            side_effect=lambda candidates: candidates[0],
+        ),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.shuffle",
+            side_effect=lambda _tracks: None,
+        ),
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+
+    assert provider.ai_query.await_count == 2
+    assert second_round.answer_label == "Genesis"
+    assert isinstance(second_round.answer_state, MultipleChoiceRoundState)
+    assert {suggestion.label for suggestion in second_round.answer_state.suggestions} == {
+        "Genesis",
+        "Teardrop",
+        "Midnight City",
+        "Roads",
+    }
+    assert _correct_source_uri(second_round.answer_state) == tracks[1].uri
+    assert all(
+        suggestion.uri is None
+        for suggestion in second_round.answer_state.suggestions
+        if not suggestion.is_correct
+    )
+    mass.music.albums.get.assert_not_awaited()
+    mass.music.tracks.get.assert_not_awaited()
+    mass.music.search.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
