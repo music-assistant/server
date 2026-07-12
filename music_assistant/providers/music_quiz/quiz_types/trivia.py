@@ -197,6 +197,7 @@ class TriviaQuizType(QuizType):
         :param game: Game whose configuration should be serialized.
         """
         return {
+            **super().serialize_game_config(game),
             "language": _normalize_trivia_language(game.config.language),
             "play_reveal_audio": game.config.play_reveal_audio,
         }

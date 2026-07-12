@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -22,18 +23,32 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.music_quiz import MusicQuizPlugin
-from music_assistant.providers.music_quiz.models import MusicQuizConfig
+from music_assistant.providers.music_quiz.models import (
+    MultipleChoiceRoundState,
+    MusicQuizConfig,
+    TimelineRoundState,
+)
 from music_assistant.providers.music_quiz.quiz_types.base import (
     GENRE_TRACK_PAGE_SIZE,
     MAX_GENRE_TRACK_COUNT,
 )
 from music_assistant.providers.music_quiz.quiz_types.guess_the_song import GuessTheSongQuizType
 from music_assistant.providers.music_quiz.quiz_types.music_timeline import MusicTimelineQuizType
+from music_assistant.providers.music_quiz.quiz_types.trivia import (
+    TriviaGeneration,
+    TriviaQuizType,
+)
 
 SourceItem = Album | Artist | Genre | ItemMapping | Playlist | Track
 
 
-def _track(item_id: str, *, year: int | None = None) -> Track:
+def _track(
+    item_id: str,
+    *,
+    year: int | None = None,
+    available: bool = True,
+    is_playable: bool = True,
+) -> Track:
     """Return a minimal playable track."""
     provider = "provider"
     track = Track(
@@ -41,6 +56,7 @@ def _track(item_id: str, *, year: int | None = None) -> Track:
         provider=provider,
         name=f"Track {item_id}",
         duration=180,
+        is_playable=is_playable,
         artists=UniqueList(
             [
                 ItemMapping(
@@ -56,6 +72,7 @@ def _track(item_id: str, *, year: int | None = None) -> Track:
                 item_id=item_id,
                 provider_domain=provider,
                 provider_instance=provider,
+                available=available,
             )
         },
     )
@@ -140,17 +157,27 @@ def _mass(source_items: Mapping[str, object]) -> MagicMock:
     mass.music.tracks.get = AsyncMock()
     mass.metadata.get_image_url_for_item = AsyncMock(return_value=None)
     mass.get_providers_supporting_feature = MagicMock(return_value=[])
+    mass.get_provider = MagicMock(return_value=None)
+    mass.player_queues = MagicMock()
     return mass
 
 
-def _guess_quiz(mass: MagicMock, source_uris: list[str]) -> GuessTheSongQuizType:
+def _guess_quiz(
+    mass: MagicMock,
+    source_uris: list[str],
+    *,
+    round_count: int = 1,
+    suggestion_count: int = 2,
+    include_similar_music: bool = False,
+) -> GuessTheSongQuizType:
     """Return a Guess the Song quiz for source-resolution tests."""
     return GuessTheSongQuizType(
         mass,
         MusicQuizConfig(
-            round_count=1,
-            suggestion_count=2,
+            round_count=round_count,
+            suggestion_count=suggestion_count,
             source_uris=source_uris,
+            include_similar_music=include_similar_music,
         ),
     )
 
@@ -301,6 +328,260 @@ async def test_mixed_sources_deduplicate_and_skip_failure() -> None:
     )._get_source_track_pool()
 
     assert list(pool) == [direct_uri, extra_uri]
+
+
+@pytest.mark.asyncio
+async def test_default_source_pool_does_not_request_similar_music() -> None:
+    """Keep the complete exact playlist pool unchanged when expansion is disabled."""
+    source = _playlist()
+    tracks = [_track("one"), _track("two")]
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks(tracks))
+    radio_provider = MagicMock()
+    radio_provider.get_dynamic_tracks = AsyncMock(return_value=[_track("similar")])
+    mass.get_provider.return_value = radio_provider
+
+    pool = await _guess_quiz(mass, [source_uri])._get_source_track_pool()
+
+    assert list(pool.values()) == tracks
+    mass.get_provider.assert_not_called()
+    radio_provider.get_dynamic_tracks.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("round_count", "suggestion_count", "expected_target"),
+    [(1, 2, 25), (100, 12, 50)],
+)
+@pytest.mark.asyncio
+async def test_similar_music_uses_resolved_seeds_and_bounded_target(
+    round_count: int,
+    suggestion_count: int,
+    expected_target: int,
+) -> None:
+    """Call radio once with selected media seeds and no playback-queue state."""
+    source = _playlist()
+    exact = _track("exact")
+    expanded = _track("expanded")
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    radio_provider = MagicMock()
+    radio_provider.get_dynamic_tracks = AsyncMock(return_value=[expanded])
+    mass.get_provider.return_value = radio_provider
+    quiz = _guess_quiz(
+        mass,
+        [source_uri],
+        round_count=round_count,
+        suggestion_count=suggestion_count,
+        include_similar_music=True,
+    )
+
+    pool = await quiz._get_source_track_pool()
+    cached_pool = await quiz._get_source_track_pool()
+
+    assert cached_pool is pool
+    assert list(pool.values()) == [exact, expanded]
+    radio_provider.get_dynamic_tracks.assert_awaited_once_with(
+        [source],
+        include_base_tracks=False,
+        target_size=expected_target,
+        preferred_provider_instances=["provider"],
+    )
+    assert mass.player_queues.mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_similar_music_preserves_exact_tracks_and_filters_expansion() -> None:
+    """Retain exact tracks while deduplicating and filtering radio candidates."""
+    source = _playlist()
+    exact = _track("exact")
+    duplicate = _track("exact")
+    expanded = _track("expanded")
+    unavailable = _track("unavailable", available=False)
+    unplayable = _track("unplayable", is_playable=False)
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    radio_provider = MagicMock()
+    radio_provider.get_dynamic_tracks = AsyncMock(
+        return_value=[duplicate, expanded, unavailable, unplayable]
+    )
+    mass.get_provider.return_value = radio_provider
+
+    pool = await _guess_quiz(
+        mass,
+        [source_uri],
+        include_similar_music=True,
+    )._get_source_track_pool()
+
+    assert list(pool.values()) == [exact, expanded]
+    assert pool[_uri(exact)] is exact
+
+
+@pytest.mark.parametrize("radio_mode", ["missing", "empty", "filtered", "error"])
+@pytest.mark.asyncio
+async def test_similar_music_failure_falls_back_to_exact_pool(
+    radio_mode: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Treat unavailable, empty, and failed radio expansion as optional."""
+    caplog.set_level(logging.DEBUG)
+    source = _playlist()
+    exact = _track("exact")
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    if radio_mode != "missing":
+        radio_provider = MagicMock()
+        radio_provider.get_dynamic_tracks = AsyncMock(
+            return_value=(
+                [_track("unavailable", available=False)] if radio_mode == "filtered" else []
+            ),
+            side_effect=RuntimeError("radio failed") if radio_mode == "error" else None,
+        )
+        mass.get_provider.return_value = radio_provider
+
+    pool = await _guess_quiz(
+        mass,
+        [source_uri],
+        include_similar_music=True,
+    )._get_source_track_pool()
+
+    assert pool == {_uri(exact): exact}
+    assert any(
+        "similar" in record.message.lower() or "radio" in record.message.lower()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_guess_the_song_can_select_an_expanded_track() -> None:
+    """Apply normal distractor validation when an expanded track is selected."""
+    source = _playlist()
+    exact = _track("exact")
+    expanded = _track("expanded")
+    distractor = _track("distractor")
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    mass.music.search.return_value = SimpleNamespace(tracks=[distractor])
+    radio_provider = MagicMock()
+    radio_provider.get_dynamic_tracks = AsyncMock(return_value=[expanded])
+    mass.get_provider.return_value = radio_provider
+    quiz = _guess_quiz(
+        mass,
+        [source_uri],
+        include_similar_music=True,
+    )
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song.secrets.choice",
+        return_value=expanded,
+    ):
+        game_round = await quiz.prepare_round(0, [])
+
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    assert game_round.track_uri == expanded.uri
+    assert len(game_round.answer_state.suggestions) == 2
+    assert {suggestion.uri for suggestion in game_round.answer_state.suggestions} == {
+        expanded.uri,
+        distractor.uri,
+    }
+
+
+@pytest.mark.asyncio
+async def test_music_timeline_applies_date_rules_to_expanded_tracks() -> None:
+    """Select dated expansion while excluding expanded tracks without a usable year."""
+    source = _playlist()
+    exact = _track("exact", year=1990)
+    expanded = _track("expanded", year=2000)
+    undated = _track("undated")
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    mass.music.tracks.get.return_value = undated
+    radio_provider = MagicMock()
+    radio_provider.get_dynamic_tracks = AsyncMock(return_value=[expanded, undated])
+    mass.get_provider.return_value = radio_provider
+    quiz = MusicTimelineQuizType(
+        mass,
+        MusicQuizConfig(
+            round_count=1,
+            source_uris=[source_uri],
+            include_similar_music=True,
+        ),
+    )
+
+    await quiz.initialize()
+    eligible_tracks = await quiz._get_eligible_tracks()
+    game_round = await quiz.prepare_round(0, [])
+
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert {track.uri for track in eligible_tracks} == {exact.uri, expanded.uri}
+    assert quiz._source_track_pool is not None
+    assert undated.uri in quiz._source_track_pool
+    assert {
+        game_round.answer_state.placement_snapshot[0].track_uri,
+        game_round.answer_state.candidate.entry.track_uri,
+    } == {exact.uri, expanded.uri}
+
+
+@pytest.mark.asyncio
+async def test_trivia_applies_grounding_rules_to_expanded_tracks() -> None:
+    """Select grounded expansion while excluding candidates without factual context."""
+    source = _playlist()
+    exact = _track("exact")
+    expanded = _track("expanded")
+    ungrounded = Track(
+        item_id="ungrounded",
+        provider="provider",
+        name="Ungrounded",
+        provider_mappings={
+            ProviderMapping(
+                item_id="ungrounded",
+                provider_domain="provider",
+                provider_instance="provider",
+            )
+        },
+    )
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([exact]))
+    radio_provider = MagicMock()
+    radio_provider.get_dynamic_tracks = AsyncMock(return_value=[expanded, ungrounded])
+    mass.get_provider.return_value = radio_provider
+    quiz = TriviaQuizType(
+        mass,
+        MusicQuizConfig(
+            round_count=1,
+            suggestion_count=2,
+            source_uris=[source_uri],
+            include_similar_music=True,
+        ),
+    )
+
+    eligible_tracks = await quiz._get_eligible_tracks()
+    generation = TriviaGeneration(
+        question="Which artist recorded this track?",
+        wrong_answers=("Different Artist",),
+    )
+    with (
+        patch.object(quiz, "_generate_question", new=AsyncMock(return_value=generation)),
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+            return_value=eligible_tracks[_uri(expanded)],
+        ),
+    ):
+        game_round = await quiz.prepare_round(0, [])
+
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    assert set(eligible_tracks) == {exact.uri, expanded.uri}
+    assert game_round.track_uri == expanded.uri
+    correct = next(
+        suggestion for suggestion in game_round.answer_state.suggestions if suggestion.is_correct
+    )
+    assert correct.uri == expanded.uri
 
 
 @pytest.mark.parametrize(

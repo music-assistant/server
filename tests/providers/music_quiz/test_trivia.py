@@ -216,6 +216,7 @@ def test_registry_identity_and_config_are_trivia_specific() -> None:
         round_count=2,
         suggestion_count=6,
         source_uris=["prov://playlist/1"],
+        include_similar_music=True,
         difficulty=MusicQuizDifficulty.HARD.value,
         use_ai_distractors=True,
         artist_bonus_mode=TimelineBonusMode.FREE_TEXT,
@@ -228,6 +229,7 @@ def test_registry_identity_and_config_are_trivia_specific() -> None:
     assert normalized.suggestion_count == 6
     assert normalized.difficulty == MusicQuizDifficulty.HARD.value
     assert normalized.use_ai_distractors is False
+    assert normalized.include_similar_music is True
     assert normalized.artist_bonus_mode is TimelineBonusMode.OFF
     assert normalized.title_bonus_mode is TimelineBonusMode.OFF
     quiz_type = TriviaQuizType(_mass(), normalized)
