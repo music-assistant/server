@@ -72,6 +72,8 @@ if TYPE_CHECKING:
 DEFAULT_SENDSPIN_CLIENT_PORT = 8928
 DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
 VIRTUAL_PLAYER_REGISTER_TIMEOUT = 10.0
+VIRTUAL_PLAYER_CLEANUP_DELAYS = (0.0, 0.5, 2.0)
+VIRTUAL_PLAYER_CLEANUP_TIMEOUT = 2.0
 
 
 def _manual_client_url(address: str) -> str:
@@ -336,13 +338,11 @@ class SendspinProvider(PlayerProvider):
         try:
             self._register_virtual_player_client(player_id, display_name)
             await self._wait_for_virtual_player(player_id)
+        except asyncio.CancelledError:
+            await self._cleanup_failed_virtual_player_creation(player_id)
+            raise
         except Exception as err:
-            self._virtual_players.pop(player_id, None)
-            # purge any partially registered player and its config
-            await self.mass.players.unregister(player_id, permanent=True)
-            if self.server_api.get_client(player_id) is not None:
-                await self.server_api.remove_client(player_id)
-            self.mass.players.delete_player_config(player_id)
+            await self._cleanup_failed_virtual_player_creation(player_id)
             if isinstance(err, SetupFailedError):
                 raise
             raise SetupFailedError(f"Failed to create virtual player {player_id}") from err
@@ -365,7 +365,6 @@ class SendspinProvider(PlayerProvider):
             and self._get_virtual_player_config_owner(player_id) is None
         ):
             raise ValueError(f"{player_id} is not a virtual player")
-        self._virtual_players.pop(player_id, None)
         # unregister the player first so the client removed event handler
         # can not race us with a non-permanent unregister
         await self.mass.players.unregister(player_id, permanent=True)
@@ -373,6 +372,7 @@ class SendspinProvider(PlayerProvider):
             await self.server_api.remove_client(player_id)
         # the config may linger when the player was never registered
         self.mass.players.delete_player_config(player_id)
+        self._virtual_players.pop(player_id, None)
         self.logger.info("Virtual player %s removed", player_id)
 
     def is_virtual_player(self, player_id: str) -> bool:
@@ -735,6 +735,28 @@ class SendspinProvider(PlayerProvider):
                 return
             await asyncio.sleep(0.1)
         raise SetupFailedError(f"Virtual player {player_id} was not registered in time")
+
+    async def _cleanup_failed_virtual_player_creation(self, player_id: str) -> None:
+        """
+        Remove a virtual player after its creation does not complete.
+
+        :param player_id: Virtual player to remove.
+        """
+        last_error: Exception | None = None
+        for delay in VIRTUAL_PLAYER_CLEANUP_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                async with asyncio.timeout(VIRTUAL_PLAYER_CLEANUP_TIMEOUT):
+                    await self.remove_virtual_player(player_id)
+                return
+            except Exception as err:
+                last_error = err
+        self.logger.warning(
+            "Could not clean up failed virtual player creation %s: %s",
+            player_id,
+            last_error,
+        )
 
     def _on_virtual_player_stream_start(self, _request: ExternalStreamStartRequest) -> None:
         """Accept stream start requests for virtual players (nothing to connect)."""
