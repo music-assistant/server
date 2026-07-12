@@ -38,6 +38,7 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizNoPlaybackTargetError,
     MusicQuizUnknownPlayerError,
 )
+from music_assistant.providers.music_quiz.game import finish_game as finish_game_state
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
     MultipleChoiceSuggestion,
@@ -397,6 +398,32 @@ async def _create_started_trivia_game(
             player_ids[player_name] = result["player_id"]
     await plugin.start_game()
     return player_ids
+
+
+async def _assert_reveal_deadline_cleared(
+    plugin: MusicQuizPlugin,
+    player_id: str,
+) -> None:
+    """Assert every client state sees a retryable reveal without a deadline."""
+    game = plugin._game
+    assert game is not None
+    public_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    host_state = await plugin.get_game()
+    assert host_state is not None
+    with patch(
+        "music_assistant.providers.music_quiz.get_current_user",
+        return_value=_guest_user(),
+    ):
+        personal_state = await plugin.get_player_state(player_id)
+
+    assert game.phase == MusicQuizPhase.REVEAL
+    assert game.rounds[-1].auto_advance_at is None
+    assert {
+        public_state["current_round"]["auto_advance_at"],
+        host_state["current_round"]["auto_advance_at"],
+        host_state["rounds"][-1]["auto_advance_at"],
+        personal_state["current_round"]["auto_advance_at"],
+    } == {None}
 
 
 @pytest.fixture(autouse=True)
@@ -1511,6 +1538,143 @@ async def test_final_trivia_reveal_finishes_once(advance: str) -> None:
 
     assert game.phase == MusicQuizPhase.FINISHED
     cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_intermediate_trivia_auto_advance_failure_broadcasts_retryable_reveal() -> None:
+    """Clear the expired deadline and allow host Next after round preparation fails."""
+    plugin = _create_plugin()
+    fail_next_round = True
+
+    async def _prepare_round(
+        round_index: int,
+        previous_rounds: list[MusicQuizRound],
+    ) -> MusicQuizRound:
+        if round_index == 1 and fail_next_round:
+            raise InvalidDataError("round preparation failed")
+        return _make_trivia_round(round_index, previous_rounds)
+
+    prepare_round = AsyncMock(side_effect=_prepare_round)
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(TriviaQuizType, "prepare_round", new=prepare_round),
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+    ):
+        player_ids = await _create_started_trivia_game(plugin, round_count=2)
+        await plugin.answer(player_ids["Alice"], "correct_0")
+        playback_task = plugin._reveal_playback_task
+        assert playback_task is not None
+        await playback_task
+
+        game = plugin._game
+        assert game is not None
+        revealed_answer_state = game.rounds[0].answer_state.to_dict()
+        revealed_ended_at = game.rounds[0].ended_at
+        revealed_score = game.players[player_ids["Alice"]].score
+        _, stale_callback, stale_round_index = _round_timer_call(plugin, plugin._advance_timer_id)
+        signal = cast("MagicMock", plugin.signal_provider_event)
+        signal.reset_mock()
+
+        await stale_callback(stale_round_index)
+
+        signal.assert_called_once()
+        await _assert_reveal_deadline_cleared(plugin, player_ids["Alice"])
+        assert game.current_round_index == 0
+        assert len(game.rounds) == 1
+        assert game.rounds[0].answer_state.to_dict() == revealed_answer_state
+        assert game.rounds[0].ended_at == revealed_ended_at
+        assert game.players[player_ids["Alice"]].score == revealed_score
+        assert (
+            sum(
+                call.kwargs.get("task_id") == plugin._advance_timer_id
+                for call in cast("MagicMock", plugin.mass.call_later).call_args_list
+            )
+            == 1
+        )
+
+        fail_next_round = False
+        state = await plugin.next_round()
+        assert state["phase"] == "answering"
+        assert game.current_round_index == 1
+        assert len(game.rounds) == 2
+        await stale_callback(stale_round_index)
+
+    assert game.phase == MusicQuizPhase.ANSWERING
+    assert game.current_round_index == 1
+    assert len(game.rounds) == 2
+
+
+@pytest.mark.asyncio
+async def test_final_trivia_auto_advance_failure_broadcasts_retryable_reveal() -> None:
+    """Clear the expired deadline and allow player Ready after finalization fails."""
+    plugin = _create_plugin()
+    finish_attempts = 0
+
+    def _finish_game(game: MusicQuizGame) -> None:
+        nonlocal finish_attempts
+        finish_attempts += 1
+        if finish_attempts == 1:
+            raise RuntimeError("finalization failed")
+        finish_game_state(game)
+
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+        patch("music_assistant.providers.music_quiz.finish_game", side_effect=_finish_game),
+        patch(
+            "music_assistant.providers.music_quiz.get_current_user",
+            return_value=_guest_user(),
+        ),
+    ):
+        player_ids = await _create_started_trivia_game(plugin, round_count=1)
+        await plugin.answer(player_ids["Alice"], "correct_0")
+        playback_task = plugin._reveal_playback_task
+        assert playback_task is not None
+        await playback_task
+
+        game = plugin._game
+        assert game is not None
+        revealed_answer_state = game.rounds[0].answer_state.to_dict()
+        revealed_ended_at = game.rounds[0].ended_at
+        revealed_score = game.players[player_ids["Alice"]].score
+        _, stale_callback, stale_round_index = _round_timer_call(plugin, plugin._advance_timer_id)
+        signal = cast("MagicMock", plugin.signal_provider_event)
+        signal.reset_mock()
+
+        await stale_callback(stale_round_index)
+
+        signal.assert_called_once()
+        await _assert_reveal_deadline_cleared(plugin, player_ids["Alice"])
+        assert game.current_round_index == 0
+        assert len(game.rounds) == 1
+        assert game.rounds[0].answer_state.to_dict() == revealed_answer_state
+        assert game.rounds[0].ended_at == revealed_ended_at
+        assert game.players[player_ids["Alice"]].score == revealed_score
+        assert (
+            sum(
+                call.kwargs.get("task_id") == plugin._advance_timer_id
+                for call in cast("MagicMock", plugin.mass.call_later).call_args_list
+            )
+            == 1
+        )
+
+        state = await plugin.ready(player_ids["Alice"])
+        assert state["phase"] == "finished"
+        assert state["current_round"]["auto_advance_at"] is None
+        assert game.phase == MusicQuizPhase.FINISHED
+        assert game.players[player_ids["Alice"]].score == revealed_score
+        assert finish_attempts == 2
+        await stale_callback(stale_round_index)
+
+    assert game.phase == MusicQuizPhase.FINISHED
+    assert finish_attempts == 2
 
 
 @pytest.mark.asyncio

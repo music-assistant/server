@@ -1106,8 +1106,15 @@ class MusicQuizPlugin(PluginProvider):
             try:
                 await self._advance_from_reveal()
             except Exception as err:
-                # leave the game in reveal so the host can retry via next/reset
+                # leave the game in reveal so the host or players can retry manually
                 self.logger.error("Could not advance Music Quiz game: %s", err, exc_info=err)
+                if (
+                    self._game is game
+                    and self._game_generation == generation
+                    and self._is_current_round(round_index, MusicQuizPhase.REVEAL)
+                ):
+                    get_current_round(game).auto_advance_at = None
+                    self._signal_game_updated()
 
     def _is_current_round(self, round_index: int, phase: MusicQuizPhase) -> bool:
         """Return whether the game is still in the given round and phase."""
