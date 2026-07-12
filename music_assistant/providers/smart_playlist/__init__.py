@@ -1290,17 +1290,17 @@ class SmartPlaylistProvider(PluginProvider):
                     if base not in seen:
                         seen.add(base)
                         seed_pool.append(base)
-                    if base_count < base_track_limit:
-                        base_count += 1
-                        with suppress(MusicAssistantError):
-                            for track in await self.mass.music.tracks.similar_tracks(
-                                base.item_id, base.provider
-                            ):
-                                if len(seed_pool) >= per_seed_cap:
-                                    break
-                                if track not in seen:
-                                    seen.add(track)
-                                    seed_pool.append(track)
+                        if base_count < base_track_limit:
+                            base_count += 1
+                            with suppress(MusicAssistantError):
+                                for track in await self.mass.music.tracks.similar_tracks(
+                                    base.item_id, base.provider
+                                ):
+                                    if len(seed_pool) >= per_seed_cap:
+                                        break
+                                    if track not in seen:
+                                        seen.add(track)
+                                        seed_pool.append(track)
             per_seed_pools.append(seed_pool)
         pool: list[Track] = []
         for round_tracks in zip_longest(*per_seed_pools):

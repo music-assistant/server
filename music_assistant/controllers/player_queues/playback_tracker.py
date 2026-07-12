@@ -286,7 +286,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # refill the queue (dynamic mode or autoplay) when running low on tracks
         if "current_item_id" in changed_keys:
             running_low = (
-                queue.current_index is not None and (queue.items - queue.current_index) < 10
+                queue.current_index is not None and (queue.items - queue.current_index - 1) < 10
             )
             if queue.is_dynamic and running_low:
                 task_id = f"fill_dynamic_tracks_{queue_id}"

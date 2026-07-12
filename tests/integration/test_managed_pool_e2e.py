@@ -286,3 +286,40 @@ async def test_dynamic_source_is_not_materialized(e2e_mass: MusicAssistant) -> N
     materialized = e2e_mass.player_queues._managed_pool._materialized.get(queue_id, {})
     assert album.uri in materialized  # the finite source is materialized into a deque
     assert radio.uri not in materialized  # the dynamic playlist is left to self-manage
+
+
+@pytest.mark.asyncio
+async def test_progressive_loading_returns_first_batch_then_fills(
+    e2e_mass: MusicAssistant,
+) -> None:
+    """Progressive loading (use_first_batch=True) returns initial candidates without waiting for full target."""
+    queue_id = demo_players(e2e_mass)[0].player_id
+    test_prov = cast("MusicProvider", e2e_mass.get_provider("test"))
+    assert test_prov is not None
+    queue = e2e_mass.player_queues.get(queue_id)
+    assert queue is not None
+    e2e_mass.player_queues.queue_data(queue_id).userid = TEST_USER
+
+    album = await test_prov.get_album("0_0")  # 20 tracks
+    e2e_mass.player_queues.queue_data(queue_id).source_items = cast("list[MediaItemType]", [album])
+
+    # first fill with use_first_batch=True: should return available candidates (up to TARGET)
+    first_batch = await e2e_mass.player_queues._managed_pool.fill(
+        queue_id, is_initial=False, use_first_batch=True
+    )
+    assert 0 < len(first_batch) <= MANAGED_POOL_TARGET
+
+    # second fill without use_first_batch: should top up to TARGET
+    # simulate advancing the queue by marking first_batch as played
+    e2e_mass.player_queues.queue_data(queue_id).items = [
+        QueueItem.from_media_item(queue_id, track) for track in first_batch
+    ]
+    queue.current_index = len(first_batch) - 1
+
+    second_batch = await e2e_mass.player_queues._managed_pool.fill(
+        queue_id, is_initial=False, use_first_batch=False
+    )
+    # should top up toward TARGET
+    assert len(second_batch) > 0
+    total = len(first_batch) + len(second_batch)
+    assert total <= MANAGED_POOL_TARGET + 5  # allow some buffer

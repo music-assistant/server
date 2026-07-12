@@ -9,7 +9,7 @@ side-effecting ``play_index`` and ``signal_update`` are stubbed out.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.media_items import (
@@ -292,6 +292,7 @@ async def test_enter_dynamic_mode_add_on_idle_does_not_start_playback() -> None:
 async def test_enter_dynamic_mode_play_on_idle_starts_playback() -> None:
     """PLAY of a dynamic source onto an idle/empty queue starts playback on the rebuilt pool."""
     ctrl = _dynamic_controller()
+    ctrl.mass = MagicMock()
     play_index = AsyncMock()
     ctrl.play_index = play_index  # type: ignore[method-assign]
     queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)

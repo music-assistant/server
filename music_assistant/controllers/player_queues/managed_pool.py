@@ -117,14 +117,21 @@ class ManagedPool:
         self._materialized: dict[str, dict[str, _MaterializedSource]] = {}
 
     async def fill(
-        self, queue_id: str, *, is_initial: bool, target_size: int | None = None
+        self,
+        queue_id: str,
+        *,
+        is_initial: bool,
+        target_size: int | None = None,
+        use_first_batch: bool = False,
     ) -> list[Track]:
         """
         Build (or top up) the managed pool and return the tracks to add.
 
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
-        :param target_size: Override the batch size (for progressive loading).
+        :param target_size: Override the batch size.
+        :param use_first_batch: When True, return the currently available candidate batch without
+            waiting to size up to MANAGED_POOL_TARGET (for progressive loading).
         """
         queue_data = self.queues.queue_data(queue_id)
         queue = queue_data.queue
@@ -150,12 +157,11 @@ class ManagedPool:
             if isinstance(item.media_item, Track):
                 pool_keys.add(item.media_item)
                 pool_song_keys.update(song_keys(item.media_item))
-        if target_size is not None:
-            if target_size == 1:
-                total_candidates = sum(len(s.candidates) for s in sources)
-                slots = min(total_candidates, MANAGED_POOL_TARGET) if total_candidates > 0 else 1
-            else:
-                slots = target_size
+        if use_first_batch:
+            total_candidates = sum(len(s.candidates) for s in sources)
+            slots = min(total_candidates, MANAGED_POOL_TARGET) if total_candidates > 0 else 1
+        elif target_size is not None:
+            slots = target_size
         else:
             slots = (
                 MANAGED_POOL_TARGET
