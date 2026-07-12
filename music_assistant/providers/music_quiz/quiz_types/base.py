@@ -19,13 +19,18 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
-    from music_assistant.providers.music_quiz.models import MusicQuizConfig, MusicQuizRound
+    from music_assistant.providers.music_quiz.models import (
+        MusicQuizConfig,
+        MusicQuizGame,
+        MusicQuizRound,
+    )
 
 LOGGER = logging.getLogger(__name__)
 
@@ -154,6 +159,18 @@ class QuizType(ABC):
         :raises InvalidDataError: If no suitable round material is available.
         :return: The prepared (not yet started) round.
         """
+
+    @classmethod
+    def serialize_game_config(
+        cls,
+        game: MusicQuizGame,  # noqa: ARG003
+    ) -> dict[str, SerializableType]:
+        """
+        Serialize quiz-specific game configuration.
+
+        :param game: Game whose configuration should be serialized.
+        """
+        return {}
 
     def reject_track(self, track_uri: str) -> None:
         """

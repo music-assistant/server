@@ -18,6 +18,7 @@ from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, jso
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
+    DEFAULT_TRIVIA_LANGUAGE,
     MusicQuizAnswerType,
     MusicQuizDifficulty,
     MusicQuizRound,
@@ -84,6 +85,7 @@ class MusicTimelineQuizType(QuizType):
             config,
             suggestion_count=DEFAULT_BONUS_OPTION_COUNT,
             difficulty=MusicQuizDifficulty.NORMAL.value,
+            language=DEFAULT_TRIVIA_LANGUAGE,
         )
 
     @classmethod

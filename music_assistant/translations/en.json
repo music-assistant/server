@@ -1398,6 +1398,7 @@
   "provider.music_quiz.errors.music_quiz_invalid_answer": "This answer is not valid for the current game.",
   "provider.music_quiz.errors.music_quiz_invalid_bonus_mode": "The selected timeline bonus mode is not valid.",
   "provider.music_quiz.errors.music_quiz_invalid_difficulty": "The selected difficulty is not valid.",
+  "provider.music_quiz.errors.music_quiz_invalid_language": "The selected Trivia language is not valid.",
   "provider.music_quiz.errors.music_quiz_name_required": "A player name is required.",
   "provider.music_quiz.errors.music_quiz_name_taken": "This player name is already taken.",
   "provider.music_quiz.errors.music_quiz_no_dated_tracks": "None of the selected tracks have a usable release year.",

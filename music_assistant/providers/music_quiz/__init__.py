@@ -28,7 +28,7 @@ The public game state is guest-safe by construction. Common state contains:
   ``answer_type``, ``mode`` (venue/remote), ``round_count``, ``answer_duration``
   and public player progress. ``auto_start_at`` contains the authoritative replay
   deadline while a lobby countdown is active. Private player IDs never appear in
-  broadcasts.
+  broadcasts. Trivia additionally exposes its canonical ``language``.
 - answering rounds expose common timing and question fields plus a strategy
   fragment. Multiple-choice exposes opaque ``suggestions``. Timeline exposes
   the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
@@ -120,6 +120,7 @@ from music_assistant.providers.music_quiz.game import (
     submit_answer as submit_game_answer,
 )
 from music_assistant.providers.music_quiz.models import (
+    DEFAULT_TRIVIA_LANGUAGE,
     MusicQuizAnswerType,
     MusicQuizConfig,
     MusicQuizDifficulty,
@@ -332,6 +333,7 @@ class MusicQuizPlugin(PluginProvider):
         source_uris: list[str] | None = None,
         name: str | None = None,
         difficulty: str = MusicQuizDifficulty.NORMAL.value,
+        language: str = DEFAULT_TRIVIA_LANGUAGE,
         artist_bonus_mode: str = TimelineBonusMode.OFF.value,
         title_bonus_mode: str = TimelineBonusMode.OFF.value,
     ) -> dict[str, Any]:
@@ -345,6 +347,7 @@ class MusicQuizPlugin(PluginProvider):
         :param source_uris: Track, playlist, album, artist or genre URIs to draw rounds from.
         :param name: Optional game name.
         :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
+        :param language: Language tag for Trivia question content.
         :param artist_bonus_mode: Music Timeline artist bonus mode.
         :param title_bonus_mode: Music Timeline title bonus mode.
         """
@@ -368,6 +371,7 @@ class MusicQuizPlugin(PluginProvider):
                 name=_clean_game_name(name),
                 difficulty=difficulty,
                 use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
+                language=language,
                 artist_bonus_mode=parsed_artist_bonus_mode,
                 title_bonus_mode=parsed_title_bonus_mode,
             )
@@ -500,6 +504,7 @@ class MusicQuizPlugin(PluginProvider):
                 "player_count": len(game.players),
                 "round_count": game.config.round_count,
                 "auto_start_at": game.auto_start_at,
+                **get_quiz_type(game.quiz_type).serialize_game_config(game),
             }
 
     async def join_game(self, name: str) -> dict[str, Any]:
@@ -1457,6 +1462,7 @@ def _public_state(game: MusicQuizGame, mode: str, answer_type: QuizAnswerType) -
         "answer_duration": game.config.answer_duration,
         "auto_start_at": game.auto_start_at,
         **answer_type.serialize_game_config(game),
+        **get_quiz_type(game.quiz_type).serialize_game_config(game),
         "players": players,
         "current_round": _public_round(
             game,
