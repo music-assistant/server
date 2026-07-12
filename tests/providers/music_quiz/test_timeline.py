@@ -109,7 +109,7 @@ def _game(
             artist_bonus_mode=artist_mode,
             title_bonus_mode=title_mode,
         ),
-        quiz_type="hitster",
+        quiz_type="music_timeline",
         answer_type=MusicQuizAnswerType.TIMELINE,
         phase=MusicQuizPhase.ANSWERING,
         players=players,

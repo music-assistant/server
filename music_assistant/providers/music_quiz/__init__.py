@@ -3,7 +3,7 @@ Music Quiz Plugin Provider for Music Assistant.
 
 Provides the backend game engine for multiplayer music quiz games. Guests
 join with a QR code on their own device and play the selected quiz type:
-guess-the-song uses multiple-choice answers, while Hitster uses a shared
+guess-the-song uses multiple-choice answers, while Music Timeline uses a shared
 chronological timeline with optional artist and title bonuses. Trivia uses
 AI-worded multiple-choice questions grounded in selected library metadata.
 
@@ -345,8 +345,8 @@ class MusicQuizPlugin(PluginProvider):
         :param source_uris: Track, playlist, album, artist or genre URIs to draw rounds from.
         :param name: Optional game name.
         :param difficulty: Guess-the-song difficulty ("easy", "normal" or "hard").
-        :param artist_bonus_mode: Hitster artist bonus mode.
-        :param title_bonus_mode: Hitster title bonus mode.
+        :param artist_bonus_mode: Music Timeline artist bonus mode.
+        :param title_bonus_mode: Music Timeline title bonus mode.
         """
         quiz_type_class = get_quiz_type(quiz_type)
         get_answer_type(quiz_type_class.answer_type)

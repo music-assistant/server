@@ -109,12 +109,12 @@ def _make_round(round_index: int, suggestion_count: int = 4) -> MusicQuizRound:
     )
 
 
-def _make_hitster_round(
+def _make_music_timeline_round(
     round_index: int,
     previous_rounds: list[MusicQuizRound],
     bonus_definitions: list[TimelineBonusDefinition] | None = None,
 ) -> MusicQuizRound:
-    """Return a deterministic Hitster round with a prefetch-safe snapshot."""
+    """Return a deterministic Music Timeline round with a prefetch-safe snapshot."""
     if previous_rounds:
         previous_state = previous_rounds[-1].answer_state
         assert isinstance(previous_state, TimelineRoundState)
@@ -135,12 +135,12 @@ def _make_hitster_round(
             )
         ]
     current_entry = TimelineEntry(
-        entry_id=f"hitster-{round_index}",
+        entry_id=f"music_timeline-{round_index}",
         release_year=2000 + round_index,
         title=f"Secret Title {round_index}",
         artist=f"Secret Artist {round_index}",
-        track_uri=f"library://track/hitster-{round_index}",
-        image_url=f"https://img/hitster-{round_index}",
+        track_uri=f"library://track/music_timeline-{round_index}",
+        image_url=f"https://img/music_timeline-{round_index}",
     )
     return MusicQuizRound(
         round_index=round_index,
@@ -320,7 +320,7 @@ async def _create_started_game(
     return player_ids
 
 
-async def _create_started_hitster_game(
+async def _create_started_music_timeline_game(
     plugin: MusicQuizPlugin,
     player_names: tuple[str, ...] = ("Alice",),
     round_count: int = 1,
@@ -328,9 +328,9 @@ async def _create_started_hitster_game(
     artist_bonus_mode: str = TimelineBonusMode.OFF.value,
     title_bonus_mode: str = TimelineBonusMode.OFF.value,
 ) -> dict[str, str]:
-    """Create and start a Hitster game, returning name-to-player credentials."""
+    """Create and start a Music Timeline game, returning name-to-player credentials."""
     await plugin.create_game(
-        quiz_type="hitster",
+        quiz_type="music_timeline",
         round_count=round_count,
         source_uris=["library://playlist/1"],
         name="Timeline Quiz",
@@ -815,11 +815,11 @@ async def test_available_quiz_types_reflect_ai_plugin_availability() -> None:
     providers = cast("MagicMock", plugin.mass.get_providers_supporting_feature)
 
     providers.return_value = []
-    assert await plugin.available_quiz_types() == ["guess_the_song", "hitster"]
+    assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline"]
     providers.return_value = [MagicMock()]
-    assert await plugin.available_quiz_types() == ["guess_the_song", "hitster"]
+    assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline"]
     providers.return_value = [MagicMock(spec=PluginProvider)]
-    assert await plugin.available_quiz_types() == ["guess_the_song", "hitster", "trivia"]
+    assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline", "trivia"]
 
 
 @pytest.mark.parametrize(
@@ -827,7 +827,7 @@ async def test_available_quiz_types_reflect_ai_plugin_availability() -> None:
     [(None, "anchor"), ("anchor", None)],
 )
 @pytest.mark.asyncio
-async def test_hitster_edge_placement_accepts_null_at_api_boundary(
+async def test_music_timeline_edge_placement_accepts_null_at_api_boundary(
     previous_entry_id: str | None,
     next_entry_id: str | None,
 ) -> None:
@@ -843,17 +843,19 @@ async def test_hitster_edge_placement_accepts_null_at_api_boundary(
     await plugin.loaded_in_mass()
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
+                    round_index, previous
+                )
             ),
         ),
     ):
-        player_ids = await _create_started_hitster_game(plugin)
+        player_ids = await _create_started_music_timeline_game(plugin)
         handler = registered["music_quiz/submit_answer"]
         arguments = parse_arguments(
             handler.signature,
@@ -1215,23 +1217,25 @@ async def test_trivia_reset_delete_and_recreate_keep_lifecycle_non_audio() -> No
 
 
 @pytest.mark.asyncio
-async def test_hitster_create_uses_flat_config_and_derived_answer_type() -> None:
-    """Create Hitster from flattened fields without exposing GTS-only controls."""
+async def test_music_timeline_create_uses_flat_config_and_derived_answer_type() -> None:
+    """Create Music Timeline from flattened fields without exposing GTS-only controls."""
     plugin = _create_plugin(use_ai_distractors=True)
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
+                    round_index, previous
+                )
             ),
         ),
     ):
         created = await plugin.create_game(
-            quiz_type="hitster",
+            quiz_type="music_timeline",
             round_count=2,
             suggestion_count=9,
             source_uris=["library://playlist/1"],
@@ -1242,7 +1246,7 @@ async def test_hitster_create_uses_flat_config_and_derived_answer_type() -> None
 
     game = plugin._game
     assert game is not None
-    assert game.quiz_type == "hitster"
+    assert game.quiz_type == "music_timeline"
     assert game.answer_type == "timeline"
     assert game.config.suggestion_count == 4
     assert game.config.difficulty == "normal"
@@ -1253,23 +1257,27 @@ async def test_hitster_create_uses_flat_config_and_derived_answer_type() -> None
 
 
 @pytest.mark.asyncio
-async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_lyrics() -> None:
-    """Complete on placement, preserve playback, and skip lyrics warm-up for Hitster."""
+async def test_music_timeline_placement_auto_reveals_without_bonuses_and_never_warms_lyrics() -> (
+    None
+):
+    """Complete on placement, preserve playback, and skip lyrics warm-up for Music Timeline."""
     plugin = _create_plugin()
     plugin._warm_up_lyrics = MagicMock()  # type: ignore[method-assign]
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
+                    round_index, previous
+                )
             ),
         ),
     ):
-        player_ids = await _create_started_hitster_game(plugin)
+        player_ids = await _create_started_music_timeline_game(plugin)
         _, deadline_callback, round_index = _round_timer_call(plugin, plugin._reveal_timer_id)
         signal = cast("MagicMock", plugin.signal_provider_event)
         hidden_state = signal.call_args[0][0]["state"]
@@ -1317,15 +1325,20 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
         assert game.rounds[0].auto_advance_at == 130.0
         assert state["current_round"]["auto_advance_at"] == 130.0
         assert game.players[player_ids["Alice"]].score == 1000
-        cast("AsyncMock", plugin._play_track).assert_awaited_with("library://track/hitster-0")
+        cast("AsyncMock", plugin._play_track).assert_awaited_with(
+            "library://track/music_timeline-0"
+        )
         plugin._warm_up_lyrics.assert_not_called()
         assert state["current_round"]["revealed_entry"]["release_year"] == 2000
         assert [entry["entry_id"] for entry in state["current_round"]["timeline"]] == [
             "anchor",
-            "hitster-0",
+            "music_timeline-0",
         ]
         assert (
-            sum(entry["entry_id"] == "hitster-0" for entry in state["current_round"]["timeline"])
+            sum(
+                entry["entry_id"] == "music_timeline-0"
+                for entry in state["current_round"]["timeline"]
+            )
             == 1
         )
         assert state["you"]["answer"]["previous_entry_id"] == "anchor"
@@ -1343,23 +1356,23 @@ async def test_hitster_placement_auto_reveals_without_bonuses_and_never_warms_ly
 
 
 @pytest.mark.asyncio
-async def test_hitster_ready_cancels_intermediate_auto_advance() -> None:
+async def test_music_timeline_ready_cancels_intermediate_auto_advance() -> None:
     """Advance once on Ready and ignore the stale reveal timer."""
     plugin = _create_plugin()
     prepare_round = AsyncMock(
-        side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+        side_effect=lambda round_index, previous: _make_music_timeline_round(round_index, previous)
     )
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=prepare_round,
         ),
     ):
-        player_ids = await _create_started_hitster_game(plugin, round_count=2)
+        player_ids = await _create_started_music_timeline_game(plugin, round_count=2)
         with (
             patch(
                 "music_assistant.providers.music_quiz.get_current_user",
@@ -1404,7 +1417,9 @@ async def test_hitster_ready_cancels_intermediate_auto_advance() -> None:
         assert first_round.to_dict()["auto_advance_at"] is None
         assert state["current_round"]["round_index"] == 1
         cast("MagicMock", plugin.mass.cancel_timer).assert_any_call(plugin._advance_timer_id)
-        cast("AsyncMock", plugin._play_track).assert_awaited_once_with("library://track/hitster-1")
+        cast("AsyncMock", plugin._play_track).assert_awaited_once_with(
+            "library://track/music_timeline-1"
+        )
         assert prepare_round.await_count == 2
 
         await stale_callback(stale_round_index)
@@ -1417,7 +1432,7 @@ async def test_hitster_ready_cancels_intermediate_auto_advance() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hitster_finish_skips_unanswered_bonus() -> None:
+async def test_music_timeline_finish_skips_unanswered_bonus() -> None:
     """Keep finish as a backward-compatible way to skip a bonus."""
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
@@ -1436,19 +1451,19 @@ async def test_hitster_finish_skips_unanswered_bonus() -> None:
     plugin = _create_plugin()
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
                     round_index, previous, definitions
                 )
             ),
         ),
     ):
-        player_ids = await _create_started_hitster_game(
+        player_ids = await _create_started_music_timeline_game(
             plugin,
             artist_bonus_mode="free_text",
             title_bonus_mode="multiple_choice",
@@ -1499,7 +1514,7 @@ async def test_hitster_finish_skips_unanswered_bonus() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
+async def test_music_timeline_deadline_scores_unfinished_placement_and_bonus() -> None:
     """Reveal and score submitted work at the deadline without a finish action."""
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
@@ -1518,20 +1533,20 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
     plugin = _create_plugin()
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
                     round_index, previous, definitions
                 )
             ),
         ),
     ):
         with patch("music_assistant.providers.music_quiz.time.time", return_value=100.0):
-            player_ids = await _create_started_hitster_game(
+            player_ids = await _create_started_music_timeline_game(
                 plugin,
                 artist_bonus_mode="free_text",
                 title_bonus_mode="multiple_choice",
@@ -1580,23 +1595,25 @@ async def test_hitster_deadline_scores_unfinished_placement_and_bonus() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hitster_manual_reveal_keeps_track_end_auto_advance() -> None:
-    """Keep the existing track-end schedule for a manual Hitster reveal."""
+async def test_music_timeline_manual_reveal_keeps_track_end_auto_advance() -> None:
+    """Keep the existing track-end schedule for a manual Music Timeline reveal."""
     plugin = _create_plugin()
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
+                    round_index, previous
+                )
             ),
         ),
         patch("music_assistant.providers.music_quiz.time.time", return_value=100.0),
     ):
-        await _create_started_hitster_game(plugin)
+        await _create_started_music_timeline_game(plugin)
 
     with patch("music_assistant.providers.music_quiz.time.time", return_value=110.0):
         state = await plugin.reveal()
@@ -1610,7 +1627,7 @@ async def test_hitster_manual_reveal_keeps_track_end_auto_advance() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None:
+async def test_music_timeline_host_public_and_personalized_rounds_remain_flat() -> None:
     """Compose strategy fragments without leaking nested persisted answer state."""
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
@@ -1620,19 +1637,19 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
     plugin = _create_plugin()
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
                     round_index, previous, definitions
                 )
             ),
         ),
     ):
-        player_ids = await _create_started_hitster_game(
+        player_ids = await _create_started_music_timeline_game(
             plugin,
             artist_bonus_mode="free_text",
         )
@@ -1702,8 +1719,8 @@ async def test_hitster_host_public_and_personalized_rounds_remain_flat() -> None
 
 
 @pytest.mark.asyncio
-async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> None:
-    """Reset Hitster to a fresh lobby while preserving its typed game config."""
+async def test_music_timeline_reset_preserves_config_and_reinitializes_strategy() -> None:
+    """Reset Music Timeline to a fresh lobby while preserving its typed game config."""
     plugin = _create_plugin()
     pending_task = MagicMock()
     pending_task.cancelled.return_value = False
@@ -1722,17 +1739,19 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
     initialize = AsyncMock(side_effect=_initialize)
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=initialize,
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
+                    round_index, previous
+                )
             ),
         ),
     ):
-        await _create_started_hitster_game(plugin)
+        await _create_started_music_timeline_game(plugin)
         plugin._next_round_task = pending_task
         cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
         cast("MagicMock", plugin.mass.cancel_task).reset_mock()
@@ -1751,7 +1770,7 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
     cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
     assert game.rounds == []
     assert state["phase"] == "lobby"
-    assert state["quiz_type"] == "hitster"
+    assert state["quiz_type"] == "music_timeline"
     assert state["answer_type"] == "timeline"
     assert state["artist_bonus_mode"] == "off"
     assert state["title_bonus_mode"] == "off"
@@ -1762,7 +1781,7 @@ async def test_hitster_reset_preserves_config_and_reinitializes_strategy() -> No
     "initial_phase",
     [MusicQuizPhase.ANSWERING, MusicQuizPhase.REVEAL],
 )
-async def test_hitster_failed_reset_preserves_active_game(
+async def test_music_timeline_failed_reset_preserves_active_game(
     initial_phase: MusicQuizPhase,
 ) -> None:
     """Keep the current game and its background work intact when initialization fails."""
@@ -1775,17 +1794,19 @@ async def test_hitster_failed_reset_preserves_active_game(
     )
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=initialize,
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
+                    round_index, previous
+                )
             ),
         ),
     ):
-        await _create_started_hitster_game(plugin, round_count=2)
+        await _create_started_music_timeline_game(plugin, round_count=2)
         game = plugin._game
         assert game is not None
         if initial_phase == MusicQuizPhase.REVEAL:
@@ -1831,22 +1852,24 @@ async def test_hitster_failed_reset_preserves_active_game(
 
 
 @pytest.mark.asyncio
-async def test_hitster_late_joiner_starts_on_prefetched_next_round() -> None:
+async def test_music_timeline_late_joiner_starts_on_prefetched_next_round() -> None:
     """Exclude a late joiner from the active round and include them in the next snapshot."""
     plugin = _create_plugin()
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=AsyncMock(),
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
+                    round_index, previous
+                )
             ),
         ),
     ):
-        player_ids = await _create_started_hitster_game(plugin, round_count=2)
+        player_ids = await _create_started_music_timeline_game(plugin, round_count=2)
         with patch(
             "music_assistant.providers.music_quiz.get_current_user",
             return_value=_guest_user(),
@@ -1890,14 +1913,14 @@ async def test_hitster_late_joiner_starts_on_prefetched_next_round() -> None:
             second_state = _timeline_answer_state(game.rounds[1])
             assert [entry.entry_id for entry in second_state.placement_snapshot] == [
                 "anchor",
-                "hitster-0",
+                "music_timeline-0",
             ]
             await plugin.submit_answer(
                 player_ids["Alice"],
                 {
                     "answer_type": "timeline",
                     "action": "place",
-                    "previous_entry_id": "hitster-0",
+                    "previous_entry_id": "music_timeline-0",
                     "next_entry_id": None,
                 },
             )
@@ -1908,7 +1931,7 @@ async def test_hitster_late_joiner_starts_on_prefetched_next_round() -> None:
                     {
                         "answer_type": "timeline",
                         "action": "place",
-                        "previous_entry_id": "hitster-0",
+                        "previous_entry_id": "music_timeline-0",
                         "next_entry_id": None,
                     },
                 ),
@@ -3149,18 +3172,20 @@ async def test_create_game_cancels_previous_background_work_after_initialize() -
 
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=_initialize,
         ),
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.prepare_round",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.prepare_round",
             new=AsyncMock(
-                side_effect=lambda round_index, previous: _make_hitster_round(round_index, previous)
+                side_effect=lambda round_index, previous: _make_music_timeline_round(
+                    round_index, previous
+                )
             ),
         ),
     ):
         await plugin.create_game(
-            quiz_type="hitster",
+            quiz_type="music_timeline",
             source_uris=["library://playlist/2"],
         )
 
@@ -3229,13 +3254,13 @@ async def test_create_game_initialize_failure_preserves_existing_finished_game()
     initialize = AsyncMock(side_effect=InvalidDataError("Initialization failed"))
     with (
         patch(
-            "music_assistant.providers.music_quiz.quiz_types.hitster.HitsterQuizType.initialize",
+            "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
             new=initialize,
         ),
         pytest.raises(InvalidDataError, match="Initialization failed"),
     ):
         await plugin.create_game(
-            quiz_type="hitster",
+            quiz_type="music_timeline",
             source_uris=["library://playlist/2"],
         )
 
