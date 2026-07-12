@@ -231,7 +231,7 @@ class SoundcloudMusicProvider(MusicProvider):
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
         # Part 1, the mixed selections
-        recommendations = await self._soundcloud.get_mixed_selection(20)
+        recommendations = await self._soundcloud.get_mixed_selection(40)
         folders = []
         for collection in recommendations.get("collection", []):
             folder = RecommendationFolder(
@@ -251,7 +251,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     continue
             folders.append(folder)
         # Part 2, the subscribed feed
-        feed = await self._soundcloud.get_subscribe_feed(20)
+        feed = await self._soundcloud.get_subscribe_feed(40)
         if feed and "collection" in feed:
             folder = RecommendationFolder(
                 name="SoundCloud Feed",
@@ -538,17 +538,24 @@ class SoundcloudMusicProvider(MusicProvider):
         playlist.is_editable = False
         if playlist_obj.get("description"):
             playlist.metadata.description = playlist_obj["description"]
-        if playlist_obj.get("artwork_url"):
+        artwork_url = playlist_obj.get("artwork_url") or playlist_obj.get("calculated_artwork_url")
+        if artwork_url:
             playlist.metadata.images = UniqueList(
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=self._transform_artwork_url(playlist_obj["artwork_url"]),
+                        path=self._transform_artwork_url(artwork_url),
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]
             )
+        if not artwork_url:
+            # fall back to the artwork of the first track that has one
+            for track_obj in playlist_obj.get("tracks", []):
+                if track_obj.get("artwork_url"):
+                    artwork_url = track_obj["artwork_url"]
+                    break
         if playlist_obj.get("genre"):
             playlist.metadata.genres = {playlist_obj["genre"]}
         if playlist_obj.get("tag_list"):
