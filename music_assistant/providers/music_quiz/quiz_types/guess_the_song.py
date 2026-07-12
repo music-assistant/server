@@ -124,8 +124,9 @@ class GuessTheSongQuizType(QuizType):
             if previous_round.track_uri
         }
         track = await self._get_next_source_track(used_track_uris)
-        correct = _track_to_candidate(track)
+        correct = await self._get_correct_candidate(track)
         distractors = await self._gather_distractors(track, correct)
+        correct, distractors = _align_round_candidates(correct, distractors)
         try:
             suggestions = build_suggestions(
                 correct,
@@ -159,6 +160,28 @@ class GuessTheSongQuizType(QuizType):
                 translation_owner=TRANSLATION_OWNER,
             )
         return secrets.choice(available)
+
+    async def _get_correct_candidate(self, track: Track) -> SuggestionCandidate:
+        """Return the correct candidate with artist metadata when it can be resolved."""
+        candidate = _track_to_candidate(track)
+        if _candidate_artist_name(candidate):
+            return candidate
+        try:
+            full_track = await self.mass.music.tracks.get_provider_item(
+                track.item_id,
+                track.provider,
+            )
+        except Exception as err:
+            LOGGER.debug("Could not enrich Guess the Song track %s: %s", track.uri, err)
+            return candidate
+        artist_names = self._track_artist_names(full_track)
+        if not artist_names:
+            return candidate
+        return replace(
+            candidate,
+            label=build_answer_label(artist_names[0], track.name),
+            artist_names=artist_names,
+        )
 
     async def _gather_distractors(
         self, track: Track, correct: SuggestionCandidate
@@ -275,7 +298,12 @@ class GuessTheSongQuizType(QuizType):
         wrong_count = self.config.suggestion_count - 1
         expected_kinds = self._ai_distractor_kinds(wrong_count)
         real_count = wrong_count - len(expected_kinds)
-        if not expected_kinds or not track.artist_str or not similar or len(catalog) < real_count:
+        if (
+            not expected_kinds
+            or not _candidate_artist_name(correct)
+            or not similar
+            or len(catalog) < real_count
+        ):
             return None
         grounded = catalog[:AI_CONTEXT_CANDIDATE_LIMIT]
         candidate_map = {
@@ -302,7 +330,6 @@ class GuessTheSongQuizType(QuizType):
                 expected_kinds,
             )
             return self._compose_ai_distractors(
-                track,
                 correct,
                 candidate_map,
                 set(similar),
@@ -325,7 +352,7 @@ class GuessTheSongQuizType(QuizType):
         grounded_data = json_dumps(
             {
                 "source_track": {
-                    "artist": bounded_ai_context(track.artist_str),
+                    "artist": bounded_ai_context(_candidate_artist_name(correct)),
                     "title": bounded_ai_context(track.name),
                     "album": bounded_ai_context(track.album.name if track.album else None),
                     "correct_display_label": bounded_ai_context(correct.label),
@@ -366,7 +393,6 @@ class GuessTheSongQuizType(QuizType):
 
     def _compose_ai_distractors(
         self,
-        track: Track,
         correct: SuggestionCandidate,
         candidate_map: dict[str, SuggestionCandidate],
         similar: set[SuggestionCandidate],
@@ -381,13 +407,13 @@ class GuessTheSongQuizType(QuizType):
         ranked = [first_similar, *(candidate for candidate in ranked if candidate != first_similar)]
         synthetic = [
             self._synthetic_track_candidate(
-                track,
+                correct,
                 distractor.kind,
                 distractor.label,
                 {
                     normalize_answer_label(artist_name)
                     for artist_name in (
-                        *self._track_artist_names(track),
+                        *correct.artist_names,
                         *(
                             artist_name
                             for candidate in candidate_map.values()
@@ -424,7 +450,7 @@ class GuessTheSongQuizType(QuizType):
 
     @staticmethod
     def _synthetic_track_candidate(
-        track: Track,
+        correct: SuggestionCandidate,
         kind: str,
         label: str,
         known_artist_names: set[str],
@@ -440,15 +466,14 @@ class GuessTheSongQuizType(QuizType):
         ):
             raise ValueError("synthetic track labels must contain an artist and title")
         if kind == AI_KIND_SAME_ARTIST_TITLE:
-            if artist != track.artist_str:
+            if artist != _candidate_artist_name(correct):
                 raise ValueError("same-artist distractor changed the source artist")
         elif kind == AI_KIND_CONTEXT_TRACK:
             if normalize_answer_label(artist) in known_artist_names:
                 raise ValueError("context distractor reused a known artist")
         else:
             raise ValueError("unknown synthetic track kind")
-        candidate = SuggestionCandidate(label=label, title=title)
-        correct = _track_to_candidate(track)
+        candidate = SuggestionCandidate(label=label, title=title, artist_names=(artist,))
         if suggestion_candidates_are_too_close(candidate, correct):
             raise ValueError("synthetic track label is too close to the correct answer")
         return candidate
@@ -458,22 +483,61 @@ class GuessTheSongQuizType(QuizType):
         """Return display names and aliases associated with a track's artists."""
         return tuple(
             dict.fromkeys(
-                artist_name
+                artist_name.strip()
                 for artist_name in (
                     track.artist_str,
                     *(artist.name for artist in track.artists),
                     *(artist.sort_name for artist in track.artists),
                 )
-                if artist_name
+                if artist_name and artist_name.strip()
             )
         )
 
 
+def _align_round_candidates(
+    correct: SuggestionCandidate,
+    distractors: list[SuggestionCandidate],
+) -> tuple[SuggestionCandidate, list[SuggestionCandidate]]:
+    """Return candidates using one display shape for the entire round."""
+    assert correct.title is not None
+    correct_artist = _candidate_artist_name(correct)
+    aligned_correct = replace(
+        correct,
+        label=build_answer_label(correct_artist, correct.title),
+    )
+    aligned_distractors: list[SuggestionCandidate] = []
+    for candidate in distractors:
+        if candidate.title is None:
+            continue
+        candidate_artist = _candidate_artist_name(candidate)
+        if correct_artist and not candidate_artist:
+            continue
+        aligned_distractors.append(
+            replace(
+                candidate,
+                label=build_answer_label(
+                    candidate_artist if correct_artist else None,
+                    candidate.title,
+                ),
+            )
+        )
+    return (
+        aligned_correct,
+        filter_suggestion_candidates(aligned_correct, aligned_distractors),
+    )
+
+
+def _candidate_artist_name(candidate: SuggestionCandidate) -> str | None:
+    """Return the candidate's display artist when available."""
+    return next((name.strip() for name in candidate.artist_names if name.strip()), None)
+
+
 def _track_to_candidate(track: Track) -> SuggestionCandidate:
     """Convert a track to an answer suggestion candidate."""
+    artist_names = GuessTheSongQuizType._track_artist_names(track)
     return SuggestionCandidate(
-        label=build_answer_label(track.artist_str or None, track.name),
+        label=build_answer_label(artist_names[0] if artist_names else None, track.name),
         uri=track.uri,
         title=track.name,
-        artist_names=GuessTheSongQuizType._track_artist_names(track),
+        artist_names=artist_names,
     )
