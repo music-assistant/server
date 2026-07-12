@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -14,6 +15,7 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import (
     JSON_DECODE_EXCEPTIONS,
+    SerializableType,
     json_dumps,
     json_loads,
 )
@@ -42,7 +44,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.providers.music_quiz.models import MusicQuizConfig
+    from music_assistant.providers.music_quiz.models import MusicQuizConfig, MusicQuizGame
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +55,14 @@ MAX_AI_RESPONSE_BYTES = 4096
 MAX_METADATA_VALUE_LENGTH = 500
 MAX_ANSWER_LENGTH = 200
 MAX_QUESTION_LENGTH = 300
+MAX_TRIVIA_LANGUAGE_TAG_LENGTH = 16
 SYSTEM_RANDOM = random.SystemRandom()
+_LANGUAGE_TAG_PATTERN = re.compile(
+    r"(?P<language>[A-Za-z]{2,3})"
+    r"(?:[-_](?:(?P<script>[A-Za-z]{4})"
+    r"(?:[-_](?P<script_region>[A-Za-z]{2}|[0-9]{3}))?"
+    r"|(?P<region>[A-Za-z]{2}|[0-9]{3})))?"
+)
 
 
 class TriviaTarget(StrEnum):
@@ -129,6 +138,7 @@ class TriviaQuizType(QuizType):
         return replace(
             config,
             use_ai_distractors=False,
+            language=_normalize_trivia_language(config.language),
             artist_bonus_mode=TimelineBonusMode.OFF,
             title_bonus_mode=TimelineBonusMode.OFF,
         )
@@ -141,6 +151,7 @@ class TriviaQuizType(QuizType):
         :param config: Configuration to validate.
         """
         super().validate_config(config)
+        _normalize_trivia_language(config.language)
         if config.difficulty not in {item.value for item in MusicQuizDifficulty}:
             raise InvalidDataError(
                 f"Unknown difficulty: {config.difficulty}",
@@ -166,6 +177,15 @@ class TriviaQuizType(QuizType):
                 translation_key="music_quiz_source_required",
                 translation_owner=TRANSLATION_OWNER,
             )
+
+    @classmethod
+    def serialize_game_config(cls, game: MusicQuizGame) -> dict[str, SerializableType]:
+        """
+        Serialize Trivia game configuration.
+
+        :param game: Game whose configuration should be serialized.
+        """
+        return {"language": _normalize_trivia_language(game.config.language)}
 
     async def initialize(self) -> None:
         """Validate AI availability and enough grounded content for the complete game."""
@@ -293,6 +313,7 @@ class TriviaQuizType(QuizType):
 
     def _build_prompt(self, fact: TriviaFact) -> str:
         """Build a strict grounded-generation prompt for one factual answer."""
+        language = json_dumps(_normalize_trivia_language(self.config.language))
         metadata: dict[str, str | int] = {"title": fact.track.title}
         if fact.track.artist:
             metadata["artist"] = fact.track.artist
@@ -311,6 +332,10 @@ class TriviaQuizType(QuizType):
         wrong_answer_count = self.config.suggestion_count - 1
         return (
             "Create one concise music trivia question using only the supplied metadata. "
+            f"Trusted server-selected content language tag: {language}. "
+            'Write the "question" value and every string in "wrong_answers" in this language. '
+            "Preserve proper nouns exactly as supplied. The server-selected correct answer is "
+            "immutable: do not translate, replace, or return it. "
             "Match the question and wrong-answer plausibility to the supplied difficulty. "
             "The server selected the question target and correct answer; do not change, repeat, "
             "or include the correct answer in the question. Produce plausible wrong answers for "
@@ -482,3 +507,24 @@ def _bounded_metadata_value(value: str | None) -> str | None:
     if not value or not (cleaned := value.strip()):
         return None
     return cleaned if len(cleaned) <= MAX_METADATA_VALUE_LENGTH else None
+
+
+def _normalize_trivia_language(language: str) -> str:
+    """Return a canonical supported Trivia language tag."""
+    if (
+        not isinstance(language, str)
+        or len(language) > MAX_TRIVIA_LANGUAGE_TAG_LENGTH
+        or (match := _LANGUAGE_TAG_PATTERN.fullmatch(language)) is None
+    ):
+        raise InvalidDataError(
+            "Trivia language tag is invalid",
+            translation_key="music_quiz_invalid_language",
+            translation_owner=TRANSLATION_OWNER,
+        )
+    parts = [match.group("language").lower()]
+    if script := match.group("script"):
+        parts.append(script.title())
+    region = match.group("script_region") or match.group("region")
+    if region:
+        parts.append(region.upper() if region.isalpha() else region)
+    return "-".join(parts)

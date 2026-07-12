@@ -10,6 +10,8 @@ from mashumaro import DataClassDictMixin, field_options
 from mashumaro.config import BaseConfig
 from mashumaro.types import Discriminator
 
+DEFAULT_TRIVIA_LANGUAGE = "en"
+
 
 class MusicQuizPhase(StrEnum):
     """Music Quiz game phases."""
@@ -62,6 +64,8 @@ class MusicQuizConfig(DataClassDictMixin):
     # guess-the-song specific; other quiz types ignore these
     difficulty: str = MusicQuizDifficulty.NORMAL.value
     use_ai_distractors: bool = False
+    # trivia specific; other quiz types ignore this
+    language: str = DEFAULT_TRIVIA_LANGUAGE
     # timeline specific; other answer types ignore these
     artist_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
     title_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF

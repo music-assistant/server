@@ -14,6 +14,7 @@ from music_assistant_models.media_items import Track
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
+    DEFAULT_TRIVIA_LANGUAGE,
     MultipleChoiceRoundState,
     MusicQuizAnswerType,
     MusicQuizDifficulty,
@@ -52,6 +53,7 @@ class GuessTheSongQuizType(QuizType):
         """
         return replace(
             config,
+            language=DEFAULT_TRIVIA_LANGUAGE,
             artist_bonus_mode=TimelineBonusMode.OFF,
             title_bonus_mode=TimelineBonusMode.OFF,
         )
