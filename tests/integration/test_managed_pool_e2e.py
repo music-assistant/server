@@ -310,10 +310,13 @@ async def test_progressive_loading_returns_first_batch_then_fills(
     )
     assert len(first_batch) == 10  # limited by MANAGED_POOL_SOURCE_CAP
 
-    # normal fill would return more if the source allows
-    e2e_mass.player_queues._managed_pool.forget(queue_id)
-    normal_fill = await e2e_mass.player_queues._managed_pool.fill(
-        queue_id, is_initial=True, use_first_batch=False
-    )
-    # with is_initial=True and SOURCE_CAP=10, we get up to 10 (still capped by source cap)
-    assert len(normal_fill) == 10
+    # simulate the queue now has those tracks and advance to near the end
+    e2e_mass.player_queues.queue_data(queue_id).items = [
+        QueueItem.from_media_item(queue_id, track) for track in first_batch
+    ]
+    queue.current_index = len(first_batch) - 1
+
+    # a subsequent (normal) fill should page in the next chunk from the same finite source
+    second_batch = await e2e_mass.player_queues._managed_pool.fill(queue_id, is_initial=False)
+    assert len(second_batch) == 10
+    assert {t.item_id for t in second_batch}.isdisjoint({t.item_id for t in first_batch})
