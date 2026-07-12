@@ -70,6 +70,7 @@ class MusicQuizConfig(DataClassDictMixin):
     # timeline specific; other answer types ignore these
     artist_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
     title_bonus_mode: TimelineBonusMode = TimelineBonusMode.OFF
+    # shared across all quiz types
     include_similar_music: bool = False
 
 
