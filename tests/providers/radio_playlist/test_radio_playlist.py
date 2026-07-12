@@ -119,10 +119,40 @@ async def test_multiple_seeds_dedup_base_tracks() -> None:
     )
 
     await prov.get_dynamic_tracks([seed_a, seed_b], target_size=5)
-    # 3 unique base tracks after dedup. similar_tracks fires once per base per allow_lookup pass;
-    # with only 2 similar mocks per call we never hit the dynamic-target threshold, so both
-    # passes run -> 3 * 2 = 6 calls. Without dedup it would be 4 * 2 = 8.
-    assert cast("Any", prov.mass.music.tracks.similar_tracks).call_count <= 6
+    # Three unique base tracks remain after deduplication, each with a successful direct lookup.
+    assert cast("Any", prov.mass.music.tracks.similar_tracks).call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_cross_provider_lookup_only_retries_empty_results() -> None:
+    """A cross-provider lookup is only used when the direct lookup has no result."""
+    seed = _seed(MediaType.ALBUM, "seed")
+    direct_base = _track("direct")
+    fallback_base = _track("fallback")
+    prov = _make_provider({"seed": [direct_base, fallback_base]}, [])
+    similar_tracks = cast("Any", prov.mass.music.tracks.similar_tracks)
+
+    def get_similar(
+        item_id: str, _provider: str, *, allow_lookup: bool, **_kwargs: Any
+    ) -> list[MagicMock]:
+        if item_id == "direct":
+            return [_track("direct-result")]
+        if allow_lookup:
+            return [_track("fallback-result")]
+        return []
+
+    similar_tracks.side_effect = get_similar
+
+    result = await prov.get_dynamic_tracks([seed], target_size=5)
+
+    lookups = [
+        (call.args[0], call.kwargs["allow_lookup"]) for call in similar_tracks.await_args_list
+    ]
+    assert ("direct", False) in lookups
+    assert ("direct", True) not in lookups
+    assert ("fallback", False) in lookups
+    assert ("fallback", True) in lookups
+    assert {track.item_id for track in result} == {"direct-result", "fallback-result"}
 
 
 @pytest.mark.asyncio
