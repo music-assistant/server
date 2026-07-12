@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Iterable, Iterator
 from dataclasses import replace
+from itertools import chain
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
@@ -44,6 +46,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.music_quiz.models import MusicQuizConfig
 
 LOGGER = logging.getLogger(__name__)
+SYSTEM_RANDOM = secrets.SystemRandom()
 
 AI_CONTEXT_CANDIDATE_LIMIT = 24
 AI_KIND_SAME_ARTIST_TITLE = "same_artist_title"
@@ -126,7 +129,11 @@ class GuessTheSongQuizType(QuizType):
         track = await self._get_next_source_track(used_track_uris)
         correct = await self._get_correct_candidate(track)
         distractors = await self._gather_distractors(track, correct)
-        correct, distractors = _align_round_candidates(correct, distractors)
+        correct, distractors = _align_round_candidates(
+            correct,
+            distractors,
+            self.config.suggestion_count - 1,
+        )
         try:
             suggestions = build_suggestions(
                 correct,
@@ -185,13 +192,14 @@ class GuessTheSongQuizType(QuizType):
 
     async def _gather_distractors(
         self, track: Track, correct: SuggestionCandidate
-    ) -> list[SuggestionCandidate]:
+    ) -> Iterable[SuggestionCandidate]:
         """
         Collect distractor candidates ordered by preference for the game settings.
 
         :param track: The source track that is the correct answer this round.
         :param correct: The correct answer candidate.
         """
+        source_pool = self._iter_source_pool_distractors(track)
         if self.config.difficulty == MusicQuizDifficulty.HARD:
             similar = filter_suggestion_candidates(
                 correct,
@@ -202,17 +210,24 @@ class GuessTheSongQuizType(QuizType):
                 [*similar, *(await self._get_search_distractors(correct))],
             )
             if self.config.use_ai_distractors:
+                wrong_count = self.config.suggestion_count - 1
+                real_count = wrong_count - len(self._ai_distractor_kinds(wrong_count))
+                catalog = filter_suggestion_candidates(
+                    correct,
+                    chain(catalog, source_pool),
+                    limit=max(len(catalog), real_count),
+                )
                 mixed = await self._get_ai_distractors(track, correct, similar, catalog)
                 if mixed is not None:
-                    return filter_suggestion_candidates(correct, [*mixed, *catalog])
-            return catalog
-        candidates: list[SuggestionCandidate] = []
+                    return chain(
+                        filter_suggestion_candidates(correct, [*mixed, *catalog]),
+                        source_pool,
+                    )
+            return chain(catalog, source_pool)
+        search = await self._get_search_distractors(correct)
         if self.config.difficulty == MusicQuizDifficulty.EASY:
-            candidates.extend(await self._get_easy_distractors(track))
-        # the label search doubles as the normal-difficulty source and as the
-        # universal fallback, so a round never fails when preferred sources are sparse
-        candidates.extend(await self._get_search_distractors(correct))
-        return candidates
+            return chain(source_pool, search)
+        return chain(search, source_pool)
 
     async def _get_search_distractors(
         self, correct: SuggestionCandidate
@@ -279,13 +294,15 @@ class GuessTheSongQuizType(QuizType):
                 candidates.append(_track_to_candidate(top_tracks[0]))
         return candidates
 
-    async def _get_easy_distractors(self, track: Track) -> list[SuggestionCandidate]:
-        """Return obviously-different distractors sampled from the configured source pool."""
-        pool = await self._get_source_track_pool()
-        others = [item for uri, item in pool.items() if uri != track.uri]
-        sample_size = min(len(others), max(self.config.suggestion_count * 4, 12))
-        sampled = secrets.SystemRandom().sample(others, sample_size)
-        return [_track_to_candidate(item) for item in sampled]
+    def _iter_source_pool_distractors(
+        self,
+        track: Track,
+    ) -> Iterator[SuggestionCandidate]:
+        """Return randomized lazy candidates from the cached configured source pool."""
+        assert self._source_track_pool is not None
+        others = [item for uri, item in self._source_track_pool.items() if uri != track.uri]
+        SYSTEM_RANDOM.shuffle(others)
+        return (_track_to_candidate(item) for item in others)
 
     async def _get_ai_distractors(
         self,
@@ -496,7 +513,8 @@ class GuessTheSongQuizType(QuizType):
 
 def _align_round_candidates(
     correct: SuggestionCandidate,
-    distractors: list[SuggestionCandidate],
+    distractors: Iterable[SuggestionCandidate],
+    needed_count: int,
 ) -> tuple[SuggestionCandidate, list[SuggestionCandidate]]:
     """Return candidates using one display shape for the entire round."""
     assert correct.title is not None
@@ -505,25 +523,29 @@ def _align_round_candidates(
         correct,
         label=build_answer_label(correct_artist, correct.title),
     )
-    aligned_distractors: list[SuggestionCandidate] = []
-    for candidate in distractors:
-        if candidate.title is None:
-            continue
-        candidate_artist = _candidate_artist_name(candidate)
-        if correct_artist and not candidate_artist:
-            continue
-        aligned_distractors.append(
-            replace(
+
+    def _project_distractors() -> Iterator[SuggestionCandidate]:
+        for candidate in distractors:
+            if candidate.title is None:
+                continue
+            candidate_artist = _candidate_artist_name(candidate)
+            if correct_artist and not candidate_artist:
+                continue
+            yield replace(
                 candidate,
                 label=build_answer_label(
                     candidate_artist if correct_artist else None,
                     candidate.title,
                 ),
             )
-        )
+
     return (
         aligned_correct,
-        filter_suggestion_candidates(aligned_correct, aligned_distractors),
+        filter_suggestion_candidates(
+            aligned_correct,
+            _project_distractors(),
+            limit=needed_count,
+        ),
     )
 
 
