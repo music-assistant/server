@@ -302,7 +302,8 @@ class GuessTheSongQuizType(QuizType):
         assert self._source_track_pool is not None
         others = [item for uri, item in self._source_track_pool.items() if uri != track.uri]
         SYSTEM_RANDOM.shuffle(others)
-        return (_track_to_candidate(item) for item in others)
+        for item in others:
+            yield _track_to_candidate(item)
 
     async def _get_ai_distractors(
         self,

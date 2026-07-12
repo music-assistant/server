@@ -299,7 +299,7 @@ async def test_easy_difficulty_uses_source_pool() -> None:
     with (
         patch(
             "music_assistant.providers.music_quiz.quiz_types.guess_the_song.SYSTEM_RANDOM.shuffle"
-        ),
+        ) as shuffle_pool,
         patch(
             "music_assistant.providers.music_quiz.quiz_types.guess_the_song._track_to_candidate",
             wraps=_track_to_candidate,
@@ -314,6 +314,7 @@ async def test_easy_difficulty_uses_source_pool() -> None:
         "Someone - Fallback",
     ]
     assert correct_track.uri not in {item.uri for item in result}
+    shuffle_pool.assert_called_once()
     assert convert_candidate.call_count == 4
     mass.music.search.assert_awaited_once()
     mass.music.tracks.similar_tracks.assert_not_awaited()
@@ -628,7 +629,10 @@ async def test_prepare_round_builds_suggestions_from_similar_tracks() -> None:
     ]
     mass.metadata.get_image_url_for_item = AsyncMock(return_value="http://img/1")
 
-    game_round = await quiz_type.prepare_round(0, [])
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song.SYSTEM_RANDOM.shuffle"
+    ) as shuffle_pool:
+        game_round = await quiz_type.prepare_round(0, [])
 
     assert game_round.track_uri == correct_track.uri
     assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
@@ -637,6 +641,7 @@ async def test_prepare_round_builds_suggestions_from_similar_tracks() -> None:
     assert sum(item.is_correct for item in suggestions) == 1
     assert [item.label for item in suggestions if item.is_correct] == [CORRECT_LABEL]
     assert all(" - " in item.label for item in suggestions)
+    shuffle_pool.assert_not_called()
     mass.music.tracks.get_provider_item.assert_not_awaited()
 
 
