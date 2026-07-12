@@ -1376,31 +1376,14 @@ class MusicQuizPlugin(PluginProvider):
         return self._playback_session
 
     async def _create_remote_playback_session(self) -> SharedPlaybackSession:
-        """Create a remote session without abandoning a partially created virtual player."""
+        """Create the remote playback session for the active game."""
         game_name = self._game.config.name if self._game else None
-        creation_task = self.mass.create_task(
-            SharedPlaybackSession.create_remote(
-                self.mass,
-                owner_instance_id=self.instance_id,
-                display_name=game_name or "Music Quiz",
-                session_id=self.instance_id,
-            ),
-            eager_start=False,
+        return await SharedPlaybackSession.create_remote(
+            self.mass,
+            owner_instance_id=self.instance_id,
+            display_name=game_name or "Music Quiz",
+            session_id=self.instance_id,
         )
-        try:
-            return await asyncio.shield(creation_task)
-        except asyncio.CancelledError:
-            try:
-                while True:
-                    try:
-                        self._playback_session = await asyncio.shield(creation_task)
-                        break
-                    except asyncio.CancelledError:
-                        if creation_task.cancelled():
-                            raise
-            except SetupFailedError as err:
-                self.logger.warning("Unable to create remote quiz session: %s", err)
-            raise
 
     def _resolve_venue_player_id(self) -> str | None:
         """

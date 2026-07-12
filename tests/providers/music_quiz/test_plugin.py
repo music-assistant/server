@@ -1249,7 +1249,7 @@ async def test_cancelled_remote_reveal_adopts_created_session_before_advancing()
     session_creation_started = asyncio.Event()
     allow_session_creation = asyncio.Event()
     cancellation_started = asyncio.Event()
-    session = MagicMock()
+    session = cast("Any", MagicMock())
     session.player_id = "virtual-quiz-player"
     session.queue_id = "virtual-quiz-player"
     play_media = AsyncMock()
@@ -1260,7 +1260,7 @@ async def test_cancelled_remote_reveal_adopts_created_session_before_advancing()
     )
     cancel_reveal_playback = plugin._cancel_reveal_playback_task
 
-    async def _create_remote_session(*_args: Any, **_kwargs: Any) -> MagicMock:
+    async def _create_remote_session(*_args: Any, **_kwargs: Any) -> Any:
         session_creation_started.set()
         await allow_session_creation.wait()
         return session
@@ -1294,11 +1294,13 @@ async def test_cancelled_remote_reveal_adopts_created_session_before_advancing()
         advance_task = asyncio.create_task(plugin.next_round())
         await cancellation_started.wait()
         assert playback_task.cancelling()
-        playback_task.cancel()
-        allow_session_creation.set()
         await advance_task
+        assert playback_task.cancelled()
+        assert _phase(plugin) == MusicQuizPhase.ANSWERING
+        assert plugin._playback_session is None
+        allow_session_creation.set()
+        assert await plugin._get_playback_session() is session
 
-    assert playback_task.cancelled()
     assert plugin._playback_session is session
     play_media.assert_not_awaited()
     cast("AsyncMock", plugin._stop_playback).assert_awaited_once()
