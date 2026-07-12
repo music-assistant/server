@@ -117,19 +117,6 @@ class ProgressGuard:
         # abs updates every 10 s
         self._min_time_between_updates_ms = 8000
 
-    def _get_progress(self, item_id: str, episode_id: str | None = None) -> _ProgressHelper | None:
-        """Get a helper progress."""
-        for x in self._progresses:
-            if x.id_ == item_id and x.episode_id == episode_id:
-                return x
-        return None
-
-    def _remove_oldest(self) -> None:
-        """Remove oldest helper progress."""
-        progresses = sorted(self._progresses, key=lambda x: x.last_update_ms)
-        if len(progresses) > 0:
-            self._progresses.remove(progresses[0])
-
     def remove_progress(self, item_id: str, episode_id: str | None = None) -> None:
         """Remove a helper progress."""
         progress = self._get_progress(item_id=item_id, episode_id=episode_id)
@@ -169,3 +156,16 @@ class ProgressGuard:
             int(time.time() * 1000) - stored_progress.last_update_ms
             >= self._min_time_between_updates_ms
         )
+
+    def _get_progress(self, item_id: str, episode_id: str | None = None) -> _ProgressHelper | None:
+        """Get a helper progress."""
+        for x in self._progresses:
+            if x.id_ == item_id and x.episode_id == episode_id:
+                return x
+        return None
+
+    def _remove_oldest(self) -> None:
+        """Remove oldest helper progress."""
+        progresses = sorted(self._progresses, key=lambda x: x.last_update_ms)
+        if len(progresses) > 0:
+            self._progresses.remove(progresses[0])
