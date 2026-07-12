@@ -1058,6 +1058,41 @@ async def test_generation_repairs_duplicate_answers_from_cached_grounding() -> N
     mass.music.search.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_generation_defers_grounded_work_until_repair_is_needed() -> None:
+    """Avoid fallback iteration and shuffling until valid AI answers leave empty slots."""
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response(),
+        _valid_response(
+            wrong_answers=["Massive Attack", "massive-attack", "MASSIVE ATTACK"],
+        ),
+    ]
+    quiz, _ = _quiz([], providers=[provider])
+    grounded_tracks = MagicMock()
+    grounded_tracks.__iter__.return_value = iter(_grounded_fallback_facts())
+    eligible_tracks = MagicMock()
+    eligible_tracks.values.return_value = grounded_tracks
+    quiz._eligible_tracks = eligible_tracks
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.shuffle",
+        side_effect=lambda _values: None,
+    ) as shuffle:
+        valid_result = await quiz._generate_question(_artist_fact())
+        grounded_tracks.__iter__.assert_not_called()
+        shuffle.assert_not_called()
+
+        repaired_result = await quiz._generate_question(_artist_fact())
+
+    assert valid_result.wrong_answers == ("Portishead", "Radiohead", "Air")
+    assert repaired_result.wrong_answers == ("Justice", "M83", "Portishead")
+    assert provider.ai_query.await_count == 2
+    assert eligible_tracks.values.call_count == 2
+    grounded_tracks.__iter__.assert_called_once()
+    shuffle.assert_called_once()
+
+
 def test_generation_repair_skips_normalized_near_and_fallback_collisions() -> None:
     """Continue scanning grounded facts after normalized and near-answer collisions."""
     quiz, _ = _quiz([])
@@ -1077,7 +1112,8 @@ def test_generation_repair_skips_normalized_near_and_fallback_collisions() -> No
 
     result = quiz._parse_generation(response, _artist_fact(), colliding_facts)
 
-    assert result.wrong_answers == ("Portishead", "Radiohead", "Air")
+    assert result.wrong_answers[0] == "Portishead"
+    assert set(result.wrong_answers) == {"Portishead", "Radiohead", "Air"}
 
 
 @pytest.mark.parametrize(
@@ -1108,7 +1144,8 @@ def test_generation_repair_uses_only_same_target_grounding(
 
     result = quiz._parse_generation(response, fact, _grounded_fallback_facts())
 
-    assert result.wrong_answers == expected
+    assert set(result.wrong_answers) == set(expected)
+    assert all(isinstance(answer, str) for answer in result.wrong_answers)
 
 
 @pytest.mark.parametrize(
@@ -1156,7 +1193,7 @@ def test_generation_repair_excludes_compilation_release_facts(
         (compilation_facts, *_grounded_fallback_facts()),
     )
 
-    assert result.wrong_answers == expected
+    assert set(result.wrong_answers) == set(expected)
     assert excluded_value not in result.wrong_answers
 
 

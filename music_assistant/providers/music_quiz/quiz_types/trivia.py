@@ -6,7 +6,7 @@ import asyncio
 import logging
 import random
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -286,8 +286,7 @@ class TriviaQuizType(QuizType):
         prompt = self._build_prompt(fact)
         if len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES:
             raise self._generation_error()
-        grounded_tracks = list(self._eligible_tracks.values()) if self._eligible_tracks else []
-        SYSTEM_RANDOM.shuffle(grounded_tracks)
+        grounded_tracks = self._eligible_tracks.values() if self._eligible_tracks else ()
         for provider in self._require_ai_providers():
             for _attempt in range(AI_ATTEMPTS_PER_PROVIDER):
                 try:
@@ -376,7 +375,7 @@ class TriviaQuizType(QuizType):
         self,
         response: object,
         fact: TriviaFact,
-        grounded_tracks: Sequence[TriviaTrackFacts] = (),
+        grounded_tracks: Collection[TriviaTrackFacts] = (),
     ) -> TriviaGeneration:
         """Parse and validate one strict AI Trivia response."""
         if not isinstance(response, str):
@@ -439,20 +438,38 @@ class TriviaQuizType(QuizType):
         cls,
         wrong_answers: Sequence[str],
         fact: TriviaFact,
-        grounded_tracks: Sequence[TriviaTrackFacts],
+        grounded_tracks: Collection[TriviaTrackFacts],
     ) -> tuple[str, ...]:
         """Return distinct wrong answers completed with same-target grounded facts."""
+        expected_count = len(wrong_answers)
+        correct = SuggestionCandidate(label=fact.correct_answer)
+        candidates = filter_suggestion_candidates(
+            correct,
+            (SuggestionCandidate(label=answer) for answer in wrong_answers),
+            limit=expected_count,
+        )
+        if len(candidates) == expected_count:
+            return tuple(candidate.label for candidate in candidates)
+
+        grounded_values: list[str] = []
+        seen_values: set[str] = set()
+        for track in grounded_tracks:
+            if (value := cls._target_value(track, fact.target)) is None:
+                continue
+            normalized_value = normalize_answer_label(value)
+            if not normalized_value or normalized_value in seen_values:
+                continue
+            seen_values.add(normalized_value)
+            grounded_values.append(value)
+        SYSTEM_RANDOM.shuffle(grounded_values)
 
         def iter_candidates() -> Iterator[SuggestionCandidate]:
-            for answer in wrong_answers:
-                yield SuggestionCandidate(label=answer)
-            for track in grounded_tracks:
-                if (value := cls._target_value(track, fact.target)) is not None:
-                    yield SuggestionCandidate(label=value)
+            yield from candidates
+            for value in grounded_values:
+                yield SuggestionCandidate(label=value)
 
-        expected_count = len(wrong_answers)
         candidates = filter_suggestion_candidates(
-            SuggestionCandidate(label=fact.correct_answer),
+            correct,
             iter_candidates(),
             limit=expected_count,
         )
