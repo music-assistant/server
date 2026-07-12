@@ -204,7 +204,7 @@ def test_chapters_generic_when_unaligned(provider: TeddyCloudProvider) -> None:
     """A non-divisible mismatch keeps every mark with generic names (no guessed labels)."""
     tag = _tag(trackSeconds=[0, 180, 360], tonieInfo={"tracks": ["Story One", "Story Two"]})
     chapters = provider._chapters(tag, total_seconds=None)
-    assert [c.name for c in chapters] == ["Kapitel 1", "Kapitel 2", "Kapitel 3"]
+    assert [c.name for c in chapters] == ["Chapter 1", "Chapter 2", "Chapter 3"]
     assert chapters[-1].end is None  # no total -> last chapter unbounded
 
 

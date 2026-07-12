@@ -339,7 +339,7 @@ class TeddyCloudProvider(MusicProvider):
           * marks are an exact multiple of names -> collapse to the named "stories",
             each starting at its evenly-grouped mark (e.g. 16 marks / 4 names -> 4
             chapters at marks 0,4,8,12);
-          * otherwise -> expose every mark with generic "Kapitel N" (never guess a name
+          * otherwise -> expose every mark with generic "Chapter N" (never guess a name
             onto the wrong mark).
 
         The last chapter's end is the derived total duration so every chapter is bounded.
@@ -377,7 +377,7 @@ class TeddyCloudProvider(MusicProvider):
             if labels is not None and pos < len(labels) and labels[pos]:
                 name = str(labels[pos])
             else:
-                name = f"Kapitel {pos + 1}"
+                name = f"Chapter {pos + 1}"
             chapters.append(
                 MediaItemChapter(position=pos + 1, name=name, start=float(start), end=end)
             )
