@@ -196,8 +196,7 @@ def _parse_album_artists(
 ) -> UniqueList[Artist | ItemMapping] | None:
     """Parse the album artists from an album's attributes and relationships."""
     album_artist_name = normalize_unicode(attributes.get("artistName"))
-    # compilations may reference unresolvable placeholder artists that carry
-    # no details at all; those only yield a useless id-as-name mapping
+    # Skip incomplete relationships that only produce ID-based artist mappings.
     artist_objs = [
         artist
         for artist in relationships.get("artists", {}).get("data", [])
@@ -205,10 +204,7 @@ def _parse_album_artists(
     ]
     artists = UniqueList([parse_artist(provider, artist) for artist in artist_objs])
     if album_artist_name and attributes.get("isCompilation"):
-        # compilations may reference a single contributing artist instead of
-        # the album-level artist (e.g. 'Various Artists', localized), so only
-        # keep the related artists when they match the album-level artist;
-        # multiple related artists (DJ-mix compilations) are kept as-is
+        # A lone related artist can be a contributor rather than the album artist.
         if len(artists) == 1 and artists[0].name != album_artist_name:
             artists = UniqueList()
     if artists:
