@@ -1,0 +1,26 @@
+{
+  "config_entries": {
+    "base_url": {
+      "label": "AudioMuse-AI server URL",
+      "description": "Root URL of your AudioMuse-AI server, e.g. http://192.168.1.10:8000"
+    },
+    "api_token": {
+      "label": "API token",
+      "description": "Optional API token, sent as a Bearer header. Leave empty if auth is off."
+    },
+    "media_provider": {
+      "label": "Media provider to map against",
+      "description": "The Music Assistant provider that points at the same media server AudioMuse-AI analyzed. Track ids are matched through this provider."
+    },
+    "enable_text_search": {
+      "label": "Enable free-text search",
+      "description": "Expose AudioMuse-AI's CLAP + lyrics search as a search provider."
+    },
+    "enable_discover_row": {
+      "label": "Show 'Inspired by recently played' row"
+    }
+  },
+  "manifest": {
+    "description": "Library-wide Similar Tracks, an 'Inspired by recently played' discover row, and free-text search, powered by an external AudioMuse-AI server. Requires a running AudioMuse-AI instance pointed at the same media server you use in Music Assistant."
+  }
+}

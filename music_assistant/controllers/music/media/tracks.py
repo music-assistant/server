@@ -423,89 +423,127 @@ class TracksController(MediaControllerBase[Track]):
         """
         Get a list of similar tracks for the given track.
 
+        Results accumulate (de-duplicated) up to ``limit`` from every provider
+        offering similarity, consulted in order of each provider's ``priority``
+        attribute (lower = more preferred, default 50). At equal priority the
+        track's own music provider leads and the others top up any shortfall,
+        so results only change when a provider explicitly claims priority.
+
         :param item_id: The item ID of the track.
         :param provider_instance_id_or_domain: The provider instance ID or domain.
-        :param limit: Maximum number of similar tracks to return.
-        :param allow_lookup: Allow lookup on other providers if not found.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-            When provided, these providers will be tried first before falling back to others.
+        :param limit: Maximum number of similar tracks to return (the target the
+            top-up logic tries to fill).
+        :param allow_lookup: Allow matching the seed onto a music provider to pull
+            more similar tracks when the priority providers come up short.
+        :param preferred_provider_instances: Music-provider instances to prefer
+            when topping up from the track's own providers.
         """
         ref_item = await self.get(item_id, provider_instance_id_or_domain)
 
-        # Sort provider mappings to prefer user's provider instances
+        # Accumulate up to `limit` deduped tracks from all similarity sources.
+        collected: list[Track] = []
+        seen: set[str] = set()
+
+        def _add(tracks: list[Track]) -> None:
+            for track in tracks:
+                if len(collected) >= limit:
+                    return
+                uri = getattr(track, "uri", None)
+                if uri is not None:
+                    if uri == ref_item.uri or uri in seen:
+                        continue
+                    seen.add(uri)
+                collected.append(track)
+
+        # The track's own provider mappings, preferred instances and higher
+        # quality first.
         def sort_key(mapping: ProviderMapping) -> tuple[int, int]:
-            # Primary sort: preferred providers first (0), then others (1)
             preferred = (
                 0
                 if preferred_provider_instances
                 and mapping.provider_instance in preferred_provider_instances
                 else 1
             )
-            # Secondary sort: by quality (higher is better, so negate)
             quality = -(mapping.quality or 0)
             return (preferred, quality)
 
-        sorted_mappings = sorted(ref_item.provider_mappings, key=sort_key)
-
-        # Try preferred providers first, then fall back to others
-        for allow_other_provider in (False, True):
-            for prov_mapping in sorted_mappings:
-                if (
-                    not allow_other_provider
-                    and preferred_provider_instances
-                    and prov_mapping.provider_instance not in preferred_provider_instances
-                ):
-                    continue
-                prov = self.mass.get_provider(prov_mapping.provider_instance)
-                if prov is None:
-                    continue
-                if not isinstance(prov, MusicProvider):
-                    continue
-                if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
-                    continue
-                # Grab similar tracks from the music provider
-                try:
-                    if result := await prov.get_similar_tracks(
-                        prov_track_id=prov_mapping.item_id, limit=limit
-                    ):
-                        return result
-                except NotImplementedError:
-                    continue
-
-        # Fallback: consult metadata/plugin providers that claim SIMILAR_TRACKS
+        # Gather every similarity source: the track's own music provider(s)
+        # plus plugin/metadata providers implementing SIMILAR_TRACKS. Sources
+        # are consulted by the provider's `priority` attribute; at equal
+        # priority the track's own music provider wins, so a provider that
+        # wants its results to lead (e.g. a sonic-similarity plugin) must
+        # explicitly declare a lower priority.
+        sources: list[
+            tuple[
+                tuple[int, int, int],
+                MusicProvider | MetadataProvider | PluginProvider,
+                ProviderMapping | None,
+            ]
+        ] = []
         for prov in self.mass.get_providers_supporting_feature(
             ProviderFeature.SIMILAR_TRACKS,
             priority=(ProviderType.METADATA, ProviderType.PLUGIN),
         ):
+            if isinstance(prov, MusicProvider):
+                continue
+            cross_prov = cast("MetadataProvider | PluginProvider", prov)
+            sources.append(((getattr(cross_prov, "priority", 50), 1, 0), cross_prov, None))
+        for idx, prov_mapping in enumerate(sorted(ref_item.provider_mappings, key=sort_key)):
+            mapped_prov = self.mass.get_provider(prov_mapping.provider_instance)
+            if not isinstance(mapped_prov, MusicProvider):
+                continue
+            if ProviderFeature.SIMILAR_TRACKS not in mapped_prov.supported_features:
+                continue
+            sources.append(
+                ((getattr(mapped_prov, "priority", 50), 0, idx), mapped_prov, prov_mapping)
+            )
+
+        for _, prov, src_mapping in sorted(sources, key=lambda source: source[0]):
+            if len(collected) >= limit:
+                break
             try:
-                cross_prov = cast("MetadataProvider | PluginProvider", prov)
-                if result := await cross_prov.get_similar_tracks(ref_item, limit=limit):
-                    return result
+                if src_mapping is None:
+                    _add(
+                        await cast("MetadataProvider | PluginProvider", prov).get_similar_tracks(
+                            ref_item, limit=limit
+                        )
+                    )
+                else:
+                    _add(
+                        await cast("MusicProvider", prov).get_similar_tracks(
+                            prov_track_id=src_mapping.item_id, limit=limit
+                        )
+                    )
             except NotImplementedError:
                 continue
 
-        if not allow_lookup:
-            return []
-
-        music_prov: MusicProvider | None = None
-        for prov in self.mass.music.providers:
-            if ProviderFeature.SIMILAR_TRACKS in prov.supported_features:
-                music_prov = prov
-                break
-        if music_prov is None:
-            msg = "No Music Provider found that supports requesting similar tracks."
-            raise UnsupportedFeaturedException(msg)
-
-        if mappings := await self.match_provider(ref_item, music_prov):
-            if ref_item.provider == "library":
-                # update database with new provider mappings
-                await self.add_provider_mappings(ref_item.item_id, mappings)
-            ref_item.provider_mappings.update(mappings)
-            return await music_prov.get_similar_tracks(
-                prov_track_id=mappings[0].item_id, limit=limit
+        # Final top-up: when still short, match the seed onto a similar-capable
+        # music provider and pull more.
+        if allow_lookup and len(collected) < limit:
+            music_prov: MusicProvider | None = next(
+                (
+                    prov
+                    for prov in self.mass.music.providers
+                    if ProviderFeature.SIMILAR_TRACKS in prov.supported_features
+                ),
+                None,
             )
+            if music_prov is None:
+                if not collected:
+                    msg = "No Music Provider found that supports requesting similar tracks."
+                    raise UnsupportedFeaturedException(msg)
+            elif mappings := await self.match_provider(ref_item, music_prov):
+                if ref_item.provider == "library":
+                    # update database with new provider mappings
+                    await self.add_provider_mappings(ref_item.item_id, mappings)
+                ref_item.provider_mappings.update(mappings)
+                _add(
+                    await music_prov.get_similar_tracks(
+                        prov_track_id=mappings[0].item_id, limit=limit
+                    )
+                )
 
-        return []
+        return collected[:limit]
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""

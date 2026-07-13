@@ -46,6 +46,9 @@ def _make_provider(
     mass.player_queues.get_tracks_for_playback = AsyncMock(
         side_effect=lambda item: base_tracks_by_seed.get(item.item_id, [])
     )
+    # The provider checks SIMILAR_TRACKS providers for the `ordered_similarity`
+    # property; with none available it uses the default (shuffled) assembly path.
+    mass.get_providers_supporting_feature = MagicMock(return_value=[])
     prov.mass = cast("MusicAssistant", mass)
     return prov
 
@@ -123,6 +126,21 @@ async def test_multiple_seeds_dedup_base_tracks() -> None:
     # with only 2 similar mocks per call we never hit the dynamic-target threshold, so both
     # passes run -> 3 * 2 = 6 calls. Without dedup it would be 4 * 2 = 8.
     assert cast("Any", prov.mass.music.tracks.similar_tracks).call_count <= 6
+
+
+@pytest.mark.asyncio
+async def test_ordered_similarity_provider_preserves_order() -> None:
+    """An active ordered-similarity provider keeps similar tracks in provider order."""
+    seed = _seed(MediaType.TRACK, "s1")
+    base = _track("s1")
+    similar = [_track(f"sim{i}") for i in range(5)]
+    prov = _make_provider({"s1": [base]}, similar)
+    ordered_prov = MagicMock()
+    ordered_prov.ordered_similarity = True
+    cast("Any", prov.mass).get_providers_supporting_feature = MagicMock(return_value=[ordered_prov])
+
+    result = await prov.get_dynamic_tracks([seed], include_base_tracks=True, target_size=5)
+    assert [t.item_id for t in result] == ["s1", "sim0", "sim1", "sim2", "sim3", "sim4"]
 
 
 @pytest.mark.asyncio
