@@ -49,8 +49,9 @@ def _make_taf_header(num_bytes: int, page_nums: list[int]) -> bytes:
 class _FakeResponse:
     """Minimal async-context-manager stand-in for an aiohttp response."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes = b"", json_payload: Any = None) -> None:
         self._data = data
+        self._json = json_payload
 
     async def __aenter__(self) -> Self:
         return self
@@ -60,6 +61,9 @@ class _FakeResponse:
 
     def raise_for_status(self) -> None:
         """No-op: the fake response is always OK."""
+
+    async def json(self, content_type: str | None = None) -> Any:
+        return self._json
 
     @property
     def content(self) -> Mock:
@@ -298,3 +302,30 @@ async def test_get_library_audiobooks(provider: TeddyCloudProvider) -> None:
     books = [book async for book in provider.get_library_audiobooks()]
     assert len(books) == 1
     assert books[0].name == "The Copper Lantern"
+
+
+async def test_fetch_tags_normalizes_ruid_only(
+    provider: TeddyCloudProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tag with only 'ruid' (no 'uid') is normalized so downstream tag['uid'] is safe."""
+    payload = {
+        "tags": [
+            {
+                "ruid": "AABBCCDD00112233",
+                "trackSeconds": [0],
+                "source": "/library/by/audioID/1600000000.taf",
+                "audioUrl": "/content/download/000000/AABBCCDD00112233",
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        provider.mass.http_session, "get", Mock(return_value=_FakeResponse(json_payload=payload))
+    )
+
+    tags = await provider._fetch_tags(force=True)
+
+    assert "AABBCCDD00112233" in tags
+    assert tags["AABBCCDD00112233"]["uid"] == "AABBCCDD00112233"  # normalized from ruid
+    # parsing must not raise KeyError on tag["uid"]
+    book = provider._parse_audiobook(tags["AABBCCDD00112233"], total_seconds=None)
+    assert book.item_id == "AABBCCDD00112233"

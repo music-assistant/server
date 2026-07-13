@@ -233,7 +233,11 @@ class TeddyCloudProvider(MusicProvider):
             uid = tag.get("uid") or tag.get("ruid")
             if not uid or not self._is_playable(tag):
                 continue
-            tags[str(uid)] = tag
+            # normalise: downstream code (e.g. _parse_audiobook) reads tag["uid"] directly,
+            # so make sure it is always present as a string even for ruid-only tags.
+            uid = str(uid)
+            tag["uid"] = uid
+            tags[uid] = tag
 
         self._tags = tags
         self._tags_fetched_at = now
