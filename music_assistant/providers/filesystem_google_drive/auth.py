@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 from aiohttp import ClientError
 from google_drive_api.auth import AbstractAuth
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
 from music_assistant.helpers.auth import AuthenticationHelper
 
@@ -116,7 +116,9 @@ class MAGoogleDriveAuth(AbstractAuth):
                 resp.raise_for_status()
                 payload = await resp.json()
         except ClientError as err:
-            raise LoginFailed(f"Google token refresh failed: {err}") from err
+            # 5xx or network blip: transient, so don't report it as an auth
+            # problem that sends the user back through the OAuth flow
+            raise ProviderUnavailableError(f"Google token refresh failed: {err}") from err
         self._access_token = str(payload["access_token"])
         self._expires_at = time.time() + float(payload.get("expires_in", 3600))
         return self._access_token
