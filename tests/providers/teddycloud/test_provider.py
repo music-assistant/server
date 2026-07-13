@@ -329,3 +329,21 @@ async def test_fetch_tags_normalizes_ruid_only(
     # parsing must not raise KeyError on tag["uid"]
     book = provider._parse_audiobook(tags["AABBCCDD00112233"], total_seconds=None)
     assert book.item_id == "AABBCCDD00112233"
+
+
+async def test_handle_async_init_prepends_scheme(
+    mass_mock: Mock, manifest_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server entered as a bare host/IP is normalized to an http:// base URL."""
+    config = Mock()
+    config.instance_id = "teddycloud_test"
+    values: dict[str, Any] = {"url": "192.168.3.225", "log_level": "INFO", "verify_ssl": True}
+    config.get_value.side_effect = lambda key, default=None: values.get(key, default)
+    prov = TeddyCloudProvider(mass_mock, manifest_mock, config, SUPPORTED_FEATURES)
+    monkeypatch.setattr(
+        mass_mock.http_session, "get", Mock(return_value=_FakeResponse(json_payload={"tags": []}))
+    )
+
+    await prov.handle_async_init()
+
+    assert prov.base_url == "http://192.168.3.225"

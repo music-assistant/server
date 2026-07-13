@@ -121,7 +121,12 @@ class TeddyCloudProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Read config, prepare the HTTP client and verify connectivity."""
-        self.base_url = str(self.config.get_value(CONF_URL)).rstrip("/")
+        base_url = str(self.config.get_value(CONF_URL)).rstrip("/")
+        # accept a bare host/IP and default to http:// (TeddyCloud is usually plain HTTP on
+        # the local network); an explicit http(s):// scheme is always respected.
+        if not base_url.startswith(("http://", "https://")):
+            base_url = f"http://{base_url}"
+        self.base_url = base_url
         self.verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
         username = self.config.get_value(CONF_USERNAME)
         password = self.config.get_value(CONF_PASSWORD)
@@ -138,7 +143,10 @@ class TeddyCloudProvider(MusicProvider):
         except MediaNotFoundError as err:
             raise LoginFailed(str(err)) from err
         except aiohttp.ClientError as err:
-            raise LoginFailed(f"Cannot reach TeddyCloud at {self.base_url}: {err}") from err
+            raise LoginFailed(
+                f"Cannot reach TeddyCloud at {self.base_url}: {err}. Check the server URL "
+                "includes the correct scheme (http:// or https://) and port."
+            ) from err
 
     @property
     def is_streaming_provider(self) -> bool:
