@@ -208,13 +208,18 @@ class MSXHTTPServer:
         self.app.router.add_get("/api/party/qr.svg", self._handle_party_qr)
         self.app.router.add_get("/api/party/qr.png", self._handle_party_qr)
 
-        # Playback control
+        # Playback control — GET (MSX interaction plugin) + POST (web player,
+        # dashboard). Never wildcard: extra methods only widen the CSRF surface.
         self.app.router.add_post("/api/play", self._handle_play)
-        self.app.router.add_route("*", "/api/pause/{player_id}", self._handle_pause)
-        self.app.router.add_route("*", "/api/stop/{player_id}", self._handle_stop)
-        self.app.router.add_route("*", "/api/quick-stop/{player_id}", self._handle_quick_stop)
-        self.app.router.add_route("*", "/api/next/{player_id}", self._handle_next)
-        self.app.router.add_route("*", "/api/previous/{player_id}", self._handle_previous)
+        for path, handler in (
+            ("/api/pause/{player_id}", self._handle_pause),
+            ("/api/stop/{player_id}", self._handle_stop),
+            ("/api/quick-stop/{player_id}", self._handle_quick_stop),
+            ("/api/next/{player_id}", self._handle_next),
+            ("/api/previous/{player_id}", self._handle_previous),
+        ):
+            self.app.router.add_get(path, handler)
+            self.app.router.add_post(path, handler)
 
     # --- Server Lifecycle ---
 
@@ -1094,6 +1099,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             if from_playlist:
                 player._skip_ws_notify = True
 
+            # Arm BEFORE enqueuing so wait_for_media() waits for the new track's
+            # play_media() instead of returning the previous track's media.
+            player.expect_new_media()
             try:
                 async with ImpersonatedUser(
                     self.provider.mass, await self.provider.get_owner_username()
@@ -1187,17 +1195,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """
         player_id = player.player_id
 
-        # Resolve effective output format: per-player config overrides provider default.
-        # CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 uses key "output_codec"; fall back to
-        # player.output_format (set from provider-level config during registration).
-        effective_format = cast(
-            "str",
-            player.config.get_value("output_codec", player.output_format),
-        )
-
         # --- Mode 1: MA Redirect ---
         if self.provider.is_redirect_stream_mode():
-            redirect_url = await self.provider.get_ma_stream_url(media, effective_format)
+            redirect_url = await self.provider.get_ma_stream_url(player_id, media)
             if redirect_url:
                 logger.info(
                     "[StreamMode:redirect] Player %s -> MA Streamserver: %s",
@@ -1211,6 +1211,16 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 "falling back to independent mode",
                 player_id,
             )
+
+        # Resolve effective output format: per-player config overrides provider default.
+        # CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 uses key "output_codec"; fall back to
+        # player.output_format (set from provider-level config during registration).
+        # Only the proxy paths below need this — in redirect mode the MA streamserver
+        # applies the same per-player codec config itself.
+        effective_format = cast(
+            "str",
+            player.config.get_value("output_codec", player.output_format),
+        )
 
         pcm_format, out_format, headers = self._build_audio_params(
             effective_format,
@@ -2162,8 +2172,25 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     # --- Playback Control ---
 
+    @staticmethod
+    def _reject_cross_site(request: web.Request) -> web.Response | None:
+        """
+        Reject browser cross-site requests to state-changing endpoints (CSRF guard).
+
+        Any web page can fire an unauthenticated GET at this LAN server via an
+        img/script tag; modern browsers mark such requests with
+        Sec-Fetch-Site: cross-site. Legitimate callers are same-origin (web
+        player, MSX interaction plugin, dashboard) or non-browser clients that
+        omit the header entirely — both pass.
+        """
+        if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+            return web.json_response({"error": "Cross-site request rejected"}, status=403)
+        return None
+
     async def _handle_play(self, request: web.Request) -> web.Response:
         """Start playback of a track."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         try:
             body = await request.json()
         except Exception:
@@ -2183,6 +2210,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         """Pause playback."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2192,6 +2221,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_stop(self, request: web.Request) -> web.Response:
         """Stop playback."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2201,6 +2232,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_quick_stop(self, request: web.Request) -> web.Response:
         """Stop playback on MSX immediately (same signal as Disable)."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2214,6 +2247,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_next(self, request: web.Request) -> web.Response:
         """Skip to next track."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2223,6 +2258,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_previous(self, request: web.Request) -> web.Response:
         """Skip to previous track."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)

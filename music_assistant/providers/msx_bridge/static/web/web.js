@@ -184,19 +184,29 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         sendspinUrl = SENDSPIN_URL_PARAM || getDefaultSendspinUrl();
 
         try {
-            var sdkUrl = 'https://unpkg.com/@music-assistant/sendspin-js@1.0.0/dist/index.js';
-            var module = await import(sdkUrl);
+            // Vendored @sendspin/sendspin-js (see scripts/vendor-sendspin-js.sh):
+            // TVs on LAN-only setups have no CDN access. web.js is loaded as a
+            // module, so the relative specifier resolves against this file's
+            // URL (/web/web.js) and survives reverse-proxy path prefixes.
+            var module = await import('./sendspin-js/index.js');
             var SendspinPlayer = module.SendspinPlayer;
 
             console.log('[Sendspin] SDK loaded, connecting to:', sendspinUrl);
 
-            sendspinPlayer = new SendspinPlayer({
+            var playerConfig = {
                 playerId: 'web-kiosk-' + deviceId.substring(0, 8),
                 baseUrl: sendspinUrl,
                 clientName: 'Web Kiosk Player',
                 correctionMode: 'sync',
                 onStateChange: onSendspinStateChange
-            });
+            };
+            // Without WebCodecs the SDK's opus fallback needs the opus-encdec
+            // package, which is not vendored (bare dynamic import, browser-
+            // unloadable). Don't advertise opus so the server picks FLAC/PCM.
+            if (typeof AudioDecoder === 'undefined') {
+                playerConfig.codecs = ['flac', 'pcm'];
+            }
+            sendspinPlayer = new SendspinPlayer(playerConfig);
 
             await sendspinPlayer.connect();
             sendspinReady = true;
@@ -222,11 +232,13 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
                 title: meta.title || '',
                 artist: meta.artist || '',
                 image: meta.artwork_url || '',
-                duration: meta.track_duration ? meta.track_duration / 1000 : 0
+                duration: meta.progress && meta.progress.track_duration
+                    ? meta.progress.track_duration / 1000 : 0
             });
         }
 
-        updateSendspinStatus(sendspinPlayer.isClockSynced ? 'synced' : 'syncing');
+        var syncInfo = sendspinPlayer.timeSyncInfo;
+        updateSendspinStatus(syncInfo && syncInfo.synced ? 'synced' : 'syncing');
     }
 
     function updateSendspinProgress() {
@@ -649,12 +661,23 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
         if (kioskPlay) kioskPlay.innerHTML = html;
     }
 
+    // sendspin-js 3.x throws when the server's supported_commands list
+    // excludes the command (1.x sent it unconditionally) — don't let that
+    // kill the button handler.
+    function sendspinCommand(cmd) {
+        try {
+            sendspinPlayer.sendCommand(cmd);
+        } catch (e) {
+            console.warn('[Sendspin] Command rejected:', cmd, e.message);
+        }
+    }
+
     function togglePlay() {
         if (isSendspinMode() && sendspinPlayer) {
             if (sendspinPlayer.isPlaying) {
-                sendspinPlayer.sendCommand('pause');
+                sendspinCommand('pause');
             } else {
-                sendspinPlayer.sendCommand('play');
+                sendspinCommand('play');
             }
         } else {
             if (audio.paused) audio.play();
@@ -664,7 +687,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     function nextTrack() {
         if (isSendspinMode() && sendspinPlayer) {
-            sendspinPlayer.sendCommand('next');
+            sendspinCommand('next');
             return;
         }
         if (playlist.length <= 1) { stopPosReport(); return; }
@@ -674,7 +697,7 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
 
     function prevTrack() {
         if (isSendspinMode() && sendspinPlayer) {
-            sendspinPlayer.sendCommand('previous');
+            sendspinCommand('previous');
             return;
         }
         if (!playlist.length) return;

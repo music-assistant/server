@@ -70,7 +70,7 @@ class SharedGroupStream:
             "[SharedStream:%s] Starting producer task",
             self.group_id,
         )
-        self._start_time = time.time()
+        self._start_time = time.monotonic()
         self.producer_task = asyncio.create_task(self._produce(audio_chunks))
 
     async def _produce(self, audio_chunks: AsyncIterator[bytes]) -> None:
@@ -106,7 +106,7 @@ class SharedGroupStream:
                 self.group_id,
                 chunk_count,
                 self._total_bytes,
-                time.time() - self._start_time,
+                time.monotonic() - self._start_time,
             )
         except asyncio.CancelledError:
             logger.debug("[SharedStream:%s] Producer cancelled", self.group_id)
@@ -263,6 +263,7 @@ class MSXBridgeProvider(PlayerProvider):
     _timeout_task: asyncio.Task[None] | None = None
     _owner_username: str | None = None
     _shared_streams: dict[str, SharedGroupStream]  # group_id -> SharedGroupStream
+    _shared_stream_lock: asyncio.Lock
     _background_tasks: set[asyncio.Task[None]]  # fire-and-forget tasks (unregister, stream stop)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -271,6 +272,7 @@ class MSXBridgeProvider(PlayerProvider):
         self._player_last_activity = {}
         self._pending_unregisters = {}
         self._shared_streams = {}
+        self._shared_stream_lock = asyncio.Lock()
         self._background_tasks = set()
 
     async def handle_async_init(self) -> None:
@@ -379,7 +381,7 @@ class MSXBridgeProvider(PlayerProvider):
             ip_address=ip_address,
         )
         await self.mass.players.register(player)
-        self._player_last_activity[player_id] = time.time()
+        self._player_last_activity[player_id] = time.monotonic()
         self.logger.info("Registered MSX player: %s (%s)", name, player_id)
         return player
 
@@ -414,7 +416,8 @@ class MSXBridgeProvider(PlayerProvider):
 
     def on_player_activity(self, player_id: str) -> None:
         """Record activity for a player (extends idle timeout)."""
-        self._player_last_activity[player_id] = time.time()
+        # Monotonic: a wall-clock NTP step must not age players past the cutoff
+        self._player_last_activity[player_id] = time.monotonic()
 
     def on_player_disabled(self, player_id: str) -> None:
         """
@@ -556,7 +559,7 @@ class MSXBridgeProvider(PlayerProvider):
                 await asyncio.sleep(interval_seconds)
             except asyncio.CancelledError:
                 break
-            now = time.time()
+            now = time.monotonic()
             cutoff = now - (timeout_minutes * 60)
             for player in list(self.players):
                 if not isinstance(player, MSXPlayer):
@@ -582,11 +585,9 @@ class MSXBridgeProvider(PlayerProvider):
         """
         Check if MA redirect stream mode is enabled.
 
-        NOTE: Redirect mode is a scaffold for future MA Streamserver integration
-        (MA 2.6+). It is NOT exposed in the provider config UI — users cannot
-        select it. The constant GROUP_STREAM_MODE_REDIRECT exists so the code
-        path compiles and can be activated once MA exposes a public stream URL
-        endpoint. See also ``get_ma_stream_url()``.
+        In redirect mode the TV is 302-redirected to the MA Streamserver
+        (``resolve_stream_url``) instead of being served by the local
+        proxy/ffmpeg pipeline. See also ``get_ma_stream_url()``.
         """
         return self.group_stream_mode == GROUP_STREAM_MODE_REDIRECT
 
@@ -635,38 +636,43 @@ class MSXBridgeProvider(PlayerProvider):
         Returns:
             SharedGroupStream instance
         """
-        existing = self._shared_streams.get(group_id)
+        # Serialize check-and-create: without the lock, two concurrent callers
+        # replacing an old stream both pass the "existing" check while awaiting
+        # existing.stop(), creating two producers — one orphaned.
+        async with self._shared_stream_lock:
+            existing = self._shared_streams.get(group_id)
 
-        # Reuse existing if same media and not finished
-        if existing and not existing.finished and existing.media_uri == media_uri:
+            # Reuse existing if same media and not finished
+            if existing and not existing.finished and existing.media_uri == media_uri:
+                logger.info(
+                    "[GroupStream] Reusing existing shared stream for group %s (subscribers: %d)",
+                    group_id,
+                    existing.subscriber_count,
+                )
+                return existing
+
+            # Clean up old stream if exists
+            if existing:
+                logger.info(
+                    "[GroupStream] Replacing old shared stream for group %s "
+                    "(old_uri=%s, new_uri=%s)",
+                    group_id,
+                    existing.media_uri[:50] if existing.media_uri else "N/A",
+                    media_uri[:50] if media_uri else "N/A",
+                )
+                await existing.stop()
+
+            # Create new shared stream
             logger.info(
-                "[GroupStream] Reusing existing shared stream for group %s (subscribers: %d)",
+                "[GroupStream] Creating new shared stream for group %s, uri=%s",
                 group_id,
-                existing.subscriber_count,
+                media_uri[:80] if media_uri else "N/A",
             )
-            return existing
+            stream = SharedGroupStream(group_id, media_uri)
+            await stream.start(audio_chunks)
+            self._shared_streams[group_id] = stream
 
-        # Clean up old stream if exists
-        if existing:
-            logger.info(
-                "[GroupStream] Replacing old shared stream for group %s (old_uri=%s, new_uri=%s)",
-                group_id,
-                existing.media_uri[:50] if existing.media_uri else "N/A",
-                media_uri[:50] if media_uri else "N/A",
-            )
-            await existing.stop()
-
-        # Create new shared stream
-        logger.info(
-            "[GroupStream] Creating new shared stream for group %s, uri=%s",
-            group_id,
-            media_uri[:80] if media_uri else "N/A",
-        )
-        stream = SharedGroupStream(group_id, media_uri)
-        await stream.start(audio_chunks)
-        self._shared_streams[group_id] = stream
-
-        return stream
+            return stream
 
     def remove_shared_stream(self, group_id: str) -> None:
         """Remove and cleanup shared stream for a group."""
@@ -676,69 +682,40 @@ class MSXBridgeProvider(PlayerProvider):
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
 
-    async def get_ma_stream_url(
-        self,
-        media: Any,
-        output_format: str = "mp3",
-    ) -> str | None:
+    async def get_ma_stream_url(self, player_id: str, media: Any) -> str | None:
         """
-        Get direct stream URL from MA Streamserver for redirect mode.
+        Resolve the direct MA Streamserver URL for the given media.
 
-        NOTE: This is a scaffold for future MA Streamserver integration. The
-        ``/api/streams/single/...`` route does not exist in current MA versions.
-        This method is only reachable if ``group_stream_mode`` is set to
-        ``redirect``, which is NOT exposed in the provider config UI.
-        It will be activated once MA exposes a public streaming endpoint.
+        Used by redirect stream mode: the TV fetches audio straight from the
+        MA Streamserver, which applies the player's own codec config and DSP —
+        no local proxy/ffmpeg involved.
 
-        Args:
-            media: PlayerMedia with queue_item_id and source_id
-            output_format: Audio format (mp3, aac, flac)
-
-        Returns:
-            Direct URL to MA Streamserver, or None if unavailable
+        :param player_id: The MSX player requesting the stream.
+        :param media: PlayerMedia to resolve the stream URL for.
+        :return: Direct URL to the MA Streamserver, or None when resolution
+            fails (the caller falls back to the local proxy pipeline).
         """
         if not media:
             logger.debug("[MARedirect] No media provided")
             return None
-
-        queue_item_id = getattr(media, "queue_item_id", None)
-        source_id = getattr(media, "source_id", None)
-
-        if not queue_item_id or not source_id:
-            logger.debug(
-                "[MARedirect] Media missing queue_item_id=%s or source_id=%s",
-                queue_item_id,
-                source_id,
-            )
-            return None
-
         try:
-            # Get queue to find session_id
-            queue = self.mass.player_queues.get(source_id)
-            if not queue:
-                logger.warning("[MARedirect] Queue not found for source_id=%s", source_id)
-                return None
-
-            # Build MA Streamserver URL
-            # Format: /api/streams/single/{queue_id}/queue/{queue_item_id}.{format}
-            base_url = getattr(self.mass.streams, "base_url", None)
-            if not base_url:
-                # Fallback: use webserver base_url
-                base_url = self.mass.webserver.base_url
-
-            stream_url = (
-                f"{base_url}/api/streams/single/{source_id}/queue/{queue_item_id}.{output_format}"
-            )
-
-            logger.info(
-                "[MARedirect] Generated MA stream URL: %s",
+            stream_url: str = await self.mass.streams.resolve_stream_url(player_id, media)
+        except Exception as err:
+            logger.warning("[MARedirect] Failed to resolve MA stream URL: %s", err, exc_info=True)
+            return None
+        # MA returns a flow URL (continuous whole-queue stream) when e.g. crossfade
+        # is enabled and the player lacks gapless support. That breaks the MSX
+        # per-track model (progress display, auto-advance re-enqueue), so serve
+        # such tracks through the local per-track proxy instead.
+        if "/flow/" in stream_url:
+            logger.debug(
+                "[MARedirect] Flow-mode URL not usable for MSX per-track playback, "
+                "falling back to proxy: %s",
                 stream_url,
             )
-            return stream_url
-
-        except Exception as err:
-            logger.warning("[MARedirect] Failed to get MA stream URL: %s", err, exc_info=True)
             return None
+        logger.debug("[MARedirect] Resolved MA stream URL: %s", stream_url)
+        return stream_url
 
     async def cleanup_shared_streams(self) -> None:
         """Cleanup all shared streams (called on unload)."""

@@ -27,6 +27,7 @@ from .constants import (
     DEFAULT_PLAYER_IDLE_TIMEOUT,
     DEFAULT_SHOW_STOP_NOTIFICATION,
     GROUP_STREAM_MODE_INDEPENDENT,
+    GROUP_STREAM_MODE_REDIRECT,
     GROUP_STREAM_MODE_SHARED,
 )
 from .provider import MSXBridgeProvider
@@ -99,6 +100,9 @@ async def get_config_entries(
                 ),
                 ConfigValueOption(
                     GROUP_STREAM_MODE_SHARED,
+                ),
+                ConfigValueOption(
+                    GROUP_STREAM_MODE_REDIRECT,
                 ),
             ],
         ),

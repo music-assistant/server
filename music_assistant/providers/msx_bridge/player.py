@@ -117,7 +117,6 @@ class MSXPlayer(Player):
         self.logger.info("play_media on %s: uri=%s", self.display_name, media.uri)
         self.current_stream_url = media.uri
         self._attr_current_media = media
-        self._media_ready.clear()
         self._media_ready.set()
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_elapsed_time = 0.0
@@ -385,8 +384,11 @@ class MSXPlayer(Player):
         if isinstance(duration, (int, float)) and duration > 0:
             normalized = min(normalized, float(duration))
         self._attr_elapsed_time = normalized
+        # elapsed_time_last_updated is compared against time.time() by MA core
+        # (corrected_elapsed_time) — must stay wall-clock. The WS staleness
+        # marker is provider-internal — monotonic, immune to NTP steps.
         self._attr_elapsed_time_last_updated = time.time()
-        self._last_ws_position = time.time()
+        self._last_ws_position = time.monotonic()
         self.update_state()
 
     async def poll(self) -> None:
@@ -412,7 +414,7 @@ class MSXPlayer(Player):
             and self._attr_elapsed_time_last_updated is not None
         ):
             # Skip wall-clock update if WS reported position recently
-            if self._last_ws_position and (time.time() - self._last_ws_position) < 10:
+            if self._last_ws_position and (time.monotonic() - self._last_ws_position) < 10:
                 return
             now = time.time()
             delta = now - self._attr_elapsed_time_last_updated
@@ -427,15 +429,24 @@ class MSXPlayer(Player):
             self._attr_elapsed_time_last_updated = now
             self.update_state()
 
+    def expect_new_media(self) -> None:
+        """
+        Arm wait_for_media() to wait for the NEXT play_media() call.
+
+        Call this before initiating playback that will (asynchronously) invoke
+        play_media(). Without arming, wait_for_media() would return the stale
+        current_media left over from a previous track.
+        """
+        self._media_ready.clear()
+
     async def wait_for_media(self, timeout: float = 10.0) -> PlayerMedia | None:
         """
         Wait for play_media() to set current_media, with timeout.
 
-        Fast path: current_media already set — return immediately.
-        Slow path: wait for play_media() to signal. The event is cleared at the start
-        of play_media() (not in stop()), so it can never be left set with stale data.
-        After stop(), _attr_current_media is None — this method returns None even if
-        the event happens to still be set.
+        Fast path: current_media already set and not armed via expect_new_media()
+        — return immediately. Slow path: wait for the next play_media() to signal.
+        After stop(), _attr_current_media is None — this method returns None even
+        if the event happens to still be set.
         """
         if self._attr_current_media is not None and self._media_ready.is_set():
             return self._attr_current_media

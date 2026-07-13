@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -12,7 +13,7 @@ from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
+from music_assistant.providers.msx_bridge.http_server import STATIC_DIR, MSXHTTPServer
 from music_assistant.providers.msx_bridge.mappers import map_track_to_msx
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
@@ -389,6 +390,57 @@ async def test_control_unknown_player(provider: MSXBridgeProvider) -> None:
         await client.close()
 
 
+async def test_control_endpoints_reject_cross_site(http_client: TestClient[Any, Any]) -> None:
+    """
+    State-changing endpoints must reject browser cross-site requests (CSRF).
+
+    Any web page can fire a GET via an img/script tag; modern browsers stamp
+    such requests with Sec-Fetch-Site: cross-site. The rejection must happen
+    before the player lookup so probing is impossible too.
+    """
+    headers = {"Sec-Fetch-Site": "cross-site"}
+    for path in (
+        "/api/pause/msx_x",
+        "/api/stop/msx_x",
+        "/api/quick-stop/msx_x",
+        "/api/next/msx_x",
+        "/api/previous/msx_x",
+    ):
+        resp = await http_client.get(path, headers=headers)
+        assert resp.status == 403, f"{path} must reject cross-site GET"
+
+    resp = await http_client.post(
+        "/api/play",
+        json={"track_uri": "library://track/1", "player_id": "msx_x"},
+        headers=headers,
+    )
+    assert resp.status == 403, "/api/play must reject cross-site POST"
+
+
+async def test_control_endpoints_allow_same_origin(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Same-origin browser requests (web player, MSX plugin) must still work."""
+    _register_msx_player(mass_mock, provider, "msx_test")
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        resp = await client.get("/api/pause/msx_test", headers={"Sec-Fetch-Site": "same-origin"})
+        assert resp.status == 200
+        mass_mock.players.cmd_pause.assert_awaited_once_with("msx_test")
+    finally:
+        await client.close()
+
+
+async def test_control_endpoints_reject_unexpected_methods(
+    http_client: TestClient[Any, Any],
+) -> None:
+    """Control endpoints accept only GET and POST — no wildcard methods."""
+    resp = await http_client.delete("/api/pause/msx_x")
+    assert resp.status == 405
+
+
 # --- MSX content page actions ---
 
 
@@ -436,6 +488,26 @@ def _make_playlist_mock(item_id: int = 1, name: str = "Test Playlist") -> Mock:
     playlist.owner = "test_user"
     playlist.provider = "library"
     return playlist
+
+
+def _make_audio_player(mass_mock: Mock) -> tuple[MagicMock, PlayerMedia]:
+    """Wire a MagicMock MSXPlayer with queue-backed media into mass_mock for audio tests."""
+    player = MagicMock(spec=MSXPlayer)
+    player.player_id = "msx_test"
+    player.output_format = "mp3"
+    player._skip_ws_notify = False
+    media = PlayerMedia(
+        uri="library://track/1",
+        title=None,
+        artist=None,
+        album=None,
+        image_url=None,
+        duration=180,
+    )
+    player.current_media = media
+    player.wait_for_media = AsyncMock(return_value=media)
+    mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
+    return player, media
 
 
 async def test_msx_albums_have_action(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
@@ -642,20 +714,7 @@ async def test_msx_audio_per_track_mode(provider: MSXBridgeProvider, mass_mock: 
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        player = MagicMock(spec=MSXPlayer)
-        player.player_id = "msx_test"
-        player.output_format = "mp3"
-        media = PlayerMedia(
-            uri="library://track/1",
-            title=None,
-            artist=None,
-            album=None,
-            image_url=None,
-            duration=180,
-        )
-        player.current_media = media
-        player.wait_for_media = AsyncMock(return_value=media)
-        mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
+        _make_audio_player(mass_mock)
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -684,21 +743,7 @@ async def test_msx_audio_from_playlist_skips_ws(
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
     try:
-        player = MagicMock(spec=MSXPlayer)
-        player.player_id = "msx_test"
-        player.output_format = "mp3"
-        player._skip_ws_notify = False
-        media = PlayerMedia(
-            uri="library://track/1",
-            title=None,
-            artist=None,
-            album=None,
-            image_url=None,
-            duration=180,
-        )
-        player.current_media = media
-        player.wait_for_media = AsyncMock(return_value=media)
-        mass_mock.players.get.return_value = mass_mock.players.get_player.return_value = player
+        player, _media = _make_audio_player(mass_mock)
 
         mass_mock.streams = Mock()
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
@@ -724,6 +769,39 @@ async def test_msx_audio_from_playlist_skips_ws(
         # And reset to False after
         assert player._skip_ws_notify is False
 
+    finally:
+        await client.close()
+
+
+async def test_msx_audio_arms_wait_before_enqueue(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """GET /msx/audio must arm expect_new_media() BEFORE enqueuing new playback."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        player, _media = _make_audio_player(mass_mock)
+
+        mass_mock.streams = Mock()
+        mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
+
+        call_order: list[str] = []
+        player.expect_new_media = Mock(side_effect=lambda: call_order.append("arm"))
+
+        async def _record_enqueue(*_a: object, **_k: object) -> None:
+            call_order.append("enqueue")
+
+        mass_mock.player_queues.play_media = _record_enqueue
+
+        with patch(
+            "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
+            return_value=_async_iter([b"encoded-chunk-1"]),
+        ):
+            resp = await client.get("/msx/audio/msx_test?uri=library://track/1")
+            assert resp.status == 200
+
+        assert call_order == ["arm", "enqueue"]
     finally:
         await client.close()
 
@@ -1017,6 +1095,111 @@ async def test_removed_kiosk_and_sendspin_routes_404(
     ]:
         resp = await http_client.get(path)
         assert resp.status == 404, f"Expected 404 for {path}, got {resp.status}"
+
+
+# --- Redirect stream mode (MA streamserver) ---
+
+
+async def test_msx_audio_redirect_mode(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+    """In redirect mode /msx/audio must 302-redirect to the MA streamserver URL."""
+    provider.group_stream_mode = "redirect"
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+
+        stream_url = "http://ma:8097/single/s1/q1/i1/msx_test.mp3"
+        mass_mock.streams = Mock()
+        mass_mock.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+
+        resp = await client.get("/msx/audio/msx_test?uri=library://track/1", allow_redirects=False)
+        assert resp.status == 302
+        assert resp.headers["Location"] == stream_url
+    finally:
+        await client.close()
+
+
+async def test_msx_audio_redirect_mode_falls_back_to_proxy(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """When URL resolution fails, redirect mode must fall back to the local proxy."""
+    provider.group_stream_mode = "redirect"
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+
+        mass_mock.streams = Mock()
+        mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=RuntimeError("boom"))
+        mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
+
+        with patch(
+            "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
+            return_value=_async_iter([b"encoded-chunk-1"]),
+        ):
+            resp = await client.get(
+                "/msx/audio/msx_test?uri=library://track/1", allow_redirects=False
+            )
+            assert resp.status == 200
+            body = await resp.read()
+            assert b"encoded-chunk-1" in body
+    finally:
+        await client.close()
+
+
+# --- Vendored Sendspin JS client ---
+
+
+async def test_vendored_sendspin_js_served(http_client: TestClient[Any, Any]) -> None:
+    """The Sendspin JS client must be served locally — TVs on LAN-only setups have no CDN."""
+    resp = await http_client.get("/web/sendspin-js/index.js")
+    assert resp.status == 200
+    body = await resp.text()
+    assert "SendspinPlayer" in body
+
+
+def test_web_player_has_no_cdn_dependency() -> None:
+    """web.js must import the Sendspin SDK from the vendored copy, not from a CDN."""
+    web_js = (STATIC_DIR / "web" / "web.js").read_text(encoding="utf-8")
+    assert "unpkg.com" not in web_js
+    assert "jsdelivr" not in web_js
+    assert "sendspin-js/index.js" in web_js
+
+
+def test_vendored_sendspin_js_imports_are_browser_loadable() -> None:
+    """
+    Every import specifier in the vendored SDK must be loadable by a browser.
+
+    Relative specifiers must resolve to a vendored file (the upstream dist is
+    TypeScript output with extensionless specifiers that only work through CDN
+    rewriting). Bare specifiers cannot resolve in browsers at all; the two
+    opus-encdec ones are a known opus-decode fallback that stays unreachable
+    because the web player stops advertising opus when WebCodecs is missing.
+    """
+    vendor_dir = STATIC_DIR / "web" / "sendspin-js"
+    js_files = list(vendor_dir.rglob("*.js"))
+    assert js_files, "vendored sendspin-js dist is missing"
+    known_bare_specifiers = {
+        "opus-encdec/dist/libopus-decoder.js",
+        "opus-encdec/src/oggOpusDecoder.js",
+    }
+    # static imports/re-exports, side-effect imports, and dynamic import()
+    pattern = re.compile(
+        r"""(?:import\s*\(\s*|import[^'"()]*?from\s+|import\s+|export[^'"()]*?from\s+)"""
+        r"""['"]([^'"]+)['"]"""
+    )
+    bad: list[str] = []
+    for js_file in js_files:
+        for specifier in pattern.findall(js_file.read_text(encoding="utf-8")):
+            if specifier.startswith("."):
+                target = (js_file.parent / specifier).resolve()
+                if not (specifier.endswith(".js") and target.is_file()):
+                    bad.append(f"{js_file.name}: {specifier}")
+            elif specifier not in known_bare_specifiers:
+                bad.append(f"{js_file.name}: bare specifier {specifier}")
+    assert not bad, f"browser-unloadable import specifiers: {bad}"
 
 
 # --- Queue API ---
