@@ -129,6 +129,175 @@ class MSXPlayer(Player):
 
         await self._propagate_to_group_members("play_media", media=media)
 
+    async def set_members(
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Handle SET_MEMBERS — update group membership."""
+        for pid in player_ids_to_remove or []:
+            if pid in self._attr_group_members:
+                self._attr_group_members.remove(pid)
+        for pid in player_ids_to_add or []:
+            if pid != self.player_id and pid not in self._attr_group_members:
+                other = self.mass.players.get_player(pid)
+                if other and isinstance(other, MSXPlayer):
+                    self._attr_group_members.append(pid)
+
+        # Normalize group membership: leader must be first when grouped,
+        # and the list must be empty when no other members exist.
+        members_except_self = [pid for pid in self._attr_group_members if pid != self.player_id]
+        if not members_except_self:
+            self._attr_group_members = []
+        else:
+            self._attr_group_members = [self.player_id, *members_except_self]
+
+        self.update_state()
+
+    async def play(self) -> None:
+        """Handle PLAY (resume) command."""
+        self.logger.info("play (resume) on %s", self.display_name)
+        if self._attr_playback_state == PlaybackState.PAUSED:
+            await self._resume_from_pause()
+            return
+        self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_elapsed_time_last_updated = time.time()
+        self.update_state()
+        await self._propagate_to_group_members("play")
+
+    async def pause(self) -> None:
+        """Handle PAUSE command — pause playback on MSX, keep stream alive for resume."""
+        self.logger.info("pause on %s", self.display_name)
+        # Snapshot the elapsed time before pausing
+        if self._attr_elapsed_time is not None and self._attr_elapsed_time_last_updated is not None:
+            self._attr_elapsed_time += time.time() - self._attr_elapsed_time_last_updated
+        self._attr_playback_state = PlaybackState.PAUSED
+        self._attr_elapsed_time_last_updated = time.time()
+        self.update_state()
+        if not self._skip_ws_notify:
+            cast("MSXBridgeProvider", self.provider).notify_play_paused(self.player_id)
+        await self._propagate_to_group_members("pause")
+
+    async def stop(self) -> None:
+        """Handle STOP command."""
+        self.logger.info("stop on %s", self.display_name)
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_current_media = None
+        self._attr_elapsed_time = None
+        self._attr_elapsed_time_last_updated = None
+        self._last_ws_position = None
+        self.current_stream_url = None
+        self._playing_from_queue = False
+        self._queue_source_id = None
+        self._playlist_offset = 0
+        self._playlist_size = 0
+        self.update_state()
+        provider = cast("MSXBridgeProvider", self.provider)
+        provider.notify_play_stopped(self.player_id)
+        await self._propagate_to_group_members("stop")
+
+    async def volume_set(self, volume_level: int) -> None:
+        """Handle VOLUME_SET command."""
+        self._attr_volume_level = volume_level
+        self.update_state()
+
+    async def seek(self, position_seconds: int) -> None:
+        """Handle SEEK command — send seek action to MSX player via WebSocket."""
+        self._attr_elapsed_time = float(position_seconds)
+        self._attr_elapsed_time_last_updated = time.time()
+        self._last_ws_position = None
+        self.update_state()
+        if not self._skip_ws_notify:
+            cast("MSXBridgeProvider", self.provider).notify_seek(self.player_id, position_seconds)
+
+    def update_position(self, position: float) -> None:
+        """
+        Update elapsed time from a WebSocket position report.
+
+        Only accepts updates while PLAYING — late reports arriving after
+        pause() would overwrite the correctly accumulated elapsed_time.
+        """
+        if self._attr_playback_state != PlaybackState.PLAYING:
+            return
+        normalized = max(0.0, float(position))
+        current_media = self._attr_current_media
+        duration = getattr(current_media, "duration", None) if current_media is not None else None
+        if isinstance(duration, (int, float)) and duration > 0:
+            normalized = min(normalized, float(duration))
+        self._attr_elapsed_time = normalized
+        # elapsed_time_last_updated is compared against time.time() by MA core
+        # (corrected_elapsed_time) — must stay wall-clock. The WS staleness
+        # marker is provider-internal — monotonic, immune to NTP steps.
+        self._attr_elapsed_time_last_updated = time.time()
+        self._last_ws_position = time.monotonic()
+        self.update_state()
+
+    async def poll(self) -> None:
+        """
+        Poll player for state updates.
+
+        Raises PlayerUnavailableError if the player was marked unavailable
+        (e.g. WS disconnected while playing — TV likely went offline).
+
+        If a recent WebSocket position report was received (within 10s),
+        skip wall-clock increment — the WS data is more accurate.
+        """
+        if not self._attr_available:
+            raise PlayerUnavailableError(
+                f"MSX TV {self.display_name} is offline (WebSocket disconnected)",
+                translation_key="player_offline",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
+        if (
+            self._attr_playback_state == PlaybackState.PLAYING
+            and self._attr_elapsed_time is not None
+            and self._attr_elapsed_time_last_updated is not None
+        ):
+            # Skip wall-clock update if WS reported position recently
+            if self._last_ws_position and (time.monotonic() - self._last_ws_position) < 10:
+                return
+            now = time.time()
+            delta = now - self._attr_elapsed_time_last_updated
+            new_elapsed = max(0.0, float(self._attr_elapsed_time) + float(delta))
+            current_media = self._attr_current_media
+            duration = (
+                getattr(current_media, "duration", None) if current_media is not None else None
+            )
+            if isinstance(duration, (int, float)) and duration > 0:
+                new_elapsed = min(new_elapsed, float(duration))
+            self._attr_elapsed_time = new_elapsed
+            self._attr_elapsed_time_last_updated = now
+            self.update_state()
+
+    def expect_new_media(self) -> None:
+        """
+        Arm wait_for_media() to wait for the NEXT play_media() call.
+
+        Call this before initiating playback that will (asynchronously) invoke
+        play_media(). Without arming, wait_for_media() would return the stale
+        current_media left over from a previous track.
+        """
+        self._media_ready.clear()
+
+    async def wait_for_media(self, timeout: float = 10.0) -> PlayerMedia | None:
+        """
+        Wait for play_media() to set current_media, with timeout.
+
+        Fast path: current_media already set and not armed via expect_new_media()
+        — return immediately. Slow path: wait for the next play_media() to signal.
+        After stop(), _attr_current_media is None — this method returns None even
+        if the event happens to still be set.
+        """
+        if self._attr_current_media is not None and self._media_ready.is_set():
+            return self._attr_current_media
+        if not self._media_ready.is_set():
+            try:
+                await asyncio.wait_for(self._media_ready.wait(), timeout=timeout)
+            except TimeoutError:
+                return None
+        return self._attr_current_media
+
     def _notify_msx_playback(self, media: PlayerMedia) -> None:
         """Send WS notification to MSX about the new playback state."""
         source_id = media.source_id
@@ -270,42 +439,6 @@ class MSXPlayer(Player):
                 exc_info=True,
             )
 
-    async def set_members(
-        self,
-        player_ids_to_add: list[str] | None = None,
-        player_ids_to_remove: list[str] | None = None,
-    ) -> None:
-        """Handle SET_MEMBERS — update group membership."""
-        for pid in player_ids_to_remove or []:
-            if pid in self._attr_group_members:
-                self._attr_group_members.remove(pid)
-        for pid in player_ids_to_add or []:
-            if pid != self.player_id and pid not in self._attr_group_members:
-                other = self.mass.players.get_player(pid)
-                if other and isinstance(other, MSXPlayer):
-                    self._attr_group_members.append(pid)
-
-        # Normalize group membership: leader must be first when grouped,
-        # and the list must be empty when no other members exist.
-        members_except_self = [pid for pid in self._attr_group_members if pid != self.player_id]
-        if not members_except_self:
-            self._attr_group_members = []
-        else:
-            self._attr_group_members = [self.player_id, *members_except_self]
-
-        self.update_state()
-
-    async def play(self) -> None:
-        """Handle PLAY (resume) command."""
-        self.logger.info("play (resume) on %s", self.display_name)
-        if self._attr_playback_state == PlaybackState.PAUSED:
-            await self._resume_from_pause()
-            return
-        self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_elapsed_time_last_updated = time.time()
-        self.update_state()
-        await self._propagate_to_group_members("play")
-
     async def _resume_from_pause(self) -> None:
         """
         Resume playback after pause — tell MSX to unpause its native player.
@@ -323,136 +456,3 @@ class MSXPlayer(Player):
         if not self._skip_ws_notify:
             cast("MSXBridgeProvider", self.provider).notify_play_resumed(self.player_id)
         await self._propagate_to_group_members("play")
-
-    async def pause(self) -> None:
-        """Handle PAUSE command — pause playback on MSX, keep stream alive for resume."""
-        self.logger.info("pause on %s", self.display_name)
-        # Snapshot the elapsed time before pausing
-        if self._attr_elapsed_time is not None and self._attr_elapsed_time_last_updated is not None:
-            self._attr_elapsed_time += time.time() - self._attr_elapsed_time_last_updated
-        self._attr_playback_state = PlaybackState.PAUSED
-        self._attr_elapsed_time_last_updated = time.time()
-        self.update_state()
-        if not self._skip_ws_notify:
-            cast("MSXBridgeProvider", self.provider).notify_play_paused(self.player_id)
-        await self._propagate_to_group_members("pause")
-
-    async def stop(self) -> None:
-        """Handle STOP command."""
-        self.logger.info("stop on %s", self.display_name)
-        self._attr_playback_state = PlaybackState.IDLE
-        self._attr_current_media = None
-        self._attr_elapsed_time = None
-        self._attr_elapsed_time_last_updated = None
-        self._last_ws_position = None
-        self.current_stream_url = None
-        self._playing_from_queue = False
-        self._queue_source_id = None
-        self._playlist_offset = 0
-        self._playlist_size = 0
-        self.update_state()
-        provider = cast("MSXBridgeProvider", self.provider)
-        provider.notify_play_stopped(self.player_id)
-        await self._propagate_to_group_members("stop")
-
-    async def volume_set(self, volume_level: int) -> None:
-        """Handle VOLUME_SET command."""
-        self._attr_volume_level = volume_level
-        self.update_state()
-
-    async def seek(self, position_seconds: int) -> None:
-        """Handle SEEK command — send seek action to MSX player via WebSocket."""
-        self._attr_elapsed_time = float(position_seconds)
-        self._attr_elapsed_time_last_updated = time.time()
-        self._last_ws_position = None
-        self.update_state()
-        if not self._skip_ws_notify:
-            cast("MSXBridgeProvider", self.provider).notify_seek(self.player_id, position_seconds)
-
-    def update_position(self, position: float) -> None:
-        """
-        Update elapsed time from a WebSocket position report.
-
-        Only accepts updates while PLAYING — late reports arriving after
-        pause() would overwrite the correctly accumulated elapsed_time.
-        """
-        if self._attr_playback_state != PlaybackState.PLAYING:
-            return
-        normalized = max(0.0, float(position))
-        current_media = self._attr_current_media
-        duration = getattr(current_media, "duration", None) if current_media is not None else None
-        if isinstance(duration, (int, float)) and duration > 0:
-            normalized = min(normalized, float(duration))
-        self._attr_elapsed_time = normalized
-        # elapsed_time_last_updated is compared against time.time() by MA core
-        # (corrected_elapsed_time) — must stay wall-clock. The WS staleness
-        # marker is provider-internal — monotonic, immune to NTP steps.
-        self._attr_elapsed_time_last_updated = time.time()
-        self._last_ws_position = time.monotonic()
-        self.update_state()
-
-    async def poll(self) -> None:
-        """
-        Poll player for state updates.
-
-        Raises PlayerUnavailableError if the player was marked unavailable
-        (e.g. WS disconnected while playing — TV likely went offline).
-
-        If a recent WebSocket position report was received (within 10s),
-        skip wall-clock increment — the WS data is more accurate.
-        """
-        if not self._attr_available:
-            raise PlayerUnavailableError(
-                f"MSX TV {self.display_name} is offline (WebSocket disconnected)",
-                translation_key="player_offline",
-                translation_owner=self.translation_owner,
-                translation_args=[self.display_name],
-            )
-        if (
-            self._attr_playback_state == PlaybackState.PLAYING
-            and self._attr_elapsed_time is not None
-            and self._attr_elapsed_time_last_updated is not None
-        ):
-            # Skip wall-clock update if WS reported position recently
-            if self._last_ws_position and (time.monotonic() - self._last_ws_position) < 10:
-                return
-            now = time.time()
-            delta = now - self._attr_elapsed_time_last_updated
-            new_elapsed = max(0.0, float(self._attr_elapsed_time) + float(delta))
-            current_media = self._attr_current_media
-            duration = (
-                getattr(current_media, "duration", None) if current_media is not None else None
-            )
-            if isinstance(duration, (int, float)) and duration > 0:
-                new_elapsed = min(new_elapsed, float(duration))
-            self._attr_elapsed_time = new_elapsed
-            self._attr_elapsed_time_last_updated = now
-            self.update_state()
-
-    def expect_new_media(self) -> None:
-        """
-        Arm wait_for_media() to wait for the NEXT play_media() call.
-
-        Call this before initiating playback that will (asynchronously) invoke
-        play_media(). Without arming, wait_for_media() would return the stale
-        current_media left over from a previous track.
-        """
-        self._media_ready.clear()
-
-    async def wait_for_media(self, timeout: float = 10.0) -> PlayerMedia | None:
-        """
-        Wait for play_media() to set current_media, with timeout.
-
-        Fast path: current_media already set and not armed via expect_new_media()
-        — return immediately. Slow path: wait for the next play_media() to signal.
-        After stop(), _attr_current_media is None — this method returns None even
-        if the event happens to still be set.
-        """
-        if self._attr_current_media is not None and self._media_ready.is_set():
-            return self._attr_current_media
-        if not self._media_ready.is_set():
-            try:
-                await asyncio.wait_for(self._media_ready.wait(), timeout=timeout)
-            except TimeoutError:
-                return None
-        return self._attr_current_media

@@ -134,6 +134,246 @@ class MSXHTTPServer:
         self._client_prefixes: dict[str, str] = {}
         self._setup_routes()
 
+    async def start(self) -> None:
+        """Start the HTTP server."""
+        self._runner = web.AppRunner(self.app)
+        await self._runner.setup()
+        # reuse_address + reuse_port allow fast restart after reload.
+        # 0.0.0.0 is required: MSX TVs on LAN must reach this server by host IP;
+        # binding to 127.0.0.1 would prevent TV connections.
+        site = web.TCPSite(
+            self._runner,
+            "0.0.0.0",
+            self.port,
+            reuse_address=True,
+            reuse_port=True,
+        )
+        await site.start()
+        logger.info("MSX Bridge HTTP server started on port %s", self.port)
+
+    async def stop(self) -> None:
+        """Stop the HTTP server."""
+        for clients in self._ws_clients.values():
+            for ws in clients:
+                if not ws.closed:
+                    await ws.close()
+        self._ws_clients.clear()
+        for player_id in list(self._active_stream_tasks):
+            self.cancel_streams_for_player(player_id)
+        if self._runner:
+            await self._runner.cleanup()
+            self._runner = None
+        logger.info("MSX Bridge HTTP server stopped")
+
+    def broadcast_play(
+        self,
+        player_id: str,
+        *,
+        title: str | None = None,
+        artist: str | None = None,
+        image_url: str | None = None,
+        duration: int | None = None,
+        next_action: str | None = None,
+        prev_action: str | None = None,
+    ) -> None:
+        """Notify subscribed WebSocket clients to start playback with metadata."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_play: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_play: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+
+        # We always use direct stream for maximum compatibility.
+        play_path = f"/stream/{player_id}"
+
+        payload: dict[str, Any] = {
+            "type": "play",
+            "path": play_path,
+            "player_id": player_id,
+        }
+        if title:
+            payload["title"] = title
+        if artist:
+            payload["artist"] = artist
+        if image_url:
+            # During a party the play background carries the join QR (MSX has
+            # no overlays); the endpoint falls back to the original image when
+            # the party is over, so a stale cache entry here is harmless.
+            if self._cached_party() and (client_prefix := self._client_prefixes.get(player_id)):
+                image_url = (
+                    f"{client_prefix}/api/party/qr-cover.png?image={quote(image_url, safe='')}"
+                )
+            payload["image_url"] = image_url
+        if duration is not None:
+            payload["duration"] = duration
+        if next_action:
+            payload["next_action"] = next_action
+        if prev_action:
+            payload["prev_action"] = prev_action
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_playlist(self, player_id: str, playlist_url: str) -> None:
+        """Notify subscribed WebSocket clients to load an MSX native playlist."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_playlist: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_playlist: player_id=%s, url=%s, sending to %d client(s)",
+            player_id,
+            playlist_url,
+            len(clients),
+        )
+        payload: dict[str, Any] = {
+            "type": "playlist",
+            "url": playlist_url,
+            "player_id": player_id,
+        }
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_sendspin(self, player_id: str, url: str) -> None:
+        """Notify WebSocket clients to open the Sendspin kiosk (bridge stream start)."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_sendspin: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_sendspin: player_id=%s, url=%s, sending to %d client(s)",
+            player_id,
+            url,
+            len(clients),
+        )
+        msg = json.dumps({"type": "sendspin", "url": url, "player_id": player_id})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_goto_index(self, player_id: str, index: int) -> None:
+        """Notify subscribed WebSocket clients to jump to a playlist index."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        logger.info(
+            "broadcast_goto_index: player_id=%s, index=%d, sending to %d client(s)",
+            player_id,
+            index,
+            len(clients),
+        )
+        payload: dict[str, Any] = {"type": "goto_index", "index": index}
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def cancel_streams_for_player(self, player_id: str) -> None:
+        """Cancel stream tasks and abort connections for the given player."""
+        tasks = self._active_stream_tasks.pop(player_id, set())
+        transports = self._active_stream_transports.pop(player_id, set())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for transport in transports:
+            with contextlib.suppress(Exception):
+                if transport and hasattr(transport, "abort"):
+                    transport.abort()
+        if tasks or transports:
+            logger.debug(
+                "Cancelled %d task(s), aborted %d transport(s) for player %s",
+                len(tasks),
+                len(transports),
+                player_id,
+            )
+
+    def broadcast_pause(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to pause playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        logger.info(
+            "broadcast_pause: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+        msg = json.dumps({"type": "pause"})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_resume(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to resume playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        logger.info(
+            "broadcast_resume: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+        msg = json.dumps({"type": "resume"})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_stop(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to stop playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_stop: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_stop: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+        show_notification = self.provider.config.get_value(
+            CONF_SHOW_STOP_NOTIFICATION, DEFAULT_SHOW_STOP_NOTIFICATION
+        )
+        payload: dict[str, Any] = {
+            "type": "stop",
+            "showNotification": bool(show_notification),
+        }
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_seek(self, player_id: str, position_seconds: int) -> None:
+        """Notify subscribed WebSocket clients to seek to a position."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.debug("broadcast_seek: no WebSocket clients for player_id=%s", player_id)
+            return
+        msg = json.dumps({"type": "seek", "position": position_seconds})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
     def _setup_routes(self) -> None:
         """Register all HTTP routes."""
         self._setup_msx_routes()
@@ -265,37 +505,6 @@ class MSXHTTPServer:
         response: web.StreamResponse = await handler(request)
         response.headers["Access-Control-Allow-Origin"] = "*"
         return response
-
-    async def start(self) -> None:
-        """Start the HTTP server."""
-        self._runner = web.AppRunner(self.app)
-        await self._runner.setup()
-        # reuse_address + reuse_port allow fast restart after reload.
-        # 0.0.0.0 is required: MSX TVs on LAN must reach this server by host IP;
-        # binding to 127.0.0.1 would prevent TV connections.
-        site = web.TCPSite(
-            self._runner,
-            "0.0.0.0",
-            self.port,
-            reuse_address=True,
-            reuse_port=True,
-        )
-        await site.start()
-        logger.info("MSX Bridge HTTP server started on port %s", self.port)
-
-    async def stop(self) -> None:
-        """Stop the HTTP server."""
-        for clients in self._ws_clients.values():
-            for ws in clients:
-                if not ws.closed:
-                    await ws.close()
-        self._ws_clients.clear()
-        for player_id in list(self._active_stream_tasks):
-            self.cancel_streams_for_player(player_id)
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        logger.info("MSX Bridge HTTP server stopped")
 
     # --- MSX Bootstrap Routes ---
 
@@ -1629,147 +1838,6 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
         return ws
 
-    def broadcast_play(
-        self,
-        player_id: str,
-        *,
-        title: str | None = None,
-        artist: str | None = None,
-        image_url: str | None = None,
-        duration: int | None = None,
-        next_action: str | None = None,
-        prev_action: str | None = None,
-    ) -> None:
-        """Notify subscribed WebSocket clients to start playback with metadata."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.warning(
-                "broadcast_play: no WebSocket clients for player_id=%s (connected: %s)",
-                player_id,
-                list(self._ws_clients.keys()),
-            )
-            return
-        logger.info(
-            "broadcast_play: player_id=%s, sending to %d client(s)",
-            player_id,
-            len(clients),
-        )
-
-        # We always use direct stream for maximum compatibility.
-        play_path = f"/stream/{player_id}"
-
-        payload: dict[str, Any] = {
-            "type": "play",
-            "path": play_path,
-            "player_id": player_id,
-        }
-        if title:
-            payload["title"] = title
-        if artist:
-            payload["artist"] = artist
-        if image_url:
-            # During a party the play background carries the join QR (MSX has
-            # no overlays); the endpoint falls back to the original image when
-            # the party is over, so a stale cache entry here is harmless.
-            if self._cached_party() and (client_prefix := self._client_prefixes.get(player_id)):
-                image_url = (
-                    f"{client_prefix}/api/party/qr-cover.png?image={quote(image_url, safe='')}"
-                )
-            payload["image_url"] = image_url
-        if duration is not None:
-            payload["duration"] = duration
-        if next_action:
-            payload["next_action"] = next_action
-        if prev_action:
-            payload["prev_action"] = prev_action
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_playlist(self, player_id: str, playlist_url: str) -> None:
-        """Notify subscribed WebSocket clients to load an MSX native playlist."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.warning(
-                "broadcast_playlist: no WebSocket clients for player_id=%s (connected: %s)",
-                player_id,
-                list(self._ws_clients.keys()),
-            )
-            return
-        logger.info(
-            "broadcast_playlist: player_id=%s, url=%s, sending to %d client(s)",
-            player_id,
-            playlist_url,
-            len(clients),
-        )
-        payload: dict[str, Any] = {
-            "type": "playlist",
-            "url": playlist_url,
-            "player_id": player_id,
-        }
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_sendspin(self, player_id: str, url: str) -> None:
-        """Notify WebSocket clients to open the Sendspin kiosk (bridge stream start)."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.warning(
-                "broadcast_sendspin: no WebSocket clients for player_id=%s (connected: %s)",
-                player_id,
-                list(self._ws_clients.keys()),
-            )
-            return
-        logger.info(
-            "broadcast_sendspin: player_id=%s, url=%s, sending to %d client(s)",
-            player_id,
-            url,
-            len(clients),
-        )
-        msg = json.dumps({"type": "sendspin", "url": url, "player_id": player_id})
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_goto_index(self, player_id: str, index: int) -> None:
-        """Notify subscribed WebSocket clients to jump to a playlist index."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            return
-        logger.info(
-            "broadcast_goto_index: player_id=%s, index=%d, sending to %d client(s)",
-            player_id,
-            index,
-            len(clients),
-        )
-        payload: dict[str, Any] = {"type": "goto_index", "index": index}
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def cancel_streams_for_player(self, player_id: str) -> None:
-        """Cancel stream tasks and abort connections for the given player."""
-        tasks = self._active_stream_tasks.pop(player_id, set())
-        transports = self._active_stream_transports.pop(player_id, set())
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        for transport in transports:
-            with contextlib.suppress(Exception):
-                if transport and hasattr(transport, "abort"):
-                    transport.abort()
-        if tasks or transports:
-            logger.debug(
-                "Cancelled %d task(s), aborted %d transport(s) for player %s",
-                len(tasks),
-                len(transports),
-                player_id,
-            )
-
     def _register_stream(self, player_id: str, task: asyncio.Task[None], transport: Any) -> None:
         """Register active stream task and transport for cancel on stop."""
         if player_id not in self._active_stream_tasks:
@@ -1791,74 +1859,6 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if not self._active_stream_tasks[player_id]:
             del self._active_stream_tasks[player_id]
             del self._active_stream_transports[player_id]
-
-    def broadcast_pause(self, player_id: str) -> None:
-        """Notify subscribed WebSocket clients to pause playback."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            return
-        logger.info(
-            "broadcast_pause: player_id=%s, sending to %d client(s)",
-            player_id,
-            len(clients),
-        )
-        msg = json.dumps({"type": "pause"})
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_resume(self, player_id: str) -> None:
-        """Notify subscribed WebSocket clients to resume playback."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            return
-        logger.info(
-            "broadcast_resume: player_id=%s, sending to %d client(s)",
-            player_id,
-            len(clients),
-        )
-        msg = json.dumps({"type": "resume"})
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_stop(self, player_id: str) -> None:
-        """Notify subscribed WebSocket clients to stop playback."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.warning(
-                "broadcast_stop: no WebSocket clients for player_id=%s (connected: %s)",
-                player_id,
-                list(self._ws_clients.keys()),
-            )
-            return
-        logger.info(
-            "broadcast_stop: player_id=%s, sending to %d client(s)",
-            player_id,
-            len(clients),
-        )
-        show_notification = self.provider.config.get_value(
-            CONF_SHOW_STOP_NOTIFICATION, DEFAULT_SHOW_STOP_NOTIFICATION
-        )
-        payload: dict[str, Any] = {
-            "type": "stop",
-            "showNotification": bool(show_notification),
-        }
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_seek(self, player_id: str, position_seconds: int) -> None:
-        """Notify subscribed WebSocket clients to seek to a position."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.debug("broadcast_seek: no WebSocket clients for player_id=%s", player_id)
-            return
-        msg = json.dumps({"type": "seek", "position": position_seconds})
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     async def _ws_send(
         self, ws: web.WebSocketResponse, text: str, player_id: str | None = None

@@ -78,67 +78,6 @@ class SharedGroupStream:
         self._start_time = time.monotonic()
         self.producer_task = asyncio.create_task(self._produce(audio_chunks))
 
-    async def _produce(self, audio_chunks: AsyncIterator[bytes]) -> None:
-        """Read from ffmpeg and distribute to all subscribers."""
-        try:
-            chunk_count = 0
-            async for chunk in audio_chunks:
-                chunk_count += 1
-                self._total_bytes += len(chunk)
-                async with self._lock:
-                    self.buffer.append(chunk)
-                    for player_id, q in list(self.subscribers.items()):
-                        try:
-                            q.put_nowait(chunk)
-                        except asyncio.QueueFull:
-                            logger.warning(
-                                "[SharedStream:%s] Queue full for subscriber %s, dropping chunk %d",
-                                self.group_id,
-                                player_id,
-                                chunk_count,
-                            )
-
-                if not self.started.is_set():
-                    # Signal that stream has started (first chunk received)
-                    self.started.set()
-                    logger.debug(
-                        "[SharedStream:%s] First chunk received, signaling started",
-                        self.group_id,
-                    )
-
-            logger.info(
-                "[SharedStream:%s] Producer finished: %d chunks, %d bytes, %.1fs",
-                self.group_id,
-                chunk_count,
-                self._total_bytes,
-                time.monotonic() - self._start_time,
-            )
-        except asyncio.CancelledError:
-            logger.debug("[SharedStream:%s] Producer cancelled", self.group_id)
-            raise
-        except Exception as exc:
-            logger.exception("[SharedStream:%s] Producer error", self.group_id)
-            self.producer_error = exc
-        finally:
-            self.finished = True
-            # Ensure subscribers waiting on `started` can proceed even if no chunks were produced
-            if not self.started.is_set():
-                self.started.set()
-                logger.debug(
-                    "[SharedStream:%s] Producer completed without first chunk, signaling started",
-                    self.group_id,
-                )
-            # Signal EOF to all subscribers
-            async with self._lock:
-                for player_id, q in list(self.subscribers.items()):
-                    with contextlib.suppress(asyncio.QueueFull):
-                        q.put_nowait(None)
-                    logger.debug(
-                        "[SharedStream:%s] Sent EOF to subscriber %s",
-                        self.group_id,
-                        player_id,
-                    )
-
     async def subscribe(self, player_id: str) -> AsyncIterator[bytes]:
         """
         Subscribe to stream, get buffered + live chunks.
@@ -255,6 +194,67 @@ class SharedGroupStream:
     def subscriber_count(self) -> int:
         """Return current subscriber count."""
         return len(self.subscribers)
+
+    async def _produce(self, audio_chunks: AsyncIterator[bytes]) -> None:
+        """Read from ffmpeg and distribute to all subscribers."""
+        try:
+            chunk_count = 0
+            async for chunk in audio_chunks:
+                chunk_count += 1
+                self._total_bytes += len(chunk)
+                async with self._lock:
+                    self.buffer.append(chunk)
+                    for player_id, q in list(self.subscribers.items()):
+                        try:
+                            q.put_nowait(chunk)
+                        except asyncio.QueueFull:
+                            logger.warning(
+                                "[SharedStream:%s] Queue full for subscriber %s, dropping chunk %d",
+                                self.group_id,
+                                player_id,
+                                chunk_count,
+                            )
+
+                if not self.started.is_set():
+                    # Signal that stream has started (first chunk received)
+                    self.started.set()
+                    logger.debug(
+                        "[SharedStream:%s] First chunk received, signaling started",
+                        self.group_id,
+                    )
+
+            logger.info(
+                "[SharedStream:%s] Producer finished: %d chunks, %d bytes, %.1fs",
+                self.group_id,
+                chunk_count,
+                self._total_bytes,
+                time.monotonic() - self._start_time,
+            )
+        except asyncio.CancelledError:
+            logger.debug("[SharedStream:%s] Producer cancelled", self.group_id)
+            raise
+        except Exception as exc:
+            logger.exception("[SharedStream:%s] Producer error", self.group_id)
+            self.producer_error = exc
+        finally:
+            self.finished = True
+            # Ensure subscribers waiting on `started` can proceed even if no chunks were produced
+            if not self.started.is_set():
+                self.started.set()
+                logger.debug(
+                    "[SharedStream:%s] Producer completed without first chunk, signaling started",
+                    self.group_id,
+                )
+            # Signal EOF to all subscribers
+            async with self._lock:
+                for player_id, q in list(self.subscribers.items()):
+                    with contextlib.suppress(asyncio.QueueFull):
+                        q.put_nowait(None)
+                    logger.debug(
+                        "[SharedStream:%s] Sent EOF to subscriber %s",
+                        self.group_id,
+                        player_id,
+                    )
 
 
 class MSXBridgeProvider(PlayerProvider):
@@ -413,35 +413,6 @@ class MSXBridgeProvider(PlayerProvider):
             await self.bridge_manager.evaluate_bridge(player)
         return player
 
-    def _player_display_name_from_id(
-        self, player_id: str, prefix_label: str = "MSX TV", remote_ip: str | None = None
-    ) -> str:
-        """Build a unique display name from player_id for the MA UI."""
-        prefix = MSX_PLAYER_ID_PREFIX
-        suffix = player_id.removeprefix(prefix)
-        if not suffix:
-            return prefix_label
-        # IP-based: msx_192_168_10_15 → "MSX TV (192.168.10.15)"
-        if "_" in suffix:
-            parts = suffix.split("_")
-            if all(p.isdigit() for p in parts):
-                return f"{prefix_label} ({'.'.join(parts)})"
-        # UUID-based: msx_msx_bc93ce1d_491d_4d95_9430_2fbeabb5ce1b → "MSX TV (bc93)"
-        # Show only first 4 chars of UUID for readability, plus IP if available
-        if suffix.startswith("msx_") and len(suffix) > 12:
-            uuid_part = suffix[4:8]  # First 4 chars after "msx_"
-            if remote_ip:
-                return f"{prefix_label} ({uuid_part}) [{remote_ip}]"
-            return f"{prefix_label} ({uuid_part})"
-        # Fallback: truncate long suffixes
-        if len(suffix) > 12:
-            if remote_ip:
-                return f"{prefix_label} ({suffix[:8]}...) [{remote_ip}]"
-            return f"{prefix_label} ({suffix[:8]}...)"
-        if remote_ip:
-            return f"{prefix_label} ({suffix}) [{remote_ip}]"
-        return f"{prefix_label} ({suffix})"
-
     def on_player_activity(self, player_id: str) -> None:
         """Record activity for a player (extends idle timeout)."""
         # Monotonic: a wall-clock NTP step must not age players past the cutoff
@@ -552,64 +523,6 @@ class MSXBridgeProvider(PlayerProvider):
         """Notify WebSocket clients to seek to position (MA seek -> MSX)."""
         if self.http_server:
             self.http_server.broadcast_seek(player_id, position_seconds)
-
-    async def _handle_player_unregister(self, player_id: str) -> None:
-        """Unregister a player with race-condition handling."""
-        self.logger.debug("Unregistering MSX player %s", player_id)
-        unregister_event = asyncio.Event()
-        self._pending_unregisters[player_id] = unregister_event
-        try:
-            if self.bridge_manager:
-                await self.bridge_manager.remove_bridge(player_id, permanent=True)
-            await self.mass.players.unregister(player_id)
-        finally:
-            self._pending_unregisters.pop(player_id, None)
-            self._player_last_activity.pop(player_id, None)
-            unregister_event.set()
-
-    async def _run_idle_timeout_loop(self) -> None:
-        """Background task: unregister players idle longer than configured timeout."""
-        timeout_minutes = max(
-            1,
-            min(
-                1440,
-                int(
-                    cast(
-                        "int",
-                        self.config.get_value(
-                            CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT
-                        ),
-                    )
-                ),
-            ),
-        )
-        interval_seconds = 60
-        while not self.mass.closing:
-            try:
-                await asyncio.sleep(interval_seconds)
-            except asyncio.CancelledError:
-                break
-            now = time.monotonic()
-            cutoff = now - (timeout_minutes * 60)
-            for player in list(self.players):
-                if not isinstance(player, MSXPlayer):
-                    continue
-                last = self._player_last_activity.get(player.player_id, 0)
-                if last > 0 and last < cutoff:
-                    self.logger.info(
-                        "Unregistering idle MSX player %s (no activity for %d min)",
-                        player.player_id,
-                        timeout_minutes,
-                    )
-                    task = self.mass.create_task(self._handle_player_unregister(player.player_id))
-                    self._background_tasks.add(task)
-                    task.add_done_callback(self._background_tasks.discard)
-
-    def _make_bridge_manager(self) -> MSXSendspinBridgeManager:
-        """Import and construct the Sendspin bridge manager (raises ImportError if absent)."""
-        from .sendspin_bridge import MSXSendspinBridgeManager  # noqa: PLC0415
-
-        return MSXSendspinBridgeManager(self)
 
     # --- Group Stream Management ---
 
@@ -759,3 +672,90 @@ class MSXBridgeProvider(PlayerProvider):
             logger.debug("[GroupStream] Cleaning up stream for group %s", group_id)
             await stream.stop()
         self._shared_streams.clear()
+
+    def _player_display_name_from_id(
+        self, player_id: str, prefix_label: str = "MSX TV", remote_ip: str | None = None
+    ) -> str:
+        """Build a unique display name from player_id for the MA UI."""
+        prefix = MSX_PLAYER_ID_PREFIX
+        suffix = player_id.removeprefix(prefix)
+        if not suffix:
+            return prefix_label
+        # IP-based: msx_192_168_10_15 → "MSX TV (192.168.10.15)"
+        if "_" in suffix:
+            parts = suffix.split("_")
+            if all(p.isdigit() for p in parts):
+                return f"{prefix_label} ({'.'.join(parts)})"
+        # UUID-based: msx_msx_bc93ce1d_491d_4d95_9430_2fbeabb5ce1b → "MSX TV (bc93)"
+        # Show only first 4 chars of UUID for readability, plus IP if available
+        if suffix.startswith("msx_") and len(suffix) > 12:
+            uuid_part = suffix[4:8]  # First 4 chars after "msx_"
+            if remote_ip:
+                return f"{prefix_label} ({uuid_part}) [{remote_ip}]"
+            return f"{prefix_label} ({uuid_part})"
+        # Fallback: truncate long suffixes
+        if len(suffix) > 12:
+            if remote_ip:
+                return f"{prefix_label} ({suffix[:8]}...) [{remote_ip}]"
+            return f"{prefix_label} ({suffix[:8]}...)"
+        if remote_ip:
+            return f"{prefix_label} ({suffix}) [{remote_ip}]"
+        return f"{prefix_label} ({suffix})"
+
+    async def _handle_player_unregister(self, player_id: str) -> None:
+        """Unregister a player with race-condition handling."""
+        self.logger.debug("Unregistering MSX player %s", player_id)
+        unregister_event = asyncio.Event()
+        self._pending_unregisters[player_id] = unregister_event
+        try:
+            if self.bridge_manager:
+                await self.bridge_manager.remove_bridge(player_id, permanent=True)
+            await self.mass.players.unregister(player_id)
+        finally:
+            self._pending_unregisters.pop(player_id, None)
+            self._player_last_activity.pop(player_id, None)
+            unregister_event.set()
+
+    async def _run_idle_timeout_loop(self) -> None:
+        """Background task: unregister players idle longer than configured timeout."""
+        timeout_minutes = max(
+            1,
+            min(
+                1440,
+                int(
+                    cast(
+                        "int",
+                        self.config.get_value(
+                            CONF_PLAYER_IDLE_TIMEOUT, DEFAULT_PLAYER_IDLE_TIMEOUT
+                        ),
+                    )
+                ),
+            ),
+        )
+        interval_seconds = 60
+        while not self.mass.closing:
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+            now = time.monotonic()
+            cutoff = now - (timeout_minutes * 60)
+            for player in list(self.players):
+                if not isinstance(player, MSXPlayer):
+                    continue
+                last = self._player_last_activity.get(player.player_id, 0)
+                if last > 0 and last < cutoff:
+                    self.logger.info(
+                        "Unregistering idle MSX player %s (no activity for %d min)",
+                        player.player_id,
+                        timeout_minutes,
+                    )
+                    task = self.mass.create_task(self._handle_player_unregister(player.player_id))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+
+    def _make_bridge_manager(self) -> MSXSendspinBridgeManager:
+        """Import and construct the Sendspin bridge manager (raises ImportError if absent)."""
+        from .sendspin_bridge import MSXSendspinBridgeManager  # noqa: PLC0415
+
+        return MSXSendspinBridgeManager(self)
