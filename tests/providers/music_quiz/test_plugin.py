@@ -29,7 +29,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
 )
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
-from music_assistant.helpers.shared_playback import SharedPlaybackMode
+from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz import (
     MUSIC_QUIZ_GUEST_USER,
@@ -314,6 +314,79 @@ def _create_plugin(
     plugin._stop_playback = AsyncMock()  # type: ignore[method-assign]
     plugin._get_join_url = AsyncMock(return_value="http://ma/join")  # type: ignore[method-assign]
     return plugin
+
+
+def _mock_playback_session(player_id: str, queue_id: str) -> SharedPlaybackSession:
+    """Create a shared playback session mock with stable player and queue IDs."""
+    session = MagicMock(spec=SharedPlaybackSession)
+    session.player_id = player_id
+    session.queue_id = queue_id
+    return cast("SharedPlaybackSession", session)
+
+
+def _configure_venue_listener_playback(
+    plugin: MusicQuizPlugin,
+) -> tuple[AsyncMock, list[str]]:
+    """Configure deterministic venue grouping and queue playback for a plugin test."""
+    venue_player = _make_venue_player(
+        "venue_player",
+        "Venue Player",
+        features={PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS},
+    )
+    venue_player.state.can_group_with = {"web_player"}
+    venue_player.state.group_members = []
+    guest_player = SimpleNamespace(
+        player_id="web_player",
+        state=SimpleNamespace(available=True),
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [venue_player]
+    cast("MagicMock", plugin.mass.players.get_player).side_effect = {
+        "venue_player": venue_player,
+        "web_player": guest_player,
+    }.get
+
+    async def _set_members(
+        _player_id: str,
+        *,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        for player_id in player_ids_to_remove or []:
+            if player_id in venue_player.state.group_members:
+                venue_player.state.group_members.remove(player_id)
+        for player_id in player_ids_to_add or []:
+            if player_id not in venue_player.state.group_members:
+                venue_player.state.group_members.append(player_id)
+
+    set_members = AsyncMock(side_effect=_set_members)
+    cast("MagicMock", plugin.mass.players).cmd_set_members = set_members
+    played_tracks: list[str] = []
+
+    async def _play_media(
+        queue_id: str,
+        track_uri: str,
+        *,
+        option: QueueOption,
+    ) -> None:
+        assert queue_id == "venue_player"
+        assert option == QueueOption.REPLACE
+        assert "web_player" in venue_player.state.group_members
+        played_tracks.append(track_uri)
+
+    async def _stop(_queue_id: str) -> None:
+        venue_player.state.group_members.clear()
+
+    cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock(side_effect=_play_media)
+    cast("MagicMock", plugin.mass.player_queues).stop = AsyncMock(side_effect=_stop)
+    plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
+        plugin,
+        MusicQuizPlugin,
+    )
+    plugin._stop_playback = MusicQuizPlugin._stop_playback.__get__(  # type: ignore[method-assign]
+        plugin,
+        MusicQuizPlugin,
+    )
+    return set_members, played_tracks
 
 
 def _install_shared_preference_cache(
@@ -1216,8 +1289,10 @@ async def test_guest_ready_advances_and_prefetches_in_system_context() -> None:
         plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
             plugin, MusicQuizPlugin
         )
+        playback_session = _mock_playback_session("quiz_player", "quiz_queue")
+        plugin._playback_session = playback_session
         plugin._get_playback_session = AsyncMock(  # type: ignore[method-assign]
-            return_value=SimpleNamespace(queue_id="quiz_queue", player_id="quiz_player")
+            return_value=playback_session
         )
         get_player = cast("MagicMock", plugin.mass.players.get_player)
         get_player.side_effect = None
@@ -1475,6 +1550,75 @@ async def test_play_track_rejects_busy_announcement_target() -> None:
         await MusicQuizPlugin._play_track(plugin, "spotify://track/test")
 
     play_media.assert_not_awaited()
+
+
+@pytest.mark.parametrize("quiz_type", ["guess_the_song", "trivia"])
+@pytest.mark.asyncio
+async def test_venue_listener_is_restored_before_each_audio_track(quiz_type: str) -> None:
+    """Restore remembered venue listeners across Guess and Trivia playback transitions."""
+    plugin = _create_plugin()
+    set_members, played_tracks = _configure_venue_listener_playback(plugin)
+
+    async def _prepare_round(
+        round_index: int,
+        previous_rounds: list[MusicQuizRound],
+    ) -> MusicQuizRound:
+        if quiz_type == "trivia":
+            return _make_trivia_round(round_index, previous_rounds)
+        return _make_round(round_index)
+
+    initialize = AsyncMock()
+    with (
+        patch.object(TriviaQuizType, "initialize", new=initialize),
+        patch.object(
+            TriviaQuizType if quiz_type == "trivia" else GuessTheSongQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_prepare_round),
+        ),
+    ):
+        await plugin.create_game(
+            quiz_type=quiz_type,
+            round_count=2,
+            source_uris=["library://playlist/1"],
+            playback_mode="venue",
+            venue_player_id="venue_player",
+        )
+        session = await SharedPlaybackSession.create_venue(plugin.mass, "venue_player")
+        plugin._playback_session = session
+        await session.add_guest_listener("web_player")
+        set_members.reset_mock()
+        await plugin.start_game()
+
+        if quiz_type == "trivia":
+            assert played_tracks == []
+            await plugin.reveal()
+            first_reveal = plugin._reveal_playback_task
+            assert first_reveal is not None
+            await first_reveal
+            await plugin.next_round()
+            await plugin.reveal()
+            second_reveal = plugin._reveal_playback_task
+            assert second_reveal is not None
+            await second_reveal
+            expected_tracks = [
+                "library://track/trivia-0",
+                "library://track/trivia-1",
+            ]
+        else:
+            await plugin._stop_playback()
+            await plugin.reveal()
+            await plugin.next_round()
+            expected_tracks = [
+                "library://track/0",
+                "library://track/1",
+            ]
+
+    assert played_tracks == expected_tracks
+    set_members.assert_awaited_once_with(
+        "venue_player",
+        player_ids_to_add=["web_player"],
+    )
+    assert session._guest_listeners == {"web_player"}
 
 
 @pytest.mark.asyncio

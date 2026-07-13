@@ -343,6 +343,25 @@
       },
       "label": "Connected Music Assistant Player"
     },
+    "auth_device": {
+      "label": "Login with device code",
+      "description": "Open a verification URL on any device and enter the short code.",
+      "action_label": "Login with device code"
+    },
+    "auth_qr": {
+      "label": "Login with QR code",
+      "description": "Opens a QR code page — scan it with the Yandex app on your phone.",
+      "action_label": "Login with QR code"
+    },
+    "auth_cookies": {
+      "label": "Login with Cookies",
+      "description": "Authenticate using browser cookies from passport.yandex.ru.",
+      "action_label": "Login with Cookies"
+    },
+    "remember_session": {
+      "label": "Remember session (auto-refresh token)",
+      "description": "When enabled, stores a long-lived session token to automatically refresh your music token when it expires. When disabled, you must re-authenticate manually when the token expires — toggling this off after logging in immediately drops the stored long-lived tokens."
+    },
     "clear_auth": {
       "label": "Reset authentication",
       "action_label": "Reset authentication",
@@ -1104,5 +1123,25 @@
     "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
     "connection_timeout": "Connection timed out: {0}.",
     "connect_failed": "Failed to connect to {0}."
+  },
+  "page": {
+    "device_code": {
+      "step_copy": "Copy the code",
+      "hint_copy": "Tap the code to copy it",
+      "copied": "Copied ✓",
+      "copy_manual": "Automatic copy failed — select the code and copy it manually",
+      "step_open": "Open the Yandex page and enter the code",
+      "open_button": "Continue to Yandex",
+      "expires_label": "Code expires in",
+      "expired_title": "Code expired",
+      "expired_text": "The code is no longer valid. Return to Music Assistant and start the login again.",
+      "success_title": "Authorization successful",
+      "success_text": "You can close this window.",
+      "failed_title": "Authorization failed",
+      "failed_text": "Please return to Music Assistant and try again.",
+      "denied_text": "The login was denied. Return to Music Assistant and try again.",
+      "ended_title": "Session ended",
+      "ended_text": "This login session is no longer active. You can close this window."
+    }
   }
 }
