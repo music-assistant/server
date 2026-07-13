@@ -152,18 +152,7 @@ class QueueCommandsMixin:
         return playqueue
 
     def _selected_item_index(self, playqueue: PlayQueue) -> int:
-        """
-        Return the index of the selected item within the fetched play queue items.
-
-        playQueueSelectedItemOffset is the offset from the start of the *full* queue,
-        while the fetched items list may start mid-queue (the Plex server windows the
-        response around the selected item). Locate the selected item by its
-        playQueueItemID instead, falling back to the raw offset when the ID is absent
-        (e.g. track-radio queues).
-
-        :param playqueue: The (non-empty) Plex play queue to inspect.
-        :return: Index of the selected item in ``playqueue.items``.
-        """
+        """Return the selected item's index within the fetched queue window."""
         selected_id = getattr(playqueue, "playQueueSelectedItemID", None)
         if selected_id is not None:
             for index, item in enumerate(playqueue.items):
