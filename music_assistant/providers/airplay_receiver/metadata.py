@@ -93,10 +93,7 @@ class MetadataReader:
                             # Process all complete metadata items in the buffer
                             self._process_buffer()
                         else:
-                            # EOF: all writers closed (e.g. a sessioncontrol hook
-                            # finished its echo). The fd stays readable, so back
-                            # off briefly to avoid busy-spinning the event loop
-                            # until a new writer opens the pipe.
+                            # Avoid a busy loop while the FIFO has no writers.
                             await asyncio.sleep(0.1)
                     except BlockingIOError:
                         # No data available right now, wait for next notification

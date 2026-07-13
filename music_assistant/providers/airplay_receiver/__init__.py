@@ -586,10 +586,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 args, stderr=True, name=f"shairport-sync[{self.name}]"
             )
 
-            # Start the metadata reader before launching shairport-sync: the
-            # sessioncontrol hooks open the FIFO for writing, which blocks while
-            # nothing is reading, so a client connecting right at startup would
-            # stall the hook and delay/lose the MA_PLAY_BEGIN event.
+            # Open the FIFO before shairport-sync can invoke session-control hooks.
             self._metadata_reader = MetadataReader(
                 self.metadata_pipe.path, self.logger, self._on_metadata_update
             )

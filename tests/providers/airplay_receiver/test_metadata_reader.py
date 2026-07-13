@@ -21,7 +21,7 @@ def pipe_path(tmp_path: Any) -> str:
 
 
 async def _write_marker(pipe_path: str, marker: str) -> None:
-    """Write a sessioncontrol hook marker the way the shell hook does (open/write/close)."""
+    """Write a marker using a short-lived FIFO writer."""
 
     def _write() -> None:
         fd = os.open(pipe_path, os.O_WRONLY)
@@ -53,19 +53,13 @@ async def test_hook_marker_delivered(pipe_path: str) -> None:
 
 
 async def test_markers_after_writer_close(pipe_path: str) -> None:
-    """
-    Markers from later writers still arrive after a previous writer closed the pipe.
-
-    Each sessioncontrol hook is a short-lived shell that opens, writes and closes
-    the FIFO, so the reader repeatedly sees EOF between events.
-    """
+    """Accept markers from writers that connect after EOF."""
     updates: list[dict[str, Any]] = []
     reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
     await reader.start()
     try:
         await _write_marker(pipe_path, "MA_PLAY_BEGIN")
         await _wait_for(lambda: len(updates) == 1)
-        # writer closed -> EOF; a new hook invocation must still get through
         await _write_marker(pipe_path, "MA_PLAY_END")
         await _wait_for(lambda: len(updates) == 2)
         assert updates == [{"play_state": "playing"}, {"play_state": "stopped"}]
@@ -88,10 +82,9 @@ async def test_reader_backs_off_on_eof(pipe_path: str, monkeypatch: pytest.Monke
     await reader.start()
     try:
         await _write_marker(pipe_path, "MA_PLAY_BEGIN")
-        await asyncio.sleep(0.1)  # let the reader consume the marker and hit EOF
+        await asyncio.sleep(0.1)  # Wait for the reader to reach EOF.
         read_counts.clear()
-        await asyncio.sleep(0.5)  # pipe is at EOF (no writers) the whole time
-        # with the 0.1s backoff we expect ~5 reads; a busy spin does thousands
+        await asyncio.sleep(0.5)
         assert len(read_counts) < 20
     finally:
         await reader.stop()
