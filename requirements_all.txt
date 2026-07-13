@@ -90,7 +90,7 @@ srptools>=1.0.1
 sxm==0.2.8
 threadpoolctl==3.6.0
 torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
-torch==2.12.1; sys_platform != 'linux' or platform_machine != 'x86_64'
+torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchlibrosa==0.1.0
