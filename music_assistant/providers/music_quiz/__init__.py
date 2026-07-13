@@ -1329,6 +1329,12 @@ class MusicQuizPlugin(PluginProvider):
                 raise MusicQuizNoPlaybackTargetError(
                     "The Music Quiz playback target is handling an announcement"
                 )
+            async with self._playback_lock:
+                if self._playback_session is not session:
+                    raise MusicQuizNoPlaybackTargetError(
+                        "No playback target is available for the Music Quiz game"
+                    )
+                await session.restore_guest_listeners()
             await self.mass.player_queues.play_media(
                 session.queue_id, track_uri, option=QueueOption.REPLACE
             )
