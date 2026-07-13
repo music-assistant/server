@@ -35,7 +35,7 @@ deezer-python-gql==0.17.0
 defusedxml==0.7.1
 deno==2.7.12
 duration-parser==1.0.1
-fastmcp==3.3.1
+fastmcp==3.4.4
 getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.2.3
