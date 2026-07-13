@@ -576,7 +576,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self._get_player_with_redirect(player_id)
         # Redirect to queue controller if it is active (skip if already in queue command context)
         if active_queue := self.get_active_queue(player):
-            await self.mass.player_queues.stop_for_api(active_queue.queue_id)
+            await self.mass.player_queues.stop(active_queue.queue_id)
             return
         # Delegate to internal handler for actual implementation
         await self._handle_cmd_stop(player.player_id)

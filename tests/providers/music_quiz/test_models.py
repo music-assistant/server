@@ -10,11 +10,13 @@ from pathlib import Path
 import pytest
 from mashumaro.exceptions import ExtraKeysError, InvalidFieldValue
 
+from music_assistant.helpers.shared_playback import SharedPlaybackMode
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceAnswer,
     MultipleChoiceRoundState,
     MultipleChoiceSuggestion,
     MusicQuizAnswerType,
+    MusicQuizConfig,
     MusicQuizPlayer,
     MusicQuizRound,
     TimelineAnswerResult,
@@ -30,6 +32,33 @@ from music_assistant.providers.music_quiz.models import (
     TimelinePlacementResult,
     TimelineRoundState,
 )
+
+
+def test_config_defaults_and_round_trips_similar_music() -> None:
+    """Preserve default and explicit similar-music settings in persisted config."""
+    default_config = MusicQuizConfig.from_dict({})
+    enabled_config = MusicQuizConfig(include_similar_music=True)
+
+    assert default_config.include_similar_music is False
+    assert MusicQuizConfig().to_dict()["include_similar_music"] is False
+    assert MusicQuizConfig.from_dict(enabled_config.to_dict()) == enabled_config
+
+
+def test_config_round_trips_game_playback_selection() -> None:
+    """Preserve the effective playback selection with persisted game settings."""
+    config = MusicQuizConfig(
+        playback_mode=SharedPlaybackMode.VENUE,
+        venue_player_id="living_room",
+        venue_player_name="Living Room",
+    )
+
+    serialized = config.to_dict()
+
+    assert serialized["playback_mode"] == "venue"
+    assert serialized["venue_player_id"] == "living_room"
+    assert serialized["venue_player_name"] == "Living Room"
+    assert MusicQuizConfig.from_dict(serialized) == config
+    assert MusicQuizConfig.from_dict({}).playback_mode == SharedPlaybackMode.VENUE
 
 
 def test_round_answer_state_round_trips_with_discriminator() -> None:
@@ -61,6 +90,7 @@ def test_round_answer_state_round_trips_with_discriminator() -> None:
         duration=180.0,
         started_at=10.0,
         ended_at=12.0,
+        auto_advance_at=42.0,
     )
 
     serialized = game_round.to_dict()
@@ -95,6 +125,7 @@ def test_round_answer_state_round_trips_with_discriminator() -> None:
         "duration": 180.0,
         "started_at": 10.0,
         "ended_at": 12.0,
+        "auto_advance_at": 42.0,
     }
     assert restored == game_round
     assert isinstance(restored.answer_state, MultipleChoiceRoundState)

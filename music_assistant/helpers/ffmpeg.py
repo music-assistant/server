@@ -9,6 +9,7 @@ import time
 from collections import deque
 from collections.abc import AsyncGenerator
 from contextlib import suppress
+from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
@@ -439,7 +440,9 @@ async def get_ffmpeg_overlay_stream(
     )
     async with FFMpeg(
         audio_input=audio_input,
-        input_format=pcm_format,
+        # The overlay is input 0, so ffmpeg probes it before the PCM input and
+        # mutates input_format with its metadata. Keep that mutation local.
+        input_format=copy(pcm_format),
         output_format=pcm_format,
         extra_input_args=overlay_input_args,
         extra_output_args=["-filter_complex", filter_complex, "-map", "[mixed]"],

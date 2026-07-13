@@ -4,23 +4,65 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, ClassVar, Final, cast
 
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    Genre,
+    ItemMapping,
+    Playlist,
+    Track,
+)
 
+from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.controllers.music.constants import DYNAMIC_RADIO_DYNAMIC_TARGET
+from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import MediaItemType
+
     from music_assistant.mass import MusicAssistant
-    from music_assistant.providers.music_quiz.models import MusicQuizConfig, MusicQuizRound
+    from music_assistant.providers.music_quiz.models import (
+        MusicQuizConfig,
+        MusicQuizGame,
+        MusicQuizRound,
+    )
+    from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 LOGGER = logging.getLogger(__name__)
 
 MAX_ROUND_COUNT = 100
 MAX_ANSWER_DURATION = 300
 MAX_SOURCE_COUNT = 200
+GENRE_TRACK_PAGE_SIZE = 100
+MAX_GENRE_TRACK_COUNT = 500
+MAX_SUGGESTION_COUNT = 12
+PLAYBACK_REPLACEMENT_RESERVE = 4
+MIN_RELEASE_YEAR = 1000
+SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
+    {
+        MediaType.TRACK,
+        MediaType.PLAYLIST,
+        MediaType.ALBUM,
+        MediaType.ARTIST,
+        MediaType.GENRE,
+    }
+)
+
+
+def is_supported_source(media_type: MediaType, provider: str) -> bool:
+    """Return whether a media item can supply Music Quiz tracks."""
+    return media_type in SUPPORTED_SOURCE_MEDIA_TYPES and (
+        media_type != MediaType.GENRE or provider == "library"
+    )
 
 
 class QuizType(ABC):
@@ -33,6 +75,8 @@ class QuizType(ABC):
 
     answer_type: ClassVar[MusicQuizAnswerType]
     warm_up_lyrics: ClassVar[bool] = False
+    reveal_auto_advance_delay: ClassVar[float | None] = None
+    completed_reveal_auto_advance_delay: ClassVar[float | None] = None
 
     def __init__(self, mass: MusicAssistant, config: MusicQuizConfig) -> None:
         """
@@ -44,6 +88,30 @@ class QuizType(ABC):
         self.mass = mass
         self.config = config
         self._source_track_pool: dict[str, Track] | None = None
+
+    @property
+    def uses_audio(self) -> bool:
+        """Return whether this quiz type uses a shared playback session."""
+        return self.plays_track_before_answering or self.plays_track_on_reveal
+
+    @property
+    def plays_track_before_answering(self) -> bool:
+        """Return whether a prepared track must start before answering opens."""
+        return True
+
+    @property
+    def plays_track_on_reveal(self) -> bool:
+        """Return whether a prepared track should start when its answer is revealed."""
+        return False
+
+    @classmethod
+    def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003
+        """
+        Return whether this quiz type can be created.
+
+        :param mass: MusicAssistant instance.
+        """
+        return True
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -113,27 +181,64 @@ class QuizType(ABC):
         :return: The prepared (not yet started) round.
         """
 
+    @classmethod
+    def serialize_game_config(
+        cls,
+        game: MusicQuizGame,
+    ) -> dict[str, SerializableType]:
+        """
+        Serialize quiz-specific game configuration.
+
+        :param game: Game whose configuration should be serialized.
+        """
+        return {"include_similar_music": game.config.include_similar_music}
+
+    def reject_track(self, track_uri: str) -> None:
+        """
+        Remove a failed track from future round preparation.
+
+        :param track_uri: URI of the track that failed playback.
+        """
+        if self._source_track_pool is not None:
+            self._source_track_pool.pop(track_uri, None)
+
     async def _get_source_track_pool(self) -> dict[str, Track]:
         """Return all configured source tracks keyed by URI, fetched once per game."""
         if self._source_track_pool is not None:
             return self._source_track_pool
         pool: dict[str, Track] = {}
+        seeds: list[MediaItemType] = []
         for source_uri in self.config.source_uris:
             # skip individual unavailable sources so one bad source does not
             # abort a round that other sources can still populate
             try:
-                media_item = await self.mass.music.get_item_by_uri(source_uri)
-                if isinstance(media_item, Track):
-                    if media_item.uri:
-                        pool[media_item.uri] = media_item
+                source_media_type, provider_instance, item_id = await parse_uri(source_uri)
+                if not is_supported_source(source_media_type, provider_instance):
+                    LOGGER.warning(
+                        "Ignoring unsupported Music Quiz source %s (%s)",
+                        source_uri,
+                        source_media_type,
+                    )
                     continue
-                if isinstance(media_item, Playlist):
-                    async for track in self.mass.music.playlists.tracks(
-                        item_id=media_item.item_id,
-                        provider_instance_id_or_domain=media_item.provider,
-                    ):
-                        if isinstance(track, Track) and track.uri:
-                            pool[track.uri] = track
+                media_item = await self.mass.music.get_item(
+                    media_type=source_media_type,
+                    item_id=item_id,
+                    provider_instance_id_or_domain=provider_instance,
+                    allow_update_metadata=False,
+                )
+                if not isinstance(
+                    media_item, Track | Playlist | Album | Artist | Genre
+                ) or not is_supported_source(media_item.media_type, media_item.provider):
+                    LOGGER.warning(
+                        "Ignoring unsupported Music Quiz source %s (%s)",
+                        source_uri,
+                        media_item.media_type,
+                    )
+                    continue
+                seeds.append(media_item)
+                async for track in self._iter_source_tracks(media_item):
+                    if track.uri:
+                        pool[track.uri] = track
             except Exception as err:
                 LOGGER.warning("Could not load Music Quiz source %s: %s", source_uri, err)
         if not pool:
@@ -142,5 +247,130 @@ class QuizType(ABC):
                 translation_key="music_quiz_sources_unavailable",
                 translation_owner=TRANSLATION_OWNER,
             )
+        if self.config.include_similar_music:
+            await self._expand_source_track_pool(pool, seeds)
         self._source_track_pool = pool
         return pool
+
+    async def _iter_source_tracks(
+        self, media_item: Track | Playlist | Album | Artist | Genre
+    ) -> AsyncGenerator[Track]:
+        """
+        Yield tracks from a supported Music Quiz source.
+
+        :param media_item: Resolved source item.
+        """
+        if isinstance(media_item, Track):
+            yield media_item
+            return
+        if isinstance(media_item, Playlist):
+            async for track in self.mass.music.playlists.tracks(
+                item_id=media_item.item_id,
+                provider_instance_id_or_domain=media_item.provider,
+            ):
+                if isinstance(track, Track):
+                    yield track
+            return
+        if isinstance(media_item, Album):
+            tracks = await self.mass.music.albums.tracks(
+                item_id=media_item.item_id,
+                provider_instance_id_or_domain=media_item.provider,
+            )
+        elif isinstance(media_item, Artist):
+            tracks = await self.mass.music.artists.tracks(
+                item_id=media_item.item_id,
+                provider_instance_id_or_domain=media_item.provider,
+            )
+        else:
+            tracks = []
+            offset = 0
+            while offset < MAX_GENRE_TRACK_COUNT:
+                page = await self.mass.music.genres.tracks(
+                    item_id=media_item.item_id,
+                    limit=min(GENRE_TRACK_PAGE_SIZE, MAX_GENRE_TRACK_COUNT - offset),
+                    offset=offset,
+                )
+                tracks.extend(page)
+                if len(page) < GENRE_TRACK_PAGE_SIZE:
+                    break
+                offset += len(page)
+        for track in tracks:
+            if isinstance(track, Track):
+                yield track
+
+    async def _expand_source_track_pool(
+        self,
+        pool: dict[str, Track],
+        seeds: list[MediaItemType],
+    ) -> None:
+        """
+        Add playable similar tracks to a resolved Music Quiz source pool.
+
+        :param pool: Exact selected source tracks keyed by URI.
+        :param seeds: Resolved selected media items used to find similar music.
+        """
+        radio_provider = self.mass.get_provider("radio_playlist")
+        if radio_provider is None:
+            LOGGER.debug(
+                "Music Quiz similar-music expansion is unavailable without radio playlists"
+            )
+            return
+        target_size = min(
+            DYNAMIC_RADIO_DYNAMIC_TARGET,
+            max(
+                DYNAMIC_PLAYLIST_SAMPLE_SIZE,
+                self.config.round_count
+                + PLAYBACK_REPLACEMENT_RESERVE
+                + max(self.config.suggestion_count - 1, 0),
+            ),
+        )
+        preferred_provider_instances = sorted(
+            {
+                provider_instance
+                for seed in seeds
+                for provider_instance in (
+                    seed.provider,
+                    *(mapping.provider_instance for mapping in seed.provider_mappings),
+                )
+                if provider_instance != "library"
+            }
+        )
+        try:
+            similar_tracks = await cast("RadioPlaylistProvider", radio_provider).get_dynamic_tracks(
+                seeds,
+                include_base_tracks=False,
+                target_size=target_size,
+                preferred_provider_instances=preferred_provider_instances or None,
+            )
+        except Exception as err:
+            LOGGER.warning("Could not expand Music Quiz sources with similar music: %s", err)
+            return
+        if not similar_tracks:
+            LOGGER.debug("Radio playlists returned no similar tracks for Music Quiz")
+            return
+        initial_pool_size = len(pool)
+        for track in similar_tracks:
+            if isinstance(track, Track) and track.uri and track.available and track.is_playable:
+                pool.setdefault(track.uri, track)
+        if len(pool) == initial_pool_size:
+            LOGGER.debug("Radio playlists returned no new playable tracks for Music Quiz")
+
+
+def get_track_release_year(track: Track) -> int | None:
+    """
+    Return a usable release year from a track's available metadata.
+
+    :param track: Track whose release year should be resolved.
+    """
+    album = track.album
+    album_year = album.year if isinstance(album, Album | ItemMapping) else None
+    track_year = (
+        track.metadata.release_date.year if track.metadata.release_date is not None else None
+    )
+    current_year = utc().year
+    valid_years = (
+        year
+        for year in (track_year, album_year)
+        if year is not None and MIN_RELEASE_YEAR <= year <= current_year
+    )
+    return min(valid_years, default=None)

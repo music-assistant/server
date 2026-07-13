@@ -1172,9 +1172,9 @@ class AuthenticationManager:
     ) -> User:
         """Update user player and provider filters (helper method)."""
         updates = {}
-        if player_filter is not None and player_filter != target_user.player_filter:
+        if player_filter is not None:
             updates["player_filter"] = json_dumps(player_filter)
-        if provider_filter is not None and provider_filter != target_user.provider_filter:
+        if provider_filter is not None:
             updates["provider_filter"] = json_dumps(provider_filter)
 
         if updates:
@@ -1183,7 +1183,6 @@ class AuthenticationManager:
             refreshed_user = await self.get_user(target_user.user_id)
             if not refreshed_user:
                 raise InvalidDataError("Failed to refresh user after filter update")
-            self.webserver.disconnect_websockets_for_user(target_user.user_id)
             return refreshed_user
         return target_user
 

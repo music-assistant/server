@@ -157,10 +157,8 @@ class RadioPlaylistProvider(PluginProvider):
         if active_filter is not None:
             base_tracks = [t for t in base_tracks if active_filter.allows(t)] or base_tracks
         dynamic_tracks: set[Track] = set()
-        for allow_lookup in (False, True):
-            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
-                break
-            for base_track in base_tracks:
+        for base_track in base_tracks:
+            for allow_lookup in (False, True):
                 try:
                     similar = await self.mass.music.tracks.similar_tracks(
                         base_track.item_id,
@@ -169,17 +167,20 @@ class RadioPlaylistProvider(PluginProvider):
                         preferred_provider_instances=preferred_provider_instances,
                     )
                 except MusicAssistantError:
-                    # best-effort: a base track without a similar-tracks-capable provider
-                    # shouldn't abort generation (base tracks can still carry the playlist)
                     continue
-                for track in similar:
-                    if track in base_tracks or track.duration > RADIO_TRACK_MAX_DURATION_SECS:
-                        continue
-                    if active_filter is not None and not active_filter.allows(track):
-                        continue
-                    dynamic_tracks.add(track)
-                if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
+                eligible_tracks = {
+                    track
+                    for track in similar
+                    if track not in base_tracks
+                    and track not in dynamic_tracks
+                    and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
+                    and (active_filter is None or active_filter.allows(track))
+                }
+                if eligible_tracks:
+                    dynamic_tracks.update(eligible_tracks)
                     break
+            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
+                break
 
         result: list[Track] = []
         dynamic_tracks_list = list(dynamic_tracks)

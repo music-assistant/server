@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -862,12 +862,12 @@ class PartyPlugin(PluginProvider):
     @staticmethod
     def _validate_guest_access() -> None:
         """
-        Validate the current user is an authenticated party guest.
+        Validate the current user is an authenticated dedicated guest.
 
-        :raises InvalidDataError: If the user is not a party guest.
+        :raises InvalidDataError: If the user is not a dedicated guest.
         """
         user = get_current_user()
-        if not user or user.username != PARTY_GUEST_USER:
+        if not user or user.role != UserRole.GUEST:
             raise InvalidDataError("This endpoint is only available to party guests")
 
     @staticmethod

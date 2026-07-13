@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import re
 import secrets
+import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -17,11 +18,7 @@ from music_assistant.providers.music_quiz.models import MultipleChoiceSuggestion
 NORMALIZE_PATTERN = re.compile(r"[\W_]+")
 MAX_LABEL_SIMILARITY = 0.78
 MAX_TOKEN_CONTAINMENT = 0.85
-
-# leading list markers ("1.", "1)", "-", "*", "•") an AI may prefix to each line
-AI_LIST_MARKER_PATTERN = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+")
-# separators an AI may use between artist and title (plain hyphen, en dash, em dash)
-AI_ARTIST_TITLE_SEPARATORS = (" - ", " \u2013 ", " \u2014 ")
+SYSTEM_RANDOM = secrets.SystemRandom()
 
 
 @dataclass(frozen=True)
@@ -31,6 +28,7 @@ class SuggestionCandidate:
     label: str
     uri: str | None = None
     title: str | None = None
+    artist_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -49,7 +47,8 @@ def normalize_answer_label(label: str) -> str:
 
     :param label: Answer label to normalize.
     """
-    return NORMALIZE_PATTERN.sub(" ", label.casefold()).strip()
+    normalized_label = unicodedata.normalize("NFKC", label).casefold()
+    return NORMALIZE_PATTERN.sub(" ", normalized_label).strip()
 
 
 def answer_labels_are_too_close(first_label: str, second_label: str) -> bool:
@@ -102,28 +101,6 @@ def build_answer_label(artist: str | None, title: str) -> str:
     if artist:
         return f"{artist} - {title}"
     return title
-
-
-def parse_ai_distractors(text: str) -> list[SuggestionCandidate]:
-    """
-    Parse an AI response into wrong-answer candidates.
-
-    Expects one ``Artist - Title`` per line; list markers, numbering and
-    surrounding quotes are tolerated and lines without an artist/title
-    separator (preamble, commentary) are discarded.
-
-    :param text: The raw AI response text.
-    """
-    candidates: list[SuggestionCandidate] = []
-    for line in text.splitlines():
-        label = _strip_wrapping_quotes(AI_LIST_MARKER_PATTERN.sub("", line).strip())
-        if not label:
-            continue
-        title = _split_artist_title(label)
-        if title is None:
-            continue
-        candidates.append(SuggestionCandidate(label=label, title=title))
-    return candidates
 
 
 def build_suggestions(
@@ -196,16 +173,46 @@ def build_opaque_options(
             for candidate in selected
         ],
     ]
-    (rng or random).shuffle(options)
+    (rng or SYSTEM_RANDOM).shuffle(options)
     return options
 
 
-def _select_distractors(
+def has_enough_distractors(
     correct: SuggestionCandidate,
     distractors: Iterable[SuggestionCandidate],
-    needed_count: int,
-) -> Sequence[SuggestionCandidate]:
-    """Return unique distractors that do not match the correct answer."""
+    option_count: int,
+) -> bool:
+    """
+    Return whether candidates can fill every wrong option.
+
+    :param correct: Correct answer candidate.
+    :param distractors: Wrong answer candidates.
+    :param option_count: Total number of options that must be built.
+    """
+    if option_count < 2:
+        return False
+    try:
+        _select_distractors(correct, distractors, option_count - 1)
+    except ValueError:
+        return False
+    return True
+
+
+def filter_suggestion_candidates(
+    correct: SuggestionCandidate,
+    distractors: Iterable[SuggestionCandidate],
+    *,
+    limit: int | None = None,
+) -> list[SuggestionCandidate]:
+    """
+    Return ordered distractors that stay distinct from the answer and each other.
+
+    :param correct: Correct answer candidate.
+    :param distractors: Ordered wrong-answer candidates to filter.
+    :param limit: Maximum number of candidates to return.
+    """
+    if limit is not None and limit < 1:
+        return []
     correct_label = normalize_answer_label(correct.label)
     seen_labels = {correct_label}
     seen_uris = {correct.uri} if correct.uri else set()
@@ -225,25 +232,19 @@ def _select_distractors(
         if candidate.uri:
             seen_uris.add(candidate.uri)
         selected.append(candidate)
-        if len(selected) == needed_count:
+        if limit is not None and len(selected) >= limit:
             break
+    return selected
+
+
+def _select_distractors(
+    correct: SuggestionCandidate,
+    distractors: Iterable[SuggestionCandidate],
+    needed_count: int,
+) -> Sequence[SuggestionCandidate]:
+    """Return unique distractors that do not match the correct answer."""
+    selected = filter_suggestion_candidates(correct, distractors, limit=needed_count)
     if len(selected) < needed_count:
         msg = "Not enough distractors to build suggestions"
         raise ValueError(msg)
     return selected
-
-
-def _split_artist_title(label: str) -> str | None:
-    """Return the title part of an ``Artist - Title`` label, or None when absent."""
-    for separator in AI_ARTIST_TITLE_SEPARATORS:
-        artist, found, title = label.partition(separator)
-        if found and artist.strip() and title.strip():
-            return title.strip()
-    return None
-
-
-def _strip_wrapping_quotes(text: str) -> str:
-    """Strip one matching pair of surrounding quotes, preserving inner apostrophes."""
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        return text[1:-1].strip()
-    return text

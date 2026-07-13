@@ -143,19 +143,9 @@ def parse_album(
             )
         },
     )
-    if artists := relationships.get("artists"):
-        album.artists = UniqueList([parse_artist(provider, artist) for artist in artists["data"]])
-    elif artist_name := normalize_unicode(attributes.get("artistName")):
-        album.artists = UniqueList(
-            [
-                ItemMapping(
-                    media_type=MediaType.ARTIST,
-                    provider=provider.instance_id,
-                    item_id=artist_name,
-                    name=artist_name,
-                )
-            ]
-        )
+    album_artists = _parse_album_artists(provider, attributes, relationships)
+    if album_artists:
+        album.artists = album_artists
     if release_date := attributes.get("releaseDate"):
         album.year = int(release_date.split("-")[0])
     if genres := attributes.get("genreNames"):
@@ -394,3 +384,48 @@ def parse_station_as_playlist(
             )
         )
     return playlist
+
+
+def _parse_album_artists(
+    provider: AppleMusicProvider,
+    attributes: dict[str, Any],
+    relationships: dict[str, Any],
+) -> UniqueList[Artist | ItemMapping] | None:
+    """Parse the album artists from an album's attributes and relationships."""
+    album_artist_name = normalize_unicode(attributes.get("artistName"))
+    # Skip relationships that cannot produce a named artist.
+    artist_objs = [
+        artist
+        for artist in relationships.get("artists", {}).get("data", [])
+        if _has_artist_details(artist)
+    ]
+    artists = UniqueList([parse_artist(provider, artist) for artist in artist_objs])
+    if album_artist_name and attributes.get("isCompilation"):
+        # A lone related artist can be a contributor rather than the album artist.
+        if len(artists) == 1 and artists[0].name != album_artist_name:
+            artists = UniqueList()
+    if artists:
+        return artists
+    if album_artist_name:
+        return UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    provider=provider.instance_id,
+                    item_id=album_artist_name,
+                    name=album_artist_name,
+                )
+            ]
+        )
+    return None
+
+
+def _has_artist_details(artist_obj: dict[str, Any]) -> bool:
+    """Check if an artist object holds enough details to parse it."""
+    relationships = artist_obj.get("relationships", {})
+    catalog_data = relationships.get("catalog", {}).get("data", [])
+    if artist_obj.get("type") == "library-artists" and catalog_data:
+        attributes = catalog_data[0].get("attributes", {})
+    else:
+        attributes = artist_obj.get("attributes", {})
+    return bool(normalize_unicode(attributes.get("name")))

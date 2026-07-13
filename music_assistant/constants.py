@@ -39,7 +39,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 35
+API_SCHEMA_VERSION: Final[int] = 37
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -54,8 +54,6 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
 # Home Assistant system user
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
-# Reserved filter-only player ID for managed guest accounts.
-GUEST_ACCESS_RESTRICTED_PLAYER_ID: Final[str] = "__guest_access_restricted__"
 # Port used by the internal ingress webserver for the HA integration
 INGRESS_SERVER_PORT: Final[int] = 8094
 

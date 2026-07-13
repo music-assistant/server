@@ -36,15 +36,6 @@ _VOLATILE_CACHE_FIELDS = ("elapsed_time", "elapsed_time_last_updated", "playback
 
 
 @dataclass(slots=True)
-class QueueMediaPresentation:
-    """Runtime presentation override for media exposed by a queue."""
-
-    owner_token: object
-    title: str
-    identity_key: bytes
-
-
-@dataclass(slots=True)
 class PlayerQueueData:
     """The complete server-side record for a queue: the wire `PlayerQueue` plus all server-only state."""
 
@@ -79,7 +70,6 @@ class PlayerQueueData:
     # the significant part of the state last written to cache (volatile playback-progress fields
     # stripped); lets the debounced saver skip a redundant write when nothing meaningful changed
     last_saved_state: dict[str, Any] | None = None
-    media_presentation: QueueMediaPresentation | None = None
 
     def to_cache(self) -> dict[str, Any]:
         """

@@ -27,7 +27,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import InvalidDataError, UnsupportedFeaturedException
+from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.player import (
     DeviceInfo,
     OutputProtocol,
@@ -59,7 +59,6 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
-    GUEST_ACCESS_RESTRICTED_PLAYER_ID,
     PLAYER_CONTROL_PROTOCOL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
@@ -335,8 +334,6 @@ class Player(ABC):
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
-        if player_id == GUEST_ACCESS_RESTRICTED_PLAYER_ID:
-            raise InvalidDataError(f"Player ID {player_id} is reserved")
         # set mass as public variable
         self.mass = provider.mass
         self.logger = provider.logger
@@ -2356,7 +2353,7 @@ class Player(ABC):
             ):
                 # handle stream metadata in streamdetails (e.g. for radio stream)
                 image_url = stream_metadata.image_url or item_image_url
-                media = PlayerMedia(
+                return PlayerMedia(
                     uri=current_item.uri,
                     media_type=current_item.media_type,
                     title=stream_metadata.title or current_item.name,
@@ -2371,7 +2368,7 @@ class Player(ABC):
                     elapsed_time_last_updated=stream_metadata.elapsed_time_last_updated
                     or active_queue.elapsed_time_last_updated,
                 )
-            elif media_item := current_item.media_item:
+            if media_item := current_item.media_item:
                 # normal media item
                 # we use getattr here to avoid issues with different media item types
                 version = getattr(media_item, "version", None)
@@ -2388,7 +2385,7 @@ class Player(ABC):
                     if current_item.media_item.image
                     else item_image_url
                 )
-                media = PlayerMedia(
+                return PlayerMedia(
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
                     title=f"{media_item.name} ({version})" if version else media_item.name,
@@ -2403,21 +2400,20 @@ class Player(ABC):
                     elapsed_time=int(active_queue.elapsed_time),
                     elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
                 )
-            else:
-                # fallback to basic current item details
-                media = PlayerMedia(
-                    uri=current_item.uri,
-                    media_type=current_item.media_type,
-                    title=current_item.name,
-                    image_url=item_image_url,
-                    palette=self._resolved_palette(item_image_url),
-                    duration=current_item.duration,
-                    source_id=active_queue.queue_id,
-                    queue_item_id=current_item.queue_item_id,
-                    elapsed_time=int(active_queue.elapsed_time),
-                    elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
-                )
-            return self.mass.player_queues.apply_media_presentation(active_queue.queue_id, media)
+
+            # fallback to basic current item details
+            return PlayerMedia(
+                uri=current_item.uri,
+                media_type=current_item.media_type,
+                title=current_item.name,
+                image_url=item_image_url,
+                palette=self._resolved_palette(item_image_url),
+                duration=current_item.duration,
+                source_id=active_queue.queue_id,
+                queue_item_id=current_item.queue_item_id,
+                elapsed_time=int(active_queue.elapsed_time),
+                elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
+            )
         if active_queue:
             # queue is active but no current item
             return None

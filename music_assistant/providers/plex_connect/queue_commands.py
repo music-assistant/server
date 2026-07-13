@@ -151,6 +151,16 @@ class QueueCommandsMixin:
         playqueue.__dict__["items"] = all_items
         return playqueue
 
+    def _selected_item_index(self, playqueue: PlayQueue) -> int:
+        """Return the selected item's index within the fetched queue window."""
+        selected_id = getattr(playqueue, "playQueueSelectedItemID", None)
+        if selected_id is not None:
+            for index, item in enumerate(playqueue.items):
+                if getattr(item, "playQueueItemID", None) == selected_id:
+                    return index
+        selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0) or 0
+        return selected_offset if 0 <= selected_offset < len(playqueue.items) else 0
+
     def _source_key_from_play_queue_uri(self, source_uri: str) -> str | None:
         """
         Extract a Plex library key from a playQueueSourceURI string.
@@ -282,9 +292,8 @@ class QueueCommandsMixin:
             playqueue = await self._fetch_full_play_queue(queue_id)
 
             if playqueue is not None and playqueue.items:
-                # playQueueSelectedItemOffset may be None on track-radio queues.
-                selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0) or 0
-                LOGGER.info(f"PlayQueue selected item offset: {selected_offset}")
+                selected_offset = self._selected_item_index(playqueue)
+                LOGGER.info(f"PlayQueue selected item index: {selected_offset}")
 
                 # When Plex reports a shuffled queue, load the original source into MA
                 # unshuffled and let MA apply its own shuffle, then propagate back to Plex.
@@ -296,11 +305,7 @@ class QueueCommandsMixin:
 
                 self.play_queue_item_ids = {}
 
-                first_item = (
-                    playqueue.items[selected_offset]
-                    if selected_offset < len(playqueue.items)
-                    else playqueue.items[0]
-                )
+                first_item = playqueue.items[selected_offset]
                 first_track_key, first_play_queue_item_id = plex_item_fields(first_item)
 
                 if not first_track_key:
