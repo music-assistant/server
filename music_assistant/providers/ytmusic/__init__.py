@@ -718,8 +718,6 @@ class YoutubeMusicProvider(MusicProvider):
                         folder.items.append(self._parse_playlist(recommended_item))
                     elif recommended_item.get("browseId"):
                         if podcast := self._parse_browse_podcast(recommended_item):
-                            # Podcast shows carry an MPSP-prefixed browseId and
-                            # must not be treated as albums
                             folder.items.append(podcast)
                         else:
                             # Probably an album
@@ -1067,13 +1065,12 @@ class YoutubeMusicProvider(MusicProvider):
         return podcast
 
     def _parse_browse_podcast(self, item_obj: dict[str, Any]) -> Podcast | None:
-        """Parse a browse/search item into a MA Podcast, or None if it is not a podcast."""
+        """Parse a podcast from a browse or search item."""
         browse_id: str = item_obj.get("browseId") or ""
         if not browse_id.startswith("MPSP"):
             return None
         podcast_obj = dict(item_obj)
-        # get_podcast accepts the id both with and without the MPSP prefix, but
-        # library podcasts use the unprefixed form, so strip it for a stable item id
+        # Match the unprefixed IDs used by library podcasts.
         podcast_obj["podcastId"] = item_obj.get("podcastId") or browse_id.removeprefix("MPSP")
         return self._parse_podcast(podcast_obj)
 
