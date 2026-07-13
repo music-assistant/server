@@ -1247,6 +1247,66 @@ async def test_full_game_flow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_prepares_first_round_and_start_reuses_it() -> None:
+    """Complete Guess the Song preparation during create and reuse it when starting."""
+    plugin = _create_plugin()
+    prepared_round = _make_round(0)
+    prepare_round = AsyncMock(return_value=prepared_round)
+
+    with patch.object(GuessTheSongQuizType, "prepare_round", new=prepare_round):
+        state = await plugin.create_game(
+            round_count=1,
+            source_uris=["library://playlist/1"],
+        )
+
+        game = plugin._game
+        assert game is not None
+        assert state["phase"] == "lobby"
+        assert game.rounds == []
+        assert plugin._next_round_task is not None
+        assert plugin._next_round_task.done()
+        prepare_round.assert_awaited_once_with(0, [])
+        cast("AsyncMock", plugin._play_track).assert_not_awaited()
+
+        await plugin.start_game()
+
+    prepare_round.assert_awaited_once_with(0, [])
+    assert game.rounds == [prepared_round]
+    cast("AsyncMock", plugin._play_track).assert_awaited_once_with(prepared_round.track_uri)
+
+
+@pytest.mark.asyncio
+async def test_reset_prepares_replay_round_and_start_reuses_it() -> None:
+    """Prepare a fresh Guess the Song round before returning to the replay lobby."""
+    plugin = _create_plugin()
+    initial_round = _make_round(0)
+    replay_round = _make_round(0)
+    replay_round.track_uri = "library://track/replay"
+    prepare_round = AsyncMock(side_effect=[initial_round, replay_round])
+
+    with patch.object(GuessTheSongQuizType, "prepare_round", new=prepare_round):
+        await plugin.create_game(
+            round_count=1,
+            source_uris=["library://playlist/1"],
+        )
+        await plugin.start_game()
+        state = await plugin.reset()
+
+        game = plugin._game
+        assert game is not None
+        assert state["phase"] == "lobby"
+        assert game.rounds == []
+        assert plugin._next_round_task is not None
+        assert plugin._next_round_task.done()
+        assert prepare_round.await_count == 2
+
+        await plugin.start_game()
+
+    assert prepare_round.await_count == 2
+    assert game.rounds == [replay_round]
+
+
+@pytest.mark.asyncio
 async def test_guest_ready_advances_and_prefetches_in_system_context() -> None:
     """Keep provider playback and background preparation independent of the guest."""
     prepared_contexts: list[tuple[int, object | None]] = []
@@ -2650,13 +2710,14 @@ async def test_stale_trivia_timer_cannot_mutate_reset_generation(timer_phase: st
         assert game.current_round_index == 0
         expected_auto_advance = 215.0 if timer_phase == "reveal" else None
         assert game.rounds[0].auto_advance_at == expected_auto_advance
+        prepare_call_count = prepare_round.await_count
         await stale_callback(stale_round_index)
 
     assert game.phase.value == timer_phase
     assert game.current_round_index == 0
     assert len(game.rounds) == 1
     assert game.rounds[0].auto_advance_at == expected_auto_advance
-    assert prepare_round.await_count == 2
+    assert prepare_round.await_count == prepare_call_count
 
 
 @pytest.mark.asyncio
@@ -4984,6 +5045,41 @@ async def test_create_game_initialize_failure_preserves_existing_finished_game()
     assert plugin._answer_type is answer_strategy
     assert plugin._next_round_task is pending_task
     pending_task.cancel.assert_not_called()
+    cast("MagicMock", plugin.mass.cancel_timer).assert_not_called()
+    cast("MagicMock", plugin.mass.cancel_task).assert_not_called()
+    cast("MagicMock", plugin.mass.call_later).assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_game_round_preparation_failure_preserves_existing_lobby() -> None:
+    """Keep an existing lobby when replacement round preparation fails."""
+    plugin = _create_plugin()
+    await plugin.create_game(source_uris=["library://playlist/1"])
+    game = plugin._game
+    assert game is not None
+    game_state = game.to_dict()
+    quiz_strategy = plugin._quiz_type
+    answer_strategy = plugin._answer_type
+    pending_task = plugin._next_round_task
+    assert pending_task is not None
+    cast("MagicMock", plugin.mass.cancel_timer).reset_mock()
+    cast("MagicMock", plugin.mass.cancel_task).reset_mock()
+    cast("MagicMock", plugin.mass.call_later).reset_mock()
+
+    prepare_round = AsyncMock(side_effect=InvalidDataError("Round preparation failed"))
+    with (
+        patch.object(GuessTheSongQuizType, "prepare_round", new=prepare_round),
+        pytest.raises(InvalidDataError, match="Round preparation failed"),
+    ):
+        await plugin.create_game(source_uris=["library://playlist/2"])
+
+    prepare_round.assert_awaited_once_with(0, [])
+    assert plugin._game is game
+    assert game.to_dict() == game_state
+    assert plugin._quiz_type is quiz_strategy
+    assert plugin._answer_type is answer_strategy
+    assert plugin._next_round_task is pending_task
+    assert pending_task.cancelled() is False
     cast("MagicMock", plugin.mass.cancel_timer).assert_not_called()
     cast("MagicMock", plugin.mass.cancel_task).assert_not_called()
     cast("MagicMock", plugin.mass.call_later).assert_not_called()
