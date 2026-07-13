@@ -183,7 +183,7 @@ def vocal_activity_probabilities(
     duration: float,
 ) -> npt.NDArray[np.float32]:
     """
-    Convert 10 ms FireRed outputs to the persisted 100 ms vocal timeline.
+    Convert 10 ms FireRed outputs to a 100 ms vocal timeline.
 
     :param frame_probabilities: Speech, singing, and music probabilities per fbank frame.
     :param duration: Canonical analysis duration in seconds.

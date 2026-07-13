@@ -343,7 +343,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
                 if rms_energy is not None:
                     spectral_centroid[rms_energy < 0.01] = 0.0
 
-        extra_data: dict[str, Any] = {"vocal_activity": vocal_activity.tolist()}
+        vocal_activity_bins = (
+            aggregate_series_to_bins(vocal_activity, 1800)
+            if vocal_activity.size
+            else np.zeros(1800, dtype=np.float32)
+        )
+        extra_data: dict[str, Any] = {"vocal_activity": vocal_activity_bins.tolist()}
         if energy_peak > 0 and data.frequency_band_chunks:
             extra_data["band_rms"] = {
                 name: (

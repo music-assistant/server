@@ -268,7 +268,7 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     assert max(band_rms["low"]) > 0.05
 
     vocal_probabilities = analysis.extra_data["vocal_activity"]
-    assert len(vocal_probabilities) == math.ceil(analysis.duration / 0.1)
+    assert len(vocal_probabilities) == 1800
     assert all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in vocal_probabilities)
 
 

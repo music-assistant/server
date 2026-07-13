@@ -74,4 +74,4 @@ Per-block RMS energy (100ms windows) and spectral centroid (per-hop-frame via to
 
 A dedicated stateful soxr stream resamples source PCM to 16kHz for FireRed AED. Online Kaldi fbank extraction uses the reference 80-bin, 25ms frame, 10ms shift configuration with fixed CMVN. The bundled model has 588,931 parameters and is about 2.3MB. FireRed inference runs concurrently with the sequential beat-then-key branch through the shared analysis worker limits. Long inputs are processed in bounded chunks with model context.
 
-The persisted `extra_data["vocal_activity"]` list contains 100ms `max(speech, singing)` probabilities aligned to the analysis duration. FireRedVAD source and AED model weights are Apache-2.0 licensed; attribution is recorded in the project `NOTICE`.
+FireRed's `max(speech, singing)` probabilities are averaged at 100ms resolution, then resampled to 1800 fixed bins spanning the track duration for `extra_data["vocal_activity"]`. FireRedVAD source and AED model weights are Apache-2.0 licensed; attribution is recorded in the project `NOTICE`.
