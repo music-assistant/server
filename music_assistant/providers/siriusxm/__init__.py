@@ -28,7 +28,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from tenacity import RetryError
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 import sxm.http
 from sxm import SXMClientAsync
-from sxm.models import QualitySize, RegionChoice, XMChannel, XMLiveChannel
+from sxm.models import QualitySize, RegionChoice, XMChannel, XMLiveChannel, XMSong
 
 CONF_SXM_USERNAME = "sxm_email_address"
 CONF_SXM_PASSWORD = "sxm_password"
@@ -304,7 +304,19 @@ class SiriusXMProvider(MusicProvider):
             latest_cut = latest_cut_marker.cut
             title = latest_cut.title
             artist = ", ".join([a.name for a in latest_cut.artists])
-            self._current_stream_details.stream_title = f"{artist} - {title}"
+            # prefer the album art of the current song, fall back to the channel logo
+            image_url: str | None = None
+            if isinstance(latest_cut, XMSong) and latest_cut.album:
+                image_url = next((art.url for art in latest_cut.album.arts), None)
+            if image_url is None and (channel := self._channels_by_id.get(current_channel)):
+                image_url = next(
+                    (i.url for i in channel.images if i.width == 300 and i.height == 300), None
+                )
+            self._current_stream_details.stream_metadata = StreamMetadata(
+                title=title,
+                artist=artist,
+                image_url=image_url,
+            )
 
     async def _refresh_channels(self) -> bool:
         self._channels = await self._client.channels
