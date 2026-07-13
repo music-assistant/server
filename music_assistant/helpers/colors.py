@@ -266,6 +266,17 @@ async def get_palette(
     return await asyncio.shield(task)
 
 
+async def invalidate_cached_palette(mass: MusicAssistant, provider: str, path_or_url: str) -> None:
+    """
+    Remove the cached palette for an image so the next request re-extracts it.
+
+    :param mass: The MusicAssistant instance.
+    :param provider: Provider identifier for the image source.
+    :param path_or_url: Image path or URL (same format as get_palette).
+    """
+    await mass.cache.delete(key=create_thumb_hash(provider, path_or_url), provider=_CACHE_PROVIDER)
+
+
 async def get_palette_for_url(
     mass: MusicAssistant, image_url: str | None
 ) -> MediaItemPalette | None:

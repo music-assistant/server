@@ -8,7 +8,7 @@ import logging
 from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
 from music_assistant_models.config_entries import ConfigValueType
-from music_assistant_models.enums import EventType
+from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
@@ -184,9 +184,14 @@ class Provider:
         """Return the stage of this provider."""
         return self.manifest.stage
 
-    def unload_with_error(self, error: str) -> None:
-        """Unload provider with error message."""
-        self.mass.call_later(1, self.mass.unload_provider, self.instance_id, error)
+    def unload_with_error(self, error: str | Exception) -> None:
+        """
+        Unload this provider and record an error for the user to act on.
+
+        :param error: The originating exception (preferred, so its error code and localized
+            message are preserved) or a plain string for a generic error message.
+        """
+        self.mass.call_later(1, self.mass.unload_provider_with_error, self.instance_id, error)
 
     def to_dict(self) -> dict[str, Any]:
         """Return Provider(instance) as serializable dict."""
@@ -250,22 +255,29 @@ class Provider:
         return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
     ) -> _ConfigValueT | ConfigValueType:
         """
-        Return a single config value from this provider's active configuration.
+        Return the current persisted config value for this provider.
 
-        Entry defaults are already applied to the active configuration, so the
-        default is only returned when the key itself is not present.
+        Falls back to the active config entry value or default when no value is persisted.
 
         :param key: The config key to retrieve.
-        :param default: Value to return when the key is not present in the config.
+        :param default: Value to return when the key is not present in the active config.
         :param return_type: Optional type hint for type inference (e.g., str, int, bool).
             Note: This parameter is used purely for static type checking and does not
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
         """
-        return self.config.get_value(key, default)
+        if (entry := self.config.values.get(key)) is None:
+            return self.config.get_value(key, default)
+        value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
+        if value is None:
+            return self.config.get_value(key, default)
+        if entry.type == ConfigEntryType.SECURE_STRING:
+            assert isinstance(value, str)
+            return self.mass.config.decrypt_string(value)
+        return value
 
     def _update_config_value(
-        self, key: str, value: Any, encrypted: bool = False, immediate: bool = False
+        self, key: str, value: ConfigValueType, encrypted: bool = False, immediate: bool = False
     ) -> None:
         """
         Update a config value.
@@ -273,10 +285,11 @@ class Provider:
         :param immediate: Persist to disk right away instead of on the debounced save timer;
             use for critical values (e.g. a rotated auth token) that must survive a crash.
         """
-        # the config controller also updates the cached copy within this provider instance
         self.mass.config.set_raw_provider_config_value(
             self.instance_id, key, value, encrypted=encrypted, immediate=immediate
         )
+        if (entry := self.config.values.get(key)) is not None:
+            entry.value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
 
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
         """Set log level from config."""

@@ -418,9 +418,11 @@ class ProviderConfigMixin:
             self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value, immediate=immediate)
             return
         self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value, immediate=immediate)
-        # also update the provider's in-place config copy (if loaded) so
-        # object-local value reads stay in sync with raw writes
-        if (provider := self.mass.get_provider(provider_instance)) and (
+        # also update the loaded provider's in-place config copy so object-local value
+        # reads stay in sync with raw writes; include unavailable instances, since values
+        # like a rotated auth token can be written while the provider is temporarily
+        # unavailable and its copy must not lag behind the stored value
+        if (provider := self.mass.get_provider(provider_instance, return_unavailable=True)) and (
             entry := provider.config.values.get(key)
         ):
             entry.value = value

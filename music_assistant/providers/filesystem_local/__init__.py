@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import os.path
+import posixpath
 import urllib.parse
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
@@ -1120,6 +1121,17 @@ class LocalFileSystemProvider(MusicProvider):
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
 
+            if prev_checksum is not None:
+                # the file changed on disk: drop cached artwork derived from it
+                # (thumbnails, source bytes, palette) so re-read embedded art is
+                # served fresh, for both reference forms of the image path
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, item.relative_path
+                )
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, self._versioned_image_path(item.relative_path, prev_checksum)
+                )
+
             if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
                 tracks = await self._cue.parse_tracks(item)
                 for track in tracks:
@@ -1311,22 +1323,21 @@ class LocalFileSystemProvider(MusicProvider):
         try:
             line = line.replace("file://", "").strip()
             # try to resolve the filename (both normal and url decoded):
-            # - as an absolute path
-            # - relative to the playlist path
-            # - relative to our base path
-            # - relative to the playlist path with a leading slash
+            # - relative to the playlist folder (normpath resolves parent .. references)
+            # - as-is: an absolute path, or relative to our base path
+            # candidates stay relative so subclasses with virtual paths (cloud,
+            # webdav) resolve them too, instead of leaking the server CWD
             for _line in (line, urllib.parse.unquote(line)):
-                for filename in (
-                    # try to resolve the line by resolving it against the (absolute) playlist path
-                    # use the path.resolve step in between to auto-resolve parent item references
-                    (Path(self.get_absolute_path(playlist_path)) / _line).resolve().as_posix(),
-                    # try to resolve the line as a full absolute (or relative to music dir) path
-                    _line,
-                ):
-                    with contextlib.suppress(FileNotFoundError):
-                        file_item = await self.resolve(filename)
+                if playlist_path:
+                    normalized = posixpath.normpath(f"{playlist_path}/{_line}")
+                    with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
+                        file_item = await self.resolve(normalized)
                         tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
                         return await self._parse_track(file_item, tags)
+                with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
+                    file_item = await self.resolve(_line)
+                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+                    return await self._parse_track(file_item, tags)
             # all attempts failed
             raise MediaNotFoundError("Invalid path/uri")
 
@@ -1696,7 +1707,7 @@ class LocalFileSystemProvider(MusicProvider):
         elif not tags.chapters:
             # No track tag and no embedded chapters -
             # assume part of a multi-file audiobook, only process the first file alphabetically
-            items = await self._scandir(file_item.parent_path)
+            items = await self._scandir(file_item.relative_parent_path)
             # Sort by filename for alphabetical ordering
             items.sort(key=lambda x: x.filename.lower())
             for item in items:
@@ -1778,7 +1789,7 @@ class LocalFileSystemProvider(MusicProvider):
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
             # try to get an image by traversing files in the same folder
-            for _item in await self._scandir(file_item.parent_path):
+            for _item in await self._scandir(file_item.relative_parent_path):
                 if "." not in _item.relative_path or _item.is_dir:
                     continue
                 if _item.ext in IMAGE_EXTENSIONS and not audio_book.image:
@@ -1899,9 +1910,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         # try to fetch additional Podcast metadata from the folder
         assert isinstance(episode.podcast, Podcast)
-        if images := await self._get_local_images(file_item.parent_path):
+        if images := await self._get_local_images(file_item.relative_parent_path):
             episode.podcast.metadata.images = images
-        if metadata := await self._get_podcast_metadata(file_item.parent_path):
+        if metadata := await self._get_podcast_metadata(file_item.relative_parent_path):
             if title := metadata.get("title"):
                 episode.podcast.name = title
             if sort_name := metadata.get("sorttitle"):
@@ -2407,7 +2418,7 @@ class LocalFileSystemProvider(MusicProvider):
         chapter_file_items: list[tuple[FileSystemItem, AudioTags]] = []
         untagged_file_items: list[tuple[FileSystemItem, AudioTags]] = []
 
-        items = await self._scandir(audiobook_file_item.parent_path)
+        items = await self._scandir(audiobook_file_item.relative_parent_path)
         # Sort by filename for consistent alphabetical ordering
         items.sort(key=lambda x: x.filename.lower())
 

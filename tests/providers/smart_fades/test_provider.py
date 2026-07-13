@@ -218,8 +218,8 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     # Energy curve should be 1800 bins, normalized to [0, 1]
     assert analysis.rms_energy is not None
     assert len(analysis.rms_energy) == 1800
-    assert analysis.rms_energy.max() <= 1.0
-    assert analysis.rms_energy.min() >= 0.0
+    assert max(analysis.rms_energy) <= 1.0
+    assert min(analysis.rms_energy) >= 0.0
 
     # Spectral centroid should be 1800 bins with positive Hz values
     assert analysis.spectral_centroid is not None
@@ -332,6 +332,24 @@ async def test_finalize_raises_when_not_enough_beats(provider: SmartFadesProvide
         pytest.raises(AudioAnalysisError, match="beat"),
     ):
         await provider._finalize(session_id)
+
+
+async def test_digital_silence_yields_finite_spectral_centroid(
+    provider: SmartFadesProvider,
+) -> None:
+    """Digitally-silent audio yields 0 Hz centroid frames instead of non-finite values."""
+    sample_rate = 22050
+    tone = np.sin(2 * np.pi * 440 * np.arange(sample_rate, dtype=np.float32) / sample_rate)
+    pcm = np.concatenate([tone.astype(np.float32), np.zeros(sample_rate, dtype=np.float32)])
+    data = Mock()
+    data.energy_chunks = []
+    data.frequency_band_chunks = {}
+    data.centroid_chunks = []
+
+    provider._compute_energy_and_spectral_centroids(pcm, data)
+
+    assert data.centroid_chunks
+    assert np.isfinite(np.concatenate(data.centroid_chunks)).all()
 
 
 async def test_setup_raises_when_requirements_not_met(

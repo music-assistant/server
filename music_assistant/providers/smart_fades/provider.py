@@ -285,11 +285,14 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         analysis = AudioAnalysisData(
             bpm=bpm,
-            beats=beats,
-            downbeats=downbeats,
+            # the model stores plain float lists (numpy-free); convert the analysis arrays
+            beats=beats.tolist(),
+            downbeats=downbeats.tolist(),
             duration=duration,
-            rms_energy=rms_energy,
-            spectral_centroid=spectral_centroid,
+            rms_energy=rms_energy.tolist() if rms_energy is not None else None,
+            spectral_centroid=(
+                spectral_centroid.tolist() if spectral_centroid is not None else None
+            ),
             key=key,
             mode=mode,
             extra_data=extra_data,
@@ -360,6 +363,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if len(pcm_22k) >= self._spectral_centroid.n_fft:
             pcm_tensor = torch.from_numpy(pcm_22k)
             centroid_frames = self._spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
+            # digitally-silent frames divide 0/0 into NaN; treat them as 0 Hz like
+            # other negligible-energy frames so no non-finite value is ever stored
+            np.nan_to_num(centroid_frames, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
             if len(centroid_frames) > 0:
                 data.centroid_chunks.append(centroid_frames.astype(np.float32))
 

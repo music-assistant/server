@@ -47,6 +47,8 @@ from .constants import (
     BROWSE_TOP_PLAYLISTS,
     BROWSE_YOUR_TOP_ALBUMS,
     BROWSE_YOUR_TOP_ARTISTS,
+    DEFAULT_FLOW_CONFIG_ID,
+    FLOW_BATCH_COUNT,
     FLOW_CONFIG_PREFIX,
     FLOW_PLAYLIST_ID,
     PERSONAL_SONGS_PLAYLIST_ID,
@@ -639,17 +641,11 @@ class DeezerBrowseManager:
         recs: GetRecommendationsMe | None,
     ) -> None:
         """Add Made For You section to recommendations."""
-        made_for_me_items: list[Playlist] = []
-        flow_me = await self.provider.gql_client.get_flow()
-        if flow_me and flow_me.flow:
-            cover = (
-                flow_me.flow.cover.urls[0]
-                if flow_me.flow.cover and flow_me.flow.cover.urls
-                else None
+        made_for_me_items: list[Playlist] = [
+            create_virtual_playlist(
+                self.provider, FLOW_PLAYLIST_ID, "Flow", image_url=await self._get_flow_cover()
             )
-            made_for_me_items.append(
-                create_virtual_playlist(self.provider, FLOW_PLAYLIST_ID, "Flow", image_url=cover)
-            )
+        ]
         made_for_me_items.extend(await self._get_smart_tracklist_playlists())
         if made_for_me_items:
             result.append(
@@ -874,7 +870,7 @@ class DeezerBrowseManager:
         if page > 0:
             return []
         if prov_playlist_id == FLOW_PLAYLIST_ID:
-            return await self._get_flow_tracks()
+            return await self._get_flow_config_tracks(DEFAULT_FLOW_CONFIG_ID)
         if prov_playlist_id == RECOMMENDED_TRACKS_PLAYLIST_ID:
             return await self._get_recommended_tracks()
         if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
@@ -922,25 +918,6 @@ class DeezerBrowseManager:
                 )
         return playlists
 
-    async def _get_flow_tracks(self) -> list[Track]:
-        """Get a fresh batch of personalized Flow tracks."""
-        result = await self.provider.gql_client.get_flow_batch()
-        if result is None or result.flow is None:
-            return []
-        seen: set[str] = set()
-        tracks: list[Track] = []
-        for batch in (
-            result.flow.batch_1,
-            result.flow.batch_2,
-            result.flow.batch_3,
-            result.flow.batch_4,
-        ):
-            for ft in batch:
-                if ft.track is not None and ft.track.id not in seen:
-                    seen.add(ft.track.id)
-                    tracks.append(parse_track(self.provider, ft.track))
-        return filter_tracks(tracks)
-
     @use_cache(3600)
     async def _get_recommended_tracks(self) -> list[Track]:
         """Get cached recommended tracks (hot tracks)."""
@@ -972,15 +949,16 @@ class DeezerBrowseManager:
 
     async def _get_flow_config_tracks(self, config_id: str) -> list[Track]:
         """
-        Get a fresh batch of tracks for a mood/genre Flow config.
+        Get fresh batches of tracks for a Flow config, merged deduplicated.
 
-        :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
+        :param config_id: The Flow config identifier
+            (e.g. "default", "happy", "chill", "genre-rock").
         """
         seen: set[str] = set()
         tracks: list[Track] = []
-        for _ in range(4):
+        for _ in range(FLOW_BATCH_COUNT):
             result = await self.provider.gql_client.get_flow_config_tracks(flow_config_id=config_id)
-            if result is None:
+            if result is None or not result.tracks:
                 break
             for ft in result.tracks:
                 if ft.track is not None and ft.track.id not in seen:
@@ -1111,8 +1089,8 @@ class DeezerBrowseManager:
 
     @use_cache(3600)
     async def _get_flow_cover(self) -> str | None:
-        """Get the cover URL for the user's Flow."""
-        result = await self.provider.gql_client.get_flow()
-        if result and result.flow and result.flow.cover and result.flow.cover.urls:
-            return str(result.flow.cover.urls[0])
-        return None
+        """Get the cover URL for the user's default Flow."""
+        result = await self.provider.gql_client.get_flow_config_tracks(
+            flow_config_id=DEFAULT_FLOW_CONFIG_ID
+        )
+        return get_flow_config_image(result) if result else None

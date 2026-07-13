@@ -1,13 +1,17 @@
 """
 Tests for the Spotify provider's refresh-token handling.
 
-Spotify rotates the refresh token on every refresh and revokes the previous one. If a
-token was rotated while a refresh was in flight, the token we tried is merely stale, so
-the stored (newer) one must be kept instead of wiping the credentials and forcing re-auth.
+The global refresh token is always read from the persisted store, so an in-memory config
+copy that lagged a rotation can never make us refresh with a stale (revoked) token. Spotify
+rotates the refresh token on every refresh and revokes the previous one; if a newer token
+was persisted while a refresh was in flight, the stored (newer) one is kept instead of
+wiping the credentials and forcing re-auth.
 """
 
 from __future__ import annotations
 
+import time
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,12 +26,10 @@ USED_TOKEN = "token_a"
 def _make_provider(stored_token: str | None) -> SpotifyProvider:
     """Return a SpotifyProvider (bypassing __init__) with a mocked config store."""
     prov = object.__new__(SpotifyProvider)
+    # the in-memory config copy has no dev token configured; the global refresh token is
+    # read from the persisted store below, not from this object-local copy
     config = MagicMock(instance_id="spotify--test")
-    config.get_value = MagicMock(
-        side_effect=lambda key, default=None: (
-            USED_TOKEN if key == CONF_REFRESH_TOKEN_GLOBAL else default
-        )
-    )
+    config.get_value = MagicMock(return_value=None)
     prov.config = config
     prov.manifest = MagicMock(domain="spotify")
     prov.logger = MagicMock()
@@ -48,9 +50,43 @@ def test_refresh_token_superseded_no_stored_token() -> None:
     assert prov._refresh_token_superseded(CONF_REFRESH_TOKEN_GLOBAL, USED_TOKEN) is False
 
 
-async def test_login_keeps_rotated_token_on_revoked(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A revoked error is ignored when the stored token was rotated meanwhile."""
-    prov = _make_provider(stored_token="token_b")
+def test_stored_refresh_token_decrypts_stored_value() -> None:
+    """_stored_refresh_token returns the decrypted persisted token, or None when unset."""
+    prov = _make_provider(stored_token="token_x")
+    assert prov._stored_refresh_token(CONF_REFRESH_TOKEN_GLOBAL) == "token_x"
+    assert (
+        _make_provider(stored_token=None)._stored_refresh_token(CONF_REFRESH_TOKEN_GLOBAL) is None
+    )
+
+
+async def test_login_reads_token_from_persisted_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The refresh token is read from the persisted store, not a stale in-memory config copy."""
+    prov = _make_provider(stored_token="fresh_token")
+    prov._sp_user = {"display_name": "tester"}
+    token_call = AsyncMock(
+        return_value={
+            "access_token": "access",
+            "refresh_token": "fresh_token",
+            "expires_at": 9999999999,
+        }
+    )
+    monkeypatch.setattr(prov, "_update_config_value", MagicMock())
+    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
+    monkeypatch.setattr("music_assistant.providers.spotify.provider.get_spotify_token", token_call)
+    await prov.login()
+    # the token sent to Spotify must come from the persisted store
+    assert token_call.await_args is not None
+    assert token_call.await_args.args[2] == "fresh_token"
+
+
+async def test_login_keeps_token_when_rotated_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A revoked error is ignored when a newer token was persisted during the refresh."""
+    prov = _make_provider(stored_token=USED_TOKEN)
+    # the initial read uses token_a; the superseded re-check sees a newer token_b that was
+    # persisted while the refresh was in flight
+    cast("MagicMock", prov.mass.config).get_raw_provider_config_value = MagicMock(
+        side_effect=[USED_TOKEN, "token_b"]
+    )
     update_config = MagicMock()
     unload = MagicMock()
     monkeypatch.setattr(prov, "_update_config_value", update_config)
@@ -63,6 +99,44 @@ async def test_login_keeps_rotated_token_on_revoked(monkeypatch: pytest.MonkeyPa
         await prov.login()
     update_config.assert_not_called()
     unload.assert_not_called()
+
+
+async def test_login_returns_cached_token_while_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cached access token that is still valid is returned without contacting Spotify."""
+    prov = _make_provider(stored_token=USED_TOKEN)
+    cached = {
+        "access_token": "cached",
+        "refresh_token": USED_TOKEN,
+        "expires_at": time.time() + 3600,
+    }
+    prov._auth_info_global = cached
+    token_call = AsyncMock()
+    monkeypatch.setattr("music_assistant.providers.spotify.provider.get_spotify_token", token_call)
+    assert await prov.login() is cached
+    token_call.assert_not_awaited()
+
+
+async def test_login_refreshes_when_cached_token_expired(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An expired cached access token triggers a refresh instead of being served."""
+    prov = _make_provider(stored_token=USED_TOKEN)
+    prov._sp_user = {"display_name": "tester"}
+    prov._auth_info_global = {
+        "access_token": "old",
+        "refresh_token": USED_TOKEN,
+        "expires_at": time.time() - 10,
+    }
+    token_call = AsyncMock(
+        return_value={
+            "access_token": "new",
+            "refresh_token": USED_TOKEN,
+            "expires_at": time.time() + 3600,
+        }
+    )
+    monkeypatch.setattr(prov, "_update_config_value", MagicMock())
+    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
+    monkeypatch.setattr("music_assistant.providers.spotify.provider.get_spotify_token", token_call)
+    await prov.login()
+    token_call.assert_awaited_once()
 
 
 async def test_login_wipes_token_on_genuine_revoke(monkeypatch: pytest.MonkeyPatch) -> None:

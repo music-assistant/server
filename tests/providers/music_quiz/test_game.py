@@ -5,6 +5,10 @@ from __future__ import annotations
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.providers.music_quiz.answer_types.multiple_choice import (
+    MultipleChoiceAnswerType,
+    MultipleChoiceSubmission,
+)
 from music_assistant.providers.music_quiz.errors import (
     MusicQuizAlreadyAnsweredError,
     MusicQuizNameTakenError,
@@ -13,7 +17,7 @@ from music_assistant.providers.music_quiz.errors import (
 from music_assistant.providers.music_quiz.game import (
     active_players_for_round,
     add_player,
-    all_active_players_answered,
+    all_active_players_complete,
     are_active_players_ready,
     finish_game,
     reset_game,
@@ -22,13 +26,17 @@ from music_assistant.providers.music_quiz.game import (
     submit_answer,
 )
 from music_assistant.providers.music_quiz.models import (
+    MultipleChoiceRoundState,
+    MultipleChoiceSuggestion,
+    MusicQuizAnswerType,
     MusicQuizConfig,
     MusicQuizGame,
     MusicQuizPhase,
     MusicQuizPlayer,
     MusicQuizRound,
-    MusicQuizSuggestion,
 )
+
+ANSWER_TYPE = MultipleChoiceAnswerType()
 
 
 def _player(player_id: str, name: str, active_from_round: int = 0) -> MusicQuizPlayer:
@@ -45,6 +53,8 @@ def _game() -> MusicQuizGame:
     """Return a test game with one active round."""
     return MusicQuizGame(
         config=MusicQuizConfig(),
+        quiz_type="guess_the_song",
+        answer_type=MusicQuizAnswerType.MULTIPLE_CHOICE,
         phase=MusicQuizPhase.ANSWERING,
         current_round_index=0,
         rounds=[
@@ -52,17 +62,19 @@ def _game() -> MusicQuizGame:
                 round_index=0,
                 track_uri="library://track/1",
                 answer_label="Daft Punk - One More Time",
-                suggestions=[
-                    MusicQuizSuggestion(
-                        suggestion_id="correct",
-                        label="Daft Punk - One More Time",
-                        is_correct=True,
-                    ),
-                    MusicQuizSuggestion(
-                        suggestion_id="wrong_1",
-                        label="Justice - D.A.N.C.E.",
-                    ),
-                ],
+                answer_state=MultipleChoiceRoundState(
+                    suggestions=[
+                        MultipleChoiceSuggestion(
+                            suggestion_id="correct",
+                            label="Daft Punk - One More Time",
+                            is_correct=True,
+                        ),
+                        MultipleChoiceSuggestion(
+                            suggestion_id="wrong_1",
+                            label="Justice - D.A.N.C.E.",
+                        ),
+                    ]
+                ),
             )
         ],
     )
@@ -100,22 +112,24 @@ def test_start_round_requires_exactly_one_correct_suggestion() -> None:
             round_index=0,
             track_uri="library://track/1",
             answer_label="Daft Punk - One More Time",
-            suggestions=[
-                MusicQuizSuggestion(
-                    suggestion_id=f"s{index}",
-                    label=f"Suggestion {index}",
-                    is_correct=flag,
-                )
-                for index, flag in enumerate(correct_flags)
-            ],
+            answer_state=MultipleChoiceRoundState(
+                suggestions=[
+                    MultipleChoiceSuggestion(
+                        suggestion_id=f"s{index}",
+                        label=f"Suggestion {index}",
+                        is_correct=flag,
+                    )
+                    for index, flag in enumerate(correct_flags)
+                ]
+            ),
         )
 
     with pytest.raises(InvalidDataError, match="exactly one correct"):
-        start_round(game, _round(True, True, False, False), started_at=1)
+        start_round(game, _round(True, True, False, False), 1, ANSWER_TYPE)
     with pytest.raises(InvalidDataError, match="exactly one correct"):
-        start_round(game, _round(False, False, False, False), started_at=1)
+        start_round(game, _round(False, False, False, False), 1, ANSWER_TYPE)
 
-    start_round(game, _round(True, False, False, False), started_at=1)
+    start_round(game, _round(True, False, False, False), 1, ANSWER_TYPE)
     assert game.phase == MusicQuizPhase.ANSWERING
 
 
@@ -135,7 +149,7 @@ def test_ready_gate_includes_players_joining_next_round() -> None:
     """During reveal the upcoming round belongs to late joiners too."""
     game = _game()
     add_player(game, _player("p1", "Alice"))
-    reveal_round(game)
+    reveal_round(game, ANSWER_TYPE)
     add_player(game, _player("p2", "Bob", active_from_round=1))
 
     game.players["p1"].ready = True
@@ -150,7 +164,7 @@ def test_ready_gate_on_final_round_ignores_spectators_of_a_round_that_never_come
     game = _game()
     game.config.round_count = 1
     add_player(game, _player("p1", "Alice"))
-    reveal_round(game)
+    reveal_round(game, ANSWER_TYPE)
     # joins during the final reveal: their "first active round" will never play
     add_player(game, _player("p2", "Bob", active_from_round=1))
 
@@ -163,12 +177,25 @@ def test_submit_answer_locks_first_answer() -> None:
     game = _game()
     add_player(game, _player("p1", "Alice"))
 
-    answer = submit_answer(game, "p1", "wrong_1", 10)
+    submit_answer(
+        game,
+        "p1",
+        MultipleChoiceSubmission(suggestion_id="wrong_1"),
+        10,
+        ANSWER_TYPE,
+    )
+    answer = _answer_state(game.rounds[0]).answers["p1"]
 
     assert answer.suggestion_id == "wrong_1"
     assert answer.is_correct is False
     with pytest.raises(MusicQuizAlreadyAnsweredError, match="already answered"):
-        submit_answer(game, "p1", "correct", 11)
+        submit_answer(
+            game,
+            "p1",
+            MultipleChoiceSubmission(suggestion_id="correct"),
+            11,
+            ANSWER_TYPE,
+        )
 
 
 def test_submit_answer_rejects_unknown_suggestion() -> None:
@@ -177,7 +204,13 @@ def test_submit_answer_rejects_unknown_suggestion() -> None:
     add_player(game, _player("p1", "Alice"))
 
     with pytest.raises(InvalidDataError, match="Unknown suggestion"):
-        submit_answer(game, "p1", "missing", 10)
+        submit_answer(
+            game,
+            "p1",
+            MultipleChoiceSubmission(suggestion_id="missing"),
+            10,
+            ANSWER_TYPE,
+        )
 
 
 def test_submit_answer_rejects_outside_answering_phase() -> None:
@@ -187,22 +220,51 @@ def test_submit_answer_rejects_outside_answering_phase() -> None:
     add_player(game, _player("p1", "Alice"))
 
     with pytest.raises(MusicQuizWrongPhaseError, match="answering phase"):
-        submit_answer(game, "p1", "correct", 10)
+        submit_answer(
+            game,
+            "p1",
+            MultipleChoiceSubmission(suggestion_id="correct"),
+            10,
+            ANSWER_TYPE,
+        )
 
 
-def test_all_active_players_answered_tracks_current_round() -> None:
+def test_all_active_players_complete_tracks_current_round() -> None:
     """Report completion only when every active player locked an answer."""
     game = _game()
     add_player(game, _player("p1", "Alice"))
     add_player(game, _player("p2", "Bob"))
     add_player(game, _player("p3", "Late", active_from_round=1))
 
-    assert all_active_players_answered(game) is False
-    submit_answer(game, "p1", "correct", 10)
-    assert all_active_players_answered(game) is False
+    assert all_active_players_complete(game, ANSWER_TYPE) is False
+    submit_answer(
+        game,
+        "p1",
+        MultipleChoiceSubmission(suggestion_id="correct"),
+        10,
+        ANSWER_TYPE,
+    )
+    assert all_active_players_complete(game, ANSWER_TYPE) is False
     # the late joiner is not active this round and must not block completion
-    submit_answer(game, "p2", "wrong_1", 11)
-    assert all_active_players_answered(game) is True
+    submit_answer(
+        game,
+        "p2",
+        MultipleChoiceSubmission(suggestion_id="wrong_1"),
+        11,
+        ANSWER_TYPE,
+    )
+    assert all_active_players_complete(game, ANSWER_TYPE) is True
+
+
+def test_all_active_players_complete_when_only_future_players_remain() -> None:
+    """Allow a round to reveal when participants remain but none can answer it."""
+    game = _game()
+    add_player(game, _player("late", "Late", active_from_round=1))
+
+    assert all_active_players_complete(game, ANSWER_TYPE) is True
+
+    game.players.clear()
+    assert all_active_players_complete(game, ANSWER_TYPE) is False
 
 
 def test_reveal_round_applies_scores_to_correct_answers_in_order() -> None:
@@ -211,17 +273,37 @@ def test_reveal_round_applies_scores_to_correct_answers_in_order() -> None:
     add_player(game, _player("p1", "Alice"))
     add_player(game, _player("p2", "Bob"))
     add_player(game, _player("p3", "Charlie"))
-    submit_answer(game, "p2", "correct", 10)
-    submit_answer(game, "p1", "wrong_1", 11)
-    submit_answer(game, "p3", "correct", 12)
+    submit_answer(
+        game,
+        "p2",
+        MultipleChoiceSubmission(suggestion_id="correct"),
+        10,
+        ANSWER_TYPE,
+    )
+    submit_answer(
+        game,
+        "p1",
+        MultipleChoiceSubmission(suggestion_id="wrong_1"),
+        11,
+        ANSWER_TYPE,
+    )
+    submit_answer(
+        game,
+        "p3",
+        MultipleChoiceSubmission(suggestion_id="correct"),
+        12,
+        ANSWER_TYPE,
+    )
 
-    reveal_round(game)
+    reveal_round(game, ANSWER_TYPE)
 
     current_round = game.rounds[0]
+    answers = _answer_state(current_round).answers
     assert game.phase == MusicQuizPhase.REVEAL
-    assert current_round.answers["p2"].points == 1000
-    assert current_round.answers["p3"].points == 500
-    assert current_round.answers["p1"].points == 0
+    assert answers["p2"].points == 1000
+    assert answers["p3"].points == 500
+    assert answers["p1"].points == 0
+    assert current_round.ended_at == 12
     assert game.players["p2"].score == 1000
     assert game.players["p3"].score == 500
     assert game.players["p1"].score == 0
@@ -241,7 +323,7 @@ def test_active_players_for_round_excludes_late_joiners_until_next_round() -> No
 
 
 def test_reset_game_keeps_players_and_config_for_new_game() -> None:
-    """Reset rounds, scores, readiness and late-join state for a fresh game."""
+    """Reset transient state while preserving game settings and identity."""
     game = _game()
     add_player(game, _player("p1", "Alice", active_from_round=0))
     add_player(game, _player("p2", "Bob", active_from_round=1))
@@ -249,13 +331,33 @@ def test_reset_game_keeps_players_and_config_for_new_game() -> None:
     game.players["p1"].ready = True
     game.players["p2"].score = 500
     game.players["p2"].ready = True
+    game.auto_start_at = 30
 
     reset_game(game)
 
     assert game.phase == MusicQuizPhase.LOBBY
+    assert game.to_dict()["auto_start_at"] is None
+    assert game.quiz_type == "guess_the_song"
+    assert game.answer_type == MusicQuizAnswerType.MULTIPLE_CHOICE
     assert game.current_round_index is None
     assert game.rounds == []
     assert {player.name for player in game.players.values()} == {"Alice", "Bob"}
     assert all(player.score == 0 for player in game.players.values())
     assert all(player.ready is False for player in game.players.values())
     assert all(player.active_from_round == 0 for player in game.players.values())
+
+
+def test_reveal_round_uses_start_time_when_no_answers_exist() -> None:
+    """Use the common round start time when an answer type has no timestamp."""
+    game = _game()
+    game.rounds[0].started_at = 5
+
+    reveal_round(game, ANSWER_TYPE)
+
+    assert game.rounds[0].ended_at == 5
+
+
+def _answer_state(game_round: MusicQuizRound) -> MultipleChoiceRoundState:
+    """Return multiple-choice state from a test round."""
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    return game_round.answer_state

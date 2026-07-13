@@ -12,13 +12,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
-from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
-from aioaudiobookshelf.client.items import (
-    LibraryItemExpandedPodcast as AbsLibraryItemExpandedPodcast,
+from aioaudiobookshelf.client.session_configuration import (
+    SessionConfiguration as AbsSessionConfiguration,
 )
-from aioaudiobookshelf.client.items import PlaybackSessionExpanded as AbsPlaybackSessionExpanded
-from aioaudiobookshelf.client.items import PlaybackSessionParameters as AbsPlaybackSessionParameters
-from aioaudiobookshelf.client.session import SyncOpenSessionParameters
 from aioaudiobookshelf.exceptions import AbsError, RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import (
     LoginError as AbsLoginError,
@@ -37,15 +33,23 @@ from aioaudiobookshelf.schema.calls_authors import (
 from aioaudiobookshelf.schema.calls_authors import (
     AuthorWithItemsAndSeries as AbsAuthorWithItemsAndSeries,
 )
+from aioaudiobookshelf.schema.calls_items import (
+    PlaybackSessionParameters as AbsPlaybackSessionParameters,
+)
 from aioaudiobookshelf.schema.calls_playlists import (
     CreatePlaylistParameters as AbsCreatePlaylistParameters,
 )
 from aioaudiobookshelf.schema.calls_series import SeriesWithProgress as AbsSeriesWithProgress
+from aioaudiobookshelf.schema.calls_session import SyncOpenSessionParameters
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpanded,
     LibraryItemExpandedBook,
     LibraryItemExpandedPodcast,
     LibraryItemMinifiedPodcast,
+)
+from aioaudiobookshelf.schema.library import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
+from aioaudiobookshelf.schema.library import (
+    LibraryItemExpandedPodcast as AbsLibraryItemExpandedPodcast,
 )
 from aioaudiobookshelf.schema.library import LibraryMediaType as AbsLibraryMediaType
 from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
@@ -57,6 +61,7 @@ from aioaudiobookshelf.schema.playlist import (
     PlaylistItemExpandedPodcast as AbsPlaylistItemExpandedPodcast,
 )
 from aioaudiobookshelf.schema.session import DeviceInfo as AbsDeviceInfo
+from aioaudiobookshelf.schema.session import PlaybackSessionExpanded as AbsPlaybackSessionExpanded
 from aioaudiobookshelf.schema.shelf import (
     LibraryItemMinifiedPodcast as ShelfLibraryItemMinifiedPodcast,
 )
@@ -262,7 +267,7 @@ class Audiobookshelf(MusicProvider):
         token_old = self.config.get_value(CONF_OLD_TOKEN)
         token_api = self.config.get_value(CONF_API_TOKEN)
         verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
-        session_config = aioabs.SessionConfiguration(
+        session_config = AbsSessionConfiguration(
             session=self.mass.http_session,
             url=base_url,
             verify_ssl=verify_ssl,
@@ -624,8 +629,8 @@ for more details.
                         cover_version=item.library_item.updated_at,
                     )
                 )
-        for cnt, item in enumerate(playlist_items):
-            item.position = cnt
+        for cnt, playlist_item in enumerate(playlist_items):
+            playlist_item.position = cnt
 
         return playlist_items
 
@@ -1043,9 +1048,8 @@ for more details.
             abs_session = await self._client.get_open_session(session_id=session_id)
         except AbsSessionNotFoundError as err:
             raise web.HTTPNotFound from err
-        part_id = int(part_id)  # type: ignore[assignment]
         try:
-            part_track = abs_session.audio_tracks[part_id]
+            part_track = abs_session.audio_tracks[int(part_id)]
         except IndexError:
             return web.Response(status=404, text="Part not found")
 
@@ -1195,9 +1199,6 @@ for more details.
                     media_type = MediaType.AUDIOBOOK
                 case AbsShelfType.SERIES | AbsShelfType.AUTHORS:
                     media_type = MediaType.FOLDER
-                case _:
-                    # this would be authors, currently
-                    continue
 
             items: list[MediaItemType | BrowseFolder] = []
             # Recently added is the _only_ case, where we get a full podcast

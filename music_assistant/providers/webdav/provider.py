@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import posixpath
-import urllib.parse
 from dataclasses import asdict
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
@@ -14,14 +11,13 @@ import aiohttp
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
-    MusicAssistantError,
     ProviderUnavailableError,
     SetupFailedError,
 )
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.tags import async_parse_tags, get_embedded_image
+from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -34,7 +30,6 @@ from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -331,31 +326,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 )
 
         await _walk("", is_root=True)
-
-    async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
-        """Try to parse a track from a playlist line."""
-        try:
-            line = line.replace("file://", "").strip()
-            for _line in (line, urllib.parse.unquote(line)):
-                # Try relative to playlist folder
-                if playlist_path:
-                    normalized = posixpath.normpath(f"{playlist_path}/{_line}")
-                    with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
-                        file_item = await self.resolve(normalized)
-                        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                        return await self._parse_track(file_item, tags)
-
-                # Try relative to base path
-                with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
-                    file_item = await self.resolve(_line)
-                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                    return await self._parse_track(file_item, tags)
-
-            raise MediaNotFoundError("Invalid path/uri")
-
-        except MusicAssistantError as err:
-            self.logger.warning("Could not parse %s to track: %s", line, str(err))
-        return None
 
     def _get_chapter_path(self, relative_path: str) -> str:
         """Return authenticated WebDAV URL for a chapter file."""

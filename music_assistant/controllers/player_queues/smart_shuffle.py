@@ -10,9 +10,9 @@ shuffle in the controller.
 The algorithm works in two stages:
 - recency tiering: each item is fresh / artist-recently-played / song-recently-played, where a
   deliberately-duplicated song uses the short duplicate repeat-gap instead of the long song window;
-- within-tier interleave: each distinct song's copies are placed at evenly-spaced fractional
-  positions with a random phase so duplicates spread across the whole span without clustering, then
-  a bounded pass separates directly-adjacent same-artist items.
+- within-tier interleave: each distinct song's copies get independently randomized positions in
+  evenly-spaced strata, so duplicates stay spread without repeating the same sequence, then a
+  bounded pass separates directly-adjacent same-artist items.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from music_assistant.controllers.player_queues.constants import (
     SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT,
     SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
 )
-from music_assistant.controllers.player_queues.helpers import space_by_artist
+from music_assistant.controllers.player_queues.helpers import interleave_groups, space_by_artist
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -155,18 +155,11 @@ def _tier(
 
 
 def _interleave(bucket: list[QueueItem]) -> list[QueueItem]:
-    """Spread each distinct song's copies evenly with a random phase so groups don't clump."""
+    """Spread each distinct song's copies with independently randomized repeat cycles."""
     groups: dict[tuple[str, str], list[QueueItem]] = defaultdict(list)
     for item in bucket:
         groups[_song_key(item)].append(item)
-    positioned: list[tuple[float, QueueItem]] = []
-    for copies in groups.values():
-        phase = random.random()
-        total = len(copies)
-        for offset, item in enumerate(copies):
-            positioned.append(((phase + offset / total) % 1.0, item))
-    positioned.sort(key=lambda entry: entry[0])
-    return [item for _, item in positioned]
+    return interleave_groups(list(groups.values()))
 
 
 def _space_artists(items: list[QueueItem], *, preceding: set[str] | None = None) -> list[QueueItem]:

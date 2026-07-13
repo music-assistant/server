@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sqlite3
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from contextlib import closing
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -18,6 +20,7 @@ from music_assistant_models.media_items import AudioFormat, ProviderMapping, Tra
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     _default_background_scan_concurrency,
 )
@@ -28,6 +31,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,
     _merged_from_rows,
 )
+from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
@@ -723,6 +727,49 @@ async def test_close_drains_sessions_and_workers() -> None:
     p.cancel.assert_called_once_with("track://test/a")
 
 
+async def _run_buffer_reader_worker(
+    chunk_count: int, expected_duration: float | None
+) -> tuple[MagicMock, MagicMock]:
+    """Run the reader worker against a buffer yielding chunk_count 1s chunks, then EOF."""
+    controller = _make_controller()
+    session_key = "track://test/worker"
+    controller._active_sessions[session_key] = {"prov-1"}
+    controller._distribute_chunk = AsyncMock()  # type: ignore[method-assign]
+    controller._finalize_providers = MagicMock()  # type: ignore[method-assign]
+    controller._cancel_providers = MagicMock()  # type: ignore[method-assign]
+    audio_buffer = MagicMock()
+    audio_buffer.first_buffered_chunk = 0
+    audio_buffer.read_chunk_for_analysis = AsyncMock(
+        side_effect=[b"pcm"] * chunk_count + [AudioBufferEOF()]
+    )
+    await controller._buffer_reader_worker(session_key, audio_buffer, expected_duration)
+    return controller._finalize_providers, controller._cancel_providers
+
+
+@pytest.mark.asyncio
+async def test_buffer_reader_worker_finalizes_when_near_expected_duration() -> None:
+    """An EOF within the completeness tolerance finalizes the session."""
+    finalize, cancel = await _run_buffer_reader_worker(9, expected_duration=10)
+    finalize.assert_called_once_with("track://test/worker")
+    cancel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_buffer_reader_worker_discards_incomplete_stream() -> None:
+    """A source that ends far short of the expected duration is cancelled, not finalized."""
+    finalize, cancel = await _run_buffer_reader_worker(8, expected_duration=10)
+    finalize.assert_not_called()
+    cancel.assert_called_once_with("track://test/worker")
+
+
+@pytest.mark.asyncio
+async def test_buffer_reader_worker_finalizes_when_duration_unknown() -> None:
+    """Without an expected duration (e.g. radio), any clean EOF finalizes the session."""
+    finalize, cancel = await _run_buffer_reader_worker(1, expected_duration=None)
+    finalize.assert_called_once_with("track://test/worker")
+    cancel.assert_not_called()
+
+
 def _stub_controller(
     count_result: int = 0,
     iter_rows: list[dict[str, Any]] | None = None,
@@ -732,6 +779,7 @@ def _stub_controller(
     c.logger = MagicMock()
     db = MagicMock()
     db.get_count_from_query = AsyncMock(return_value=count_result)
+    db.delete = AsyncMock()
     rows_to_yield = list(iter_rows or [])
 
     async def _iter_stub(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Mapping[str, Any]]:
@@ -1281,7 +1329,9 @@ def _track_with_mapping(item_id: str = "track-1", provider: str = "test-provider
     )
 
 
-def _analysis_controller_with_rows(rows: list[dict[str, Any]]) -> AudioAnalysisController:
+def _analysis_controller_with_rows(
+    rows: list[Mapping[str, Any]],
+) -> AudioAnalysisController:
     """Build a stub controller whose DB returns the given analysis rows for any track."""
     c, db = _stub_controller()
     db.get_rows = AsyncMock(return_value=rows)
@@ -1296,6 +1346,88 @@ def _analysis_controller_with_rows(rows: list[dict[str, Any]]) -> AudioAnalysisC
         ]
     )
     return c
+
+
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_skips_corrupt_sqlite_row(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A corrupt sqlite3.Row is logged and skipped without hiding valid analysis."""
+    corrupt_data = json_dumps({"spectral_centroid": [100.0, None]})
+    valid_data = json_dumps(AudioAnalysisData(bpm=128.0).to_dict())
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.row_factory = sqlite3.Row
+        rows = cast(
+            "list[Mapping[str, Any]]",
+            db.execute(
+                """
+                SELECT 1 AS id, ? AS aa_provider_domain, ? AS analysis_data
+                UNION ALL
+                SELECT 2, ?, ?
+                """,
+                (
+                    SONIC_ANALYSIS_DOMAIN,
+                    corrupt_data,
+                    SMART_FADES_ANALYSIS_DOMAIN,
+                    valid_data,
+                ),
+            ).fetchall(),
+        )
+
+    controller = _analysis_controller_with_rows(rows)
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        result = await controller.get_track_audio_metadata(_track_with_mapping())
+
+    assert result is not None
+    assert result.bpm == 128.0
+    warning = next(
+        record for record in caplog.records if record.name == audio_analysis_mod.LOGGER.name
+    )
+    assert "id=1, domain=sonic_analysis" in warning.getMessage()
+    assert corrupt_data not in warning.getMessage()
+    assert warning.exc_info is None
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_deletes_unparsable_rows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Corrupt rows are deleted, so their stored version no longer blocks re-analysis."""
+    rows: list[Mapping[str, Any]] = [
+        {
+            "id": 7,
+            "aa_provider_domain": SMART_FADES_ANALYSIS_DOMAIN,
+            "analysis_data": json_dumps({"spectral_centroid": [100.0, None]}),
+        },
+        _aa_row(SONIC_ANALYSIS_DOMAIN, 8, bpm=101.0),
+    ]
+    controller = _analysis_controller_with_rows(rows)
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        result = await controller.get_audio_analysis("track-1", "test-provider")
+
+    assert result is not None
+    assert result.bpm == 101.0
+    delete_mock = cast("AsyncMock", controller.mass.music.database.delete)
+    delete_mock.assert_awaited_once_with(DB_TABLE_AUDIO_ANALYSIS, {"id": 7})
+    warning = next(r for r in caplog.records if r.name == audio_analysis_mod.LOGGER.name)
+    assert "in field spectral_centroid" in warning.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_set_audio_analysis_rejects_non_finite_values() -> None:
+    """A payload holding non-finite floats is refused before anything reaches the database."""
+    c, db = _stub_controller()
+    list_case = AudioAnalysisData(spectral_centroid=[100.0, float("nan"), 200.0])
+    with pytest.raises(ValueError, match="spectral_centroid"):
+        await c.set_audio_analysis(
+            "track-1", "test-provider", SMART_FADES_ANALYSIS_DOMAIN, list_case
+        )
+    scalar_case = AudioAnalysisData(bpm=float("inf"))
+    with pytest.raises(ValueError, match="bpm"):
+        await c.set_audio_analysis(
+            "track-1", "test-provider", SMART_FADES_ANALYSIS_DOMAIN, scalar_case
+        )
+    db.insert_or_replace.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1335,7 +1467,7 @@ async def test_get_track_audio_metadata_none_without_relevant_analysis() -> None
 @pytest.mark.asyncio
 async def test_get_wave_form_returns_rms_bins() -> None:
     """wave_form returns the stored RMS energy bins as a plain list of floats."""
-    rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32)
+    rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32).tolist()
     c = _analysis_controller_with_rows([_aa_row(SMART_FADES_ANALYSIS_DOMAIN, 1, rms_energy=rms)])
     result = await c.get_wave_form("track-1", "test-provider")
     assert result is not None

@@ -80,8 +80,9 @@ class RainyMoodProvider(MusicProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            # remote source is a continuous ambience; let ffmpeg detect the codec
-            audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+            # rainymood serves an MP3 stream; declare it explicitly instead of
+            # leaving the container type to be probed
+            audio_format=AudioFormat(content_type=ContentType.MP3),
             media_type=MediaType.SOUND_EFFECT,
             stream_type=StreamType.HTTP,
             path=RAIN_URL,

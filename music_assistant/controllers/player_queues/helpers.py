@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
 
@@ -165,6 +166,21 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
+    """
+    Randomly interleave groups while preserving the item order within each group.
+
+    :param groups: The ordered item groups to spread across the result.
+    """
+    positioned: list[tuple[float, ItemT]] = []
+    for items in groups:
+        total = len(items)
+        for offset, item in enumerate(items):
+            positioned.append(((offset + random.random()) / total, item))
+    positioned.sort(key=lambda entry: entry[0])
+    return [item for _, item in positioned]
 
 
 # how many bounded passes to make separating directly-adjacent same-artist items
