@@ -254,6 +254,8 @@ class YoutubeMusicProvider(MusicProvider):
                 ytm_filter = "songs"
             if media_types[0] == MediaType.PLAYLIST:
                 ytm_filter = "playlists"
+            if media_types[0] == MediaType.PODCAST:
+                ytm_filter = "podcasts"
             if media_types[0] == MediaType.RADIO:
                 # bit of an edge case but still good to handle
                 return parsed_results
@@ -265,6 +267,7 @@ class YoutubeMusicProvider(MusicProvider):
         albums: list[Album | ItemMapping] = []
         playlists: list[Playlist | ItemMapping] = []
         tracks: list[Track | ItemMapping] = []
+        podcasts: list[Podcast | ItemMapping] = []
         for result in results:
             try:
                 if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
@@ -273,6 +276,9 @@ class YoutubeMusicProvider(MusicProvider):
                     albums.append(self._parse_album(result))
                 elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
                     playlists.append(self._parse_playlist(result))
+                elif result["resultType"] == "podcast" and MediaType.PODCAST in media_types:
+                    if podcast := self._parse_browse_podcast(result):
+                        podcasts.append(podcast)
                 elif (
                     result["resultType"] in ("song", "video")
                     and MediaType.TRACK in media_types
@@ -285,6 +291,7 @@ class YoutubeMusicProvider(MusicProvider):
         parsed_results.albums = albums
         parsed_results.playlists = playlists
         parsed_results.tracks = tracks
+        parsed_results.podcasts = podcasts
         return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
@@ -710,8 +717,11 @@ class YoutubeMusicProvider(MusicProvider):
                         del recommended_item["playlistId"]
                         folder.items.append(self._parse_playlist(recommended_item))
                     elif recommended_item.get("browseId"):
-                        # Probably an album
-                        folder.items.append(self._parse_album(recommended_item))
+                        if podcast := self._parse_browse_podcast(recommended_item):
+                            folder.items.append(podcast)
+                        else:
+                            # Probably an album
+                            folder.items.append(self._parse_album(recommended_item))
                     elif recommended_item.get("subscribers"):
                         # Probably artist
                         folder.items.append(self._parse_album(recommended_item))
@@ -1048,11 +1058,21 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if description := podcast_obj.get("description"):
             podcast.metadata.description = description
-        if author := podcast_obj.get("author"):
+        if author := podcast_obj.get("author") or podcast_obj.get("channel"):
             podcast.publisher = author["name"]
         if thumbnails := podcast_obj.get("thumbnails"):
             podcast.metadata.images = self._parse_thumbnails(thumbnails)
         return podcast
+
+    def _parse_browse_podcast(self, item_obj: dict[str, Any]) -> Podcast | None:
+        """Parse a podcast from a browse or search item."""
+        browse_id: str = item_obj.get("browseId") or ""
+        if not browse_id.startswith("MPSP"):
+            return None
+        podcast_obj = dict(item_obj)
+        # Match the unprefixed IDs used by library podcasts.
+        podcast_obj["podcastId"] = item_obj.get("podcastId") or browse_id.removeprefix("MPSP")
+        return self._parse_podcast(podcast_obj)
 
     def _parse_podcast_episode(
         self, episode_obj: dict[str, Any], podcast: Podcast
