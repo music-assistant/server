@@ -7,6 +7,7 @@ import logging
 from itertools import zip_longest
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.constants import MASS_LOGGER_NAME
@@ -33,7 +34,11 @@ class RecommendationsController:
         self.mass = mass
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.recommendations")
         self._sources: list[RecommendationSource] = build_default_sources(mass)
-        self.mass.register_api_command("music/recommendations", self.get_recommendations)
+        self.mass.register_api_command(
+            "music/recommendations",
+            self.get_recommendations,
+            required_scope=Scope.LIBRARY_READ,
+        )
 
     @property
     def sources(self) -> list[RecommendationSource]:

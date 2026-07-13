@@ -1,5 +1,6 @@
 """Tests for the DatabaseConnection helper."""
 
+import asyncio
 import os
 import pathlib
 from collections.abc import AsyncGenerator
@@ -8,7 +9,11 @@ from typing import Any
 
 import pytest
 
-from music_assistant.helpers.database import DatabaseConnection, get_sqlite_memory_settings
+from music_assistant.helpers.database import (
+    DatabaseConnection,
+    get_sqlite_memory_settings,
+    query_params,
+)
 from music_assistant.mass import MusicAssistant
 
 GIB = 1024**3
@@ -25,6 +30,30 @@ async def db_connection(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnec
     await db.setup()
     yield db
     await db.close()
+
+
+@pytest.fixture
+async def db_with_table(db_connection: DatabaseConnection) -> DatabaseConnection:
+    """Return an initialized DatabaseConnection with a simple test table."""
+    await db_connection.execute(
+        "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "name TEXT NOT NULL UNIQUE, url TEXT, plays INTEGER)"
+    )
+    await db_connection.commit()
+    return db_connection
+
+
+def _count_commits(db: DatabaseConnection) -> list[None]:
+    """Wrap the raw connection commit so every commit appends to the returned list."""
+    calls: list[None] = []
+    original_commit = db._db.commit
+
+    async def counting_commit() -> None:
+        calls.append(None)
+        await original_commit()
+
+    db._db.commit = counting_commit  # type: ignore[method-assign]
+    return calls
 
 
 async def _get_temp_store(db: DatabaseConnection) -> int:
@@ -151,3 +180,185 @@ async def test_setup_clamps_pragma_values(tmp_path: pathlib.Path) -> None:
         assert await _read_pragma_int(db, "mmap_size") == 0
     finally:
         await db.close()
+
+
+async def test_deferred_commit_batches_writes_into_single_commit(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that writes within a deferred_commit scope result in one commit at scope exit."""
+    commits = _count_commits(db_with_table)
+    async with db_with_table.deferred_commit():
+        for i in range(10):
+            await db_with_table.insert("items", {"name": f"item{i}"})
+        await db_with_table.update("items", {"name": "item0"}, {"url": "http://test"})
+        await db_with_table.delete("items", {"name": "item9"})
+        assert len(commits) == 0
+    assert len(commits) == 1
+    assert len(await db_with_table.get_rows("items")) == 9
+
+
+async def test_deferred_commit_nested_scopes_commit_once(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that nested deferred_commit scopes only commit when the outermost scope exits."""
+    commits = _count_commits(db_with_table)
+    async with db_with_table.deferred_commit():
+        await db_with_table.insert("items", {"name": "outer"})
+        async with db_with_table.deferred_commit():
+            await db_with_table.insert("items", {"name": "inner"})
+        assert len(commits) == 0
+    assert len(commits) == 1
+    assert len(await db_with_table.get_rows("items")) == 2
+
+
+async def test_deferred_commit_commits_pending_writes_on_error(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that a deferred_commit scope commits (not rolls back) already executed writes."""
+
+    async def write_and_fail() -> None:
+        async with db_with_table.deferred_commit():
+            await db_with_table.insert("items", {"name": "kept"})
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        await write_and_fail()
+    assert await db_with_table.get_row("items", {"name": "kept"}) is not None
+
+
+async def test_deferred_commit_commits_on_cancellation(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that cancelling a task inside a scope commits its writes and keeps the db usable."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def writer() -> None:
+        async with db_with_table.deferred_commit():
+            await db_with_table.insert("items", {"name": "written-before-cancel"})
+            started.set()
+            await release.wait()
+
+    task = asyncio.get_running_loop().create_task(writer())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not db_with_table._db.in_transaction
+    assert await db_with_table.get_row("items", {"name": "written-before-cancel"}) is not None
+    # the connection remains fully usable for subsequent writes
+    await db_with_table.insert("items", {"name": "after-cancel"})
+    assert await db_with_table.get_row("items", {"name": "after-cancel"}) is not None
+
+
+async def test_deferred_commit_scope_only_defers_own_task(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that writes from tasks outside a scope still commit immediately."""
+    commits = _count_commits(db_with_table)
+    in_scope = asyncio.Event()
+    release = asyncio.Event()
+
+    async def scoped_writer() -> None:
+        async with db_with_table.deferred_commit():
+            await db_with_table.insert("items", {"name": "scoped"})
+            in_scope.set()
+            await release.wait()
+
+    task = asyncio.get_running_loop().create_task(scoped_writer())
+    await in_scope.wait()
+    # this write happens on the test task (no scope) while the writer's scope is open
+    commits_before = len(commits)
+    await db_with_table.insert("items", {"name": "plain"})
+    assert len(commits) == commits_before + 1
+    release.set()
+    await task
+    assert len(await db_with_table.get_rows("items")) == 2
+
+
+async def test_deferred_commit_concurrent_scopes_do_not_interfere(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that concurrent tasks (e.g. parallel syncs) each batch their own writes."""
+    commits = _count_commits(db_with_table)
+    barrier = asyncio.Barrier(2)
+
+    async def sync_task(name: str) -> None:
+        async with db_with_table.deferred_commit():
+            await db_with_table.insert("items", {"name": f"{name}-1"})
+            # force both scopes to be open at the same time
+            await barrier.wait()
+            await db_with_table.insert("items", {"name": f"{name}-2"})
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(sync_task("a"))
+        tg.create_task(sync_task("b"))
+
+    # all writes from both tasks landed, with one commit per scope exit
+    assert len(await db_with_table.get_rows("items")) == 4
+    assert len(commits) == 2
+
+
+async def test_update_returns_none(db_with_table: DatabaseConnection) -> None:
+    """Test that update() no longer fetches and returns the updated row."""
+    row_id = await db_with_table.insert("items", {"name": "old"})
+    result = await db_with_table.update("items", {"id": row_id}, {"name": "new"})  # type: ignore[func-returns-value]
+    assert result is None
+    row = await db_with_table.get_row("items", {"id": row_id})
+    assert row is not None
+    assert row["name"] == "new"
+
+
+async def test_upsert_many(db_with_table: DatabaseConnection) -> None:
+    """Test that upsert_many inserts/updates multiple rows with a single commit."""
+    commits = _count_commits(db_with_table)
+    # rows with different column sets are handled in a single call
+    await db_with_table.upsert_many(
+        "items",
+        [
+            {"name": "a", "url": "http://a", "plays": 1},
+            {"name": "b", "plays": 2},
+            {"name": "c", "plays": 3},
+        ],
+    )
+    assert len(commits) == 1
+    rows = {row["name"]: row for row in await db_with_table.get_rows("items")}
+    assert len(rows) == 3
+    assert rows["a"]["url"] == "http://a"
+    # upserting again updates on conflict; omitted columns keep their existing value
+    await db_with_table.upsert_many("items", [{"name": "a", "plays": 10}])
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert row["plays"] == 10
+    assert row["url"] == "http://a"
+
+
+async def test_upsert_many_empty_is_noop(db_with_table: DatabaseConnection) -> None:
+    """Test that upsert_many with no rows does nothing."""
+    commits = _count_commits(db_with_table)
+    await db_with_table.upsert_many("items", [])
+    assert len(commits) == 0
+
+
+def test_query_params_expands_list_values() -> None:
+    """Test that list params are expanded into placeholders in all placeholder notations."""
+    query, params = query_params(
+        "SELECT * FROM items WHERE id IN :ids AND name = :name",
+        {"ids": [1, 2], "name": "foo"},
+    )
+    assert query == "SELECT * FROM items WHERE id IN (:_param_0,:_param_1) AND name = :name"
+    assert params == {"_param_0": 1, "_param_1": 2, "name": "foo"}
+    # placeholder already wrapped in parens must not end up double-wrapped
+    query, params = query_params("SELECT * FROM items WHERE id IN(:ids)", {"ids": [1, 2]})
+    assert query == "SELECT * FROM items WHERE id IN(:_param_0,:_param_1)"
+    assert params == {"_param_0": 1, "_param_1": 2}
+
+
+def test_query_params_leaves_prefixed_placeholders_untouched() -> None:
+    """Test that expanding a list param does not corrupt placeholders sharing its prefix."""
+    query, params = query_params(
+        "SELECT * FROM items WHERE id IN :ids AND other = :ids_extra",
+        {"ids": [1], "ids_extra": 2},
+    )
+    assert query == "SELECT * FROM items WHERE id IN (:_param_0) AND other = :ids_extra"
+    assert params == {"_param_0": 1, "ids_extra": 2}

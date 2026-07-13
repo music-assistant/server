@@ -10,6 +10,10 @@
         "0": "Automatically select",
         "1": "Prefer AirPlay 1 (RAOP)",
         "2": "Prefer AirPlay 2"
+      },
+      "disabled_reasons": {
+        "1": "This device does not advertise AirPlay 1 (RAOP) support.",
+        "2": "This device does not advertise AirPlay 2 support."
       }
     },
     "encryption": {

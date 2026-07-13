@@ -15,9 +15,9 @@ import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
 from concurrent import futures
+from contextlib import aclosing
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import quote
 
 import aiofiles
 from aiohttp import web
@@ -27,6 +27,7 @@ from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
@@ -34,9 +35,11 @@ from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_VALUE_AUTO,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
 from music_assistant.controllers.webserver.helpers.ssl import (
     create_server_ssl_context,
@@ -45,7 +48,10 @@ from music_assistant.controllers.webserver.helpers.ssl import (
 )
 from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
+from music_assistant.helpers.redirect_validation import (
+    build_code_redirect_url,
+    is_allowed_redirect_url,
+)
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -54,8 +60,12 @@ from .api_docs import generate_commands_json, generate_openapi_spec, generate_sc
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
+    has_scope,
     is_request_from_ingress,
+    resolve_command_impersonation,
+    set_current_token,
     set_current_user,
+    set_impersonated_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .remote_access import RemoteAccessManager
@@ -66,6 +76,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, CoreConfig
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.api import APICommandHandler
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
@@ -75,6 +86,29 @@ CONF_SSL_PRIVATE_KEY = "ssl_private_key"
 CONF_ACTION_VERIFY_SSL = "verify_ssl"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
+
+
+def _get_publish_addresses(
+    bind_ip: str | None, publish_ip: str, all_ip_addresses: tuple[str, ...]
+) -> list[str]:
+    """
+    Return the IP addresses the webserver should publish/advertise.
+
+    :param bind_ip: The configured bind IP (None or a wildcard means all interfaces).
+    :param publish_ip: The resolved primary publish IP.
+    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    """
+    addresses = [publish_ip]
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        return addresses
+    # bound to all interfaces: also publish the primary address of the other
+    # IP family (if any) so both IPv4-only and IPv6-only clients can connect
+    publish_is_ipv6 = ":" in publish_ip
+    for ip in all_ip_addresses:
+        if (":" in ip) != publish_is_ipv6:
+            addresses.append(ip)
+            break
+    return addresses
 
 
 def _locale_from_request(request: web.Request) -> str | None:
@@ -105,6 +139,10 @@ class WebserverController(CoreController):
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
         self.clients: set[WebsocketClientHandler] = set()
+        # the URL that the "auto" base_url setting resolves to, detected at setup
+        self._auto_base_url: str = ""
+        self.bind_ip: str | None = None
+        self.publish_addresses: list[str] = []
         self.manifest.name = "Web Server (frontend and api)"
         self.manifest.description = (
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
@@ -120,7 +158,10 @@ class WebserverController(CoreController):
         config = getattr(self, "config", None)
         if config is None:
             return ""
-        return str(config.get_value(CONF_BASE_URL)).removesuffix("/")
+        base_url = str(config.get_value(CONF_BASE_URL) or CONF_VALUE_AUTO)
+        if base_url == CONF_VALUE_AUTO:
+            return self._auto_base_url
+        return base_url.removesuffix("/")
 
     async def get_config_entries(
         self,
@@ -129,7 +170,6 @@ class WebserverController(CoreController):
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
-        default_publish_ip = ip_addresses[0]
 
         # Handle verify SSL action
         ssl_verify_result = ""
@@ -140,12 +180,6 @@ class WebserverController(CoreController):
             )
             ssl_verify_result = format_certificate_info(cert_info)
 
-        # Determine if SSL is enabled from values
-        ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
-        protocol = "https" if ssl_enabled else "http"
-        default_base_url = (
-            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{DEFAULT_SERVER_PORT}"
-        )
         return (
             ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -157,7 +191,7 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
-                default_value=default_base_url,
+                default_value=CONF_VALUE_AUTO,
                 requires_reload=False,
             ),
             ConfigEntry(
@@ -250,10 +284,8 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
-        # legacy /imageproxy?provider=&path= form — deprecated; the canonical
-        # /imageproxy/<image_id> form is registered as a dynamic route on the
-        # webserver by MetaDataController.post_setup()
-        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_legacy_imageproxy))
+        # the canonical /imageproxy/<image_id> form is registered as a dynamic
+        # route on the webserver by MetaDataController.post_setup()
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
@@ -298,12 +330,23 @@ class WebserverController(CoreController):
             ingress_tcp_site_params = (ingress_host, INGRESS_SERVER_PORT)
         else:
             ingress_tcp_site_params = None
-        base_url = str(config.get_value(CONF_BASE_URL))
         port_value = config.get_value(CONF_BIND_PORT)
         assert isinstance(port_value, int)
         self.publish_port = port_value
-        self.publish_ip = default_publish_ip
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
+        self.bind_ip = bind_ip
+        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+            self.publish_ip = bind_ip
+        else:
+            self.publish_ip = default_publish_ip
+        self.publish_addresses = _get_publish_addresses(bind_ip, self.publish_ip, all_ip_addresses)
+        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
+        # resolve the URL that the "auto" base_url default (or an unset value) translates to
+        protocol = "https" if ssl_enabled else "http"
+        self._auto_base_url = (
+            f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+        )
+        base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
         if not self.auth.has_users:
@@ -336,7 +379,6 @@ class WebserverController(CoreController):
 
         # Create SSL context if SSL is enabled
         ssl_context = None
-        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
         if ssl_enabled:
             ssl_context = await create_server_ssl_context(
                 str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
@@ -454,10 +496,15 @@ class WebserverController(CoreController):
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
-        async for chunk in self.mass.streams.get_preview_stream(
+        preview_stream = self.mass.streams.get_preview_stream(
             provider_instance_id_or_domain, item_id
-        ):
-            await resp.write(chunk)
+        )
+        # aclosing guarantees the preview stream (and the ffmpeg process behind it)
+        # is torn down immediately when the client disconnects, instead of lingering
+        # until garbage collection finalizes the abandoned generator.
+        async with aclosing(preview_stream):
+            async for chunk in preview_stream:
+                await resp.write(chunk)
         return resp
 
     async def _handle_cors_preflight(self, request: web.Request) -> web.Response:
@@ -529,33 +576,16 @@ class WebserverController(CoreController):
             return web.Response(status=400, text=error)
 
         # Check authentication if required
-        if handler.authenticated or handler.required_role:
-            try:
-                user = await get_authenticated_user(request)
-            except Exception as e:
-                self.logger.exception("Authentication error: %s", e)
-                return web.Response(
-                    status=401,
-                    text="Authentication failed",
-                    headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
-                )
-
-            if not user:
-                return web.Response(
-                    status=401,
-                    text="Authentication required",
-                    headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
-                )
-
-            # Set user in context and check role
-            set_current_user(user)
-            if handler.required_role == "admin" and user.role != UserRole.ADMIN:
-                return web.Response(
-                    status=403,
-                    text="Admin access required",
-                )
+        if error_response := await self._authenticate_api_command(request, handler):
+            return error_response
 
         try:
+            # handle the optional impersonation argument for impersonation-enabled commands
+            if handler.allow_impersonation and command_msg.args:
+                if impersonation_user := await resolve_command_impersonation(
+                    self.mass, command_msg.args
+                ):
+                    set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
@@ -568,6 +598,10 @@ class WebserverController(CoreController):
             locale = _locale_from_request(request)
             await self.mass.translations.ensure_locale_loaded(locale)
             return self._localized_json_response(result, locale)
+        except InsufficientPermissions as e:
+            return web.Response(status=403, text=str(e))
+        except InvalidDataError as e:
+            return web.Response(status=400, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -575,6 +609,46 @@ class WebserverController(CoreController):
             error = f"{error_type}: {error_msg}"
             self.logger.exception("Error executing command %s: %s", command_msg.command, error)
             return web.Response(status=500, text="Internal server error")
+
+    async def _authenticate_api_command(
+        self, request: web.Request, handler: APICommandHandler
+    ) -> web.Response | None:
+        """
+        Authenticate the request and check the handler's required scope.
+
+        Sets the authenticated user in context and returns an error response
+        if authentication or the scope check failed, None otherwise.
+        """
+        if not (handler.authenticated or handler.required_scope):
+            return None
+        try:
+            user = await get_authenticated_user(request)
+        except Exception as e:
+            self.logger.exception("Authentication error: %s", e)
+            return web.Response(
+                status=401,
+                text="Authentication failed",
+                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            )
+
+        if not user:
+            return web.Response(
+                status=401,
+                text="Authentication required",
+                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            )
+
+        # Set user and token in context and check the required scope
+        set_current_user(user)
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            set_current_token(auth_header[7:])
+        if handler.required_scope and not has_scope(user, handler.required_scope):
+            return web.Response(
+                status=403,
+                text=f"This command requires the {handler.required_scope} scope",
+            )
+        return None
 
     def _localized_json_response(self, result: Any, locale: str | None) -> web.Response:
         """
@@ -758,18 +832,7 @@ class WebserverController(CoreController):
                 if category != "trusted":
                     return web.Response(status=400, text="Invalid return_url")
 
-                # Insert code parameter before any hash fragment
-                code_param = f"code={quote(token, safe='')}"
-                if "#" in return_url:
-                    url_parts = return_url.split("#", 1)
-                    base_part = url_parts[0]
-                    hash_part = url_parts[1]
-                    separator = "&" if "?" in base_part else "?"
-                    redirect_url = f"{base_part}{separator}{code_param}#{hash_part}"
-                elif "?" in return_url:
-                    redirect_url = f"{return_url}&{code_param}"
-                else:
-                    redirect_url = f"{return_url}?{code_param}"
+                redirect_url = build_code_redirect_url(return_url, token)
 
                 response_data["redirect_to"] = redirect_url
                 self.logger.debug(
@@ -940,26 +1003,7 @@ class WebserverController(CoreController):
                 elif category == "external":
                     # External domain - require user consent
                     requires_consent = True
-            # Add code parameter to redirect URL (the token URL-encoded)
-            # Important: Insert code BEFORE any hash fragment (e.g., #/) to ensure
-            # it's in query params, not inside the hash where Vue Router can't access it
-            code_param = f"code={quote(token, safe='')}"
-
-            # Split URL by hash to insert code in the right place
-            if "#" in final_redirect_url:
-                # URL has a hash fragment (e.g., http://example.com/#/ or http://example.com/path#section)
-                url_parts = final_redirect_url.split("#", 1)
-                base_url = url_parts[0]
-                hash_part = url_parts[1]
-
-                # Add code to base URL (before hash)
-                separator = "&" if "?" in base_url else "?"
-                final_redirect_url = f"{base_url}{separator}{code_param}#{hash_part}"
-            # No hash fragment, simple case
-            elif "?" in final_redirect_url:
-                final_redirect_url = f"{final_redirect_url}&{code_param}"
-            else:
-                final_redirect_url = f"{final_redirect_url}?{code_param}"
+            final_redirect_url = build_code_redirect_url(final_redirect_url, token)
 
             # Load OAuth callback success page template and inject token and redirect URL
             oauth_callback_html_path = str(RESOURCES_DIR.joinpath("oauth_callback.html"))
@@ -989,14 +1033,12 @@ class WebserverController(CoreController):
 
     async def _handle_setup_page(self, request: web.Request) -> web.Response:
         """Handle request for first-time setup page."""
-        # Validate return_url if provided
+        # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
-            is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
-            if not is_valid:
+            _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+            if category != "trusted":
                 return web.Response(status=400, text="Invalid return_url")
-        else:
-            return_url = "/"
 
         if self.auth.has_users:
             # this should not happen, but guard anyways
@@ -1061,13 +1103,24 @@ class WebserverController(CoreController):
             self.logger.info("First admin user created: %s", username)
 
             # Return token - frontend will complete onboarding via config/onboard_complete
-            return web.json_response(
-                {
-                    "success": True,
-                    "token": token,
-                    "user": user.to_dict(),
-                }
-            )
+            response_data: dict[str, Any] = {
+                "success": True,
+                "token": token,
+                "user": user.to_dict(),
+            }
+
+            # Only forward the token to a trusted destination (no consent step here).
+            return_url = body.get("return_url")
+            if return_url and isinstance(return_url, str):
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category == "trusted":
+                    response_data["redirect_to"] = build_code_redirect_url(
+                        return_url, token, {"onboard": "true"}
+                    )
+                else:
+                    self.logger.warning("Ignoring untrusted setup return_url: %s", return_url)
+
+            return web.json_response(response_data)
 
         except Exception as e:
             self.logger.exception("Error during setup")

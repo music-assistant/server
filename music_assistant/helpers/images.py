@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import itertools
 import os
 import random
 import re
+import time
 import urllib.parse
 from base64 import b64decode
 from collections import OrderedDict
@@ -18,6 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 import aiofiles
 from aiohttp.client_exceptions import ClientError
+from music_assistant_models.errors import MusicAssistantError
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME
@@ -50,6 +53,21 @@ _THUMB_CACHE_VERSION = 2
 _THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+_v\d+(?:_flat)?\.(?:jpg|png)$")
 
 _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
+
+# Source-image cache: the raw origin bytes (remote download, local file read or
+# ffmpeg-extracted embedded art) that every derived artifact (thumb sizes/formats,
+# color palette, collage tiles) is generated from. Without it, first display of a
+# single item fetches the same source several times within seconds. The memory
+# tier is byte-budgeted (originals can be multi-MB); sources also get an on-disk
+# `<hash>_src` entry in the thumbnail cache dir so multi-variant generation
+# after a restart doesn't re-fetch either.
+_SOURCE_CACHE_SUFFIX = "_src"
+# remote urls can serve new content behind a stable url, so keep the TTL modest;
+# local files don't rely on it as invalidate_cached_image busts them on change
+_SOURCE_CACHE_TTL = 3600
+_SOURCE_MEMORY_MAX_BYTES = 32 * 1024 * 1024
+# a single huge original would evict everything else, so cap the entry size
+_SOURCE_MEMORY_ENTRY_MAX_BYTES = 8 * 1024 * 1024
 
 _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
 
@@ -119,6 +137,50 @@ def _put_in_memory_cache(key: str, data: bytes) -> None:
         _thumb_memory_cache.popitem(last=False)
 
 
+class _SourceMemoryCache:
+    """In-memory byte-budgeted LRU tier of the source-image cache."""
+
+    def __init__(self) -> None:
+        self.entries: OrderedDict[str, tuple[bytes, float]] = OrderedDict()
+        self.total_bytes = 0
+
+    def get(self, key: str) -> bytes | None:
+        """Return cached source bytes for key, or None on miss/expiry."""
+        entry = self.entries.get(key)
+        if entry is None:
+            return None
+        data, stored_at = entry
+        if time.monotonic() - stored_at > _SOURCE_CACHE_TTL:
+            self.pop(key)
+            return None
+        self.entries.move_to_end(key)
+        return data
+
+    def put(self, key: str, data: bytes) -> None:
+        """Store source bytes for key, evicting oldest entries over the byte budget."""
+        if len(data) > _SOURCE_MEMORY_ENTRY_MAX_BYTES:
+            return
+        self.pop(key)
+        self.entries[key] = (data, time.monotonic())
+        self.total_bytes += len(data)
+        while self.total_bytes > _SOURCE_MEMORY_MAX_BYTES and self.entries:
+            _, (evicted, _stored_at) = self.entries.popitem(last=False)
+            self.total_bytes -= len(evicted)
+
+    def pop(self, key: str) -> None:
+        """Remove the entry for key (if present)."""
+        if entry := self.entries.pop(key, None):
+            self.total_bytes -= len(entry[0])
+
+    def clear(self) -> None:
+        """Remove all entries."""
+        self.entries.clear()
+        self.total_bytes = 0
+
+
+_source_memory_cache = _SourceMemoryCache()
+
+
 def _has_alpha(img: ImageClass) -> bool:
     """Return True if the image actually uses transparency."""
     if img.mode == "P":
@@ -132,35 +194,6 @@ def _has_alpha(img: ImageClass) -> bool:
 
 
 _IMAGEPROXY_V2_PREFIX = "/imageproxy/"
-
-
-def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
-    """
-    Extract (path, provider) from a *legacy* /imageproxy?... URL.
-
-    :param url: The URL to check for imageproxy format.
-    :return: Tuple of (path, provider) if this is an imageproxy URL, None otherwise.
-    """
-    if "/imageproxy?" not in url:
-        return None
-
-    parsed = urllib.parse.urlparse(url)
-    query_params = urllib.parse.parse_qs(parsed.query)
-
-    path = query_params.get("path", [None])[0]
-    provider = query_params.get("provider", ["builtin"])[0]
-
-    if path:
-        # The path may be URL-encoded multiple times; decode until stable
-        decoded_path = urllib.parse.unquote_plus(path)
-        for _ in range(3):
-            new_decoded = urllib.parse.unquote_plus(decoded_path)
-            if new_decoded == decoded_path:
-                break
-            decoded_path = new_decoded
-        return (decoded_path, provider)
-
-    return None
 
 
 def _extract_imageproxy_id(url: str) -> str | None:
@@ -212,6 +245,11 @@ async def get_image_data(
     """
     Retrieve image data from a path or URL.
 
+    Source bytes are cached (in memory and on disk) so that deriving multiple
+    artifacts from one image (thumb sizes/formats, palette, collage tiles)
+    only fetches the origin once. Concurrent requests for the same source
+    share a single fetch.
+
     :param mass: The MusicAssistant instance.
     :param path_or_url: The image path, URL, or base64 data URI.
     :param provider: The provider ID that can resolve the image.
@@ -220,66 +258,174 @@ async def get_image_data(
     if _depth >= _MAX_IMAGEPROXY_RECURSION_DEPTH:
         msg = f"Maximum recursion depth exceeded when fetching image: {path_or_url}"
         raise FileNotFoundError(msg)
-    # TODO: add local cache here !
+    # base64 data URIs carry their content inline; just decode them
+    if path_or_url.startswith("data:image"):
+        return b64decode(path_or_url.rsplit(",", maxsplit=1)[-1])
+    # imageproxy URLs pointing at our own server are resolved to their underlying
+    # (provider, path) before anything is cached: an alias-keyed cache entry
+    # would keep serving after the underlying image was invalidated
+    if path_or_url.startswith("http") and (
+        resolved := await _resolve_own_imageproxy_url(mass, path_or_url)
+    ):
+        extracted_provider, extracted_path = resolved
+        return await get_image_data(mass, extracted_path, extracted_provider, _depth=_depth + 1)
+    cache_key = create_thumb_hash(provider, path_or_url)
+    if (cached := _source_memory_cache.get(cache_key)) is not None:
+        return cached
+    # fetch de-duplicated across concurrent requests for the same source
+    task: asyncio.Task[bytes] = mass.create_task(
+        _fetch_and_cache_source_image,
+        mass,
+        path_or_url,
+        provider,
+        cache_key,
+        _depth,
+        task_id=f"imgsrc.{cache_key}",
+        abort_existing=False,
+    )
+    return await asyncio.shield(task)
+
+
+async def _resolve_own_imageproxy_url(mass: MusicAssistant, url: str) -> tuple[str, str] | None:
+    """
+    Resolve an imageproxy URL pointing at our own server to its (provider, path).
+
+    Returns None when the URL does not point at this server at all; raises
+    FileNotFoundError for own-server URLs that carry an invalid or unknown id.
+
+    :param mass: The MusicAssistant instance.
+    :param url: The (http/https) URL to inspect.
+    """
+    parsed_url = urllib.parse.urlparse(url)
+    url_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    server_origins = {
+        f"{p.scheme}://{p.netloc}"
+        for b in (mass.webserver.base_url, mass.streams.base_url)
+        if (p := urllib.parse.urlparse(b)).netloc
+    }
+    if url_origin not in server_origins:
+        return None
+    # opaque-id form: /imageproxy/<image_id>?size=...&fmt=...
+    if image_id := _extract_imageproxy_id(url):
+        resolved = await mass.metadata.resolve_image_id(image_id)
+        if resolved is None:
+            msg = f"Unknown image id in URL: {url}"
+            raise FileNotFoundError(msg)
+        return resolved
+    msg = f"Invalid imageproxy URL: {url}"
+    raise FileNotFoundError(msg)
+
+
+def _source_cache_filepath(mass: MusicAssistant, cache_key: str) -> str:
+    """Return the on-disk path for a cached source image, validating containment."""
+    thumb_dir = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
+    filepath = os.path.realpath(os.path.join(thumb_dir, f"{cache_key}{_SOURCE_CACHE_SUFFIX}"))
+    if not filepath.startswith(thumb_dir + os.sep):
+        msg = f"Cache path escapes thumbnail directory: {filepath}"
+        raise OSError(msg)
+    return filepath
+
+
+async def _fetch_and_cache_source_image(
+    mass: MusicAssistant, path_or_url: str, provider: str, cache_key: str, depth: int
+) -> bytes:
+    """
+    Fetch source image bytes, store them in the source cache tiers and return them.
+
+    :param mass: The MusicAssistant instance.
+    :param path_or_url: The image path or URL.
+    :param provider: The provider ID that can resolve the image.
+    :param cache_key: Source cache key (create_thumb_hash of provider + path).
+    :param depth: Recursion depth of the originating get_image_data call.
+    """
+    filepath = _source_cache_filepath(mass, cache_key)
+
+    def _read_disk_entry() -> bytes | None:
+        # remote urls only count as fresh within the TTL (a CDN can serve new
+        # content behind a stable url); local files rely on invalidation instead
+        try:
+            if not os.path.isfile(filepath):
+                return None
+            if (
+                path_or_url.startswith("http")
+                and time.time() - Path(filepath).stat().st_mtime > _SOURCE_CACHE_TTL
+            ):
+                return None
+            with open(filepath, "rb") as _file:
+                return _file.read()
+        except OSError:
+            return None
+
+    if disk_data := await asyncio.to_thread(_read_disk_entry):
+        _source_memory_cache.put(cache_key, disk_data)
+        return disk_data
+
+    img_data, disk_cacheable = await _fetch_source_image(mass, path_or_url, provider, depth)
+    _source_memory_cache.put(cache_key, img_data)
+    if disk_cacheable:
+        # persist to disk cache (best-effort, don't fail on I/O errors)
+        try:
+            await asyncio.to_thread(os.makedirs, os.path.dirname(filepath), exist_ok=True)
+            async with aiofiles.open(filepath, "wb") as _file:
+                await _file.write(img_data)
+        except OSError:
+            pass
+    return img_data
+
+
+async def _fetch_source_image(
+    mass: MusicAssistant, path_or_url: str, provider: str, depth: int
+) -> tuple[bytes, bool]:
+    """
+    Fetch image bytes from their origin.
+
+    Returns the raw bytes plus whether they may be persisted on disk under this
+    (provider, path) cache key. That is True for every origin except results
+    resolved under a different key (imageproxy URLs pointing at our own server):
+    an alias-keyed copy would keep being served after the underlying image is
+    invalidated.
+
+    :param mass: The MusicAssistant instance.
+    :param path_or_url: The image path or URL.
+    :param provider: The provider ID that can resolve the image.
+    :param depth: Recursion depth of the originating get_image_data call.
+    """
     if prov := mass.get_provider(provider):
         assert isinstance(prov, MusicProvider | MetadataProvider | PluginProvider)
         if resolved_image := await prov.resolve_image(path_or_url):
             if isinstance(resolved_image, bytes):
-                return resolved_image
+                return resolved_image, True
             if isinstance(resolved_image, str):
                 path_or_url = resolved_image
     # handle HTTP location
     if path_or_url.startswith("http"):
-        # Handle imageproxy URLs pointing to our own server
-        parsed_url = urllib.parse.urlparse(path_or_url)
-        url_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        server_origins = {
-            f"{p.scheme}://{p.netloc}"
-            for b in (mass.webserver.base_url, mass.streams.base_url)
-            if (p := urllib.parse.urlparse(b)).netloc
-        }
-        if url_origin in server_origins:
-            # new opaque-id form: /imageproxy/<image_id>?size=...&fmt=...
-            if image_id := _extract_imageproxy_id(path_or_url):
-                resolved = await mass.metadata.resolve_image_id(image_id)
-                if resolved is None:
-                    msg = f"Unknown image id in URL: {path_or_url}"
-                    raise FileNotFoundError(msg)
-                extracted_provider, extracted_path = resolved
-                return await get_image_data(
-                    mass, extracted_path, extracted_provider, _depth=_depth + 1
-                )
-            # legacy form: /imageproxy?provider=X&path=Y
-            if imageproxy_params := _extract_imageproxy_params(path_or_url):
-                extracted_path, extracted_provider = imageproxy_params
-                # Validate extracted path before recursive call
-                if not extracted_path.startswith(("http://", "https://", "data:image")):
-                    if not is_safe_path(extracted_path):
-                        msg = f"Unsafe image path extracted from imageproxy URL: {extracted_path}"
-                        raise FileNotFoundError(msg)
-                return await get_image_data(
-                    mass, extracted_path, extracted_provider, _depth=_depth + 1
-                )
-            msg = f"Invalid imageproxy URL (missing path): {path_or_url}"
-            raise FileNotFoundError(msg)
+        # handle imageproxy URLs pointing to our own server
+        if resolved := await _resolve_own_imageproxy_url(mass, path_or_url):
+            extracted_provider, extracted_path = resolved
+            # route through the public entrypoint so the result is cached under
+            # the resolved key; don't persist it under this alias key as well
+            return (
+                await get_image_data(mass, extracted_path, extracted_provider, _depth=depth + 1),
+                False,
+            )
         try:
-            return await _fetch_remote_image(mass, path_or_url)
+            return await _fetch_remote_image(mass, path_or_url), True
         except ClientError as err:
             msg = f"Failed to fetch image from {path_or_url}: {err}"
             raise FileNotFoundError(msg) from err
     # handle base64 embedded images
     if path_or_url.startswith("data:image"):
-        return b64decode(path_or_url.split(",")[-1])
+        return b64decode(path_or_url.split(",")[-1]), True
     # handle FILE location (of type image)
     if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg", "svg", "SVG")) and is_safe_path(
         path_or_url
     ):
         if await asyncio.to_thread(os.path.isfile, path_or_url):
             async with aiofiles.open(path_or_url, "rb") as _file:
-                return cast("bytes", await _file.read())
+                return cast("bytes", await _file.read()), True
     # use ffmpeg for embedded images
     if is_safe_path(path_or_url) and (img_data := await get_embedded_image(path_or_url)):
-        return img_data
+        return img_data, True
     msg = f"Image not found: {path_or_url}"
     raise FileNotFoundError(msg)
 
@@ -484,6 +630,37 @@ async def cleanup_thumb_cache(cache_path: str, max_size_bytes: int) -> int:
     return await asyncio.to_thread(_cleanup)
 
 
+async def invalidate_cached_image(mass: MusicAssistant, provider: str, path_or_url: str) -> None:
+    """
+    Remove all cached artifacts (thumbnails + source bytes) for an image.
+
+    Used when the image content behind an unchanged (provider, path) identity
+    has changed, e.g. a local file whose (embedded) artwork was replaced.
+
+    :param mass: The MusicAssistant instance.
+    :param provider: Provider id exactly as used when the image was requested.
+    :param path_or_url: Image path or URL exactly as used when the image was requested.
+    """
+    thumb_hash = create_thumb_hash(provider, path_or_url)
+    prefix = f"{thumb_hash}_"
+    for key in [key for key in _thumb_memory_cache if key.startswith(prefix)]:
+        _thumb_memory_cache.pop(key, None)
+    _source_memory_cache.pop(thumb_hash)
+
+    thumb_dir = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
+
+    def _remove_disk_entries() -> None:
+        # covers every size/format/flatten thumb variant plus the `_src` entry
+        if not os.path.isdir(thumb_dir):
+            return
+        for entry in os.scandir(thumb_dir):
+            if entry.name.startswith(prefix) and entry.is_file():
+                with contextlib.suppress(OSError):
+                    Path(entry.path).unlink()
+
+    await asyncio.to_thread(_remove_disk_entries)
+
+
 async def create_collage(
     mass: MusicAssistant,
     images: Iterable[MediaItemImage],
@@ -506,18 +683,39 @@ async def create_collage(
 
     # prevent duplicates with a set
     images = list(set(images))
-    random.shuffle(images)
-    iter_images = itertools.cycle(images)
+    # warm the source cache with bounded concurrency and drop images that can't
+    # be fetched, so the (serial) tile loop below is served from cache
+    fetch_limiter = asyncio.Semaphore(8)
+
+    async def _warm_source_cache(img: MediaItemImage) -> MediaItemImage | None:
+        async with fetch_limiter:
+            try:
+                await get_image_data(mass, img.path, img.provider)
+            except FileNotFoundError, MusicAssistantError:
+                return None
+            return img
+
+    usable_images = [
+        img for img in await asyncio.gather(*map(_warm_source_cache, images)) if img is not None
+    ]
+    if not usable_images:
+        msg = "None of the collage images could be fetched"
+        raise FileNotFoundError(msg)
+    random.shuffle(usable_images)
+    iter_images = itertools.cycle(usable_images)
 
     for x_co in range(0, dimensions[0], image_size):
         for y_co in range(0, dimensions[1], image_size):
+            # try a few candidates per tile: a fetched image can still fail to decode
             for _ in range(5):
                 img = next(iter_images)
-                img_data = await get_image_data(mass, img.path, img.provider)
-                if img_data:
+                try:
+                    img_data = await get_image_data(mass, img.path, img.provider)
                     await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
-                    del img_data
-                    break
+                except FileNotFoundError, MusicAssistantError, UnidentifiedImageError:
+                    continue
+                del img_data
+                break
 
     def _save_collage() -> bytes:
         final_data = BytesIO()

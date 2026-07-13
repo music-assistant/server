@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast, overload
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -12,7 +13,7 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import CONF_PLAYER_QUEUES
+from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_GLOBAL
 from music_assistant.controllers.config.constants import (
     PLAYER_QUEUE_CONFIG_OWNER,
     _ConfigValueT,
@@ -36,7 +37,7 @@ class PlayerQueueConfigMixin:
 
         def set(self, key: str, value: Any) -> None: ...  # noqa: D102
 
-    @api_command("config/player_queues")
+    @api_command("config/player_queues", required_scope=Scope.CONFIG_PLAYERS_READ)
     def get_player_queue_configs(self) -> list[PlayerQueueConfig]:
         """Return all (stored) queue configurations."""
         return [
@@ -44,7 +45,7 @@ class PlayerQueueConfigMixin:
             for queue_id, raw_conf in list(self.get(CONF_PLAYER_QUEUES, {}).items())
         ]
 
-    @api_command("config/player_queues/get")
+    @api_command("config/player_queues/get", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_queue_config_for_api(self, queue_id: str) -> PlayerQueueConfig:
         """Return (full) configuration for a single queue, with dynamic options populated."""
         # The frontend renders the queue settings form straight from this config, so the
@@ -60,7 +61,7 @@ class PlayerQueueConfigMixin:
         raw_conf = self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}") or {"queue_id": queue_id}
         return self._parse_player_queue_config(queue_id, raw_conf)
 
-    @api_command("config/player_queues/get_entries")
+    @api_command("config/player_queues/get_entries", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_queue_config_entries(
         self,
         queue_id: str,
@@ -73,7 +74,7 @@ class PlayerQueueConfigMixin:
         )
         return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER, action, values)
 
-    @api_command("config/player_queues/get_value")
+    @api_command("config/player_queues/get_value", required_scope=Scope.CONFIG_PLAYERS_READ)
     def get_player_queue_config_value(self, queue_id: str, key: str) -> ConfigValueType:
         """Return single config(entry) value for a queue."""
         return self.get_player_queue_config(queue_id).get_value(key)
@@ -103,7 +104,28 @@ class PlayerQueueConfigMixin:
             self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}/values/{key}", default),
         )
 
-    @api_command("config/player_queues/save", required_role="admin")
+    def get_effective_player_queue_config_value(
+        self, queue_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return the effective queue config value, following the global (queue controller) value.
+
+        A per-queue value of "global" (or unset) resolves to the matching value on the Player Queues
+        core controller, so a queue can either follow the global default or override it — mirroring
+        the log_level "GLOBAL" pattern.
+
+        :param queue_id: The queue to read the value for.
+        :param key: The config key.
+        :param default: The global (queue-controller) default to fall back to when the value is
+            stored on neither the queue nor the core config.
+        """
+        value = self.get_raw_player_queue_config_value(queue_id, key, CONF_VALUE_GLOBAL)
+        if value in (CONF_VALUE_GLOBAL, None):
+            # self is the ConfigController; go via mass.config for the typed (overloaded) accessor
+            return self.mass.config.get_raw_core_config_value(CONF_PLAYER_QUEUES, key, default)
+        return value
+
+    @api_command("config/player_queues/save", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def save_player_queue_config(
         self, queue_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerQueueConfig:

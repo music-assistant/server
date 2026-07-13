@@ -15,7 +15,7 @@ from uuid import uuid4
 import aiofiles
 from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ProviderError
 from music_assistant_models.enums import CoreState, EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
@@ -40,6 +40,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
@@ -49,9 +50,13 @@ from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
+from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import get_icon_string
 from music_assistant.helpers.util import (
     TaskManager,
@@ -140,6 +145,7 @@ class MusicAssistant:
     discovery: DiscoveryController
     streams: StreamsController
     translations: TranslationController
+    diagnostics: DiagnosticsController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
@@ -173,6 +179,10 @@ class MusicAssistant:
         self.loop = asyncio.get_running_loop()
         # start() runs on the event loop thread, so this is the loop's thread id.
         self.loop_thread_id = threading.get_ident()
+        # ensure the always-on diagnostics capture handler is installed as early as
+        # possible so boot-time errors are captured (idempotent, also installed by
+        # __main__ but embedded usage boots the server directly)
+        install_diagnostics_log_handler()
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
         # setup config controller first and fetch important config values
@@ -201,6 +211,7 @@ class MusicAssistant:
         self.player_queues = PlayerQueuesController(self)
         self.streams = StreamsController(self)
         self.translations = TranslationController(self)
+        self.diagnostics = DiagnosticsController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
@@ -208,7 +219,11 @@ class MusicAssistant:
 
         # setup all core controllers in parallel
         async def setup_controller(controller: CoreController) -> None:
-            await controller.setup(await self.config.get_core_config(controller.domain))
+            config = await self.config.get_core_config(controller.domain)
+            # keep the active config on the controller so internal code can read
+            # config values without rebuilding the config entries
+            controller.config = config
+            await controller.setup(config)
             controller.initialized.set()
 
         # set up the translations catalog first so it is ready before any object is serialized
@@ -222,6 +237,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.metadata))
             tg.create_task(setup_controller(self.players))
             tg.create_task(setup_controller(self.player_queues))
+            tg.create_task(setup_controller(self.diagnostics))
 
         for controller_name in (
             "cache",
@@ -236,7 +252,9 @@ class MusicAssistant:
 
         # load webserver/api now that the core controllers are setup and ready to be used
         self._register_api_commands()
-        await self.webserver.setup(await self.config.get_core_config("webserver"))
+        webserver_config = await self.config.get_core_config("webserver")
+        self.webserver.config = webserver_config
+        await self.webserver.setup(webserver_config)
         await setup_controller(self.discovery)
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
@@ -272,6 +290,7 @@ class MusicAssistant:
         await self.player_queues.close()
         await self.players.close()
         await self.translations.close()
+        await self.diagnostics.close()
         # cleanup cache and config
         await self.config.close()
         await self.cache.close()
@@ -335,12 +354,12 @@ class MusicAssistant:
             status=self._state,
         )
 
-    @api_command("providers/manifests")
+    @api_command("providers/manifests", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifests(self) -> list[ProviderManifest]:
         """Return all Provider manifests."""
         return list(self._provider_manifests.values())
 
-    @api_command("providers/manifests/get")
+    @api_command("providers/manifests/get", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifest(self, instance_id_or_domain: str) -> ProviderManifest:
         """Return Provider manifests of single provider(domain)."""
         if instance_id_or_domain in self._provider_manifests:
@@ -349,7 +368,7 @@ class MusicAssistant:
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
 
-    @api_command("providers")
+    @api_command("providers", required_scope=Scope.PROVIDERS_READ)
     def get_providers(
         self, provider_type: ProviderType | None = None
     ) -> list[ProviderInstanceType]:
@@ -361,7 +380,7 @@ class MusicAssistant:
         """
         user = get_current_user()
         user_provider_filter = (
-            user.provider_filter if user and user.role != UserRole.ADMIN else None
+            user.provider_filter if user and not has_scope(user, Scope.ALL) else None
         )
         return [
             x
@@ -375,7 +394,7 @@ class MusicAssistant:
             )
         ]
 
-    @api_command("logging/get", required_role=UserRole.ADMIN)
+    @api_command("logging/get", required_scope=Scope.SYSTEM_MANAGE)
     async def get_application_log(self) -> str:
         """Return the application log from file."""
         logfile = os.path.join(self.storage_path, "musicassistant.log")
@@ -525,7 +544,7 @@ class MusicAssistant:
             else:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], None]", cb_func)
-                self.loop.call_soon_threadsafe(cb_func, event_obj)
+                self.loop.call_soon(cb_func, event_obj)
 
     def subscribe(
         self,
@@ -691,7 +710,8 @@ class MusicAssistant:
         command: str,
         handler: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
-        required_role: str | None = None,
+        required_scope: Scope | None = None,
+        allow_impersonation: bool = False,
         alias: bool = False,
     ) -> Callable[[], None]:
         """
@@ -700,8 +720,10 @@ class MusicAssistant:
         :param command: The command name/path.
         :param handler: The function to handle the command.
         :param authenticated: Whether authentication is required (default: True).
-        :param required_role: Required user role ("admin" or "user")
+        :param required_scope: Scope required to execute the command,
             None means any authenticated user.
+        :param allow_impersonation: Whether the command accepts a 'user' argument
+            to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).
             Aliases are not shown in API documentation but remain functional.
 
@@ -711,7 +733,7 @@ class MusicAssistant:
             msg = f"Command {command} is already registered"
             raise RuntimeError(msg)
         self.command_handlers[command] = APICommandHandler.parse(
-            command, handler, authenticated, required_role, alias
+            command, handler, authenticated, required_scope, allow_impersonation, alias
         )
 
         def unregister() -> None:
@@ -723,13 +745,21 @@ class MusicAssistant:
         self,
         prov_conf: ProviderConfig,
     ) -> None:
-        """Try to load a provider and catch errors."""
+        """Load (or reload) a provider from its config, recording any load failure."""
         # cancel existing (re)load timer if needed
         task_id = f"load_provider_{prov_conf.instance_id}"
         if existing := self._tracked_timers.pop(task_id, None):
             existing.cancel()
 
-        await self._load_provider(prov_conf)
+        try:
+            await self._load_provider(prov_conf)
+        except Exception as exc:
+            # persist the failure so the provider surfaces a clear status (e.g. auth_required)
+            # to the UI instead of appearing stuck loading, then propagate to the caller
+            self.config.update_provider_last_error(
+                prov_conf.instance_id, _provider_error_from_exc(exc)
+            )
+            raise
 
         # (re)load any dependants
         prov_configs = await self.config.get_provider_configs(include_values=True)
@@ -783,9 +813,7 @@ class MusicAssistant:
                 self.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
                 return
             prov_conf.last_error = _provider_error_from_exc(exc)
-            self.config.set(
-                f"{CONF_PROVIDERS}/{instance_id}/last_error", prov_conf.last_error.to_dict()
-            )
+            self.config.update_provider_last_error(instance_id, prov_conf.last_error)
             LOGGER.warning(
                 "Provider(instance) %s can not run on this system: %s",
                 prov_conf.name or prov_conf.instance_id,
@@ -796,9 +824,7 @@ class MusicAssistant:
             # if loading failed, we store the error in the config object
             # so we can show something useful to the user
             prov_conf.last_error = _provider_error_from_exc(exc)
-            self.config.set(
-                f"{CONF_PROVIDERS}/{instance_id}/last_error", prov_conf.last_error.to_dict()
-            )
+            self.config.update_provider_last_error(instance_id, prov_conf.last_error)
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
@@ -858,10 +884,19 @@ class MusicAssistant:
                 await self._update_available_providers_cache()
                 self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
-    async def unload_provider_with_error(self, instance_id: str, error: str) -> None:
-        """Unload a provider when it got into trouble which needs user interaction."""
-        prov_error = ProviderError(error_code=999, message=error)
-        self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", prov_error.to_dict())
+    async def unload_provider_with_error(self, instance_id: str, error: str | Exception) -> None:
+        """
+        Unload a provider that hit a problem which needs user interaction.
+
+        :param error: The originating exception (preferred, so e.g. a LoginFailed surfaces as an
+            auth-required status with a localized message) or a plain string for a generic error.
+        """
+        prov_error = (
+            _provider_error_from_exc(error)
+            if isinstance(error, Exception)
+            else ProviderError(error_code=999, message=error)
+        )
+        self.config.update_provider_last_error(instance_id, prov_error)
         await self.unload_provider(instance_id)
 
     async def run_provider_discovery(self, instance_id: str) -> None:
@@ -913,6 +948,7 @@ class MusicAssistant:
             self.webserver,
             self.webserver.auth,
             self.streams.audio_analysis,
+            self.diagnostics,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -929,9 +965,12 @@ class MusicAssistant:
                 if hasattr(obj, "api_cmd"):
                     # method is decorated with our api decorator
                     authenticated = getattr(obj, "api_authenticated", True)
-                    required_role = getattr(obj, "api_required_role", None)
+                    required_scope = getattr(obj, "api_required_scope", None)
+                    allow_impersonation = getattr(obj, "api_allow_impersonation", False)
                     alias = getattr(obj, "api_alias", False)
-                    self.register_api_command(obj.api_cmd, obj, authenticated, required_role, alias)
+                    self.register_api_command(
+                        obj.api_cmd, obj, authenticated, required_scope, allow_impersonation, alias
+                    )
 
     async def _load_builtin_providers(self) -> None:
         """

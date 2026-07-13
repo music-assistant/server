@@ -69,7 +69,7 @@
     }),
     'name': 'Infest',
     'position': None,
-    'provider': 'jellyfin',
+    'provider': 'xx-instance-id-xx',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -92,7 +92,7 @@
       }),
     ]),
     'sort_name': 'infest',
-    'uri': 'jellyfin://album/70b7288088b42d318f75dbcc41fd0091',
+    'uri': 'xx-instance-id-xx://album/70b7288088b42d318f75dbcc41fd0091',
     'version': '',
     'year': 2000,
   })
@@ -167,7 +167,7 @@
     }),
     'name': 'Nu-Clear Sounds',
     'position': None,
-    'provider': 'jellyfin',
+    'provider': 'xx-instance-id-xx',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -190,7 +190,7 @@
       }),
     ]),
     'sort_name': 'nu-clear sounds',
-    'uri': 'jellyfin://album/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
+    'uri': 'xx-instance-id-xx://album/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
     'version': '',
     'year': 1998,
   })
@@ -265,7 +265,7 @@
     }),
     'name': 'This Is Christmas',
     'position': None,
-    'provider': 'jellyfin',
+    'provider': 'xx-instance-id-xx',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -288,7 +288,7 @@
       }),
     ]),
     'sort_name': 'this is christmas',
-    'uri': 'jellyfin://album/32ed6a0091733dcff57eae67010f3d4b',
+    'uri': 'xx-instance-id-xx://album/32ed6a0091733dcff57eae67010f3d4b',
     'version': '',
     'year': 2011,
   })
@@ -306,10 +306,10 @@
         'item_id': '[unknown]',
         'media_type': 'artist',
         'name': '[unknown]',
-        'provider': 'jellyfin',
+        'provider': 'xx-instance-id-xx',
         'sort_name': 'unknown]',
         'translation_key': None,
-        'uri': 'jellyfin://artist/[unknown]',
+        'uri': 'xx-instance-id-xx://artist/[unknown]',
         'version': '',
         'year': None,
       }),
@@ -348,7 +348,7 @@
     }),
     'name': 'Yesterday, When I Was Mad [Disc 2]',
     'position': None,
-    'provider': 'jellyfin',
+    'provider': 'xx-instance-id-xx',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -371,7 +371,7 @@
       }),
     ]),
     'sort_name': 'yesterday when i was mad [disc 0000000002]',
-    'uri': 'jellyfin://album/7c8d0bd55291c7fc0451d17ebef30017',
+    'uri': 'xx-instance-id-xx://album/7c8d0bd55291c7fc0451d17ebef30017',
     'version': '',
     'year': None,
   })
@@ -438,7 +438,7 @@
     }),
     'name': 'Ash',
     'position': None,
-    'provider': 'jellyfin',
+    'provider': 'xx-instance-id-xx',
     'provider_mappings': list([
       dict({
         'audio_format': dict({
@@ -461,7 +461,7 @@
       }),
     ]),
     'sort_name': 'ash',
-    'uri': 'jellyfin://artist/dd954bbf54398e247d803186d3585b79',
+    'uri': 'xx-instance-id-xx://artist/dd954bbf54398e247d803186d3585b79',
     'version': '',
   })
 # ---
@@ -501,6 +501,7 @@
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 1,
     'duration': 272,
@@ -601,14 +602,15 @@
         'item_id': '[unknown]',
         'media_type': 'artist',
         'name': '[unknown]',
-        'provider': 'jellyfin',
+        'provider': 'xx-instance-id-xx',
         'sort_name': 'unknown]',
         'translation_key': None,
-        'uri': 'jellyfin://artist/[unknown]',
+        'uri': 'xx-instance-id-xx://artist/[unknown]',
         'version': '',
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 577,
@@ -695,6 +697,7 @@
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 1,
     'duration': 246,
@@ -819,6 +822,7 @@
         'year': None,
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 1,
     'duration': 224,

@@ -6,7 +6,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.media_items import BrowseFolder
+
+from music_assistant.providers.radio_playlist import radio_playlist_uri
 
 from ..tags import Tag
 from ._common import TIMEOUT_MUTATION, TIMEOUT_QUERY
@@ -16,7 +21,7 @@ if TYPE_CHECKING:
 
 
 def _control_annotations(*, title: str, idempotent: bool = False) -> ToolAnnotations:
-    """Default annotations for transport-control tools (mutate but non-destructive)."""
+    """Build default annotations for transport-control tools (mutate but non-destructive)."""
     return ToolAnnotations(
         title=title,
         readOnlyHint=False,
@@ -180,10 +185,10 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
     async def play_media(
         queue_id: str,
         uri: str,
-        radio_mode: bool = False,
+        radio: bool = False,
     ) -> None:
         """
-        Load and start playing an album, track, playlist, or radio station on a player queue.
+        Load and start playing an artist, album, track, playlist, or radio station on a queue.
 
         Replaces whatever the queue was playing. Use ``playback_play_index`` to start an
         item that is already in the queue. Returns nothing.
@@ -194,10 +199,23 @@ def build_playback_server(mass: MusicAssistant) -> FastMCP:
             or radio station to play, of the form
             ``<provider>://<media_type>/<id>`` (e.g. as found on
             ``TrackBrief.uri`` / ``AlbumBrief.uri`` / ...).
-        :param radio_mode: When ``True``, Music Assistant fills the queue with
-            similar items after the requested URI plays.
+        :param radio: When ``True``, play an endless "radio" seeded from ``uri``
+            instead of just the item itself. Music Assistant builds a dynamic
+            playlist from the seed (artist, album, track, playlist or genre),
+            mixing in its own tracks and continuously refilling the queue with
+            similar tracks.
         """
-        await mass.player_queues.play_media(queue_id, uri, radio_mode=radio_mode)
+        if radio:
+            try:
+                seed = await mass.music.get_item_by_uri(uri)
+            except MusicAssistantError as err:
+                msg = f"Could not resolve URI for radio: {uri!r} ({err})"
+                raise ToolError(msg) from err
+            if isinstance(seed, BrowseFolder):
+                msg = f"Cannot start a radio from a browse folder: {uri!r}"
+                raise ToolError(msg)
+            uri = radio_playlist_uri(seed)
+        await mass.player_queues.play_media(queue_id, uri)
 
     @sub.tool(
         tags={Tag.CONTROL_PLAYBACK},

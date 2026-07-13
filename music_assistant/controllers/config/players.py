@@ -7,6 +7,7 @@ import logging
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -61,6 +62,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_CATEGORY_PREFIX,
     CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
@@ -73,11 +75,29 @@ from music_assistant.providers.sync_group.constants import SGP_PREFIX
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
+    from music_assistant_models.player import OutputProtocol
+
     from music_assistant import MusicAssistant
     from music_assistant.models.player import Player
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _first_enabled_control_value(options: list[ConfigValueOption]) -> ConfigValueType:
+    """
+    Return the value of the first selectable option, so a disabled option is never the default.
+
+    Player-control selects always list the "native" option (shown disabled when the feature is
+    unsupported); this picks the first enabled option as the entry default and falls back to the
+    always-present "none" control.
+
+    :param options: The control entry's options, in display order.
+    """
+    for option in options:
+        if not option.disabled:
+            return option.value
+    return PLAYER_CONTROL_NONE
 
 
 class PlayerConfigMixin:
@@ -93,7 +113,7 @@ class PlayerConfigMixin:
 
         def remove(self, key: str) -> None: ...  # noqa: D102
 
-    @api_command("config/players")
+    @api_command("config/players", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_configs(
         self,
         provider: str | None = None,
@@ -135,14 +155,15 @@ class PlayerConfigMixin:
             if include_values:
                 result.append(await self.get_player_config(raw_conf["player_id"]))
             else:
-                raw_conf["default_name"] = (
-                    player.state.name if player else raw_conf.get("default_name")
+                summary_conf = deepcopy(raw_conf)
+                summary_conf["default_name"] = (
+                    player.state.name if player else summary_conf.get("default_name")
                 )
-                raw_conf["available"] = player.state.available if player else False
-                result.append(cast("PlayerConfig", PlayerConfig.parse([], raw_conf)))
+                summary_conf["available"] = player.state.available if player else False
+                result.append(cast("PlayerConfig", PlayerConfig.parse([], summary_conf)))
         return result
 
-    @api_command("config/players/get")
+    @api_command("config/players/get", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_config(
         self,
         player_id: str,
@@ -191,7 +212,7 @@ class PlayerConfigMixin:
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
 
-    @api_command("config/players/get_entries")
+    @api_command("config/players/get_entries", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_config_entries(
         self,
         player_id: str,
@@ -287,7 +308,7 @@ class PlayerConfigMixin:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/players/get_value")
+    @api_command("config/players/get_value", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_player_config_value(
         self,
         player_id: str,
@@ -370,7 +391,7 @@ class PlayerConfigMixin:
             }
         return cast("PlayerConfig", PlayerConfig.parse([], raw_conf))
 
-    @api_command("config/players/save", required_role="admin")
+    @api_command("config/players/save", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
@@ -418,7 +439,7 @@ class PlayerConfigMixin:
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
-    @api_command("config/players/remove", required_role="admin")
+    @api_command("config/players/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_player_config(self, player_id: str) -> None:
         """Remove PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{player_id}"
@@ -480,9 +501,9 @@ class PlayerConfigMixin:
             # update default name if needed
             if name and name != existing_conf.get("default_name"):
                 self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
-            # update player_type if needed
-            if existing_conf.get("player_type") != player_type:
-                self.set(f"{CONF_PLAYERS}/{player_id}/player_type", player_type.value)
+            # deliberately do NOT update player_type here: this is called from
+            # Player.__init__ where the type can still be a transient class default.
+            # Genuine type changes are persisted by update_state after registration.
             return
         # config does not yet exist, create a default one
         conf_key = f"{CONF_PLAYERS}/{player_id}"
@@ -517,6 +538,12 @@ class PlayerConfigMixin:
             self.set(f"{CONF_PLAYERS}/{player_id}/{key}", value)
         else:
             self.set(f"{CONF_PLAYERS}/{player_id}/values/{key}", value)
+            # also update the player's in-place config copy so object-local
+            # value reads stay in sync with raw writes
+            if (player := self.mass.players.get_player(player_id, False)) and (
+                entry := player.config.values.get(key)
+            ):
+                entry.value = value
 
     async def _get_player_config_entries(
         self,
@@ -651,24 +678,24 @@ class PlayerConfigMixin:
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
         auto_option = ConfigValueOption(PLAYER_CONTROL_PROTOCOL)
-        # work out player supported features
-        power_options: list[ConfigValueOption] = []
-        if player.supports_feature(PlayerFeature.POWER):
-            power_options.append(
-                ConfigValueOption(PLAYER_CONTROL_NATIVE),
+        # the "native" option is always listed (disabled when the feature is unsupported) so the
+        # option set is consistent across players; the entry default skips disabled options.
+        power_options: list[ConfigValueOption] = [
+            ConfigValueOption(
+                PLAYER_CONTROL_NATIVE,
+                disabled=not player.supports_feature(PlayerFeature.POWER),
             )
-        volume_options: list[ConfigValueOption] = []
-        has_native_volume_control = False
-        if player.supports_feature(PlayerFeature.VOLUME_SET):
-            has_native_volume_control = True
-            volume_options.append(
-                ConfigValueOption(PLAYER_CONTROL_NATIVE),
+        ]
+        has_native_volume_control = player.supports_feature(PlayerFeature.VOLUME_SET)
+        volume_options: list[ConfigValueOption] = [
+            ConfigValueOption(PLAYER_CONTROL_NATIVE, disabled=not has_native_volume_control)
+        ]
+        mute_options: list[ConfigValueOption] = [
+            ConfigValueOption(
+                PLAYER_CONTROL_NATIVE,
+                disabled=not player.supports_feature(PlayerFeature.VOLUME_MUTE),
             )
-        mute_options: list[ConfigValueOption] = []
-        if player.supports_feature(PlayerFeature.VOLUME_MUTE):
-            mute_options.append(
-                ConfigValueOption(PLAYER_CONTROL_NATIVE),
-            )
+        ]
         # add player protocols as volume controls if native player has no volume control
         for linked_protocol in player.linked_output_protocols:
             if has_native_volume_control:
@@ -717,7 +744,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_POWER_CONTROL,
                 type=ConfigEntryType.STRING,
-                default_value=power_options[0].value if power_options else PLAYER_CONTROL_NONE,
+                default_value=_first_enabled_control_value(power_options),
                 required=False,
                 options=[
                     *power_options,
@@ -729,7 +756,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,
                 type=ConfigEntryType.STRING,
-                default_value=volume_options[0].value if volume_options else PLAYER_CONTROL_NONE,
+                default_value=_first_enabled_control_value(volume_options),
                 required=True,
                 options=[
                     *volume_options,
@@ -741,7 +768,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_MUTE_CONTROL,
                 type=ConfigEntryType.STRING,
-                default_value=mute_options[0].value if mute_options else PLAYER_CONTROL_NONE,
+                default_value=_first_enabled_control_value(mute_options),
                 required=True,
                 options=[
                     *mute_options,
@@ -775,20 +802,41 @@ class PlayerConfigMixin:
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
 
+        # Resolve derived-transport edges (e.g. a Sendspin bridge riding on the
+        # AirPlay protocol) so derived protocols render as dependent on their base.
+        base_protocols: dict[str, OutputProtocol] = {}
+        for protocol in output_protocols:
+            if protocol.is_native:
+                continue
+            underlying_id = self.get_raw_player_config_value(
+                protocol.output_protocol_id, CONF_UNDERLYING_PLAYER_ID
+            )
+            if not underlying_id:
+                continue
+            if base_protocol := next(
+                (p for p in output_protocols if p.output_protocol_id == underlying_id), None
+            ):
+                base_protocols[protocol.output_protocol_id] = base_protocol
+
         # Build options from available output protocols, sorted by priority
         options: list[ConfigValueOption] = []
 
         # Add each available output protocol as an option, sorted by priority
         has_native = False
         for protocol in sorted(output_protocols, key=lambda p: p.priority):
-            if provider_manifest := self.mass.get_provider_manifest(protocol.protocol_domain):
-                protocol_name = provider_manifest.name
-            else:
-                protocol_name = protocol.protocol_domain.upper()
+            protocol_name = self._get_protocol_display_name(protocol.protocol_domain)
             if protocol.available:
                 # Use "native" for native playback,
                 # otherwise use the protocol output id (=player id)
-                title = f"{protocol_name} (native)" if protocol.is_native else protocol_name
+                if protocol.is_native:
+                    title = f"{protocol_name} (native)"
+                elif base_protocol := base_protocols.get(protocol.output_protocol_id):
+                    title = (
+                        f"{protocol_name} "
+                        f"(over {self._get_protocol_display_name(base_protocol.protocol_domain)})"
+                    )
+                else:
+                    title = protocol_name
                 value = "native" if protocol.is_native else protocol.output_protocol_id
                 options.append(ConfigValueOption(value, title=title))
                 has_native = has_native or protocol.is_native
@@ -815,10 +863,7 @@ class PlayerConfigMixin:
         # Add config entries for all protocol players/outputs
         for protocol in output_protocols:
             domain = protocol.protocol_domain
-            if provider_manifest := self.mass.get_provider_manifest(protocol.protocol_domain):
-                protocol_name = provider_manifest.name
-            else:
-                protocol_name = protocol.protocol_domain.upper()
+            protocol_name = self._get_protocol_display_name(domain)
             protocol_player_enabled = self.get_raw_player_config_value(
                 protocol.output_protocol_id, CONF_ENABLED, True
             )
@@ -830,18 +875,33 @@ class PlayerConfigMixin:
             protocol_enabled_key = f"{protocol_prefix}enabled"
             protocol_category = f"{CONF_PROTOCOL_CATEGORY_PREFIX}_{domain}"
             category_translation_key = "protocol_output_settings"
+            category_translation_params = [protocol_name]
+            # Derived protocols (e.g. Sendspin over AirPlay) render with their base
+            # protocol in the label and follow its enabled state.
+            base_protocol = base_protocols.get(protocol.output_protocol_id)
+            base_name: str | None = None
+            base_enabled = True
+            if base_protocol is not None:
+                base_name = self._get_protocol_display_name(base_protocol.protocol_domain)
+                base_raw_conf = self.get(f"{CONF_PLAYERS}/{base_protocol.output_protocol_id}") or {}
+                base_enabled = bool(base_raw_conf.get("enabled", True))
+                category_translation_key = "protocol_output_settings_via"
+                category_translation_params = [protocol_name, base_name]
             if not protocol.is_native:
                 all_entries.append(
                     ConfigEntry(
                         key=protocol_enabled_key,
                         type=ConfigEntryType.BOOLEAN,
                         # the key is per-protocol (dynamic), so pin a static catalog key
-                        translation_key="protocol_enable",
-                        value=protocol_player_enabled,
+                        translation_key="protocol_enable_via" if base_name else "protocol_enable",
+                        translation_params=[base_name] if base_name else None,
+                        # a derived protocol cannot be active while its base is disabled
+                        value=bool(protocol_player_enabled) and base_enabled,
+                        read_only=not base_enabled,
                         default_value=True,
                         category=protocol_category,
                         category_translation_key=category_translation_key,
-                        category_translation_params=[protocol_name],
+                        category_translation_params=category_translation_params,
                         requires_reload=False,
                     )
                 )
@@ -855,7 +915,7 @@ class PlayerConfigMixin:
                     entry = deepcopy(proto_entry)
                     entry.category = protocol_category
                     entry.category_translation_key = category_translation_key
-                    entry.category_translation_params = [protocol_name]
+                    entry.category_translation_params = category_translation_params
                     all_entries.append(entry)
 
             elif protocol_player := self.mass.players.get_player(protocol.output_protocol_id):
@@ -883,7 +943,7 @@ class PlayerConfigMixin:
                     entry = deepcopy(proto_entry)
                     entry.category = protocol_category
                     entry.category_translation_key = category_translation_key
-                    entry.category_translation_params = [protocol_name]
+                    entry.category_translation_params = category_translation_params
                     # the key gets prefixed below to avoid collisions; pin the catalog key to the
                     # original (bare) slug and the protocol's own provider so the label still
                     # resolves against provider.<domain>.config_entries.<original_key>
@@ -942,3 +1002,9 @@ class PlayerConfigMixin:
                 continue
             values[entry.key] = stored_value
         return values
+
+    def _get_protocol_display_name(self, protocol_domain: str) -> str:
+        """Return the display name for a protocol domain."""
+        if provider_manifest := self.mass.get_provider_manifest(protocol_domain):
+            return provider_manifest.name
+        return protocol_domain.upper()

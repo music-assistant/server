@@ -162,7 +162,7 @@ def _track_available(
         return False
     if media.rights.sub is None:
         return False
-    return media.rights.sub.available
+    return bool(media.rights.sub.available)
 
 
 def parse_track(

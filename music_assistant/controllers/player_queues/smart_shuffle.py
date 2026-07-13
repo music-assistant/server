@@ -10,9 +10,9 @@ shuffle in the controller.
 The algorithm works in two stages:
 - recency tiering: each item is fresh / artist-recently-played / song-recently-played, where a
   deliberately-duplicated song uses the short duplicate repeat-gap instead of the long song window;
-- within-tier interleave: each distinct song's copies are placed at evenly-spaced fractional
-  positions with a random phase so duplicates spread across the whole span without clustering, then
-  a bounded pass separates directly-adjacent same-artist items.
+- within-tier interleave: each distinct song's copies get independently randomized positions in
+  evenly-spaced strata, so duplicates stay spread without repeating the same sequence, then a
+  bounded pass separates directly-adjacent same-artist items.
 """
 
 from __future__ import annotations
@@ -21,6 +21,11 @@ import random
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING
 
+from music_assistant.constants import (
+    CONF_PLAYER_QUEUES,
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+)
 from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
@@ -29,9 +34,9 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_SONG_RECENCY,
     SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT,
     SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT,
-    SMART_SHUFFLE_ENABLED_DEFAULT,
     SMART_SHUFFLE_SONG_RECENCY_DEFAULT,
 )
+from music_assistant.controllers.player_queues.helpers import interleave_groups, space_by_artist
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -40,14 +45,8 @@ if TYPE_CHECKING:
     from music_assistant.controllers.music.recency import RecencySnapshot
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 
-# how many bounded passes to make separating directly-adjacent same-artist items
-ARTIST_REPAIR_PASSES = 4
-# how far ahead to look for a non-clashing item to swap in (keeps moves local so the
-# even spread from the interleave is preserved)
-ARTIST_SWAP_WINDOW = 6
 
-
-class SmartShuffleHelper:
+class SmartShuffle:
     """Produce a recency-aware, well-spaced ordering of upcoming queue items."""
 
     def __init__(self, queues: PlayerQueuesController) -> None:
@@ -62,14 +61,17 @@ class SmartShuffleHelper:
 
     def is_enabled(self, queue_id: str) -> bool:
         """
-        Return whether smart shuffle is enabled in config for the given queue.
+        Return whether smart shuffle is enabled for the given queue.
+
+        Follows the global (queue controller) setting when the per-queue value is "global".
 
         :param queue_id: The queue to read the smart-shuffle setting for.
         """
-        return bool(
-            self.mass.config.get_raw_player_queue_config_value(
-                queue_id, CONF_SMART_SHUFFLE_ENABLED, SMART_SHUFFLE_ENABLED_DEFAULT
+        return (
+            self.mass.config.get_effective_player_queue_config_value(
+                queue_id, CONF_SMART_SHUFFLE_ENABLED, CONF_VALUE_DISABLED
             )
+            == CONF_VALUE_ENABLED
         )
 
     async def arrange(self, queue: PlayerQueue, items: list[QueueItem]) -> list[QueueItem]:
@@ -79,27 +81,29 @@ class SmartShuffleHelper:
         :param queue: The queue being (re)shuffled; its owner scopes the play history.
         :param items: The upcoming queue items to reorder.
         """
-        windows = self._windows(queue.queue_id)
-        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
+        windows = self.windows()
+        snapshot = await self.mass.music.recency.snapshot(
+            windows, userid=self.queues.queue_data(queue.queue_id).userid
+        )
         return _arrange(items, snapshot, windows)
 
-    def _windows(self, queue_id: str) -> RecencyWindows:
-        """Read the configured recency windows (in seconds) for the queue."""
+    def windows(self) -> RecencyWindows:
+        """Read the configured recency windows (in seconds). These are a global-only setting."""
         return RecencyWindows(
             song_seconds=self._window_seconds(
-                queue_id, CONF_SMART_SHUFFLE_SONG_RECENCY, SMART_SHUFFLE_SONG_RECENCY_DEFAULT
+                CONF_SMART_SHUFFLE_SONG_RECENCY, SMART_SHUFFLE_SONG_RECENCY_DEFAULT
             ),
             artist_seconds=self._window_seconds(
-                queue_id, CONF_SMART_SHUFFLE_ARTIST_RECENCY, SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT
+                CONF_SMART_SHUFFLE_ARTIST_RECENCY, SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT
             ),
             duplicate_gap_seconds=self._window_seconds(
-                queue_id, CONF_SMART_SHUFFLE_DUPLICATE_GAP, SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT
+                CONF_SMART_SHUFFLE_DUPLICATE_GAP, SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT
             ),
         )
 
-    def _window_seconds(self, queue_id: str, key: str, default: int) -> int:
-        """Read a window preset (seconds, 0 = off) from the queue config."""
-        raw = self.mass.config.get_raw_player_queue_config_value(queue_id, key, default)
+    def _window_seconds(self, key: str, default: int) -> int:
+        """Read a window preset (seconds, 0 = off) from the global queue-controller config."""
+        raw = self.mass.config.get_raw_core_config_value(CONF_PLAYER_QUEUES, key, default)
         try:
             return int(raw)
         except TypeError, ValueError:
@@ -151,45 +155,23 @@ def _tier(
 
 
 def _interleave(bucket: list[QueueItem]) -> list[QueueItem]:
-    """Spread each distinct song's copies evenly with a random phase so groups don't clump."""
+    """Spread each distinct song's copies with independently randomized repeat cycles."""
     groups: dict[tuple[str, str], list[QueueItem]] = defaultdict(list)
     for item in bucket:
         groups[_song_key(item)].append(item)
-    positioned: list[tuple[float, QueueItem]] = []
-    for copies in groups.values():
-        phase = random.random()
-        total = len(copies)
-        for offset, item in enumerate(copies):
-            positioned.append(((phase + offset / total) % 1.0, item))
-    positioned.sort(key=lambda entry: entry[0])
-    return [item for _, item in positioned]
+    return interleave_groups(list(groups.values()))
 
 
-def _space_artists(items: list[QueueItem]) -> list[QueueItem]:
-    """Best-effort separate directly-adjacent same-artist items with bounded local swaps."""
-    count = len(items)
-    if count <= 2:
-        return items
-    result = list(items)
-    artist_sets = [_artist_name_set(item) for item in result]
-    for _ in range(ARTIST_REPAIR_PASSES):
-        changed = False
-        for index in range(count - 1):
-            current = artist_sets[index]
-            if not current or not current & artist_sets[index + 1]:
-                continue
-            for target in range(index + 2, min(index + 2 + ARTIST_SWAP_WINDOW, count)):
-                if not current & artist_sets[target]:
-                    result[index + 1], result[target] = result[target], result[index + 1]
-                    artist_sets[index + 1], artist_sets[target] = (
-                        artist_sets[target],
-                        artist_sets[index + 1],
-                    )
-                    changed = True
-                    break
-        if not changed:
-            break
-    return result
+def _space_artists(items: list[QueueItem], *, preceding: set[str] | None = None) -> list[QueueItem]:
+    """
+    Best-effort separate directly-adjacent same-artist items.
+
+    :param items: The items to space.
+    :param preceding: Artist names of the item that will sit directly before the first item (the
+        seam with the already-queued tail); the first item is kept clear of it too. None ignores it.
+    """
+    order = space_by_artist([_artist_name_set(item) for item in items], preceding=preceding)
+    return [items[index] for index in order]
 
 
 def _song_key(item: QueueItem) -> tuple[str, str]:

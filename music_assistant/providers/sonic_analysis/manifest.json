@@ -6,7 +6,7 @@
   "codeowners": ["@music-assistant"],
   "requirements": [
     "transformers==5.6.2",
-    "huggingface-hub==1.12.0",
+    "huggingface-hub==1.22.0",
     "PyYAML==6.0.3",
     "torchlibrosa==0.1.0",
     "threadpoolctl==3.6.0"

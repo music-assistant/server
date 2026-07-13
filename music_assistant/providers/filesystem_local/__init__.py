@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import os.path
+import posixpath
 import urllib.parse
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
@@ -48,6 +49,7 @@ from music_assistant_models.media_items import (
     PodcastEpisode,
     ProviderMapping,
     SearchResults,
+    SoundEffect,
     Track,
     UniqueList,
     is_track,
@@ -72,7 +74,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
 from music_assistant.helpers.util import (
@@ -90,6 +92,7 @@ from .constants import (
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
     CACHE_CATEGORY_FOLDER_IMAGES,
     CACHE_CATEGORY_PODCAST_METADATA,
+    CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -105,6 +108,7 @@ from .constants import (
     IMAGE_EXTENSIONS,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
+    SOUND_EFFECT_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
     IsChapterFile,
@@ -136,6 +140,7 @@ if TYPE_CHECKING:
 
 isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
+ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
 scandir = wrap(os.scandir)
@@ -220,6 +225,9 @@ class LocalFileSystemProvider(MusicProvider):
             return {ProviderFeature.LIBRARY_AUDIOBOOKS, *base_features}
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
+        if self.media_content_type == "sound_effects":
+            # sound effects are live-fetched content, never synced into the library
+            return {ProviderFeature.SOUND_EFFECTS, *base_features}
         music_features = {
             ProviderFeature.LIBRARY_ALBUMS,
             ProviderFeature.LIBRARY_ARTISTS,
@@ -253,6 +261,14 @@ class LocalFileSystemProvider(MusicProvider):
                 translation_args=[self.base_path],
             )
         await self.check_write_access()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "sync_running": self.sync_running,
+            "write_access": self.write_access,
+            "content_type": self.media_content_type,
+        }
 
     async def search(
         self,
@@ -310,9 +326,13 @@ class LocalFileSystemProvider(MusicProvider):
         """
         # for audiobooks and podcasts we just return all library items
         if self.media_content_type == "podcasts":
-            return await self.mass.music.podcasts.library_items(provider=self.instance_id)
+            return await self.mass.music.podcasts.library_items(
+                provider=self.instance_id, summary=False
+            )
         if self.media_content_type == "audiobooks":
-            return await self.mass.music.audiobooks.library_items(provider=self.instance_id)
+            return await self.mass.music.audiobooks.library_items(
+                provider=self.instance_id, summary=False
+            )
         items: list[MediaItemType | ItemMapping | BrowseFolder] = []
         item_path = path.split("://", 1)[1]
         if not item_path:
@@ -364,13 +384,17 @@ class LocalFileSystemProvider(MusicProvider):
                     continue
                 items.append(
                     ItemMapping(
-                        media_type=MediaType.TRACK,
+                        media_type=(
+                            MediaType.SOUND_EFFECT
+                            if self.media_content_type == "sound_effects"
+                            else MediaType.TRACK
+                        ),
                         item_id=item.relative_path,
                         provider=self.instance_id,
                         name=item.filename,
                     )
                 )
-            elif item.ext in PLAYLIST_EXTENSIONS:
+            elif item.ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
                 items.append(
                     ItemMapping(
                         media_type=MediaType.PLAYLIST,
@@ -385,6 +409,9 @@ class LocalFileSystemProvider(MusicProvider):
         """Run library sync for this provider."""
         if media_type in (MediaType.ARTIST, MediaType.ALBUM):
             # artists and albums are synced as part of track sync
+            return
+        if self.media_content_type == "sound_effects":
+            # sound effects are live-fetched content, never synced into the library
             return
         # check if any sync options are enabled for this content type
         # the filesystem provider processes all file types in one scan,
@@ -684,6 +711,28 @@ class LocalFileSystemProvider(MusicProvider):
         msg = f"Podcast not found: {prov_podcast_id}"
         raise MediaNotFoundError(msg)
 
+    async def get_sound_effect(self, prov_sound_effect_id: str) -> SoundEffect:
+        """Get full sound effect details by id."""
+        if not await self.exists(prov_sound_effect_id):
+            msg = f"Sound effect path does not exist: {prov_sound_effect_id}"
+            raise MediaNotFoundError(msg)
+        file_item = await self.resolve(prov_sound_effect_id)
+        return await self._get_or_parse_sound_effect(file_item)
+
+    async def get_sound_effects(self) -> AsyncGenerator[SoundEffect]:
+        """Get all sound effect items this provider offers."""
+
+        def _walk() -> list[FileSystemItem]:
+            return sorted(
+                recursive_iter(
+                    self.base_path, self.base_path, SOUND_EFFECT_EXTENSIONS, self.logger
+                ),
+                key=lambda x: x.relative_path,
+            )
+
+        for file_item in await asyncio.to_thread(_walk):
+            yield await self._get_or_parse_sound_effect(file_item)
+
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
@@ -856,6 +905,8 @@ class LocalFileSystemProvider(MusicProvider):
                 return await self._get_stream_details_for_audiobook(item_id)
             if media_type == MediaType.PODCAST_EPISODE:
                 return await self._get_stream_details_for_podcast_episode(item_id)
+            if media_type == MediaType.SOUND_EFFECT:
+                return await self._get_stream_details_for_sound_effect(item_id)
             return await self._get_stream_details_for_track(item_id)
         except FileNotFoundError:
             self.logger.warning(
@@ -930,7 +981,11 @@ class LocalFileSystemProvider(MusicProvider):
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
             return False
-        abs_path = self.get_absolute_path(file_path)
+        try:
+            abs_path = self.get_absolute_path(file_path)
+        except MediaNotFoundError:
+            # a path that escapes the base directory simply does not exist here
+            return False
         return bool(await exists(abs_path))
 
     def get_absolute_path(self, file_path: str) -> str:
@@ -1065,6 +1120,17 @@ class LocalFileSystemProvider(MusicProvider):
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
+
+            if prev_checksum is not None:
+                # the file changed on disk: drop cached artwork derived from it
+                # (thumbnails, source bytes, palette) so re-read embedded art is
+                # served fresh, for both reference forms of the image path
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, item.relative_path
+                )
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, self._versioned_image_path(item.relative_path, prev_checksum)
+                )
 
             if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
                 tracks = await self._cue.parse_tracks(item)
@@ -1257,22 +1323,21 @@ class LocalFileSystemProvider(MusicProvider):
         try:
             line = line.replace("file://", "").strip()
             # try to resolve the filename (both normal and url decoded):
-            # - as an absolute path
-            # - relative to the playlist path
-            # - relative to our base path
-            # - relative to the playlist path with a leading slash
+            # - relative to the playlist folder (normpath resolves parent .. references)
+            # - as-is: an absolute path, or relative to our base path
+            # candidates stay relative so subclasses with virtual paths (cloud,
+            # webdav) resolve them too, instead of leaking the server CWD
             for _line in (line, urllib.parse.unquote(line)):
-                for filename in (
-                    # try to resolve the line by resolving it against the (absolute) playlist path
-                    # use the path.resolve step in between to auto-resolve parent item references
-                    (Path(self.get_absolute_path(playlist_path)) / _line).resolve().as_posix(),
-                    # try to resolve the line as a full absolute (or relative to music dir) path
-                    _line,
-                ):
-                    with contextlib.suppress(FileNotFoundError):
-                        file_item = await self.resolve(filename)
+                if playlist_path:
+                    normalized = posixpath.normpath(f"{playlist_path}/{_line}")
+                    with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
+                        file_item = await self.resolve(normalized)
                         tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
                         return await self._parse_track(file_item, tags)
+                with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
+                    file_item = await self.resolve(_line)
+                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+                    return await self._parse_track(file_item, tags)
             # all attempts failed
             raise MediaNotFoundError("Invalid path/uri")
 
@@ -1642,7 +1707,7 @@ class LocalFileSystemProvider(MusicProvider):
         elif not tags.chapters:
             # No track tag and no embedded chapters -
             # assume part of a multi-file audiobook, only process the first file alphabetically
-            items = await self._scandir(file_item.parent_path)
+            items = await self._scandir(file_item.relative_parent_path)
             # Sort by filename for alphabetical ordering
             items.sort(key=lambda x: x.filename.lower())
             for item in items:
@@ -1724,7 +1789,7 @@ class LocalFileSystemProvider(MusicProvider):
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
             # try to get an image by traversing files in the same folder
-            for _item in await self._scandir(file_item.parent_path):
+            for _item in await self._scandir(file_item.relative_parent_path):
                 if "." not in _item.relative_path or _item.is_dir:
                     continue
                 if _item.ext in IMAGE_EXTENSIONS and not audio_book.image:
@@ -1845,9 +1910,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         # try to fetch additional Podcast metadata from the folder
         assert isinstance(episode.podcast, Podcast)
-        if images := await self._get_local_images(file_item.parent_path):
+        if images := await self._get_local_images(file_item.relative_parent_path):
             episode.podcast.metadata.images = images
-        if metadata := await self._get_podcast_metadata(file_item.parent_path):
+        if metadata := await self._get_podcast_metadata(file_item.relative_parent_path):
             if title := metadata.get("title"):
                 episode.podcast.name = title
             if sort_name := metadata.get("sorttitle"):
@@ -1888,6 +1953,71 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             )
         return episode
+
+    async def _parse_sound_effect(self, file_item: FileSystemItem, tags: AudioTags) -> SoundEffect:
+        """Parse full sound effect details from file tags."""
+        sound_effect = SoundEffect(
+            item_id=file_item.relative_path,
+            provider=self.instance_id,
+            name=tags.title,
+            sort_name=tags.title_sort,
+            duration=int(tags.duration or 0),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=file_item.relative_path,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        sample_rate=tags.sample_rate,
+                        bit_depth=tags.bits_per_sample,
+                        channels=tags.channels,
+                        bit_rate=tags.bit_rate,
+                    ),
+                    details=file_item.checksum,
+                    in_library=True,
+                )
+            },
+        )
+        sound_effect.metadata.description = tags.get("comment")
+        # handle embedded cover image
+        if tags.has_cover_image:
+            # we do not actually embed the image in the metadata because that would consume too
+            # much space and bandwidth. Instead we set the filename as value so the image can
+            # be retrieved later in realtime.
+            sound_effect.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=file_item.relative_path,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
+            )
+        return sound_effect
+
+    async def _get_or_parse_sound_effect(self, file_item: FileSystemItem) -> SoundEffect:
+        """Return the (cached) SoundEffect for the given file, parsing tags when needed."""
+        cache_key = f"sound_effect.{file_item.relative_path}"
+        cached_data: SoundEffect | None = await self.cache.get(
+            cache_key,
+            provider=self.instance_id,
+            checksum=file_item.checksum,
+            category=CACHE_CATEGORY_SOUND_EFFECTS,
+            base_class=SoundEffect,
+        )
+        if cached_data is not None:
+            return cached_data
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        sound_effect = await self._parse_sound_effect(file_item, tags)
+        await self.cache.set(
+            cache_key,
+            sound_effect.to_dict(),
+            expiration=3600 * 24 * 365,  # File timestamp checksum handles invalidation
+            provider=self.instance_id,
+            checksum=file_item.checksum,
+            category=CACHE_CATEGORY_SOUND_EFFECTS,
+        )
+        return sound_effect
 
     async def _parse_album(
         self, track_path: str, track_tags: AudioTags, track_created_at: int | None = None
@@ -2179,6 +2309,27 @@ class LocalFileSystemProvider(MusicProvider):
             can_seek=True,
         )
 
+    async def _get_stream_details_for_sound_effect(self, item_id: str) -> StreamDetails:
+        """Return the streamdetails for a sound effect."""
+        # sound effects are never stored in the library so we parse the file,
+        # served from cache unless the file changed on disk
+        file_item = await self.resolve(item_id)
+        sound_effect = await self._get_or_parse_sound_effect(file_item)
+        prov_mapping = next(x for x in sound_effect.provider_mappings if x.item_id == item_id)
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=prov_mapping.audio_format,
+            media_type=MediaType.SOUND_EFFECT,
+            stream_type=StreamType.LOCAL_FILE,
+            duration=sound_effect.duration,
+            size=file_item.file_size,
+            data=file_item,
+            path=file_item.absolute_path,
+            allow_seek=True,
+            can_seek=True,
+        )
+
     async def _get_stream_details_for_audiobook(self, item_id: str) -> StreamDetails:
         """Return the streamdetails for an audiobook."""
         library_item = await self.mass.music.audiobooks.get_library_item_by_prov_id(
@@ -2267,7 +2418,7 @@ class LocalFileSystemProvider(MusicProvider):
         chapter_file_items: list[tuple[FileSystemItem, AudioTags]] = []
         untagged_file_items: list[tuple[FileSystemItem, AudioTags]] = []
 
-        items = await self._scandir(audiobook_file_item.parent_path)
+        items = await self._scandir(audiobook_file_item.relative_parent_path)
         # Sort by filename for consistent alphabetical ordering
         items.sort(key=lambda x: x.filename.lower())
 

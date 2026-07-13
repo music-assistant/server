@@ -165,7 +165,7 @@ class LastFMRecommendationManager:
         if media_type == MediaType.ARTIST:
             if name:
                 artist_results = await self.mass.music.artists.library_items(
-                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 artist_match = next(
                     (a for a in artist_results if compare_strings(name, a.name, strict=False)),
@@ -180,7 +180,7 @@ class LastFMRecommendationManager:
         elif media_type == MediaType.ALBUM:
             if name:
                 album_results = await self.mass.music.albums.library_items(
-                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 album_match = next(
                     (a for a in album_results if compare_strings(name, a.name, strict=False)),
@@ -204,7 +204,7 @@ class LastFMRecommendationManager:
                 # "Artist - Title" format so the tracks controller searches both fields
                 search_query = f"{artist_name} - {clean_name}"
                 track_results = await self.mass.music.tracks.library_items(
-                    search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT
+                    search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 # Match both title and artist; a title-only check would treat a same-named
                 # track by a different artist as owned. Differing recording MBIDs identify
@@ -423,7 +423,7 @@ class LastFMRecommendationManager:
                 )
 
         top_tracks = await self.mass.music.tracks.library_items(
-            limit=TOP_TRACKS_LIMIT, order_by="play_count_desc"
+            limit=TOP_TRACKS_LIMIT, order_by="play_count_desc", summary=False
         )
         # only seed from tracks actually played, so a new library of unplayed tracks
         # doesn't produce a row from arbitrary zero-play seeds
@@ -740,7 +740,7 @@ class LastFMRecommendationManager:
         # appearances across the user's most recently played tracks instead. Ordering happens
         # in the DB; ties fall to the more recently played artist via insertion order.
         recent_tracks = await self.mass.music.tracks.library_items(
-            limit=RECENT_TRACKS_SCAN_LIMIT, order_by="last_played_desc"
+            limit=RECENT_TRACKS_SCAN_LIMIT, order_by="last_played_desc", summary=False
         )
         counts: dict[str | int, int] = {}
         for track in recent_tracks:

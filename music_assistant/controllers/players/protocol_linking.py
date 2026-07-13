@@ -29,6 +29,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_PARENT_ID,
+    CONF_UNDERLYING_PLAYER_ID,
     PROTOCOL_PRIORITY,
     VERBOSE_LOG_LEVEL,
 )
@@ -113,12 +114,27 @@ class ProtocolLinkingMixin:
         elif player.state.type == PlayerType.GROUP:
             return
         else:
+            # A player that registers with a non-protocol type can no longer be a
+            # protocol child: drop a leftover persisted parent link (e.g. from a
+            # bridge client that turned web player) so the startup repair pass
+            # doesn't heal its player type back to protocol.
+            if self._get_cached_protocol_parent_id(player.player_id):
+                self._clear_protocol_parent_id(player.player_id)
             # Native player (including STEREO_PAIR): try to find protocol players to link
             self._try_link_protocols_to_native(player)
 
     def _try_link_protocol_to_native(self, protocol_player: Player) -> None:
         """Try to link a protocol player to a native player."""
         protocol_domain = protocol_player.provider.domain
+
+        # Derived protocol players (e.g. Sendspin bridges riding on another
+        # protocol) resolve strictly via their underlying player - no identifier
+        # matching or delayed evaluation. If the underlying player has no parent
+        # yet, the link is established by _link_derived_protocols_of as soon as
+        # the underlying player gets linked.
+        if protocol_player.underlying_player_id:
+            self._try_link_derived_protocol(protocol_player)
+            return
 
         # Check for cached parent_id from previous session and restore link immediately
         cached_parent_id = self._get_cached_protocol_parent_id(protocol_player.player_id)
@@ -164,8 +180,8 @@ class ProtocolLinkingMixin:
                 # Try to add the link (may be refused if domain already has active link)
                 self._add_protocol_link(parent_player, protocol_player, protocol_domain)
             if protocol_player.protocol_parent_id:
-                protocol_player.update_state()
-                parent_player.update_state()
+                protocol_player.refresh_state()
+                parent_player.refresh_state()
                 # Copy identifiers from protocol player to universal player on restore.
                 # Restored universal players start with empty identifiers which must be
                 # repopulated from their protocol players so that new protocol players
@@ -235,8 +251,8 @@ class ProtocolLinkingMixin:
                         self._save_universal_player_data(native_player)
                         # Check if this universal player should now be merged with another
                         self._check_merge_universal_players(native_player)
-                        protocol_player.update_state()
-                        native_player.update_state()
+                        protocol_player.refresh_state()
+                        native_player.refresh_state()
                         return True
                 continue
 
@@ -245,8 +261,8 @@ class ProtocolLinkingMixin:
             if protocol_player.player_id in cached_ids:
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
                 if protocol_player.protocol_parent_id:
-                    protocol_player.update_state()
-                    native_player.update_state()
+                    protocol_player.refresh_state()
+                    native_player.refresh_state()
                     return True
                 # Link refused (domain duplicate) - try next native player
                 continue
@@ -255,8 +271,8 @@ class ProtocolLinkingMixin:
             if self._identifiers_match(native_player, protocol_player, protocol_domain):
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
                 if protocol_player.protocol_parent_id:
-                    protocol_player.update_state()
-                    native_player.update_state()
+                    protocol_player.refresh_state()
+                    native_player.refresh_state()
                     return True
                 # Link refused (domain duplicate) - try next native player
                 continue
@@ -296,12 +312,77 @@ class ProtocolLinkingMixin:
             if self._identifiers_match(linked_player, protocol_player, protocol_domain):
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
                 if protocol_player.protocol_parent_id:
-                    protocol_player.update_state()
-                    native_player.update_state()
+                    protocol_player.refresh_state()
+                    native_player.refresh_state()
                     return True
                 # Link refused (domain duplicate) - stop checking siblings
                 break
         return False
+
+    def _try_link_derived_protocol(self, protocol_player: Player) -> bool:
+        """
+        Link a derived protocol player to the parent of its underlying player.
+
+        Derived protocol players carry an underlying_player_id declared by their
+        bridge, which makes the parent resolution deterministic: they always join
+        the parent of the player they ride on (or that player itself when it is
+        not a protocol player). Callers must ensure the player is not linked yet.
+
+        :param protocol_player: The derived protocol player to link.
+        :return: True if the player got linked, False if the underlying player
+            (or its parent) is not available yet or the link was refused.
+        """
+        underlying = self.get_player(protocol_player.underlying_player_id or "")
+        if underlying is None:
+            return False
+        if underlying.state.type == PlayerType.PROTOCOL:
+            parent = (
+                self.get_player(underlying.protocol_parent_id)
+                if underlying.protocol_parent_id
+                else None
+            )
+        else:
+            parent = underlying
+        if parent is None or parent.state.type == PlayerType.GROUP:
+            return False
+
+        self._add_protocol_link(parent, protocol_player, protocol_player.provider.domain)
+        if not protocol_player.protocol_parent_id:
+            # Link refused (e.g. parent already has an active link from this domain)
+            return False
+
+        if parent.provider.domain == "universal_player" and isinstance(parent, UniversalPlayer):
+            # Track membership and identifiers on the universal player so the
+            # derived protocol restores quickly on the next start.
+            parent.add_protocol_player(protocol_player.player_id)
+            for conn_type, value in protocol_player.device_info.identifiers.items():
+                parent.device_info.add_identifier(conn_type, value)
+            self._save_universal_player_data(parent)
+
+        protocol_player.refresh_state()
+        parent.refresh_state()
+        self.logger.debug(
+            "Linked derived protocol %s to %s (via underlying %s)",
+            protocol_player.player_id,
+            parent.player_id,
+            underlying.player_id,
+        )
+        return True
+
+    def _link_derived_protocols_of(self, underlying_player: Player) -> None:
+        """
+        Link any waiting derived protocol players that ride on the given player.
+
+        Called after a player is linked to a parent (or registered as a native
+        player), so derived protocol players that registered earlier can join
+        the same parent.
+        """
+        for candidate in self.all_players(return_protocol_players=True):
+            if candidate.underlying_player_id != underlying_player.player_id:
+                continue
+            if candidate.protocol_parent_id:
+                continue
+            self._try_link_derived_protocol(candidate)
 
     def _schedule_protocol_evaluation(self, protocol_player: Player) -> None:
         """
@@ -356,6 +437,18 @@ class ProtocolLinkingMixin:
         async with self._delayed_evaluation_lock:
             protocol_player = self.get_player(player_id)
             if not protocol_player or protocol_player.protocol_parent_id:
+                return
+            if protocol_player.state.type != PlayerType.PROTOCOL:
+                # The player changed type while the evaluation was pending
+                # (e.g. re-registered as a regular player); it must never be
+                # linked as a protocol or wrapped in a universal player.
+                return
+
+            # Derived protocol players resolve strictly via their underlying
+            # player and never match by identifiers or wrap into universal
+            # players; they wait for _link_derived_protocols_of otherwise.
+            if protocol_player.underlying_player_id:
+                self._try_link_derived_protocol(protocol_player)
                 return
 
             protocol_domain = protocol_player.provider.domain
@@ -412,6 +505,10 @@ class ProtocolLinkingMixin:
                 continue
             if other_player.protocol_parent_id:
                 continue
+            if other_player.underlying_player_id:
+                # Derived protocol players follow their underlying player
+                # once it is linked; they never seed a universal player.
+                continue
             # Skip players from the same protocol domain
             # Multiple instances of the same protocol on one host are separate players
             if other_player.provider.domain == protocol_domain:
@@ -465,8 +562,8 @@ class ProtocolLinkingMixin:
             # Check if this universal player should now be merged with another
             self._check_merge_universal_players(universal_player)
 
-        protocol_player.update_state()
-        universal_player.update_state()
+        protocol_player.refresh_state()
+        universal_player.refresh_state()
 
     def _update_universal_device_info(
         self, universal_player: UniversalPlayer, protocol_player: Player
@@ -689,7 +786,7 @@ class ProtocolLinkingMixin:
                     self._add_protocol_link(keep, protocol_player, domain)
                     if protocol_player.protocol_parent_id == keep.player_id:
                         moved_protocol_ids.add(protocol_player.player_id)
-                        protocol_player.update_state()
+                        protocol_player.refresh_state()
 
             # Move cached-only protocol ownership as well so old-parent cleanup
             # does not wipe protocols that were intentionally preserved.
@@ -701,7 +798,7 @@ class ProtocolLinkingMixin:
             # Merge identifiers
             for conn_type, value in remove.device_info.identifiers.items():
                 keep.device_info.add_identifier(conn_type, value)
-            keep.update_state()
+            keep.refresh_state()
 
             # Persist updated data and remove the obsolete player
             self._save_universal_player_data(keep)
@@ -722,10 +819,10 @@ class ProtocolLinkingMixin:
                 player.set_protocol_parent_id(None)
             # Link to universal player
             self._add_protocol_link(universal_player, player, player.provider.domain)
-            player.update_state()
+            player.refresh_state()
 
         # Update availability from protocol players
-        universal_player.update_state()
+        universal_player.refresh_state()
 
     async def _create_or_update_universal_player(self, protocol_players: list[Player]) -> None:
         """
@@ -772,12 +869,12 @@ class ProtocolLinkingMixin:
             if separate_up := self.get_player(separate_id):
                 # Link to the separate universal player instead
                 self._add_protocol_link(separate_up, player, player.provider.domain)
-                player.update_state()
-                separate_up.update_state()
+                player.refresh_state()
+                separate_up.refresh_state()
                 unlinked_players.remove(player)
 
         self._link_protocols_to_universal(universal_player, unlinked_players)
-        universal_player.update_state()
+        universal_player.refresh_state()
 
     def _try_link_protocols_to_native(self, native_player: Player) -> None:
         """Try to link protocol players to a native player."""
@@ -791,6 +888,9 @@ class ProtocolLinkingMixin:
             if protocol_player.protocol_parent_id:
                 # Already linked to a parent (could be this native player after replacement)
                 continue
+            if protocol_player.underlying_player_id:
+                # Derived protocol players link via their underlying player instead
+                continue
 
             protocol_domain = protocol_player.provider.domain
 
@@ -803,8 +903,8 @@ class ProtocolLinkingMixin:
                 self._add_protocol_link(native_player, protocol_player, protocol_domain)
                 # Check if linking succeeded (may be refused for duplicate domain)
                 if protocol_player.protocol_parent_id is not None:
-                    protocol_player.update_state()
-                    native_player.update_state()
+                    protocol_player.refresh_state()
+                    native_player.refresh_state()
 
         # Proactively recover disabled/missing protocols from config
         # This ensures disabled protocols show up in the UI so they can be re-enabled
@@ -819,6 +919,8 @@ class ProtocolLinkingMixin:
                 continue
             if protocol_player.protocol_parent_id:
                 continue
+            if protocol_player.underlying_player_id:
+                continue
             protocol_domain = protocol_player.provider.domain
             if self._parent_has_active_protocol_from_domain(native_player, protocol_domain):
                 continue
@@ -828,6 +930,11 @@ class ProtocolLinkingMixin:
                     protocol_player.player_id,
                     native_player.player_id,
                 )
+
+        # Finally, link derived protocol players that ride directly on this
+        # native player (derived players riding on the protocol players linked
+        # above are handled by _add_protocol_link itself).
+        self._link_derived_protocols_of(native_player)
 
     def _check_replace_universal_player(self, native_player: Player) -> None:
         """Check if a universal player should be replaced by this native player."""
@@ -868,7 +975,7 @@ class ProtocolLinkingMixin:
                     self._add_protocol_link(native_player, protocol_player, domain)
                     if protocol_player.protocol_parent_id == native_player.player_id:
                         moved_protocol_ids.add(protocol_player.player_id)
-                        protocol_player.update_state()
+                        protocol_player.refresh_state()
                     else:
                         # Link refused, keep the protocol owned by the universal player.
                         protocol_player.set_protocol_parent_id(player.player_id)
@@ -878,16 +985,22 @@ class ProtocolLinkingMixin:
                 # what moved so the refused protocols are not orphaned.
                 self._migrate_protocol_ids_to_parent(native_player, moved_protocol_ids)
                 self._remove_protocol_ids_from_parent(player, moved_protocol_ids)
-                native_player.update_state()
+                native_player.refresh_state()
                 continue
 
             cached_only_ids = known_protocol_ids - active_protocol_ids
             preserved_protocol_ids = moved_protocol_ids | cached_only_ids
             # A device that kept its id across a type change lists itself here.
+            # It must never become its own protocol, and it must also be dropped
+            # from the obsolete universal player so the permanent cleanup below
+            # doesn't treat it as an orphaned protocol (which would re-wrap the
+            # native player in a fresh universal player).
             preserved_protocol_ids.discard(native_player.player_id)
             self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
-            self._remove_protocol_ids_from_parent(player, preserved_protocol_ids)
-            native_player.update_state()
+            self._remove_protocol_ids_from_parent(
+                player, preserved_protocol_ids | {native_player.player_id}
+            )
+            native_player.refresh_state()
 
             # Remove the now-obsolete universal player
             self.mass.create_task(self.unregister(player.player_id, permanent=True))
@@ -949,6 +1062,13 @@ class ProtocolLinkingMixin:
         # Get priority for this protocol
         priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
 
+        # Derived transports (e.g. a Sendspin bridge riding on an AirPlay player)
+        # reference the base output they run on top of; "native" when they ride
+        # on the parent player itself
+        derived_from = protocol_player.underlying_player_id
+        if derived_from == native_player.player_id:
+            derived_from = "native"
+
         # Add the new link
         updated_protocols.append(
             OutputProtocol(
@@ -956,6 +1076,7 @@ class ProtocolLinkingMixin:
                 name=protocol_player.provider.name,
                 protocol_domain=protocol_domain,
                 priority=priority,
+                derived_from=derived_from,
             )
         )
         native_player.set_linked_output_protocols(updated_protocols)
@@ -970,6 +1091,10 @@ class ProtocolLinkingMixin:
         # Always save the parent ID on the protocol player for reverse lookup on restart
         # (needed for both native and universal parents to enable fast restore)
         self._save_protocol_parent_id(protocol_player.player_id, native_player.player_id)
+
+        # The freshly linked player may have derived protocol players (e.g. a
+        # Sendspin bridge riding on it) waiting to join the same parent.
+        self._link_derived_protocols_of(protocol_player)
 
     def _remove_protocol_link(
         self, native_player: Player, protocol_player_id: str, permanent: bool = False
@@ -1053,6 +1178,23 @@ class ProtocolLinkingMixin:
             return
         conf_key = f"{CONF_PLAYERS}/{protocol_player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
         self.mass.config.set(conf_key, parent_id)
+
+    def _save_underlying_player_id(self, player: Player) -> None:
+        """
+        Persist the derived-transport edge of a player to config.
+
+        Allows the edge to be resolved (e.g. by the config UI) even while the
+        player is not registered. Clears a previously persisted edge when the
+        player is no longer derived (e.g. a bridge client turned web player).
+        """
+        # Only save if the player config still exists to avoid creating partial entries
+        if not self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}"):
+            return
+        conf_key = f"{CONF_PLAYERS}/{player.player_id}/values/{CONF_UNDERLYING_PLAYER_ID}"
+        if player.underlying_player_id:
+            self.mass.config.set(conf_key, player.underlying_player_id)
+        elif self.mass.config.get(conf_key) is not None:
+            self.mass.config.set(conf_key, None)
 
     def _get_cached_protocol_parent_id(self, protocol_player_id: str) -> str | None:
         """Get cached parent ID for a protocol player from config."""
@@ -1138,6 +1280,16 @@ class ProtocolLinkingMixin:
             protocol_player = self.get_player(protocol_id)
             is_available = protocol_player is not None and protocol_player.available
 
+            # Resolve the derived-transport edge from the live player when
+            # registered, else from the persisted edge in config
+            derived_from = (
+                protocol_player.underlying_player_id
+                if protocol_player
+                else protocol_config.get("values", {}).get(CONF_UNDERLYING_PLAYER_ID)
+            )
+            if derived_from == native_player.player_id:
+                derived_from = "native"
+
             # Add the OutputProtocol entry
             native_player.linked_output_protocols.append(
                 OutputProtocol(
@@ -1147,6 +1299,7 @@ class ProtocolLinkingMixin:
                     priority=priority,
                     is_native=False,
                     available=is_available,
+                    derived_from=derived_from,
                 )
             )
             self.logger.debug(
@@ -1177,7 +1330,7 @@ class ProtocolLinkingMixin:
                             self.mass.players.unregister(parent_id, permanent=True)
                         )
                     else:
-                        parent_player.update_state()
+                        parent_player.refresh_state()
                 else:
                     # Parent not registered yet — still purge the cached id
                     self._remove_protocol_id_from_cache(parent_id, player.player_id)
@@ -1194,7 +1347,7 @@ class ProtocolLinkingMixin:
                     # Protocol player is available: clear parent and schedule re-evaluation
                     # so it can be matched to a new parent or a new universal player
                     protocol_player.set_protocol_parent_id(None)
-                    protocol_player.update_state()
+                    protocol_player.refresh_state()
                     self.logger.debug(
                         "Player %s removed - scheduling evaluation for protocol %s",
                         player.player_id,

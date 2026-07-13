@@ -207,7 +207,7 @@ class PlaybackMixin:
 
         except Exception as e:
             LOGGER.exception(f"Error handling skipTo: {e}")
-            return web.Response(status=500, text=str(e))
+            return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
 

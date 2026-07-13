@@ -20,8 +20,11 @@ RUN uv venv $VIRTUAL_ENV
 # because we do not have to install dependencies at runtime
 # --index-strategy: allow PyPI packages when also using the PyTorch extra index
 # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+ENV URLLIB3_NO_OVERRIDE=1
 RUN uv pip install \
     --index-strategy unsafe-best-match \
+    --no-binary urllib3-future \
     -r requirements_all.txt
 
 # Install PyAV from pre-built wheel (built against system FFmpeg in base image)

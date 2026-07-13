@@ -82,7 +82,7 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list
     mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
         return_value=SimpleNamespace(loudness_integrated=MEASURED_LOUDNESS, loudness_album=None)
     )
-    mass.config.get_core_config = AsyncMock(return_value=MagicMock())
+    mass.streams.config.get_value.return_value = VolumeNormalizationMode.FALLBACK_DYNAMIC.value
     mass.config.get_player_config = AsyncMock(return_value=MagicMock())
     return controller, captured
 
@@ -131,7 +131,7 @@ async def test_dynamic_override_forces_loudnorm_and_ignores_measurement(
     # the just-in-time hydration / re-evaluation is skipped entirely
     mass = cast("MagicMock", controller.mass)
     mass.streams.audio_analysis.get_audio_analysis.assert_not_called()
-    mass.config.get_core_config.assert_not_called()
+    mass.streams.config.get_value.assert_not_called()
 
 
 @pytest.mark.asyncio

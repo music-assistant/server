@@ -3,21 +3,23 @@
 from __future__ import annotations
 
 import functools
+import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
 
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.media_items import MediaItemMetadata, Playlist, Track
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
-    from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.media_items import MediaItemType, PlayableMediaItemType
     from music_assistant_models.player_queue import PlayerQueue
-    from music_assistant_models.queue_item import QueueItem
 
-    from music_assistant.controllers.player_queues.controller import PlayerQueuesController
+    from music_assistant import MusicAssistant
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
@@ -43,9 +45,23 @@ class CompareState(TypedDict):
     output_formats: list[str] | None
 
 
-def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R](
-    func: Callable[Concatenate[PlayerQueuesControllerT, P], Awaitable[R]],
-) -> Callable[Concatenate[PlayerQueuesControllerT, P], Coroutine[Any, Any, R]]:
+class _PlayActionHost(Protocol):
+    """
+    The minimal controller surface that :func:`handle_play_action` needs.
+
+    Lets the decorator wrap actions defined either on the controller itself or on one
+    of its mixins, since both expose this surface at runtime.
+    """
+
+    mass: MusicAssistant
+    _queue_data: dict[str, PlayerQueueData]
+
+    def signal_update(self, queue_id: str, items_changed: bool = False) -> None: ...
+
+
+def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
+    func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]],
+) -> Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R]]:
     """
     Decorator for queue playback actions.
 
@@ -57,42 +73,55 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     """  # noqa: D401
 
     @functools.wraps(func)
-    async def wrapper(self: PlayerQueuesControllerT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: PlayActionHostT, *args: P.args, **kwargs: P.kwargs) -> R:
         """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
-        queue = self._queues.get(queue_id)
-        if queue is None:
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None:
             return await func(self, *args, **kwargs)
+        queue = queue_data.queue
         async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
             try:
-                self._play_action_refcount[queue_id] = (
-                    self._play_action_refcount.get(queue_id, 0) + 1
-                )
+                queue_data.play_action_refcount += 1
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 if not prev_in_progress:
                     self.signal_update(queue_id)
                 return await func(self, *args, **kwargs)
             finally:
-                refcount = self._play_action_refcount.get(queue_id, 1) - 1
-                if refcount <= 0:
-                    self._play_action_refcount.pop(queue_id, None)
+                queue_data.play_action_refcount -= 1
+                if queue_data.play_action_refcount <= 0:
+                    queue_data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
                     self.signal_update(queue_id)
-                else:
-                    self._play_action_refcount[queue_id] = refcount
 
     return wrapper
 
 
-def is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
-    """Return True if radio_source is a single dynamic playlist."""
-    return (
-        len(radio_source) == 1
-        and isinstance(radio_source[0], Playlist)
-        and radio_source[0].is_dynamic
-    )
+def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
+    """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
+    return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
+
+
+def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:
+    """
+    Build a QueueItem for enqueueing, keeping its media item slim.
+
+    The returned item only carries the media details needed for the queue listing and stream
+    resolution. For tracks the full metadata is dropped; it is restored from the library when
+    the item becomes the queue's current or next item, so large queues stay light on memory
+    and persisted-cache size.
+
+    :param queue_id: The id of the queue the item is created for.
+    :param media_item: The source media item to enqueue.
+    """
+    queue_item = QueueItem.from_media_item(queue_id, media_item)
+    if isinstance(queue_item.media_item, Track):
+        # the list-row artwork is already captured on QueueItem.image, so dropping the
+        # track's metadata here does not lose anything the queue listing still needs
+        queue_item.media_item.metadata = MediaItemMetadata()
+    return queue_item
 
 
 def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
@@ -137,3 +166,54 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
+    """
+    Randomly interleave groups while preserving the item order within each group.
+
+    :param groups: The ordered item groups to spread across the result.
+    """
+    positioned: list[tuple[float, ItemT]] = []
+    for items in groups:
+        total = len(items)
+        for offset, item in enumerate(items):
+            positioned.append(((offset + random.random()) / total, item))
+    positioned.sort(key=lambda entry: entry[0])
+    return [item for _, item in positioned]
+
+
+# how many bounded passes to make separating directly-adjacent same-artist items
+ARTIST_REPAIR_PASSES = 4
+# how far ahead to look for a non-clashing item to swap in (keeps moves local so any
+# existing even spread is preserved)
+ARTIST_SWAP_WINDOW = 6
+
+
+def space_by_artist(artist_sets: list[set[str]], *, preceding: set[str] | None = None) -> list[int]:
+    """
+    Return an index order that best-effort keeps same-artist entries from sitting adjacent.
+
+    :param artist_sets: The lowercased artist-name set for each item, in its current order.
+    :param preceding: Artist names of the item that will sit directly before the first entry (the
+        seam with the already-queued tail); the first entry is kept clear of it too. None ignores it.
+    """
+    count = len(artist_sets)
+    order = list(range(count))
+    sets = list(artist_sets)
+    for _ in range(ARTIST_REPAIR_PASSES):
+        changed = False
+        # index -1 represents the preceding (seam) item, so the first entry is kept clear of it too
+        for index in range(-1, count - 1):
+            current = preceding if index == -1 else sets[index]
+            if not current or not current & sets[index + 1]:
+                continue
+            for target in range(index + 2, min(index + 2 + ARTIST_SWAP_WINDOW, count)):
+                if not current & sets[target]:
+                    order[index + 1], order[target] = order[target], order[index + 1]
+                    sets[index + 1], sets[target] = sets[target], sets[index + 1]
+                    changed = True
+                    break
+        if not changed:
+            break
+    return order

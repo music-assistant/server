@@ -7,10 +7,12 @@ import logging
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import shortuuid
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
     ProviderConfig,
+    ProviderError,
 )
 from music_assistant_models.enums import (
     EventType,
@@ -63,7 +65,7 @@ class ProviderConfigMixin:
 
         def get(self, key: str, default: Any = None) -> Any: ...  # noqa: D102
 
-        def set(self, key: str, value: Any) -> None: ...  # noqa: D102
+        def set(self, key: str, value: Any, immediate: bool = False) -> None: ...  # noqa: D102
 
         def set_default(self, key: str, default_value: Any) -> None: ...  # noqa: D102
 
@@ -73,7 +75,7 @@ class ProviderConfigMixin:
 
         async def set_onboard_complete(self) -> None: ...  # noqa: D102
 
-    @api_command("config/providers")
+    @api_command("config/providers", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
@@ -104,7 +106,7 @@ class ProviderConfigMixin:
             configs.append(conf)
         return configs
 
-    @api_command("config/providers/get")
+    @api_command("config/providers/get", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -156,7 +158,7 @@ class ProviderConfigMixin:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/providers/get_value")
+    @api_command("config/providers/get_value", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config_value(
         self,
         instance_id: str,
@@ -191,7 +193,7 @@ class ProviderConfigMixin:
             else conf.values[key].default_value
         )
 
-    @api_command("config/providers/get_entries")
+    @api_command("config/providers/get_entries", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config_entries(
         self,
         provider_domain: str,
@@ -240,7 +242,7 @@ class ProviderConfigMixin:
         ]
         return _with_translation_owner(all_entries, f"provider.{provider_domain}", action, values)
 
-    @api_command("config/providers/save", required_role="admin")
+    @api_command("config/providers/save", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def save_provider_config(
         self,
         provider_domain: str,
@@ -261,7 +263,7 @@ class ProviderConfigMixin:
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)
 
-    @api_command("config/providers/remove", required_role="admin")
+    @api_command("config/providers/remove", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def remove_provider_config(self, instance_id: str) -> None:
         """Remove ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
@@ -303,6 +305,19 @@ class ProviderConfigMixin:
         """Set (or update) the default name for a provider."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}/default_name"
         self.set(conf_key, default_name)
+
+    def update_provider_last_error(self, instance_id: str, error: ProviderError | None) -> None:
+        """
+        Persist (or clear) a provider's last_error.
+
+        Only writes if the provider config still exists; this avoids re-creating a
+        config entry that was removed while a load was still in flight, which would
+        leave a stub entry without a domain. See #5728.
+        """
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        if not self.get(conf_key):
+            return
+        self.set(f"{conf_key}/last_error", error.to_dict() if error else None)
 
     async def create_builtin_provider_config(self, provider_domain: str) -> None:
         """
@@ -380,11 +395,15 @@ class ProviderConfigMixin:
         key: str,
         value: ConfigValueType,
         encrypted: bool = False,
+        immediate: bool = False,
     ) -> None:
         """
         Set (raw) single config(entry) value for a provider.
 
         Note that this only stores the (raw) value without any validation or default.
+        When immediate is set the value is flushed to disk right away instead of on the
+        debounced save timer, so a critical value (e.g. a rotated auth token) is not lost
+        if the process is killed within the debounce window.
         """
         if not self.get(f"{CONF_PROVIDERS}/{provider_instance}"):
             # only allow setting raw values if main entry exists
@@ -396,11 +415,19 @@ class ProviderConfigMixin:
                 raise ValueError(msg)
             value = self.encrypt_string(value)
         if key in BASE_KEYS:
-            self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+            self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value, immediate=immediate)
             return
-        self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value)
+        self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value, immediate=immediate)
+        # also update the loaded provider's in-place config copy so object-local value
+        # reads stay in sync with raw writes; include unavailable instances, since values
+        # like a rotated auth token can be written while the provider is temporarily
+        # unavailable and its copy must not lag behind the stored value
+        if (provider := self.mass.get_provider(provider_instance, return_unavailable=True)) and (
+            entry := provider.config.values.get(key)
+        ):
+            entry.value = value
 
-    @api_command("config/providers/reload", required_role="admin")
+    @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def _reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
         try:
@@ -428,8 +455,6 @@ class ProviderConfigMixin:
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         raw_conf = config.to_raw()
         self.set(conf_key, raw_conf)
-        if config.enabled and prov_instance is None:
-            await self.mass.load_provider_config(config)
         if config.enabled and prov_instance and available:
             # update config for existing/loaded provider instance
             await prov_instance.update_config(config, changed_keys)

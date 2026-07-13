@@ -8,10 +8,14 @@ underruns the LIVE flow stream at EOF and keeps reporting buffering/playing).
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
+
+if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
 
 
 def _fake_controller(queue: MagicMock) -> MagicMock:
@@ -22,8 +26,14 @@ def _fake_controller(queue: MagicMock) -> MagicMock:
         coro.close()
 
     fake = MagicMock()
-    fake._queues = {queue.queue_id: queue}
-    fake._flow_buffer_completed = {}
+    data = PlayerQueueData(queue=cast("PlayerQueue", queue))
+    # session_id is server-side state on the record now, not on the wire queue
+    data.session_id = queue.session_id
+    fake._queue_data = {queue.queue_id: data}
+    fake.get = MagicMock(
+        side_effect=lambda qid: d.queue if (d := fake._queue_data.get(qid)) else None
+    )
+    fake.queue_data_or_none = MagicMock(side_effect=lambda qid: fake._queue_data.get(qid))
     fake.mass.create_task = MagicMock(side_effect=_close_coro)
     return fake
 
@@ -49,7 +59,7 @@ def test_queue_buffer_completed_marks_session_finished() -> None:
 
     PlayerQueuesController.queue_buffer_completed(cast("PlayerQueuesController", fake), "q")
 
-    assert fake._flow_buffer_completed == {"q": "sess-1"}
+    assert fake._queue_data["q"].flow_buffer_completed == "sess-1"
     assert _finished(fake, "q") is True
 
 
@@ -60,7 +70,7 @@ def test_flow_stream_finished_invalidated_by_new_session() -> None:
     PlayerQueuesController.queue_buffer_completed(cast("PlayerQueuesController", fake), "q")
 
     # a new playback session starts (play_index assigns a fresh session_id)
-    queue.session_id = "sess-2"
+    fake._queue_data["q"].session_id = "sess-2"
 
     assert _finished(fake, "q") is False
 

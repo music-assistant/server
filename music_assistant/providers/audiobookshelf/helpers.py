@@ -19,17 +19,33 @@ class LibraryHelper(DataClassDictMixin):
 
 
 @dataclass(kw_only=True)
+class NarratorHelper(DataClassDictMixin):
+    """Store narrator's name and id."""
+
+    id_: str
+    name: str
+
+    def __hash__(self) -> int:
+        """Hash."""
+        return hash(self.id_)
+
+
+@dataclass(kw_only=True)
 class LibrariesHelper(DataClassDictMixin):
     """
     Helper class to store ABSLibrary name, id and the uuids of its media items.
 
-    Dictionary is lib_id:LibraryHelper or lib_id:set[playlist_ids].
+    Dictionary is lib_id:LibraryHelper or lib_id:set[playlist_ids/narrator_ids/author_ids].
     """
 
     audiobooks: dict[str, LibraryHelper] = field(default_factory=dict)
     podcasts: dict[str, LibraryHelper] = field(default_factory=dict)
     playlists_audiobooks: dict[str, set[str]] = field(default_factory=dict)
     playlists_podcasts: dict[str, set[str]] = field(default_factory=dict)
+    authors: dict[str, set[str]] = field(default_factory=dict)
+    narrators: dict[str, set[str]] = field(default_factory=dict)
+    # audiobook_id is key. Abs does not have a dedicated narrator endpoint.
+    audiobook_narrators: dict[str, set[NarratorHelper]] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True)

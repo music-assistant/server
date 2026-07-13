@@ -48,7 +48,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             translation_key="recently_added_tracks",
             icon="music-note-plus",
             items_factory=lambda: mass.music.tracks.library_items(
-                limit=10, order_by="timestamp_added_desc"
+                limit=10, order_by="timestamp_added_desc", summary=False
             ),
         ),
         CallableRecommendationSource(
@@ -58,7 +58,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             translation_key="recently_added_albums",
             icon="music-note-plus",
             items_factory=lambda: mass.music.albums.library_items(
-                limit=10, order_by="timestamp_added_desc"
+                limit=10, order_by="timestamp_added_desc", summary=False
             ),
         ),
         CallableRecommendationSource(
@@ -68,7 +68,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             translation_key="random_artists",
             icon="mdi-account-music",
             items_factory=lambda: mass.music.artists.library_items(
-                limit=10, order_by="random_play_count"
+                limit=10, order_by="random_play_count", summary=False
             ),
         ),
         CallableRecommendationSource(
@@ -78,7 +78,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             translation_key="random_albums",
             icon="mdi-album",
             items_factory=lambda: mass.music.albums.library_items(
-                limit=10, order_by="random_play_count"
+                limit=10, order_by="random_play_count", summary=False
             ),
         ),
         CallableRecommendationSource(
@@ -88,7 +88,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             translation_key="recent_favorite_tracks",
             icon="mdi-file-music",
             items_factory=lambda: mass.music.tracks.library_items(
-                favorite=True, limit=10, order_by="timestamp_modified_desc"
+                favorite=True, limit=10, order_by="timestamp_modified_desc", summary=False
             ),
         ),
         CallableRecommendationSource(
@@ -98,7 +98,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             translation_key="favorite_playlists",
             icon="mdi-playlist-music",
             items_factory=lambda: mass.music.playlists.library_items(
-                favorite=True, limit=10, order_by="random"
+                favorite=True, limit=10, order_by="random", summary=False
             ),
         ),
         CallableRecommendationSource(
@@ -108,7 +108,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             translation_key="favorite_radio_stations",
             icon="mdi-access-point",
             items_factory=lambda: mass.music.radio.library_items(
-                favorite=True, limit=10, order_by="play_count_desc"
+                favorite=True, limit=10, order_by="play_count_desc", summary=False
             ),
         ),
         CallableRecommendationSource(

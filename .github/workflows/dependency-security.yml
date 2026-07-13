@@ -1,10 +1,17 @@
 # Dependency Security Check Workflow
-# Checks Python dependencies for security vulnerabilities and supply chain risks
+# Checks Python dependencies for security vulnerabilities and supply chain risks.
+#
+# SECURITY: This workflow runs on `pull_request` (NOT `pull_request_target`), so
+# for PRs from forks it gets a read-only GITHUB_TOKEN and no access to repository
+# secrets. That makes it safe to check out and execute untrusted PR code here.
+# It cannot comment on the PR or change labels; that is handled by the companion
+# `dependency-security-report.yml` workflow, which runs with write permissions
+# but never checks out untrusted code.
 
 name: Dependency Security Check
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened, labeled]
     paths:
       - "requirements_all.txt"
@@ -17,20 +24,15 @@ on:
 permissions:
   contents: read
 
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+env:
+  URLLIB3_NO_OVERRIDE: "1"
+
 jobs:
   audit:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      req_sync: ${{ steps.req_sync.outputs.status }}
-      pip_audit: ${{ steps.pip_audit.outputs.status }}
-      deps_has_changes: ${{ steps.deps_check.outputs.has_changes }}
-      manifest_has_changes: ${{ steps.manifest_check.outputs.has_changes }}
-      safety_status: ${{ steps.safety_check.outputs.status }}
-      trusted_sources: ${{ steps.safety_check.outputs.trusted_sources }}
-      typosquatting: ${{ steps.safety_check.outputs.typosquatting }}
-      license: ${{ steps.safety_check.outputs.license }}
     steps:
       - name: Check out code from GitHub
         uses: actions/checkout@v7
@@ -253,7 +255,26 @@ jobs:
 
           cat safety_report.md
 
-      # Step 5: Hand off report fragments to the trusted reporting job
+      # Step 5: Persist analysis results for the reporting workflow.
+      # The report runs via workflow_run and cannot see this job's outputs, so
+      # the result strings are passed via the artifact. This data is UNTRUSTED
+      # (produced by fork code); the reporting workflow validates it and derives
+      # all PR identity/labels from the GitHub API, never from this artifact.
+      - name: Persist analysis results
+        if: always()
+        run: |
+          {
+            echo "REQ_SYNC=${{ steps.req_sync.outputs.status }}"
+            echo "PIP_AUDIT=${{ steps.pip_audit.outputs.status }}"
+            echo "DEPS_CHANGES=${{ steps.deps_check.outputs.has_changes }}"
+            echo "MANIFEST_CHANGES=${{ steps.manifest_check.outputs.has_changes }}"
+            echo "SAFETY_STATUS=${{ steps.safety_check.outputs.status }}"
+            echo "TRUSTED_SOURCES=${{ steps.safety_check.outputs.trusted_sources }}"
+            echo "TYPOSQUATTING=${{ steps.safety_check.outputs.typosquatting }}"
+            echo "LICENSE=${{ steps.safety_check.outputs.license }}"
+          } > status.env
+
+      # Step 6: Hand off report fragments and results to the reporting workflow
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -265,263 +286,6 @@ jobs:
             deps_report.md
             manifest_report.md
             safety_report.md
+            status.env
           if-no-files-found: ignore
           retention-days: 1
-
-  report:
-    needs: audit
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-    steps:
-      - name: Detect automated dependency PRs
-        id: pr_type
-        run: |
-          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
-          PR_LABELS="${{ toJson(github.event.pull_request.labels.*.name) }}"
-
-          # Check if PR is from dependabot, renovate, or has auto-merge label
-          if [[ "$PR_AUTHOR" == "dependabot[bot]" ]] || \
-             [[ "$PR_AUTHOR" == "renovate[bot]" ]] || \
-             echo "$PR_LABELS" | grep -q "auto-merge"; then
-            echo "is_automated=true" >> $GITHUB_OUTPUT
-            echo "✅ Detected automated dependency update PR - will auto-approve security checks"
-          else
-            echo "is_automated=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Download security reports
-        uses: actions/download-artifact@v8
-        with:
-          name: security-reports
-
-      # Step 6: Combine all reports and post as PR comment
-      - name: Create combined security report
-        id: report
-        env:
-          REQ_SYNC: ${{ needs.audit.outputs.req_sync }}
-          PIP_AUDIT: ${{ needs.audit.outputs.pip_audit }}
-          DEPS_CHANGES: ${{ needs.audit.outputs.deps_has_changes }}
-          MANIFEST_CHANGES: ${{ needs.audit.outputs.manifest_has_changes }}
-          SAFETY_STATUS: ${{ needs.audit.outputs.safety_status }}
-          TRUSTED_SOURCES: ${{ needs.audit.outputs.trusted_sources }}
-          TYPOSQUATTING: ${{ needs.audit.outputs.typosquatting }}
-          LICENSE: ${{ needs.audit.outputs.license }}
-          IS_AUTOMATED: ${{ steps.pr_type.outputs.is_automated }}
-        run: |
-          echo "# 🔒 Dependency Security Report" > security_report.md
-          echo "" >> security_report.md
-
-          if [ "$DEPS_CHANGES" == "true" ] || [ "$MANIFEST_CHANGES" == "true" ]; then
-            # 1. Show sync status if out of sync
-            if [ "$REQ_SYNC" == "out_of_sync" ] && [ -f sync_report.md ]; then
-              cat sync_report.md >> security_report.md
-              echo "" >> security_report.md
-              echo "---" >> security_report.md
-              echo "" >> security_report.md
-            fi
-
-            # 2. Modified Dependencies Section (consolidated)
-            echo "## 📦 Modified Dependencies" >> security_report.md
-            echo "" >> security_report.md
-
-            # Combine requirements_all.txt and manifest changes
-            HAS_DEPS=false
-
-            if [ "$MANIFEST_CHANGES" == "true" ] && [ -f manifest_report.md ]; then
-              cat manifest_report.md | grep -v "^## " >> security_report.md
-              HAS_DEPS=true
-            fi
-
-            if [ "$DEPS_CHANGES" == "true" ] && [ -f deps_report.md ]; then
-              if [ "$HAS_DEPS" = "true" ]; then
-                echo "" >> security_report.md
-              fi
-              cat deps_report.md | grep -v "^## " >> security_report.md
-            fi
-
-            echo "" >> security_report.md
-            echo "---" >> security_report.md
-            echo "" >> security_report.md
-
-            # 3. Vulnerability Scan Results
-            if [ -f audit_report.md ]; then
-              cat audit_report.md >> security_report.md
-            fi
-            echo "" >> security_report.md
-            echo "---" >> security_report.md
-            echo "" >> security_report.md
-
-            # 4. Automated Security Checks
-            echo "### Automated Security Checks" >> security_report.md
-            echo "" >> security_report.md
-
-            # Vulnerability scan check
-            if [ "$PIP_AUDIT" == "fail" ]; then
-              echo "- ❌ **Vulnerability Scan**: Failed - Known vulnerabilities detected" >> security_report.md
-            else
-              echo "- ✅ **Vulnerability Scan**: Passed - No known vulnerabilities" >> security_report.md
-            fi
-
-            # Trusted sources check
-            if [ "$TRUSTED_SOURCES" == "fail" ]; then
-              echo "- ❌ **Trusted Sources**: Some packages missing source repository" >> security_report.md
-            else
-              echo "- ✅ **Trusted Sources**: All packages have verified source repositories" >> security_report.md
-            fi
-
-            # Typosquatting check
-            if [ "$TYPOSQUATTING" == "fail" ]; then
-              echo "- ❌ **Typosquatting Check**: Suspicious package names detected!" >> security_report.md
-            else
-              echo "- ✅ **Typosquatting Check**: No suspicious package names detected" >> security_report.md
-            fi
-
-            # License compatibility check
-            if [ "$LICENSE" == "fail" ]; then
-              echo "- ⚠️  **License Compatibility**: Some licenses may not be compatible" >> security_report.md
-            else
-              echo "- ✅ **License Compatibility**: All licenses are OSI-approved and compatible" >> security_report.md
-            fi
-
-            # Supply chain risk check
-            if [ "$SAFETY_STATUS" == "high_risk" ]; then
-              echo "- ❌ **Supply Chain Risk**: High risk packages detected" >> security_report.md
-            elif [ "$SAFETY_STATUS" == "medium_risk" ]; then
-              echo "- ⚠️  **Supply Chain Risk**: Medium risk - review recommended" >> security_report.md
-            else
-              echo "- ✅ **Supply Chain Risk**: Passed - packages appear mature and maintained" >> security_report.md
-            fi
-
-            echo "" >> security_report.md
-
-            # Check if automated PR
-            if [ "$IS_AUTOMATED" == "true" ]; then
-              echo "> 🤖 **Automated dependency update** - This PR is from a trusted source (dependabot/renovate) and will be auto-approved if all checks pass." >> security_report.md
-              echo "" >> security_report.md
-            fi
-
-            echo "### Manual Review" >> security_report.md
-            echo "" >> security_report.md
-            echo "**Maintainer approval required:**" >> security_report.md
-            echo "" >> security_report.md
-            echo "- [ ] **I have reviewed the changes above and approve these dependency updates**" >> security_report.md
-            echo "" >> security_report.md
-
-            if [ "$IS_AUTOMATED" == "true" ]; then
-              echo "_Automated PRs with all checks passing will be auto-approved._" >> security_report.md
-            else
-              echo "**To approve:** Comment \`/approve-dependencies\` or manually add the \`dependencies-reviewed\` label." >> security_report.md
-            fi
-          else
-            echo "✅ No dependency changes detected in this PR." >> security_report.md
-          fi
-
-          cat security_report.md
-
-          # Add to GitHub job summary (always available, even for forks)
-          cat security_report.md >> $GITHUB_STEP_SUMMARY
-
-      # Step 7: Post comment to PR
-      - name: Post security report to PR
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const fs = require('fs');
-            const report = fs.readFileSync('security_report.md', 'utf8');
-
-            // Find existing bot comment
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-
-            const botComment = comments.data.find(comment =>
-              comment.user.type === 'Bot' &&
-              comment.body.includes('🔒 Dependency Security Report')
-            );
-
-            if (botComment) {
-              // Update existing comment
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: report
-              });
-            } else {
-              // Create new comment
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: report
-              });
-            }
-
-      # Step 8: Check for approval label (if dependencies changed)
-      - name: Check for security review approval
-        if: needs.audit.outputs.deps_has_changes == 'true' || needs.audit.outputs.manifest_has_changes == 'true'
-        uses: actions/github-script@v9
-        env:
-          IS_AUTOMATED: ${{ steps.pr_type.outputs.is_automated }}
-          SAFETY_STATUS: ${{ needs.audit.outputs.safety_status }}
-          PIP_AUDIT: ${{ needs.audit.outputs.pip_audit }}
-        with:
-          script: |
-            const labels = context.payload.pull_request.labels.map(l => l.name);
-            const hasReviewLabel = labels.includes('dependencies-reviewed');
-            const isAutomated = process.env.IS_AUTOMATED === 'true';
-            const isHighRisk = process.env.SAFETY_STATUS === 'high_risk';
-            const hasFailed = process.env.PIP_AUDIT === 'fail';
-
-            if (isHighRisk) {
-              core.setFailed('🔴 HIGH RISK dependencies detected! This PR requires thorough security review before merging.');
-            } else if (hasFailed) {
-              core.setFailed('🔴 Known vulnerabilities detected! Please address the security issues above.');
-            } else if (isAutomated) {
-              // Auto-approve automated PRs if security checks passed
-              core.info('✅ Automated dependency update with passing security checks - auto-approved');
-
-              // Optionally add the label automatically
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                labels: ['dependencies-reviewed']
-              });
-            } else if (!hasReviewLabel) {
-              core.setFailed('⚠️  Dependency changes detected. A maintainer must add the "dependencies-reviewed" label after security review.');
-            } else {
-              core.info('✅ Security review approved via "dependencies-reviewed" label');
-            }
-
-      # Step 9: Fail the check if high-risk or vulnerabilities found
-      - name: Final security status
-        if: always()
-        env:
-          PIP_AUDIT: ${{ needs.audit.outputs.pip_audit }}
-          SAFETY_STATUS: ${{ needs.audit.outputs.safety_status }}
-          DEPS_CHANGES: ${{ needs.audit.outputs.deps_has_changes }}
-          MANIFEST_CHANGES: ${{ needs.audit.outputs.manifest_has_changes }}
-        run: |
-          if [ "$PIP_AUDIT" == "fail" ]; then
-            echo "❌ Known vulnerabilities found!"
-            exit 1
-          fi
-
-          if [ "$SAFETY_STATUS" == "high_risk" ]; then
-            echo "❌ High-risk packages detected!"
-            exit 1
-          fi
-
-          if [ "$DEPS_CHANGES" == "true" ] || [ "$MANIFEST_CHANGES" == "true" ]; then
-            echo "⚠️  Dependency changes require review"
-            # Don't fail here - the label check above will handle it
-          fi
-
-          echo "✅ Security checks completed"

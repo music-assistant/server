@@ -7,6 +7,7 @@ import contextlib
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     AlbumType,
     ArtistType,
@@ -22,6 +23,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    ArtistSummary,
     Audiobook,
     ItemMapping,
     ProviderMapping,
@@ -50,6 +52,8 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -60,6 +64,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     db_table = DB_TABLE_ARTISTS
     media_type = MediaType.ARTIST
     item_cls = Artist
+    summary_item_cls = ArtistSummary
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
@@ -67,12 +72,39 @@ class ArtistsController(MediaControllerBase[Artist]):
         self._db_add_lock = asyncio.Lock()
         # register (extra) api handlers
         api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/artist_albums", self.albums)
-        self.mass.register_api_command(f"music/{api_base}/artist_tracks", self.tracks)
-        self.mass.register_api_command(f"music/{api_base}/top_tracks", self.top_tracks)
-        self.mass.register_api_command(f"music/{api_base}/top_albums", self.top_albums)
-        self.mass.register_api_command(f"music/{api_base}/artist_audiobooks", self.audiobooks)
-        self.mass.register_api_command(f"music/{api_base}/similar_artists", self.similar_artists)
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_albums", self.albums, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/top_tracks", self.top_tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/top_albums", self.top_albums, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_audiobooks",
+            self.audiobooks,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/similar_artists",
+            self.similar_artists,
+            required_scope=Scope.LIBRARY_READ,
+        )
+
+    @property
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the slim SELECT query used for artist summary listings."""
+        query = f"""
+        SELECT
+            {self._summary_base_columns()},
+            artists.artist_type,
+            {self._provider_mappings_query()} AS provider_mappings
+            FROM artists"""
+        return query, {}
 
     async def library_count(
         self,
@@ -96,7 +128,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             sql_query += f" WHERE {' AND '.join(query_parts)}"
         return await self.mass.music.database.get_count_from_query(sql_query)
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -105,8 +137,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        played_only: bool = False,
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
+        *,
+        summary: bool = True,
         **kwargs: Any,
     ) -> list[Artist]:
         """
@@ -121,12 +156,14 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param album_artists_only: Only return artists that have albums.
         :param genre: Filter by genre id(s).
         :param artist_type: The artist's type
+        :param summary: When True (default), return slim summary items containing only the
+            fields needed for a list view. Set to False to get fully hydrated items.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         if artist_type:
             extra_query_parts = [f"artist_type = '{artist_type}'"]
-        if album_artists_only and artist_type == ArtistType.SINGER:
+        if album_artists_only and artist_type in (None, ArtistType.SINGER):
             extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"from {DB_TABLE_ALBUM_ARTISTS})"
@@ -141,7 +178,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            played_only=played_only,
             in_library_only=True,
+            summary=summary,
         )
 
     async def tracks(
@@ -799,24 +838,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
 
-    async def radio_mode_base_tracks(
-        self,
-        item: Artist,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Artist to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        if item.artist_type != ArtistType.SINGER:
-            raise MusicAssistantError("Radio mode tracks only exists for artists of type ARTIST.")
-        # prefer the (top) tracks listing as radio seed, falling back to all tracks
-        if result := await self.top_tracks(item.item_id, item.provider):
-            return result
-        return await self.tracks(item.item_id, item.provider)
-
     async def match_provider(
         self, db_artist: Artist, provider: MusicProvider, strict: bool = True
     ) -> list[ProviderMapping]:
@@ -977,7 +998,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "favorite": item.favorite,
-                "external_ids": serialize_to_json(item.external_ids),
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
@@ -985,6 +1005,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "artist_type": item.artist_type,
             },
         )
+        # update/set external id lookup table
+        await self.set_external_ids(db_id, item.external_ids)
         # update/set provider_mappings table
         await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -1020,9 +1042,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             {
                 "name": name,
                 "sort_name": sort_name,
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
                 "metadata": serialize_to_json(metadata),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
@@ -1033,6 +1052,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             },
         )
         self.logger.debug("updated %s in database: %s", update.name, db_id)
+        # update/set external id lookup table
+        await self.set_external_ids(
+            db_id, update.external_ids if overwrite else cur_item.external_ids
+        )
         # update/set provider_mappings table
         provider_mappings = (
             update.provider_mappings
@@ -1095,3 +1118,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 provider_filter=[provider_instance_id_or_domain],
             )
         return []
+
+    def _parse_summary_row(self, db_row: Mapping[str, Any]) -> ArtistSummary:
+        """Parse a raw summary db row into an ArtistSummary object."""
+        item = cast("ArtistSummary", super()._parse_summary_row(db_row))
+        item.artist_type = ArtistType(db_row["artist_type"])
+        return item

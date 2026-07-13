@@ -15,7 +15,7 @@ This package provides a centralized caching layer backed by SQLite. All data sto
 ## Package Layout
 
 - `controller.py`: main `CacheController` with get/set/delete/clear operations and database lifecycle.
-- `constants.py`: shared constants (`DEFAULT_CACHE_EXPIRATION`, `MAX_CACHE_DB_SIZE_MB`, `DB_SCHEMA_VERSION`), the `BYPASS_CACHE` context variable, and the `SerializableType` alias.
+- `constants.py`: shared constants (`DEFAULT_CACHE_EXPIRATION`, `MAX_CACHE_DB_SIZE_MB`, `DB_SCHEMA_VERSION`) and the `BYPASS_CACHE` context variable.
 - `helpers.py`: the `use_cache` decorator for provider/controller methods.
 
 ## Design Notes

@@ -191,17 +191,6 @@
         const deviceName = urlParams.get('device_name');
         const returnUrl = urlParams.get('return_url');
 
-        function isValidRedirectUrl(url) {
-            if (!url) return false;
-            try {
-                const parsed = new URL(url, window.location.origin);
-                const allowedProtocols = ['http:', 'https:', 'musicassistant:'];
-                return allowedProtocols.includes(parsed.protocol);
-            } catch {
-                return false;
-            }
-        }
-
         function showError(message) {
             const errorMessage = document.getElementById('errorMessage');
             errorMessage.textContent = message;
@@ -213,22 +202,10 @@
             errorMessage.classList.remove('show');
         }
 
-        function redirectWithToken(token) {
-            if (returnUrl && isValidRedirectUrl(returnUrl)) {
-                let finalUrl = returnUrl;
-
-                if (returnUrl.includes('#')) {
-                    const parts = returnUrl.split('#', 2);
-                    const basePart = parts[0];
-                    const hashPart = parts[1];
-                    const separator = basePart.includes('?') ? '&' : '?';
-                    finalUrl = `${basePart}${separator}code=${encodeURIComponent(token)}&onboard=true#${hashPart}`;
-                } else {
-                    const separator = returnUrl.includes('?') ? '&' : '?';
-                    finalUrl = `${returnUrl}${separator}code=${encodeURIComponent(token)}&onboard=true`;
-                }
-
-                window.location.href = finalUrl;
+        function redirectWithToken(token, redirectTo) {
+            // Follow the server-provided target; fall back to a local redirect otherwise.
+            if (redirectTo) {
+                window.location.href = redirectTo;
             } else {
                 window.location.href = `./?code=${encodeURIComponent(token)}&onboard=true`;
             }
@@ -271,6 +248,10 @@
                     requestBody.device_name = deviceName;
                 }
 
+                if (returnUrl) {
+                    requestBody.return_url = returnUrl;
+                }
+
                 const response = await fetch('setup', {
                     method: 'POST',
                     headers: {
@@ -282,7 +263,7 @@
                 const data = await response.json();
 
                 if (response.ok && data.success) {
-                    redirectWithToken(data.token);
+                    redirectWithToken(data.token, data.redirect_to);
                 } else {
                     submitBtn.disabled = false;
                     submitBtn.textContent = 'Create Account';

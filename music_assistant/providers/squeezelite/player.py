@@ -35,7 +35,12 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import (
+    POSITION_JUMP_THRESHOLD,
+    DeviceInfo,
+    Player,
+    PlayerMedia,
+)
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -278,6 +283,7 @@ class SqueezelitePlayer(Player):
             self,
             start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
             crossfade_enabled=crossfade_enabled,
+            overlay_active=bool(queue and queue.overlay_enabled and queue.overlay_source),
         )
 
         # select audio source, we force flow mode
@@ -527,10 +533,15 @@ class SqueezelitePlayer(Player):
             # Some players keep sending heartbeat with increasing elapsed time
             # even when paused (e.g. WiiM)
             return
-        # elapsed time change on the player will be auto picked up
-        # by the player manager.
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
+        # only involve the state machine when the reported position diverged (e.g. buffering/seek)
+        published_position = self.state.corrected_elapsed_time
+        if (
+            published_position is None
+            or abs(published_position - self.client.elapsed_seconds) > POSITION_JUMP_THRESHOLD
+        ):
+            self.update_state()
 
         # handle sync
         if self.synced_to:

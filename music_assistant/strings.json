@@ -40,6 +40,12 @@
         "relative": "Relative volume increase",
         "percentual": "Volume increase by fixed percentage",
         "none": "Do not adjust volume"
+      },
+      "option_descriptions": {
+        "absolute": "Play announcements at the fixed volume set below, ignoring the player's current volume.",
+        "relative": "Raise the current volume by the amount set below while the announcement plays.",
+        "percentual": "Raise the current volume by the percentage set below while the announcement plays.",
+        "none": "Leave the volume unchanged; play the announcement at the player's current volume."
       }
     },
     "auto_play": {
@@ -57,6 +63,11 @@
         "disabled": "Disabled - do not send ICY metadata",
         "basic": "Profile 1 - basic info",
         "full": "Profile 2 - full info (including image)"
+      },
+      "option_descriptions": {
+        "disabled": "Don't inject metadata; the player won't show track info during flow mode.",
+        "basic": "Send title and artist only. Lightweight and widely compatible.",
+        "full": "Also send album name and cover art. Richer, but some players mishandle it — use Basic if you see playback issues."
       }
     },
     "flow_mode": {
@@ -65,13 +76,20 @@
     },
     "flow_mode_sample_rate": {
       "label": "Flow Mode sample rate",
-      "description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.\n\n- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first track. Subsequent tracks with an equal or lower sample rate are upsampled to match; if the next track has a higher sample rate, the flow stream is restarted at that higher rate. This is the best balance between quality and seamless playback.\n- 'Bit-perfect (no resampling)': Never resamples audio (unless the player does not support the track's sample rate). Playback is restarted between queue tracks when their sample rates differ, which disables gapless and crossfade between those tracks.\n- '48 kHz': Resamples all audio to a fixed 48 kHz (or the closest rate supported by the player) using a high quality resampler. A good compromise of quality and bandwidth.\n- '96 kHz': Resamples all audio to a fixed 96 kHz (or the closest rate supported by the player) using a high quality resampler.\n- 'Highest supported by player': Resamples all audio to the highest sample rate the player supports. Note that this can waste a lot of bandwidth.",
+      "description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.",
       "options": {
-        "smart": "Smart (upsample only)",
-        "bit_perfect": "Bit-perfect (no resampling)",
-        "48000": "48 kHz (balanced quality and bandwidth)",
-        "96000": "96 kHz (high quality)",
+        "smart": "Smart",
+        "bit_perfect": "Bit-perfect",
+        "48000": "48 kHz",
+        "96000": "96 kHz",
         "highest": "Highest supported by player"
+      },
+      "option_descriptions": {
+        "smart": "Starts at the first track's rate; upsamples lower-rate tracks to match, and restarts the stream only when a track has a higher rate. Best balance of quality and seamless playback.",
+        "bit_perfect": "Never resamples. Playback restarts between tracks of differing sample rates, which disables gapless and crossfade across those transitions.",
+        "48000": "Resamples everything to a fixed 48 kHz (or the closest rate the player supports). A good compromise of quality and bandwidth.",
+        "96000": "Resamples everything to a fixed 96 kHz (or the closest rate the player supports).",
+        "highest": "Resamples everything to the highest rate the player supports. Best quality, but can waste a lot of bandwidth."
       }
     },
     "http_profile": {
@@ -81,11 +99,38 @@
         "chunked": "Profile 1 - chunked",
         "no_content_length": "Profile 2 - no content length",
         "forced_content_length": "Profile 3 - forced content length"
+      },
+      "option_descriptions": {
+        "chunked": "Send audio using chunked transfer encoding, without a fixed length up front.",
+        "no_content_length": "Stream without a Content-Length header. Works for most players (the default).",
+        "forced_content_length": "Send an estimated Content-Length header. Some players need this to start playback or to seek."
       }
     },
     "icon": {
       "label": "Icon",
       "description": "Material design icon for this player.\n\nSee https://pictogrammers.com/library/mdi/."
+    },
+    "ignore_album_playlists": {
+      "label": "Ignore playlists with album tracks within album folders",
+      "description": "A digital album often comes with a playlist file (.m3u) that contains the tracks of the album. \nAdding all these playlists to the library, is not very practical so it's better to just ignore them.\n\nIf this option is enabled, all playlists will be ignored which are more than 1 level deep anywhere in the folder structure. E.g. /music/artistname/albumname/playlist.m3u"
+    },
+    "missing_album_artist_action": {
+      "label": "Action when a track is missing the Albumartist ID3 tag",
+      "description": "How to fill in the album artist for tracks with no Albumartist tag. This affects how those albums are grouped in your library.",
+      "options": {
+        "track_artist": "Use Track artist(s)",
+        "various_artists": "Use Various Artists",
+        "folder_name": "Use Folder name (if possible)"
+      },
+      "option_descriptions": {
+        "track_artist": "Use the track's own artist(s). Can split an album across artists when its tracks differ.",
+        "various_artists": "Group everything under a single 'Various Artists' album artist. Keeps the album together; best for compilations.",
+        "folder_name": "Use the containing folder's name, falling back to 'Various Artists' when it can't be determined."
+      }
+    },
+    "propagate_track_genres": {
+      "label": "Propagate track genres to albums and artists",
+      "description": "Derive album and artist genres from their tracks when the album/artist has no genre metadata of its own. Useful when your files only have genres tagged at track level."
     },
     "library_sync_album_tracks": {
       "label": "Import album tracks",
@@ -173,6 +218,12 @@
         "mp3": "MP3 (lossy)",
         "aac": "AAC (lossy)",
         "wav": "WAV (lossless, uncompressed)"
+      },
+      "option_descriptions": {
+        "flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
+        "mp3": "Lossy — smaller bitrate at some quality cost. Use for players that can't play FLAC, or to save bandwidth.",
+        "aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
+        "wav": "Lossless but uncompressed — highest bandwidth. Only needed for players that can't handle FLAC."
       }
     },
     "output_limiter": {
@@ -235,6 +286,10 @@
       "label": "Enable",
       "description": "Enable or disable this output protocol for the player."
     },
+    "protocol_enable_via": {
+      "label": "Enable",
+      "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled."
+    },
     "pre_announcement_chime_url": {
       "label": "Custom (pre)announcement chime URL",
       "description": "URL to a custom audio file to play before announcements.\nLeave empty to use the default chime.\nSupports http:// and https:// URLs pointing to audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\nExample: http://homeassistant.local:8123/local/audio/custom_chime.mp3"
@@ -253,6 +308,9 @@
         "native": "Native power control",
         "none": "None",
         "fake": "Fake power control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native power control."
       }
     },
     "volume_control": {
@@ -261,6 +319,9 @@
         "native": "Native volume control",
         "follow_protocol": "Auto-select (based on active/preferred protocol)",
         "none": "None"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native volume control."
       }
     },
     "mute_control": {
@@ -270,6 +331,9 @@
         "follow_protocol": "Auto-select (based on active/preferred protocol)",
         "none": "None",
         "fake": "Fake mute control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native mute control."
       }
     },
     "preferred_output_protocol": {
@@ -288,10 +352,13 @@
       "description": "Start the stream server on this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), which is the default. \nThis is an advanced setting that should normally not be adjusted in regular setups."
     },
     "content_type": {
+      "label": "Content type",
+      "description": "The type of content stored in this location",
       "options": {
         "audiobooks": "Audiobooks",
         "music": "Music",
-        "podcasts": "Podcasts"
+        "podcasts": "Podcasts",
+        "sound_effects": "Sound Effects"
       }
     },
     "mass_player_id": {
@@ -299,6 +366,25 @@
         "__auto__": "Auto (prefer playing player)"
       },
       "label": "Connected Music Assistant Player"
+    },
+    "auth_device": {
+      "label": "Login with device code",
+      "description": "Open a verification URL on any device and enter the short code.",
+      "action_label": "Login with device code"
+    },
+    "auth_qr": {
+      "label": "Login with QR code",
+      "description": "Opens a QR code page — scan it with the Yandex app on your phone.",
+      "action_label": "Login with QR code"
+    },
+    "auth_cookies": {
+      "label": "Login with Cookies",
+      "description": "Authenticate using browser cookies from passport.yandex.ru.",
+      "action_label": "Login with Cookies"
+    },
+    "remember_session": {
+      "label": "Remember session (auto-refresh token)",
+      "description": "When enabled, stores a long-lived session token to automatically refresh your music token when it expires. When disabled, you must re-authenticate manually when the token expires — toggling this off after logging in immediately drops the stored long-lived tokens."
     },
     "clear_auth": {
       "label": "Reset authentication",
@@ -319,11 +405,14 @@
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
     "playback": "Queue Playback",
+    "items_to_select": "Items to select",
+    "default_enqueue_option": "Default enqueue option",
     "autoplay": "Autoplay",
     "crossfade": "Crossfade",
     "smart_shuffle": "Smart shuffle",
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
+    "protocol_output_settings_via": "Enable {0} support (over {1})",
     "dsp": "Digital Signal Processing (DSP)",
     "options": "Player options",
     "audio": "Audio",
@@ -770,6 +859,9 @@
       "podcasts": {
         "name": "Podcasts"
       },
+      "sound_effects": {
+        "name": "Sound Effects"
+      },
       "library": {
         "name": "Library"
       },
@@ -1061,5 +1153,25 @@
     "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
     "connection_timeout": "Connection timed out: {0}.",
     "connect_failed": "Failed to connect to {0}."
+  },
+  "page": {
+    "device_code": {
+      "step_copy": "Copy the code",
+      "hint_copy": "Tap the code to copy it",
+      "copied": "Copied ✓",
+      "copy_manual": "Automatic copy failed — select the code and copy it manually",
+      "step_open": "Open the Yandex page and enter the code",
+      "open_button": "Continue to Yandex",
+      "expires_label": "Code expires in",
+      "expired_title": "Code expired",
+      "expired_text": "The code is no longer valid. Return to Music Assistant and start the login again.",
+      "success_title": "Authorization successful",
+      "success_text": "You can close this window.",
+      "failed_title": "Authorization failed",
+      "failed_text": "Please return to Music Assistant and try again.",
+      "denied_text": "The login was denied. Return to Music Assistant and try again.",
+      "ended_title": "Session ended",
+      "ended_text": "This login session is no longer active. You can close this window."
+    }
   }
 }

@@ -25,12 +25,6 @@ async def test_remove_player_prunes_manual_host_config() -> None:
     provider.config.get_value.side_effect = lambda key, default=None: (
         config_entries.get(key, SimpleNamespace(value=default)).value
     )
-    original_entries = [
-        "kitchen.local:6600",
-        "office.local:6601",
-        "office.local:6601",
-        "bedroom.local",
-    ]
     provider.mass = Mock()
     provider.mass.config = Mock()
     provider.mass.players = Mock()
@@ -39,15 +33,12 @@ async def test_remove_player_prunes_manual_host_config() -> None:
 
     await provider.remove_player("mpd_office.local_6601")
 
+    # the config controller stores the pruned list (and updates the in-place config copy)
     provider.mass.config.set_raw_provider_config_value.assert_called_once_with(
         "mpd_test",
         "manual_discovery_ip_addresses",
         ["kitchen.local:6600", "bedroom.local"],
-        False,
+        encrypted=False,
+        immediate=False,
     )
-    assert config_entries["manual_discovery_ip_addresses"].value == [
-        "kitchen.local:6600",
-        "bedroom.local",
-    ]
-    assert original_entries != config_entries["manual_discovery_ip_addresses"].value
     provider.mass.players.unregister.assert_awaited_once_with("mpd_office.local_6601", True)

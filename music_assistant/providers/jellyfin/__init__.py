@@ -24,7 +24,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import UNKNOWN_ARTIST_ID_MBID
+from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -40,14 +40,17 @@ from music_assistant.providers.jellyfin.parsers import (
 from .const import (
     ALBUM_FIELDS,
     ARTIST_FIELDS,
+    COLLECTION_TYPE_MUSIC,
+    COLLECTION_TYPE_PLAYLISTS,
     ITEM_KEY_COLLECTION_TYPE,
     ITEM_KEY_ID,
     ITEM_KEY_MEDIA_STREAMS,
+    ITEM_KEY_MEDIA_TYPE,
     ITEM_KEY_NAME,
     ITEM_KEY_RUNTIME_TICKS,
+    MEDIA_TYPE_AUDIO,
     SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
-    UNKNOWN_ARTIST_MAPPING,
     USER_APP_NAME,
 )
 
@@ -157,7 +160,7 @@ class JellyfinProvider(MusicProvider):
             self._client = await authenticate_by_name(
                 session_config,
                 username,
-                str(self.config.get_value(CONF_PASSWORD)),
+                str(self.config.get_value(CONF_PASSWORD) or ""),
             )
         except Exception as err:
             raise LoginFailed(f"Authentication failed: {err}") from err
@@ -181,11 +184,8 @@ class JellyfinProvider(MusicProvider):
         return tracks
 
     async def _search_album(self, search_query: str, limit: int) -> list[Album]:
-        if "-" in search_query:
-            searchterms = search_query.split(" - ")
-            albumname = searchterms[1]
-        else:
-            albumname = search_query
+        # an "Artist - Album" style query: search on the album part only
+        albumname = search_query.split(" - ", 1)[1] if " - " in search_query else search_query
         resultset = (
             await self._client.albums.search_term(albumname)
             .limit(limit)
@@ -319,8 +319,8 @@ class JellyfinProvider(MusicProvider):
                 .stream(100)
             )
             async for playlist in stream:
-                if "MediaType" in playlist:  # Only jellyfin has this property
-                    if playlist["MediaType"] == "Audio":
+                if ITEM_KEY_MEDIA_TYPE in playlist:  # Only jellyfin has this property
+                    if playlist[ITEM_KEY_MEDIA_TYPE] == MEDIA_TYPE_AUDIO:
                         yield parse_playlist(self.instance_id, self._client, playlist)
                 else:  # emby playlists are only audio type
                     yield parse_playlist(self.instance_id, self._client, playlist)
@@ -350,14 +350,14 @@ class JellyfinProvider(MusicProvider):
     @use_cache(60 * 15)  # Cache for 15 minutes
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        if prov_artist_id == UNKNOWN_ARTIST_MAPPING.item_id:
+        if prov_artist_id == UNKNOWN_ARTIST:
             artist = Artist(
-                item_id=UNKNOWN_ARTIST_MAPPING.item_id,
-                name=UNKNOWN_ARTIST_MAPPING.name,
+                item_id=UNKNOWN_ARTIST,
+                name=UNKNOWN_ARTIST,
                 provider=self.instance_id,
                 provider_mappings={
                     ProviderMapping(
-                        item_id=UNKNOWN_ARTIST_MAPPING.item_id,
+                        item_id=UNKNOWN_ARTIST,
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
                     )
@@ -432,18 +432,24 @@ class JellyfinProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        jellyfin_track = await self._client.get_track(item_id)
+        try:
+            jellyfin_track = await self._client.get_track(item_id)
+        except NotFound:
+            raise MediaNotFoundError(f"Item {item_id} not found")
         url = self._client.audio_url(
             jellyfin_track[ITEM_KEY_ID], container=SUPPORTED_CONTAINER_FORMATS
         )
+        runtime_ticks = jellyfin_track.get(ITEM_KEY_RUNTIME_TICKS)
         return StreamDetails(
             item_id=jellyfin_track[ITEM_KEY_ID],
             provider=self.instance_id,
             audio_format=audio_format(jellyfin_track),
             stream_type=StreamType.HTTP,
-            duration=int(
-                jellyfin_track[ITEM_KEY_RUNTIME_TICKS] / 10000000
-            ),  # 10000000 ticks per millisecond)
+            duration=(
+                int(runtime_ticks / 10000000)  # 10000000 ticks per second
+                if runtime_ticks is not None
+                else None
+            ),
             path=url,
             can_seek=True,
             allow_seek=True,
@@ -466,7 +472,7 @@ class JellyfinProvider(MusicProvider):
         libraries = response["Items"]
         result = []
         for library in libraries:
-            if ITEM_KEY_COLLECTION_TYPE in library and library[ITEM_KEY_COLLECTION_TYPE] in "music":
+            if library.get(ITEM_KEY_COLLECTION_TYPE) == COLLECTION_TYPE_MUSIC:
                 result.append(library)
         return result
 
@@ -476,9 +482,6 @@ class JellyfinProvider(MusicProvider):
         libraries = response["Items"]
         result = []
         for library in libraries:
-            if (
-                ITEM_KEY_COLLECTION_TYPE in library
-                and library[ITEM_KEY_COLLECTION_TYPE] in "playlists"
-            ):
+            if library.get(ITEM_KEY_COLLECTION_TYPE) == COLLECTION_TYPE_PLAYLISTS:
                 result.append(library)
         return result

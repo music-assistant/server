@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastmcp import Client
 
-# Use the ``from music_assistant.providers.fastmcp_server.debug import …`` form (not ``import provider.debug.… as``):
+# Use the ``from music_assistant.providers.fastmcp_server.debug import …`` form (not ``import music_assistant.providers.fastmcp_server.debug.… as``):
 # the upstream import-path rewrite only translates ``from music_assistant.providers.fastmcp_server.`` imports, so
 # the aliased ``import`` form survives un-rewritten and breaks the bundled tests.
 from music_assistant.providers.fastmcp_server.debug import event_buffer as ev_buf

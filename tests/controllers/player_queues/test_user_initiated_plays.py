@@ -16,14 +16,10 @@ from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.media_items import Album, Artist, Track
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
 if TYPE_CHECKING:
-    from music_assistant_models.player_queue import PlayerQueue
-
-
-def _controller() -> PlayerQueuesController:
-    """Create a bare controller instance without running __init__."""
-    return PlayerQueuesController.__new__(PlayerQueuesController)
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
 def test_directly_enqueued_track_is_user_initiated() -> None:
@@ -40,23 +36,23 @@ def test_directly_enqueued_track_is_user_initiated() -> None:
         item_id="t2", provider="library", name="T2", provider_mappings=set(), album=album
     )
     # the user explicitly played a single track and (separately) an album
-    queue = cast("PlayerQueue", Mock(enqueued_media_items=[explicit_track, album]))
+    data = cast("PlayerQueueData", Mock(enqueued_media_items=[explicit_track, album]))
 
-    ctrl = _controller()
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     # the directly-enqueued track was explicitly chosen
-    assert ctrl._is_user_initiated_play(queue, explicit_track) is True
+    assert tracker._is_user_initiated_play(data, explicit_track) is True
     # a track that only played as part of the enqueued album was not
-    assert ctrl._is_user_initiated_play(queue, album_track) is False
+    assert tracker._is_user_initiated_play(data, album_track) is False
 
 
 async def test_mark_album_played_is_user_initiated() -> None:
     """Crediting an enqueued album records it as a user-initiated play."""
-    ctrl = _controller()
-    ctrl.logger = Mock()
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    tracker.logger = Mock()
     mark = AsyncMock()
-    ctrl.mass = Mock()
-    ctrl.mass.music.mark_item_played = mark
-    ctrl.mass.music.resolve_library_artist_ids = AsyncMock(return_value=set())
+    tracker.mass = Mock()
+    tracker.mass.music.mark_item_played = mark
+    tracker.mass.music.resolve_library_artist_ids = AsyncMock(return_value=set())
 
     album = Album(
         item_id="a1",
@@ -66,25 +62,25 @@ async def test_mark_album_played_is_user_initiated() -> None:
         album_type=AlbumType.ALBUM,
     )
     track = Track(item_id="t1", provider="library", name="T", provider_mappings=set())
-    queue = cast("PlayerQueue", Mock(queue_id="q1", userid="u1"))
+    data = cast("PlayerQueueData", Mock(userid="u1", queue=Mock(queue_id="q1")))
 
-    await ctrl._mark_album_played(album, track, queue)
+    await tracker._mark_album_played(album, track, data)
 
     assert mark.call_args.kwargs["user_initiated"] is True
 
 
 async def test_resolve_artist_marks_user_initiated() -> None:
     """Enqueuing an artist records the artist itself as a user-initiated play."""
-    ctrl = _controller()
-    ctrl.mass = Mock()
-    ctrl.mass.create_task = Mock(side_effect=lambda coro: coro)
-    ctrl.mass.music.mark_item_played = Mock()
-    ctrl.get_artist_tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    resolver = MediaResolver.__new__(MediaResolver)
+    resolver.mass = Mock()
+    resolver.mass.create_task = Mock(side_effect=lambda coro: coro)
+    resolver.mass.music.mark_item_played = Mock()
+    resolver.get_artist_tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
     artist = Artist(item_id="ar1", provider="library", name="Ar", provider_mappings=set())
 
-    await ctrl._resolve_media_items(artist, userid="u1", queue_id="q1")
+    await resolver._resolve_media_items(artist, userid="u1", queue_id="q1")
 
-    call = ctrl.mass.music.mark_item_played.call_args
+    call = resolver.mass.music.mark_item_played.call_args
     assert call.kwargs["user_initiated"] is True
     assert call.args[0].media_type == MediaType.ARTIST

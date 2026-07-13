@@ -21,6 +21,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import CONF_ENABLED
 from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.player_provider import PlayerProvider
@@ -41,6 +42,7 @@ from music_assistant.providers.snapcast.constants import (
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
     SHIPPED_SNAPSERVER_CONFIG_FILE,
+    SNAPCLIENT_LIVENESS_POLL_INTERVAL,
     SNAPWEB_DIR,
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
@@ -79,6 +81,7 @@ class SnapCastProvider(PlayerProvider):
     _controlscript_available: bool
     _snapcast_ma_streams: dict[str, SnapcastMAStream]
     _snapcast_ma_streams_lock: asyncio.Lock
+    _last_status_refresh: float
 
     @property
     def queue_control_available(self) -> bool:
@@ -130,6 +133,7 @@ class SnapCastProvider(PlayerProvider):
             )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         self._ids_map = bidict({})
+        self._last_status_refresh = 0.0
 
         self._snapcast_ma_streams = {}
         self._snapcast_ma_streams_lock = asyncio.Lock()
@@ -169,7 +173,8 @@ class SnapCastProvider(PlayerProvider):
         self._stop_called = True
 
         for snap_client in self._snapserver.clients:
-            player_id = self._get_ma_id(snap_client.identifier)
+            if not (player_id := self._get_ma_id(snap_client.identifier)):
+                continue
             if not (player := self.mass.players.get_player(player_id, raise_unavailable=False)):
                 continue
             if player.playback_state != PlaybackState.PLAYING:
@@ -182,12 +187,55 @@ class SnapCastProvider(PlayerProvider):
         self._snapserver.stop()
         await self._stop_builtin_server()
 
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "builtin_server": self._use_builtin_server,
+            "builtin_server_started": (
+                self._snapserver_started.is_set() if self._snapserver_started else None
+            ),
+            "clients_total": len(self._snapserver.clients),
+            "clients_connected": sum(client.connected for client in self._snapserver.clients),
+            "groups": len(self._snapserver.groups),
+            "streams": len(self._snapserver.streams),
+            "ma_streams": len(self._snapcast_ma_streams),
+        }
+
+    async def refresh_server_status(self) -> None:
+        """
+        Refresh the full snapserver state, throttled to once per poll cycle.
+
+        Snapcast players all poll within the same controller pass; this collapses
+        that burst into a single Server.GetStatus so each client's lastSeen is
+        refreshed once per interval. Transient errors are ignored and retried.
+        """
+        now = self.mass.loop.time()
+        if now - self._last_status_refresh < SNAPCLIENT_LIVENESS_POLL_INTERVAL / 2:
+            return
+        self._last_status_refresh = now
+        try:
+            status, _ = await self._snapserver.status()
+            if isinstance(status, dict) and "server" in status:
+                self._snapserver.synchronize(status)
+        except Exception:
+            self.logger.debug("Snapserver status refresh failed", exc_info=True)
+
     async def _start_builtin_server(self) -> None:
         """Start the built-in Snapserver."""
         if self._use_builtin_server:
             self._snapserver_started = asyncio.Event()
             self._snapserver_runner = self.mass.create_task(self._builtin_server_runner())
-            await asyncio.wait_for(self._snapserver_started.wait(), 10)
+            try:
+                # during startup the executor and event loop can be contended
+                # by other providers loading, which delays the start signal
+                # by several seconds
+                await asyncio.wait_for(self._snapserver_started.wait(), 30)
+            except TimeoutError as err:
+                # cancel the runner so the spawned snapserver process
+                # does not linger and occupy the ports on the next attempt
+                await self._stop_builtin_server()
+                msg = "Builtin Snapserver did not start within 30 seconds"
+                raise SetupFailedError(msg) from err
 
     async def _stop_builtin_server(self) -> None:
         """Stop the built-in Snapserver."""
@@ -330,11 +378,9 @@ class SnapCastProvider(PlayerProvider):
                     self._snapserver_started.clear()
                 self._controlscript_available = False
 
-    def _get_ma_id(self, snap_client_id: str) -> str:
-        search_dict = self._ids_map.inverse
-        ma_id = search_dict.get(snap_client_id)
-        assert ma_id is not None  # for type checking
-        return ma_id
+    def _get_ma_id(self, snap_client_id: str) -> str | None:
+        """Return the MA player id for the given snapclient id, or None if not registered."""
+        return self._ids_map.inverse.get(snap_client_id)
 
     def _get_snapclient_id(self, player_id: str) -> str:
         search_dict = self._ids_map
@@ -348,7 +394,7 @@ class SnapCastProvider(PlayerProvider):
             new_id = "ma_" + str(re.sub(r"\W+", "", snap_client_id))
             self._ids_map[new_id] = snap_client_id
             return new_id
-        return self._get_ma_id(snap_client_id)
+        return search_dict[snap_client_id]
 
     def _handle_player_init(self, snap_client: SnapclientProto) -> SnapCastPlayer | None:
         """Process Snapcast add to Player controller."""
@@ -528,7 +574,8 @@ class SnapCastProvider(PlayerProvider):
                 raise RuntimeError("Couldn't remove client from group")
             self._snapserver.synchronize(res)
             for client_id in group_members:
-                ma_player_id = self._get_ma_id(client_id)
+                if (ma_player_id := self._get_ma_id(client_id)) is None:
+                    continue
                 if ma_player := cast("SnapCastPlayer", self.mass.players.get_player(ma_player_id)):
                     client = self._snapserver.client(client_id)
                     if client is not None:
@@ -705,9 +752,11 @@ class SnapCastProvider(PlayerProvider):
     ) -> SnapCastPlayer | None:
         """Return the MA SnapCastPlayer for either given client_id or player_id."""
         if client_id is not None:
-            if player_id is not None and player_id != self._get_ma_id(client_id):
+            if (mapped_id := self._get_ma_id(client_id)) is None:
+                return None
+            if player_id is not None and player_id != mapped_id:
                 raise ValueError("provided client_id and player_id do not match")
-            player_id = self._get_ma_id(client_id)
+            player_id = mapped_id
 
         if player_id is None:
             return None

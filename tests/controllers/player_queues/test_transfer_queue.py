@@ -37,7 +37,6 @@ def _fake_controller(source_id: str, target_player: MagicMock) -> MagicMock:
 
     fake = MagicMock()
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == source_id else target_queue)
-    fake._queue_items = {source_id: []}
     fake.stop = AsyncMock()
     fake.load = AsyncMock()
     fake.resume = AsyncMock()

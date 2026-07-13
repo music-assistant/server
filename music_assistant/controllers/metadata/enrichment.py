@@ -15,7 +15,7 @@ from time import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
 
@@ -138,7 +138,18 @@ class MetadataEnrichmentMixin:
             for provider in self.providers:
                 if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                     continue
-                if metadata := await provider.get_artist_metadata(artist):
+                try:
+                    metadata = await provider.get_artist_metadata(artist)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Artist %s from provider %s: %s",
+                        artist.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     if metadata.description:
@@ -245,7 +256,18 @@ class MetadataEnrichmentMixin:
             for provider in self.providers:
                 if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                     continue
-                if metadata := await provider.get_album_metadata(album):
+                try:
+                    metadata = await provider.get_album_metadata(album)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Album %s from provider %s: %s",
+                        album.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     album.metadata.update(metadata)
@@ -304,7 +326,18 @@ class MetadataEnrichmentMixin:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
 
-                if metadata := await provider.get_track_metadata(track):
+                try:
+                    metadata = await provider.get_track_metadata(track)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Track %s from provider %s: %s",
+                        track.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     track.metadata.update(metadata)
@@ -322,11 +355,6 @@ class MetadataEnrichmentMixin:
         self, playlist: Playlist, force_refresh: bool = False
     ) -> None:
         """Get/update rich metadata for a playlist."""
-        # dynamic playlists (e.g. Pandora stations, Apple Music stations) are
-        # provider-driven and endless: scanning "all" tracks for aggregate metadata
-        # doesn't make sense
-        if playlist.is_dynamic:
-            return
         # collect metadata + create collage images
         # NOTE: we only do/allow this every REFRESH_INTERVAL
         needs_refresh = (time() - (playlist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
@@ -381,7 +409,7 @@ class MetadataEnrichmentMixin:
                         provider.name,
                         playlist.name,
                     )
-            except Exception as err:
+            except MusicAssistantError as err:
                 self.logger.warning(
                     "Error retrieving playlist metadata from provider %s for %s: %s",
                     provider.name,

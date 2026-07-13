@@ -5,10 +5,12 @@ from __future__ import annotations
 import time
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ProviderMapping, Track
+from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.music.recency import RecencyWindows
+from music_assistant.helpers.json import serialize_to_json
 from music_assistant.mass import MusicAssistant
 
 
@@ -21,6 +23,7 @@ async def _add_playlog_row(
     name: str,
     timestamp: int,
     userid: str = "user-a",
+    artist_names: list[str] | None = None,
 ) -> None:
     """Insert a single row into the playlog."""
     await mass.music.database.insert(
@@ -30,6 +33,9 @@ async def _add_playlog_row(
             "provider": provider,
             "media_type": media_type.value,
             "name": name,
+            "artists": serialize_to_json([{"name": artist_name} for artist_name in artist_names])
+            if artist_names
+            else None,
             "timestamp": timestamp,
             "fully_played": True,
             "seconds_played": 180,
@@ -48,6 +54,28 @@ def _track(item_id: str, provider: str, *, mapping: ProviderMapping | None = Non
         name=f"Track {item_id}",
         uri=f"{provider}://track/{item_id}",
         provider_mappings=mappings,
+    )
+
+
+def _named_track(item_id: str, name: str, artist_names: list[str]) -> Track:
+    """Build a Track with the given title and artist names (no provider mappings)."""
+    return Track(
+        item_id=item_id,
+        provider="library",
+        name=name,
+        uri=f"library://track/{item_id}",
+        provider_mappings=set(),
+        artists=UniqueList(
+            [
+                ItemMapping(
+                    item_id=artist_name.lower(),
+                    provider="library",
+                    name=artist_name,
+                    media_type=MediaType.ARTIST,
+                )
+                for artist_name in artist_names
+            ]
+        ),
     )
 
 
@@ -208,3 +236,45 @@ async def test_song_lookback_uses_duplicate_gap_when_song_window_unset(
 
     assert ("library", "recent") in snapshot.song_ts
     assert ("library", "old") not in snapshot.song_ts
+
+
+async def test_track_recent_fuzzy_matches_other_version(mass: MusicAssistant) -> None:
+    """A different release/version of a played song (same title + shared artist) is recent too."""
+    now = int(time.time())
+    await _add_playlog_row(
+        mass,
+        item_id="amber-1",
+        provider="spotify--x",
+        media_type=MediaType.TRACK,
+        name="Amber",
+        timestamp=now - 60,
+        artist_names=["The Thrillseekers"],
+    )
+    snapshot = await mass.music.recency.snapshot(RecencyWindows(song_seconds=3600), userid="user-a")
+
+    # same song, different catalog item with differing artist credits: matched fuzzily
+    other_version = _named_track("amber-2", "Amber", ["The Thrillseekers", "Hydra"])
+    assert snapshot.track_recent(other_version, 3600) is True
+    # a bracketed version suffix on the candidate title is stripped before matching
+    remaster = _named_track("amber-3", "Amber (Remastered 2019)", ["The Thrillseekers"])
+    assert snapshot.track_recent(remaster, 3600) is True
+    # same title by an unrelated artist is NOT matched
+    unrelated = _named_track("amber-4", "Amber", ["Someone Else"])
+    assert snapshot.track_recent(unrelated, 3600) is False
+
+
+async def test_track_recent_no_fuzzy_match_for_legacy_rows(mass: MusicAssistant) -> None:
+    """Playlog rows without stored artists (legacy) only match on exact ids."""
+    now = int(time.time())
+    await _add_playlog_row(
+        mass,
+        item_id="amber-1",
+        provider="spotify--x",
+        media_type=MediaType.TRACK,
+        name="Amber",
+        timestamp=now - 60,
+    )
+    snapshot = await mass.music.recency.snapshot(RecencyWindows(song_seconds=3600), userid="user-a")
+
+    other_version = _named_track("amber-2", "Amber", ["The Thrillseekers"])
+    assert snapshot.track_recent(other_version, 3600) is False

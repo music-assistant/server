@@ -47,6 +47,10 @@ UPNP_DISCOVERY_BROADCAST_TARGET = (str(IPv4Address("255.255.255.255")), 1900)
 UPNP_DISCOVERY_TASK_ID = "discovery_upnp_cycle"
 UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
 
+# Re-announce daily so the HA integration token rotates before expiry, also on long uptimes
+HA_ANNOUNCE_INTERVAL = 86400
+HA_ANNOUNCE_TIMER_ID = "discovery_ha_announce_timer"
+
 
 async def async_upnp_search(*args: Any, **kwargs: Any) -> None:
     """Run async_upnp_client SSDP search with lazy import."""
@@ -93,6 +97,7 @@ class DiscoveryController(CoreController):
         if self.mass.running_as_hass_addon:
             # (re)announce to HA supervisor to make sure that HA picks it up
             await self._announce_to_homeassistant()
+            self._schedule_periodic_ha_announce()
         self._schedule_periodic_upnp_discovery()
 
     async def get_config_entries(
@@ -116,6 +121,7 @@ class DiscoveryController(CoreController):
         """Handle logic on server stop."""
         self.mass.cancel_timer(UPNP_DISCOVERY_TIMER_ID)
         self.mass.cancel_task(UPNP_DISCOVERY_TASK_ID)
+        self.mass.cancel_timer(HA_ANNOUNCE_TIMER_ID)
 
         await self._cancel_mdns_browser()
 
@@ -255,7 +261,9 @@ class DiscoveryController(CoreController):
         info = AsyncServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
+            addresses=[
+                await get_ip_pton(address) for address in self.mass.webserver.publish_addresses
+            ],
             port=self.mass.webserver.publish_port,
             properties=self.mass.get_server_info().to_dict(),
             server="mass.local.",
@@ -468,3 +476,16 @@ class DiscoveryController(CoreController):
                 )
         except Exception as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
+
+    def _schedule_periodic_ha_announce(self) -> None:
+        """Schedule the periodic (re)announce to Home Assistant."""
+
+        def run_announce() -> None:
+            self.mass.create_task(self._announce_to_homeassistant())
+            self._schedule_periodic_ha_announce()
+
+        self.mass.call_later(
+            HA_ANNOUNCE_INTERVAL,
+            run_announce,
+            task_id=HA_ANNOUNCE_TIMER_ID,
+        )

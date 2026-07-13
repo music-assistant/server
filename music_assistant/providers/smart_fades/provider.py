@@ -24,7 +24,12 @@ from music_assistant.models.audio_analysis_provider import (
 
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
-from .helpers import calculate_overall_bpm, decode_pcm_chunk_to_mono
+from .helpers import (
+    aggregate_series_to_bins,
+    calculate_overall_bpm,
+    compute_band_rms_frames,
+    decode_pcm_chunk_to_mono,
+)
 from .resources.skey_model import KEY_MAP as SKEY_KEY_MAP
 from .resources.skey_model import load_skey_components
 
@@ -56,6 +61,7 @@ class SmartFadesData:
     beats_feature_blocks: list[np.ndarray] = field(default_factory=list)
     energy_chunks: list[np.ndarray] = field(default_factory=list)
     centroid_chunks: list[np.ndarray] = field(default_factory=list)
+    frequency_band_chunks: dict[str, list[np.ndarray]] = field(default_factory=dict)
     musical_key_feature_blocks: list[torch.Tensor] = field(default_factory=list)
 
 
@@ -63,6 +69,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
     """Smart fades audio analysis provider using Beat This for beat tracking."""
 
     max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
+    # v2: anti-aliased 1800-bin envelopes, band_rms extra_data, beats_per_bar
+    analysis_version = 2
     has_unloadable_models = True
 
     def __init__(
@@ -236,45 +244,59 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
 
         # Run beat and key inference sequentially to keep peak CPU bounded.
-        beats, downbeats = await self._run_offloaded(self._infer_beat_timings, feats)
+        beats, downbeats, beats_per_bar = await self._run_offloaded(self._infer_beat_timings, feats)
         if len(beats) < 2:
             raise AudioAnalysisError("no rhythmic beat detected")
         key, mode = await self._run_offloaded(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)
 
-        # Interpolate energy and centroid to 1800 fixed bins
+        # mean power per bin: point sampling aliases beat-rate ripple into the bins
         rms_energy = None
+        energy_peak = 0.0
         if data.energy_chunks:
             energy_all = np.concatenate(data.energy_chunks)
             if len(energy_all) >= 2:
-                src_x = np.linspace(0, 1, len(energy_all))
-                dst_x = np.linspace(0, 1, 1800)
-                rms_energy = np.interp(dst_x, src_x, energy_all).astype(np.float32)
-                peak = rms_energy.max()
-                if peak > 0:
-                    rms_energy = rms_energy / peak
+                rms_energy = aggregate_series_to_bins(energy_all, 1800, power=True)
+                energy_peak = float(rms_energy.max())
+                if energy_peak > 0:
+                    rms_energy = rms_energy / energy_peak
 
         spectral_centroid = None
         if data.centroid_chunks:
             centroid_all = np.concatenate(data.centroid_chunks)
             if len(centroid_all) >= 2:
-                src_x = np.linspace(0, 1, len(centroid_all))
-                dst_x = np.linspace(0, 1, 1800)
-                spectral_centroid = np.interp(dst_x, src_x, centroid_all).astype(np.float32)
+                spectral_centroid = aggregate_series_to_bins(centroid_all, 1800)
                 # Zero out centroid where energy is negligible (noise dominates)
                 if rms_energy is not None:
                     spectral_centroid[rms_energy < 0.01] = 0.0
 
+        extra_data = None
+        if energy_peak > 0 and data.frequency_band_chunks:
+            extra_data = {
+                "band_rms": {
+                    name: (
+                        aggregate_series_to_bins(np.concatenate(chunks), 1800, power=True)
+                        / energy_peak
+                    ).tolist()
+                    for name, chunks in data.frequency_band_chunks.items()
+                }
+            }
+
         analysis = AudioAnalysisData(
             bpm=bpm,
-            beats=beats,
-            downbeats=downbeats,
+            # the model stores plain float lists (numpy-free); convert the analysis arrays
+            beats=beats.tolist(),
+            downbeats=downbeats.tolist(),
             duration=duration,
-            rms_energy=rms_energy,
-            spectral_centroid=spectral_centroid,
+            rms_energy=rms_energy.tolist() if rms_energy is not None else None,
+            spectral_centroid=(
+                spectral_centroid.tolist() if spectral_centroid is not None else None
+            ),
             key=key,
             mode=mode,
+            extra_data=extra_data,
+            beats_per_bar=beats_per_bar or None,
         )
 
         self.logger.debug(
@@ -332,11 +354,18 @@ class SmartFadesProvider(AudioAnalysisProvider):
             if rms_list:
                 data.energy_chunks.append(np.concatenate(rms_list).astype(np.float32))
 
+            band_frames = compute_band_rms_frames(pcm_22k, sr, window_samples)
+            for name, frames in band_frames.items():
+                data.frequency_band_chunks.setdefault(name, []).append(frames)
+
         # Spectral centroid: keep per-frame (hop_length=512, ~43 frames/s)
         # Skip short tail buffers: STFT reflect-pad requires len > n_fft // 2.
         if len(pcm_22k) >= self._spectral_centroid.n_fft:
             pcm_tensor = torch.from_numpy(pcm_22k)
             centroid_frames = self._spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
+            # digitally-silent frames divide 0/0 into NaN; treat them as 0 Hz like
+            # other negligible-energy frames so no non-finite value is ever stored
+            np.nan_to_num(centroid_frames, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
             if len(centroid_frames) > 0:
                 data.centroid_chunks.append(centroid_frames.astype(np.float32))
 
@@ -374,8 +403,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
         )
         return parts[0], parts[1].lower()
 
-    def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Run Beat This model inference to detect beat and downbeat timings."""
+    def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
+        """Run Beat This model inference to detect beat/downbeat timings and the meter."""
         assert self._beat_this_model is not None
         assert self._beat_this_post_processor is not None
 
@@ -400,7 +429,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             ]
         )
 
-        dbn_out = self._beat_this_post_processor(combined_act)
+        dbn_out, beats_per_bar = self._beat_this_post_processor(combined_act)
         post_elapsed = (time.perf_counter() - post_start) * 1000
 
         beats = dbn_out[:, 0]
@@ -415,4 +444,4 @@ class SmartFadesProvider(AudioAnalysisProvider):
             len(downbeats),
         )
 
-        return beats, downbeats
+        return beats, downbeats, beats_per_bar

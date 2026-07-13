@@ -7,16 +7,18 @@ import base64
 import contextlib
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiofiles
-from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 from music_assistant_models import config_entries
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
+    CONF_ENCRYPTION_KEY,
+    CONF_ENCRYPTION_KEY_MIGRATED,
     CONF_ONBOARD_DONE,
     CONF_SERVER_ID,
     ENCRYPT_SUFFIX,
@@ -28,16 +30,17 @@ from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.config.queues import PlayerQueueConfigMixin
-from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
+from music_assistant.helpers.json import (
+    JSON_DECODE_EXCEPTIONS,
+    async_json_dumps,
+    async_json_loads,
+    json_loads,
+)
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
-
-isfile = wrap(os.path.isfile)
-remove = wrap(os.remove)
-rename = wrap(os.rename)
 
 
 class ConfigController(
@@ -58,17 +61,15 @@ class ConfigController(
         self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
+        self._save_lock = asyncio.Lock()
 
     async def setup(self) -> None:
         """Async initialize of controller."""
         await self._load()
         self.initialized = True
-        # create default server ID if needed (also used for encrypting passwords)
+        # create default server ID if needed
         self.set_default(CONF_SERVER_ID, uuid4().hex)
-        server_id: str = self.get(CONF_SERVER_ID)
-        assert server_id
-        fernet_key = base64.urlsafe_b64encode(server_id.encode()[:32])
-        self._fernet = Fernet(fernet_key)
+        self._init_encryption()
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
         if not self.onboard_done:
@@ -128,7 +129,7 @@ class ConfigController(
             parent = parent[subkey]
         return default
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, immediate: bool = False) -> None:
         """Set value(s) for a specific key/path in persistent storage."""
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
@@ -141,7 +142,7 @@ class ConfigController(
             else:
                 parent.setdefault(subkey, {})
                 parent = parent[subkey]
-        self.save()
+        self.save(immediate=immediate)
 
     def set_default(self, key: str, default_value: Any) -> None:
         """Set default value(s) for a specific key/path in persistent storage."""
@@ -203,6 +204,54 @@ class ConfigController(
             msg = "Password decryption failed"
             raise InvalidDataError(msg) from err
 
+    def _init_encryption(self) -> None:
+        """Set up encryption for SECURE_STRING config values."""
+        self._fernet = self._load_or_create_encryption_key()
+        if not self.get(CONF_ENCRYPTION_KEY_MIGRATED):
+            self._migrate_legacy_secrets()
+            self.set(CONF_ENCRYPTION_KEY_MIGRATED, True)
+
+    def _load_or_create_encryption_key(self) -> Fernet:
+        """Return the stored encryption key, generating a new one if it is absent or invalid."""
+        encryption_key: Any = self.get(CONF_ENCRYPTION_KEY, "")
+        if isinstance(encryption_key, str) and encryption_key:
+            try:
+                return Fernet(encryption_key.encode())
+            except ValueError:
+                LOGGER.warning("Stored encryption key is invalid; generating a new one")
+                self.set(CONF_ENCRYPTION_KEY_MIGRATED, False)
+        encryption_key = Fernet.generate_key().decode()
+        self.set(CONF_ENCRYPTION_KEY, encryption_key)
+        return Fernet(encryption_key.encode())
+
+    def _migrate_legacy_secrets(self) -> None:
+        """One-time re-encryption of secrets that were encrypted with the server_id-derived key."""
+        server_id: str = self.get(CONF_SERVER_ID)
+        assert server_id
+        legacy_fernet = Fernet(base64.urlsafe_b64encode(server_id.encode()[:32]))
+        migrated = self._rotate_encrypted_values(self._data, legacy_fernet)
+        if migrated:
+            LOGGER.info("Re-encrypted %s secret(s) with the dedicated encryption key", migrated)
+            self.save(immediate=True)
+
+    def _rotate_encrypted_values(self, node: Any, legacy_fernet: Fernet) -> int:
+        """Recursively re-encrypt legacy-encrypted values, returning the count."""
+        assert self._fernet is not None
+        count = 0
+        values = node.items() if isinstance(node, dict) else enumerate(node)
+        for key, value in values:
+            if isinstance(value, (dict, list)):
+                count += self._rotate_encrypted_values(value, legacy_fernet)
+            elif isinstance(value, str) and value.startswith(ENCRYPT_SUFFIX):
+                token = value[len(ENCRYPT_SUFFIX) :].encode()
+                try:
+                    decrypted = legacy_fernet.decrypt(token)
+                except InvalidToken:
+                    continue
+                node[key] = ENCRYPT_SUFFIX + self._fernet.encrypt(decrypted).decode()
+                count += 1
+        return count
+
     async def _load(self) -> None:
         """Load data from persistent storage."""
         assert not self._data, "Already loaded"
@@ -223,13 +272,31 @@ class ConfigController(
 
     async def _async_save(self) -> None:
         """Save persistent data to disk."""
-        filename_backup = f"{self.filename}.backup"
-        # make backup before we write a new file
-        if await isfile(self.filename):
-            with contextlib.suppress(FileNotFoundError):
-                await remove(filename_backup)
-            await rename(self.filename, filename_backup)
-
-        async with aiofiles.open(self.filename, "w", encoding="utf-8") as _file:
-            await _file.write(await async_json_dumps(self._data, indent=True))
+        async with self._save_lock:
+            json_data = await async_json_dumps(self._data, indent=True)
+            await asyncio.to_thread(self._save_to_disk, json_data)
         LOGGER.debug("Saved data to persistent storage")
+
+    def _save_to_disk(self, json_data: str) -> None:
+        """Atomically write the settings file to disk, rotating the previous one to backup."""
+        filename = Path(self.filename)
+        filename_temp = Path(f"{self.filename}.tmp")
+        with filename_temp.open("w", encoding="utf-8") as _file:
+            _file.write(json_data)
+            _file.flush()
+            # fsync so a power failure can not leave a zero-length file behind (#5716)
+            os.fsync(_file.fileno())
+        with contextlib.suppress(FileNotFoundError, *JSON_DECODE_EXCEPTIONS):
+            # only rotate a parseable file to the backup, so a corrupt
+            # (crash leftover) file can never clobber a possibly good backup
+            json_loads(filename.read_bytes())
+            filename.replace(f"{self.filename}.backup")
+        filename_temp.replace(filename)
+        # best effort: fsync the directory as well so the renames themselves
+        # survive a power failure (not supported on all platforms/filesystems)
+        with contextlib.suppress(OSError):
+            dir_fd = os.open(os.path.dirname(self.filename), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)

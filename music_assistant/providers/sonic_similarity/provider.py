@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
@@ -142,14 +143,20 @@ class SonicSimilarityPlugin(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Register similarity API commands and set up the optional CLAP engine."""
         self._unregister_handles.append(
-            self.mass.register_api_command("sonic_similarity/similar", self._handle_similar)
-        )
-        self._unregister_handles.append(
-            self.mass.register_api_command("sonic_similarity/status", self._handle_status)
+            self.mass.register_api_command(
+                "sonic_similarity/similar", self._handle_similar, required_scope=Scope.LIBRARY_READ
+            )
         )
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "sonic_similarity/rebuild_index", self._handle_rebuild_index
+                "sonic_similarity/status", self._handle_status, required_scope=Scope.LIBRARY_READ
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "sonic_similarity/rebuild_index",
+                self._handle_rebuild_index,
+                required_scope=Scope.LIBRARY_MANAGE,
             )
         )
 
@@ -164,7 +171,9 @@ class SonicSimilarityPlugin(PluginProvider):
                 await self._clap_index.load()
                 self._unregister_handles.append(
                     self.mass.register_api_command(
-                        "sonic_similarity/similar_clap", self._handle_similar_clap
+                        "sonic_similarity/similar_clap",
+                        self._handle_similar_clap,
+                        required_scope=Scope.LIBRARY_READ,
                     )
                 )
                 await self._rebuild_clap_index_from_database()
@@ -179,7 +188,9 @@ class SonicSimilarityPlugin(PluginProvider):
         if text_search_enabled:
             self._unregister_handles.append(
                 self.mass.register_api_command(
-                    "sonic_similarity/text_search", self._handle_text_search
+                    "sonic_similarity/text_search",
+                    self._handle_text_search,
+                    required_scope=Scope.LIBRARY_READ,
                 )
             )
             # The ~500MB GPT2 text encoder loads lazily on the first query (see search()

@@ -1,0 +1,74 @@
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - stable
+      - dev
+    paths: &benchmark_paths
+      # helper functions exercised by the benchmarks
+      - "music_assistant/helpers/**"
+      # the benchmarks and toolchain itself
+      - "tests/benchmarks/**"
+      - ".github/workflows/codspeed.yml"
+      - "pyproject.toml"
+      - "requirements_all.txt"
+  pull_request:
+    branches:
+      - stable
+      - dev
+    paths: *benchmark_paths
+  # `workflow_dispatch` allows CodSpeed to trigger backtest
+  # performance analysis in order to generate initial data.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # for OpenID Connect authentication with CodSpeed
+
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+env:
+  URLLIB3_NO_OVERRIDE: "1"
+
+jobs:
+  benchmarks:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        # Pin an exact patch (not .python-version's "3.14") so the interpreter is
+        # identical across runs and CodSpeed's instruction counts stay comparable;
+        # check-latest is omitted so a new 3.14.x can't silently change the runtime.
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version: "3.14.6"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Cache uv packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('.python-version') }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
+
+      - name: Install dependencies
+        # --index-strategy: allow PyPI packages when also using the PyTorch extra index
+        # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+        run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@f99becdce5e5d51fd556489ebef684f4ecfd6286  # v4.18.5
+        with:
+          mode: simulation
+          # tests/benchmarks/ holds only deterministic pure-function benchmarks, so their
+          # instruction counts are reproducible under simulation. Server-level / async
+          # scenarios are non-deterministic under instruction counting and are covered by
+          # the scripts/perf/ deep-dive suite instead.
+          # -o addopts="" clears the default "--cov music_assistant" so coverage
+          # instrumentation does not interfere with the CodSpeed measurements.
+          run: pytest tests/benchmarks/ --codspeed -o addopts=""

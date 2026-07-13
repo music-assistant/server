@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, ImageType
@@ -40,6 +41,7 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_TYPE,
     ITEM_KEY_USER_DATA,
     USER_DATA_KEY_IS_FAVORITE,
+    USER_DATA_KEY_LAST_PLAYED_DATE,
 )
 
 if TYPE_CHECKING:
@@ -133,6 +135,9 @@ def parse_track(
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
     track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+
+    if last_played_date := user_data.get(USER_DATA_KEY_LAST_PLAYED_DATE):
+        track.last_played = int(datetime.fromisoformat(last_played_date).timestamp())
 
     if genres := item.get(ITEM_KEY_GENRES):
         track.metadata.genres = set(genres)

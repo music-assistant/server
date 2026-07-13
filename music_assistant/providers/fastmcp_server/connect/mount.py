@@ -33,6 +33,7 @@ async def mount_connect_wizard(
     *,
     enabled_tags_provider: Callable[[], list[str]],
     extra_origins_csv: str = "",
+    trust_forwarded_proto: bool = False,
 ) -> Callable[[], None]:
     """
     Register the wizard routes and return a callable that unregisters them.
@@ -45,6 +46,9 @@ async def mount_connect_wizard(
         permission hot-swaps surface in the UI without remount.
     :param extra_origins_csv: Comma-separated additional ``Origin`` values to
         accept beyond the auto-derived loopback + base_url + publish_ip set.
+    :param trust_forwarded_proto: When True, accept a trusted reverse proxy's
+        ``X-Forwarded-Proto: https`` as proof the public hop was HTTPS, so the
+        credential-bearing endpoints work behind a TLS-terminating proxy.
     :return: Callable that, when invoked, unregisters every wizard route.
     """
     allowlist = compute_origin_allowlist(mass, extra_origins_csv)
@@ -53,6 +57,7 @@ async def mount_connect_wizard(
         mount_path=mount_path,
         enabled_tags_provider=enabled_tags_provider,
         origin_check=lambda request: is_origin_allowed_for_request(request, allowlist),
+        trust_forwarded_proto=trust_forwarded_proto,
     )
 
     base = "/" + mount_path.strip("/")

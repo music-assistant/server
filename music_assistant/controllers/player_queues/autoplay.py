@@ -18,12 +18,14 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
+from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_GLOBAL
 from music_assistant.controllers.player_queues.constants import (
     CONF_AUTOPLAY_MODE,
     CONF_AUTOPLAY_PLAYLIST,
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
@@ -48,7 +50,7 @@ class AutoplayMode(StrEnum):
 AUTOPLAY_MODE_DEFAULT_VALUE = AutoplayMode.AUTO.value
 
 
-class AutoplayHelper:
+class Autoplay:
     """Resolve the Autoplay mode and produce the next batch of tracks for a queue."""
 
     def __init__(self, queues: PlayerQueuesController) -> None:
@@ -65,9 +67,11 @@ class AutoplayHelper:
         """
         Return the configured Autoplay mode for the given queue.
 
+        Follows the global (queue controller) mode when the per-queue value is "global".
+
         :param queue_id: The queue to read the configured Autoplay mode for.
         """
-        raw = self.mass.config.get_raw_player_queue_config_value(
+        raw = self.mass.config.get_effective_player_queue_config_value(
             queue_id, CONF_AUTOPLAY_MODE, AUTOPLAY_MODE_DEFAULT_VALUE
         )
         try:
@@ -93,6 +97,7 @@ class AutoplayHelper:
                     genre=genre_ids,
                     limit=AUTOPLAY_BATCH_SIZE * 3,
                     order_by="random_play_count",
+                    summary=False,
                 )
         # top up with a whole-library random mix when the genre selection yields too few usable
         # tracks (gauge on the deduped result so unavailable/excluded matches don't mask a shortfall)
@@ -102,6 +107,7 @@ class AutoplayHelper:
                 candidates += await self.mass.music.tracks.library_items(
                     limit=AUTOPLAY_BATCH_SIZE * 3,
                     order_by="random_play_count",
+                    summary=False,
                 )
             result = self._dedupe(candidates, exclude)
         return result
@@ -113,9 +119,7 @@ class AutoplayHelper:
         :param queue: The queue being refilled.
         :param exclude: Tracks already present in the queue, to avoid immediate repeats.
         """
-        uri = self.mass.config.get_raw_player_queue_config_value(
-            queue.queue_id, CONF_AUTOPLAY_PLAYLIST
-        )
+        uri = self._autoplay_playlist_uri(queue.queue_id)
         if not uri:
             self.logger.warning(
                 "Autoplay playlist mode is selected for %s but no playlist is configured",
@@ -137,12 +141,30 @@ class AutoplayHelper:
         random.shuffle(tracks)
         return self._dedupe(tracks, exclude)
 
+    def _autoplay_playlist_uri(self, queue_id: str) -> ConfigValueType:
+        """
+        Return the configured Autoplay playlist, taken from the level the mode resolves from.
+
+        A queue that follows the global Autoplay mode also follows the global playlist, so a
+        leftover per-queue playlist can't override the global one.
+
+        :param queue_id: The queue to read the Autoplay playlist for.
+        """
+        raw_mode = self.mass.config.get_raw_player_queue_config_value(
+            queue_id, CONF_AUTOPLAY_MODE, CONF_VALUE_GLOBAL
+        )
+        if raw_mode in (CONF_VALUE_GLOBAL, None):
+            return self.mass.config.get_raw_core_config_value(
+                CONF_PLAYER_QUEUES, CONF_AUTOPLAY_PLAYLIST
+            )
+        return self.mass.config.get_raw_player_queue_config_value(queue_id, CONF_AUTOPLAY_PLAYLIST)
+
     async def _collect_genre_ids(self, queue: PlayerQueue) -> list[int]:
         """Collect library genre ids from the queue's most recently enqueued items."""
         genre_ids: set[int] = set()
         seeds = [
             item
-            for item in reversed(queue.enqueued_media_items)
+            for item in reversed(self.queues.queue_data(queue.queue_id).enqueued_media_items)
             if item.media_type in GENRE_SEED_MEDIA_TYPES
         ][:GENRE_SEED_ITEM_COUNT]
         for seed in seeds:

@@ -146,6 +146,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
 
     from .provider import SendspinProvider
@@ -550,11 +551,17 @@ class SendspinPlayer(SendspinBasePlayer):
                     self._attr_volume_muted = muted
                 if volume is not None or muted is not None:
                     break
-        self._attr_expose_to_ha_by_default = not self.is_web_player
-        self._attr_hidden_by_default = self.is_web_player
+        # virtual players are server-owned anchors that follow the same
+        # hidden/standalone semantics as web players, without relying on the
+        # device-info heuristics above
+        is_standalone = self.is_web_player or cast(
+            "SendspinProvider", self.provider
+        ).is_virtual_player(self.player_id)
+        self._attr_expose_to_ha_by_default = not is_standalone
+        self._attr_hidden_by_default = is_standalone
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
-        self._attr_type = PlayerType.PLAYER if self.is_web_player else PlayerType.PROTOCOL
+        self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
 
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
@@ -1138,7 +1145,7 @@ class SendspinPlayer(SendspinBasePlayer):
         )
 
     @staticmethod
-    def _flow_track_offset_us(queue: PlayerQueue | None, queue_item: QueueItem) -> int | None:
+    def _flow_track_offset_us(pq_data: PlayerQueueData | None, queue_item: QueueItem) -> int | None:
         """
         Return the current track's flow-stream start offset (minus file seek), in µs.
 
@@ -1152,9 +1159,9 @@ class SendspinPlayer(SendspinBasePlayer):
         up to the crossfade duration. Exact handling needs a raw-seek field on
         the flow log entry.
         """
-        if queue is None or queue_item.streamdetails is None:
+        if pq_data is None or queue_item.streamdetails is None:
             return None
-        log = queue.flow_mode_stream_log
+        log = pq_data.flow_mode_stream_log
         if not log or log[-1].queue_item_id != queue_item.queue_item_id:
             return None
         track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:-1])
@@ -1196,7 +1203,8 @@ class SendspinPlayer(SendspinBasePlayer):
         # timeline. Falls back to the progress-derived anchor until the first
         # chunk commits or while the flow log hasn't recorded this track yet.
         anchor_us: int | None = None
-        offset_us = self._flow_track_offset_us(queue, queue_item)
+        pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
+        offset_us = self._flow_track_offset_us(pq_data, queue_item)
         if offset_us is not None:
             anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
         if anchor_us is None:

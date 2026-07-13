@@ -19,6 +19,7 @@ def mass_mock() -> Mock:
     mass.http_session = AsyncMock()
     mass.metadata.locale = "en_US"
     mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
     return mass

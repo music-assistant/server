@@ -38,7 +38,7 @@ on:
         required: true
 
 env:
-  BASE_IMAGE_VERSION_STABLE: "1.5.3"
+  BASE_IMAGE_VERSION_STABLE: "1.5.4"
   BASE_IMAGE_VERSION_BETA: "1.5.4"
   BASE_IMAGE_VERSION_NIGHTLY: "1.5.4"
 
@@ -349,14 +349,14 @@ jobs:
           path: dist/
 
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v4.2.0
+        uses: docker/login-action@v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.1.0
+        uses: docker/setup-buildx-action@v4.2.0
 
       - name: Generate Docker tags
         id: tags
@@ -400,7 +400,7 @@ jobs:
           echo "Docker tags: $TAGS"
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v7.2.0
+        uses: docker/build-push-action@v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64

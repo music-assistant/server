@@ -3,8 +3,11 @@ Shared recency engine for the Music controller.
 
 Reads the playlog once and exposes fast in-memory "was this heard recently?" tests, used by
 smart shuffle, the smart playlist dedup and (later) radio refills. Song recency is matched on
-provider/item-id pairs resolved across a track's provider mappings; artist recency is matched by
-(lowercased) name, which is provider-agnostic (artist playlog rows are keyed by the library id).
+provider/item-id pairs resolved across a track's provider mappings (the exact escape hatch),
+plus a fuzzy same-song match on (version-stripped title, artist name) keys so the same
+recording is recognized across different releases/providers with differing ids or artist
+credits; artist recency is matched by (lowercased) name, which is provider-agnostic (artist
+playlog rows are keyed by the library id).
 """
 
 from __future__ import annotations
@@ -17,8 +20,13 @@ from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.util import parse_title_and_version
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant_models.media_items import MediaItemType
 
     from music_assistant import MusicAssistant
@@ -45,6 +53,7 @@ class RecencySnapshot:
 
     now: int
     song_ts: dict[tuple[str, str], int] = field(default_factory=dict)
+    song_key_ts: dict[tuple[str, str], int] = field(default_factory=dict)
     artist_ts: dict[str, int] = field(default_factory=dict)
 
     def track_recent(self, item: MediaItemType, within_seconds: int | None) -> bool:
@@ -63,7 +72,9 @@ class RecencySnapshot:
         """
         Return the most recent play timestamp for the track, or None if it has no play recorded.
 
-        Matched across the track's own ``(provider, item_id)`` and all of its provider mappings.
+        Matched across the track's own ``(provider, item_id)`` and all of its provider mappings
+        (exact), plus the fuzzy same-song keys so a different release/version of the same
+        recording is recognized too.
 
         :param item: The track (or queue media item) to look up.
         """
@@ -73,6 +84,10 @@ class RecencySnapshot:
             timestamps.append(timestamp)
         for mapping in getattr(item, "provider_mappings", None) or ():
             timestamp = self.song_ts.get((mapping.provider_instance, mapping.item_id))
+            if timestamp is not None:
+                timestamps.append(timestamp)
+        for key in song_keys(item):
+            timestamp = self.song_key_ts.get(key)
             if timestamp is not None:
                 timestamps.append(timestamp)
         return max(timestamps) if timestamps else None
@@ -133,7 +148,7 @@ class RecencyEngine:
         # one row per item is guaranteed when scoped to a user (unique playlog index); the
         # MAX(timestamp) group keeps the most recent play when no user scope is applied.
         query = (
-            f"SELECT item_id, provider, media_type, name, MAX(timestamp) AS ts "
+            f"SELECT item_id, provider, media_type, name, artists, MAX(timestamp) AS ts "
             f"FROM {DB_TABLE_PLAYLOG} WHERE {where} "
             f"GROUP BY item_id, provider, media_type"
         )
@@ -143,6 +158,47 @@ class RecencyEngine:
             timestamp = int(row["ts"])
             if row["media_type"] == MediaType.TRACK.value:
                 snapshot.song_ts[(row["provider"], row["item_id"])] = timestamp
+                for key in _song_keys(row["name"], _row_artist_names(row["artists"])):
+                    if timestamp > snapshot.song_key_ts.get(key, 0):
+                        snapshot.song_key_ts[key] = timestamp
             elif name := row["name"]:
                 snapshot.artist_ts[name.lower()] = timestamp
         return snapshot
+
+
+def song_keys(item: MediaItemType) -> set[tuple[str, str]]:
+    """
+    Return the fuzzy same-song identity keys for a track: (safe title, safe artist) per artist.
+
+    Version/featuring info is stripped from the title so different releases of the same recording
+    (remaster, single vs album edit, differing artist credits across providers) produce
+    overlapping keys. Returns an empty set for items without artists (non-track media).
+
+    :param item: The track (or queue media item) to build keys for.
+    """
+    artist_names = [artist.name for artist in getattr(item, "artists", None) or () if artist.name]
+    return _song_keys(item.name, artist_names)
+
+
+def _song_keys(name: str, artist_names: Iterable[str]) -> set[tuple[str, str]]:
+    """Build (safe title, safe artist) keys from a raw title and artist names."""
+    if not name:
+        return set()
+    title, _ = parse_title_and_version(name, strip_for_search=True)
+    if not (safe_title := create_safe_string(title)):
+        return set()
+    return {
+        (safe_title, safe_artist)
+        for artist_name in artist_names
+        if (safe_artist := create_safe_string(artist_name))
+    }
+
+
+def _row_artist_names(raw_artists: str | None) -> list[str]:
+    """Extract artist names from a playlog row's artists json column (None for legacy rows)."""
+    if not raw_artists:
+        return []
+    try:
+        return [name for artist in json_loads(raw_artists) if (name := artist.get("name"))]
+    except ValueError, TypeError, AttributeError:
+        return []

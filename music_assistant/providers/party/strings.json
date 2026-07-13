@@ -1,5 +1,13 @@
 {
   "config_entries": {
+    "mode": {
+      "label": "Party Mode",
+      "description": "How the party audio is played. In venue mode an existing player plays the music out loud for everyone in the room. In remote mode every guest listens on their own device (silent-disco style).",
+      "options": {
+        "venue": "Venue (play on a real speaker)",
+        "remote": "Remote (guests listen on their own device)"
+      }
+    },
     "player": {
       "label": "Party Player",
       "description": "Select which player/queue is attached to the party dashboard. When set to auto, the first active player will be used.",

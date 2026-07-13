@@ -9,7 +9,8 @@ a built-in JS Sendspin client that connects directly to the server via WebSocket
 The bridge:
 1. Registers Chromecast players as external Sendspin clients (using MAC as client_id)
 2. The Sendspin provider creates a SendspinPlayer for this external client
-3. Protocol linking matches the SendspinPlayer with the ChromecastPlayer via MAC
+3. Protocol linking parents the SendspinPlayer next to the ChromecastPlayer via the
+   declared underlying player (derived-transport edge)
 4. When playback is requested, the Cast app is launched and connects to the server
 5. The server upgrades the client from bridge role to the JS client's player@v1 role
 """
@@ -33,6 +34,7 @@ from pychromecast.controllers import BaseController
 
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.providers.chromecast.constants import get_cast_model_static_delay
+from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -62,6 +64,7 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
     from pychromecast.generated.cast_channel_pb2 import CastMessage
 
+    from music_assistant.models.player import Player
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .player import ChromecastPlayer
@@ -312,6 +315,11 @@ class SendspinChromecastBridge:
         return self._bridge_client_id
 
     @property
+    def is_registered(self) -> bool:
+        """Return whether the bridge is registered with Sendspin."""
+        return self._sendspin_client is not None
+
+    @property
     def is_cast_app_active(self) -> bool:
         """Return whether the Sendspin Cast app is active on the device."""
         return self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
@@ -319,6 +327,24 @@ class SendspinChromecastBridge:
     async def start(self) -> None:
         """Register the Chromecast player as an external Sendspin client."""
         hello = _build_bridge_hello(self.cast_player, self._bridge_client_id)
+
+        # Pre-register the Chromecast UUID so the resulting SendspinPlayer
+        # carries it as a CAST_UUID identifier for cross-protocol matching.
+        if sendspin_provider := cast("SendspinProvider | None", self.mass.get_provider("sendspin")):
+            sendspin_provider.register_bridge_identifiers(
+                self._bridge_client_id,
+                {IdentifierType.CAST_UUID: str(self.cast_player.cast_info.uuid)},
+            )
+            sendspin_provider.register_bridge_underlying_player(
+                self._bridge_client_id, self.cast_player.player_id
+            )
+            sendspin_provider.register_bridge_static_delay_default(
+                self._bridge_client_id,
+                get_cast_model_static_delay(
+                    self.cast_player.device_info.manufacturer or "",
+                    self.cast_player.device_info.model or "",
+                ),
+            )
 
         self.logger.debug(
             "Registering Sendspin bridge for %s with client_id=%s",
@@ -598,7 +624,7 @@ class SendspinChromecastBridge:
         """
         # The Sendspin server runs on its own port (8927), NOT through
         # the MA webserver or streams server. Use publish_ip directly.
-        publish_ip = cast("str", self.mass.streams.publish_ip)
+        publish_ip = self.mass.streams.publish_ip
         # sendspin-js's SendspinCore appends `/sendspin` to baseUrl when constructing
         # the WebSocket URL. Send the bare server URL here so it ends up correct.
         server_url = f"ws://{format_ip_for_url(publish_ip)}:8927"
@@ -638,7 +664,7 @@ class SendspinChromecastBridge:
         )
 
 
-class SendspinBridgeManager:
+class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge]):
     """Manages Sendspin bridges for all Chromecast players."""
 
     def __init__(self, provider: ChromecastProvider) -> None:
@@ -647,210 +673,42 @@ class SendspinBridgeManager:
 
         :param provider: The Chromecast provider instance.
         """
-        self.provider = provider
-        self.mass = provider.mass
-        self.logger = provider.logger.getChild("bridge_manager")
-        self._bridges: dict[str, SendspinChromecastBridge] = {}
-        self._lock = asyncio.Lock()
+        super().__init__(provider)
         self._rebridge_unsubs: dict[str, Callable[[], None]] = {}
         self._claimed_clients: dict[str, str] = {}
-        self._unsub_config_updated = self.mass.subscribe(
-            self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED
-        )
-        self._unsub_player_updated = self.mass.subscribe(
-            self._on_player_updated, EventType.PLAYER_UPDATED
-        )
-        self._airplay_was_available = self.mass.get_provider("airplay") is not None
-        self._unsub_providers_updated = self.mass.subscribe(
-            self._on_providers_updated, EventType.PROVIDERS_UPDATED
-        )
+        self._unsubs.append(self.mass.subscribe(self._on_player_updated, EventType.PLAYER_UPDATED))
 
-    @property
-    def sendspin_provider(self) -> SendspinProvider | None:
-        """Get the Sendspin provider if available."""
-        return cast(
-            "SendspinProvider | None",
-            self.mass.get_provider("sendspin"),
-        )
-
-    @property
-    def sendspin_server(self) -> SendspinServer | None:
-        """Get the Sendspin server if available."""
-        if provider := self.sendspin_provider:
-            return provider.server_api
-        return None
-
-    async def evaluate_bridge(self, cast_player: ChromecastPlayer) -> None:
+    async def remove_bridge(self, player_id: str, permanent: bool = False) -> None:
         """
-        Reconcile the Sendspin bridge state for this cast player.
+        Remove the Sendspin bridge (or claimed client) for a Chromecast player.
 
-        Creates or removes the bridge to match the desired state derived from
-        the current player graph. Idempotent and safe to call repeatedly.
-
-        :param cast_player: The Chromecast player to evaluate.
+        :param player_id: The player ID to remove the bridge for.
+        :param permanent: Also remove the bridge client player and its config.
         """
-        player_id = cast_player.player_id
-        desired = self._should_have_bridge(cast_player)
-        has_bridge = player_id in self._bridges or player_id in self._claimed_clients
-
-        if desired and not has_bridge:
-            await self.setup_bridge(cast_player)
-        elif not desired and has_bridge:
-            self.logger.info(
-                "Removing redundant Sendspin Cast bridge for %s",
-                cast_player.display_name,
-            )
-            await self.remove_bridge(player_id)
-
-    async def setup_bridge(self, cast_player: ChromecastPlayer) -> None:
-        """
-        Set up a Sendspin bridge for a Chromecast player.
-
-        :param cast_player: The Chromecast player to bridge.
-        """
-        async with self._lock:
-            player_id = cast_player.player_id
-
-            if player_id in self._bridges:
-                self.logger.debug("Bridge already exists for %s", cast_player.display_name)
-                return
-
-            if player_id in self._claimed_clients:
-                self.logger.debug(
-                    "Bridge already claimed for %s (waiting for JS client disconnect)",
-                    cast_player.display_name,
-                )
-                return
-
-            if not self._should_have_bridge(cast_player):
-                return
-
-            bridge_client_id = get_bridge_client_id(cast_player)
-            sendspin_server = self.sendspin_server
-            if bridge_client_id is None or sendspin_server is None:
-                self.logger.debug(
-                    "Skipping bridge setup for %s — preconditions changed since evaluation",
-                    cast_player.display_name,
-                )
-                return
-            manufacturer = cast_player.device_info.manufacturer or ""
-            model = cast_player.device_info.model or ""
-
-            existing_client_id = self._find_existing_sendspin_client(
-                sendspin_server, bridge_client_id, cast_player
-            )
-            if existing_client_id:
-                self.logger.info(
-                    "Sendspin client %s already registered — claiming existing player for %s",
-                    existing_client_id,
-                    cast_player.display_name,
-                )
-                sendspin_provider = self.sendspin_provider
-                if sendspin_provider is not None:
-                    bridge_hello = _build_bridge_hello(cast_player, existing_client_id)
-                    identifiers = {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)}
-                    sendspin_provider.register_bridge_static_delay_default(
-                        existing_client_id, get_cast_model_static_delay(manufacturer, model)
-                    )
-                    if not await sendspin_provider.apply_bridge_claim(
-                        existing_client_id, identifiers, bridge_hello
-                    ):
-                        # SendspinPlayer registration still in flight
-                        # (`_handle_client_added` waits up to 5 s for hello).
-                        # Pre-register identifiers so `_create_player` attaches
-                        # CAST_UUID when it runs.
-                        sendspin_provider.register_bridge_identifiers(
-                            existing_client_id, identifiers
-                        )
-                    self._claimed_clients[player_id] = existing_client_id
-                    self._subscribe_rebridge_on_disconnect(cast_player, existing_client_id)
-                return
-
-            bridge = SendspinChromecastBridge(
-                self.provider, cast_player, sendspin_server, bridge_client_id
-            )
-
-            # Pre-register the Chromecast UUID so the resulting SendspinPlayer
-            # carries it as a CAST_UUID identifier for cross-protocol matching.
-            if sendspin_provider := self.sendspin_provider:
-                sendspin_provider.register_bridge_identifiers(
-                    bridge_client_id,
-                    {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)},
-                )
-                sendspin_provider.register_bridge_static_delay_default(
-                    bridge_client_id, get_cast_model_static_delay(manufacturer, model)
-                )
-
-            try:
-                await bridge.start()
-            except Exception:
-                self.logger.warning(
-                    "Failed to start Sendspin bridge for %s", cast_player.display_name
-                )
-                with suppress(Exception):
-                    await bridge.stop()
-                return
-
-            self._bridges[player_id] = bridge
-
-            self.logger.info("Sendspin bridge created for %s", cast_player.display_name)
-
-    async def remove_bridge(self, cast_player_id: str) -> None:
-        """
-        Remove the Sendspin bridge for a Chromecast player.
-
-        :param cast_player_id: The player ID to remove the bridge for.
-        """
-        async with self._lock:
-            bridge = self._bridges.pop(cast_player_id, None)
-            client_id = bridge.bridge_client_id if bridge else None
-            claimed_client_id = self._claimed_clients.pop(cast_player_id, None)
-            if claimed_client_id and (unsub := self._rebridge_unsubs.pop(claimed_client_id, None)):
+        claimed_client_id = self._claimed_clients.pop(player_id, None)
+        if claimed_client_id:
+            if unsub := self._rebridge_unsubs.pop(claimed_client_id, None):
                 with suppress(Exception):
                     unsub()
-            target_id = client_id or claimed_client_id
-            if target_id:
-                if self.mass.players.get_player(target_id):
-                    await self.mass.players.unregister(target_id, permanent=True)
-                else:
-                    self.mass.players.delete_player_config(target_id)
-            if bridge:
-                await bridge.stop()
-            elif claimed_client_id and (sendspin_server := self.sendspin_server):
+            if sendspin_server := self.sendspin_server:
                 with suppress(Exception):
                     await sendspin_server.remove_client(claimed_client_id)
-
-            self.logger.debug("Sendspin bridge removed for Chromecast player %s", cast_player_id)
-
-    async def stop_all(self) -> None:
-        """Stop all Sendspin bridges."""
-        async with self._lock:
-            for bridge in list(self._bridges.values()):
-                with suppress(Exception):
-                    await bridge.stop()
-            self._bridges.clear()
-
-        self.logger.debug("All Sendspin bridges stopped")
+            if permanent:
+                if self.mass.players.get_player(claimed_client_id):
+                    await self.mass.players.unregister(claimed_client_id, permanent=True)
+                else:
+                    self.mass.players.delete_player_config(claimed_client_id)
+            self.logger.debug("Claimed Sendspin client removed for Chromecast player %s", player_id)
+        await super().remove_bridge(player_id, permanent=permanent)
 
     async def close(self) -> None:
         """Stop all bridges and unsubscribe event listeners."""
-        self._unsub_config_updated()
-        self._unsub_player_updated()
-        self._unsub_providers_updated()
         for unsub in list(self._rebridge_unsubs.values()):
             with suppress(Exception):
                 unsub()
         self._rebridge_unsubs.clear()
         self._claimed_clients.clear()
-        await self.stop_all()
-
-    def get_bridge(self, cast_player_id: str) -> SendspinChromecastBridge | None:
-        """
-        Get the bridge for a Chromecast player.
-
-        :param cast_player_id: The player ID to look up.
-        """
-        return self._bridges.get(cast_player_id)
+        await super().close()
 
     def get_bridge_by_client_id(self, bridge_client_id: str) -> SendspinChromecastBridge | None:
         """
@@ -863,12 +721,36 @@ class SendspinBridgeManager:
                 return bridge
         return None
 
-    def _should_have_bridge(self, cast_player: ChromecastPlayer) -> bool:
+    def _bridge_client_id(self, player: Player) -> str | None:
+        """Return the Sendspin client_id used to bridge a Chromecast player."""
+        return get_bridge_client_id(cast("ChromecastPlayer", player))
+
+    def _create_bridge(self, player: Player) -> SendspinChromecastBridge:
+        """Create a bridge instance for a Chromecast player."""
+        cast_player = cast("ChromecastPlayer", player)
+        bridge_client_id = get_bridge_client_id(cast_player)
+        sendspin_server = self.sendspin_server
+        # both guaranteed by _should_have_bridge/_lifecycle_allows_bridge
+        assert bridge_client_id is not None
+        assert sendspin_server is not None
+        return SendspinChromecastBridge(
+            cast("ChromecastProvider", self.provider),
+            cast_player,
+            sendspin_server,
+            bridge_client_id,
+        )
+
+    def _has_bridge(self, player_id: str) -> bool:
+        """Return whether a bridge or claimed client is in place for the player."""
+        return player_id in self._bridges or player_id in self._claimed_clients
+
+    def _should_have_bridge(self, player: Player) -> bool:
         """
         Return whether this cast player should have a Sendspin bridge.
 
-        :param cast_player: The Chromecast player to evaluate.
+        :param player: The Chromecast player to evaluate.
         """
+        cast_player = cast("ChromecastPlayer", player)
         # Audio groups (non-stereo-pair) have their own playback mechanism
         if cast_player.cast_info.is_audio_group and not cast_player.cast_info.is_multichannel_group:
             return False
@@ -887,25 +769,69 @@ class SendspinBridgeManager:
             )
             return False
 
-        if not self.sendspin_server:
-            self.logger.debug(
-                "Sendspin provider not available, skipping bridge for %s",
-                cast_player.display_name,
-            )
-            return False
-
-        # Prefer the airplay bridge over the cast bridge (better sync performance)
-        # when the cast player shares a parent with an airplay protocol player.
+        # Prefer the airplay bridge over the cast bridge: the Cast receiver
+        # pipeline is fragile on many (especially 3rd-party) devices. Hard-deny
+        # the cast bridge whenever the device is known to also support AirPlay,
+        # regardless of whether the airplay protocol/provider is currently
+        # enabled - a device with AirPlay gets its Sendspin support over
+        # AirPlay or not at all.
         if cast_player.protocol_parent_id:
             parent_player = self.mass.players.get_player(cast_player.protocol_parent_id)
-            if parent_player:
-                for protocol in parent_player.linked_output_protocols:
-                    if protocol.protocol_domain != "airplay":
-                        continue
-                    airplay_player = self.mass.players.get_player(protocol.output_protocol_id)
-                    if airplay_player and airplay_player.available:
-                        return False
+            if parent_player and parent_player.get_output_protocol_by_domain("airplay"):
+                return False
 
+        return True
+
+    async def _try_claim_existing(self, player: Player) -> bool:
+        """
+        Claim a Sendspin client that connected on its own (JS Cast receiver).
+
+        Happens on MA restart when the JS Cast receiver reconnects to the
+        Sendspin server before Chromecast discovery fires.
+
+        :param player: The Chromecast player being bridged.
+        :return: True when an existing client was claimed (skips bridge setup).
+        """
+        cast_player = cast("ChromecastPlayer", player)
+        bridge_client_id = get_bridge_client_id(cast_player)
+        sendspin_server = self.sendspin_server
+        sendspin_provider = self.sendspin_provider
+        if bridge_client_id is None or sendspin_server is None or sendspin_provider is None:
+            return False
+        existing_client_id = self._find_existing_sendspin_client(
+            sendspin_server, bridge_client_id, cast_player
+        )
+        if not existing_client_id:
+            return False
+
+        self.logger.info(
+            "Sendspin client %s already registered — claiming existing player for %s",
+            existing_client_id,
+            cast_player.display_name,
+        )
+        manufacturer = cast_player.device_info.manufacturer or ""
+        model = cast_player.device_info.model or ""
+        bridge_hello = _build_bridge_hello(cast_player, existing_client_id)
+        identifiers = {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)}
+        sendspin_provider.register_bridge_static_delay_default(
+            existing_client_id, get_cast_model_static_delay(manufacturer, model)
+        )
+        if not await sendspin_provider.apply_bridge_claim(
+            existing_client_id,
+            identifiers,
+            bridge_hello,
+            underlying_player_id=cast_player.player_id,
+        ):
+            # SendspinPlayer registration still in flight
+            # (`_handle_client_added` waits up to 5 s for hello).
+            # Pre-register identifiers so `_create_player` attaches
+            # CAST_UUID when it runs.
+            sendspin_provider.register_bridge_identifiers(existing_client_id, identifiers)
+            sendspin_provider.register_bridge_underlying_player(
+                existing_client_id, cast_player.player_id
+            )
+        self._claimed_clients[cast_player.player_id] = existing_client_id
+        self._subscribe_rebridge_on_disconnect(cast_player, existing_client_id)
         return True
 
     def _find_existing_sendspin_client(
@@ -1024,17 +950,9 @@ class SendspinBridgeManager:
             ):
                 await self.evaluate_bridge(cast_player)
 
-    async def _on_providers_updated(self, event: MassEvent) -> None:
-        """Re-evaluate cast bridges when the airplay provider availability flips."""
-        airplay_available = self.mass.get_provider("airplay") is not None
-        if airplay_available == self._airplay_was_available:
-            return
-        self._airplay_was_available = airplay_available
-        for player in self.provider.players:
-            await self.evaluate_bridge(cast("ChromecastPlayer", player))
-
     async def _on_player_config_updated(self, event: MassEvent) -> None:
-        """Handle player config updates for bridged Sendspin Chromecast players."""
+        """Re-evaluate bridges and push runtime config updates to active Cast apps."""
+        await super()._on_player_config_updated(event)
         if not event.object_id:
             return
 

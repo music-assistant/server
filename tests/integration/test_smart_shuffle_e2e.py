@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from music_assistant_models.enums import MediaType
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_ENABLED, DB_TABLE_PLAYLOG
 from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
@@ -56,7 +56,7 @@ async def test_smart_shuffle_pushes_recently_played_to_back(e2e_mass: MusicAssis
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
     # scope the recency window to a known user (no session user exists under test)
-    queue.userid = TEST_USER
+    e2e_mass.player_queues.queue_data(queue_id).userid = TEST_USER
 
     # mark the later half of the tracks as recently played for this user
     recent_tracks = tracks[5:]
@@ -78,15 +78,20 @@ async def test_smart_shuffle_pushes_recently_played_to_back(e2e_mass: MusicAssis
             },
         )
 
-    # enable smart shuffle: long song window, artist/duplicate windows off so only song recency drives
-    await e2e_mass.config.save_player_queue_config(
-        queue_id,
+    # recency windows are a global (queue controller) setting: long song window, artist/duplicate
+    # windows off so only song recency drives the ordering
+    await e2e_mass.config.save_core_config(
+        CONF_PLAYER_QUEUES,
         {
-            CONF_SMART_SHUFFLE_ENABLED: True,
             CONF_SMART_SHUFFLE_SONG_RECENCY: str(WEEK),
             CONF_SMART_SHUFFLE_ARTIST_RECENCY: "0",
             CONF_SMART_SHUFFLE_DUPLICATE_GAP: "0",
         },
+    )
+    # enable smart shuffle on the queue
+    await e2e_mass.config.save_player_queue_config(
+        queue_id,
+        {CONF_SMART_SHUFFLE_ENABLED: CONF_VALUE_ENABLED},
     )
 
     await e2e_mass.player_queues.set_shuffle(queue_id, True)

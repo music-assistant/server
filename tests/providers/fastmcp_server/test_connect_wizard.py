@@ -270,6 +270,117 @@ async def test_scheme_guard_still_rejects_when_ingress_helper_returns_false(
     wizard_mass.webserver.auth.login.assert_not_awaited()
 
 
+@pytest.fixture
+async def wizard_client_trust_proxy(wizard_mass: MagicMock) -> AsyncIterator[TestClient]:
+    """Wizard mounted with ``trust_forwarded_proto=True`` (TLS-terminating proxy)."""
+    unmount = await mount_connect_wizard(
+        wizard_mass,
+        mount_path="/mcp/v1",
+        enabled_tags_provider=lambda: ["query:library", "control:playback"],
+        extra_origins_csv="",
+        trust_forwarded_proto=True,
+    )
+    async with TestClient(TestServer(build_aiohttp_app(wizard_mass.webserver))) as client:
+        yield client
+    unmount()
+
+
+async def test_scheme_guard_trust_proxy_off_ignores_forwarded_proto(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """
+    Default (trust off): ``X-Forwarded-Proto: https`` does NOT bypass the guard.
+
+    The header is forgeable by any LAN client, so it must be inert unless the
+    operator has explicitly opted in — secure by default, no behaviour change.
+    """
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/login",
+        json={"username": "admin", "password": "hunter2"},
+        headers={
+            "Origin": "http://localhost:8095",
+            "Host": "192.168.1.42:8095",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    assert resp.status == 400
+    wizard_mass.webserver.auth.login.assert_not_awaited()
+
+
+async def test_scheme_guard_trust_proxy_allows_forwarded_https(
+    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
+) -> None:
+    """
+    Trust on + ``X-Forwarded-Proto: https`` → request is treated as secure.
+
+    Reproduces the reverse-proxy deployment (nginx / NPM / Traefik / Caddy):
+    TLS terminates at the proxy, the proxy-to-MA hop is plain HTTP, and the
+    proxy reports the original scheme via ``X-Forwarded-Proto``.
+    """
+    resp = await wizard_client_trust_proxy.post(
+        "/mcp/v1/connect/login",
+        json={"username": "admin", "password": "hunter2"},
+        headers={
+            "Origin": "http://localhost:8095",
+            "Host": "musicassistant.example.com",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    assert resp.status == 200
+    wizard_mass.webserver.auth.login.assert_awaited_once()
+
+
+async def test_scheme_guard_trust_proxy_accepts_forwarded_scheme_header(
+    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
+) -> None:
+    """Trust on: Nginx-Proxy-Manager's ``X-Forwarded-Scheme: https`` also counts."""
+    resp = await wizard_client_trust_proxy.post(
+        "/mcp/v1/connect/login",
+        json={"username": "admin", "password": "hunter2"},
+        headers={
+            "Origin": "http://localhost:8095",
+            "Host": "musicassistant.example.com",
+            "X-Forwarded-Scheme": "https",
+        },
+    )
+    assert resp.status == 200
+    wizard_mass.webserver.auth.login.assert_awaited_once()
+
+
+async def test_scheme_guard_trust_proxy_multi_hop_uses_first_value(
+    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
+) -> None:
+    """Trust on: a chained ``https, http`` list is read as the client hop (https)."""
+    resp = await wizard_client_trust_proxy.post(
+        "/mcp/v1/connect/login",
+        json={"username": "admin", "password": "hunter2"},
+        headers={
+            "Origin": "http://localhost:8095",
+            "Host": "musicassistant.example.com",
+            "X-Forwarded-Proto": "https, http",
+        },
+    )
+    assert resp.status == 200
+    wizard_mass.webserver.auth.login.assert_awaited_once()
+
+
+async def test_scheme_guard_trust_proxy_still_rejects_plain_http(
+    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
+) -> None:
+    """Trust on but no https forwarded header → still refused (genuine plaintext)."""
+    resp = await wizard_client_trust_proxy.post(
+        "/mcp/v1/connect/login",
+        json={"username": "admin", "password": "hunter2"},
+        headers={
+            "Origin": "http://localhost:8095",
+            "Host": "192.168.1.42:8095",
+            "X-Forwarded-Proto": "http",
+        },
+    )
+    assert resp.status == 400
+    wizard_mass.webserver.auth.login.assert_not_awaited()
+
+
 async def test_info_endpoint_shape(wizard_client: TestClient) -> None:
     """``GET /mcp/v1/connect/info`` returns the meta JSON the UI needs."""
     resp = await wizard_client.get(

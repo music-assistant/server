@@ -199,6 +199,21 @@ async def test_select_flow_pcm_format_uses_f32_when_crossfade_enabled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_select_flow_pcm_format_uses_f32_when_overlay_active() -> None:
+    """An active audio overlay requires F32 headroom for clipping-free mixing."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=44100, bit_depth=16)
+    fmt = await audio.select_flow_pcm_format(
+        player, start_streamdetails=streamdetails, overlay_active=True
+    )
+    assert fmt.bit_depth == 32
+
+
+@pytest.mark.asyncio
 async def test_select_flow_pcm_format_uses_f32_when_volume_normalization_active() -> None:
     """Active volume normalization on the start track triggers F32 headroom."""
     audio = _make_streams_audio()

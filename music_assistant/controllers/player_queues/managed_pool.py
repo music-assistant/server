@@ -1,19 +1,31 @@
 """
 Managed dynamic pool for the Player Queues controller.
 
-A queue with one or more *dynamic sources* (its ``radio_source``) is kept as a small bounded pool
+A queue with one or more *dynamic sources* (its ``sources``) is kept as a small bounded pool
 that is topped up as it plays down. Each source has a *fill mode*:
 
-- ``SIMILAR`` — base + similar/discovery tracks (radio sources);
-- ``TRACKS`` — the source's own unplayed tracks (a playlist/album/artist mixed into the pool).
+- ``DYNAMIC`` — a dynamic playlist's own self-managing batch (a radio playlist, a station): a fresh
+  batch is pulled every refill, so it never runs dry;
+- ``TRACKS`` — a finite source (a playlist/album/artist mixed into the pool): its tracks are
+  materialized once into a per-source deque and dequeued progressively, so the source plays through
+  once and then drops out rather than recycling the same tracks as they age out of the recency
+  window. A recency-denied track rotates to the back of its deque (a fair second chance) instead of
+  being dropped, and the deque is bounded (paging in more as it drains) so a huge source can't
+  balloon internal state.
 
 Each top-up apportions slots across the sources by weight (per-base quota by default, so adding a
-source more than once weights it up), gates every candidate against the shared ``RecencyEngine`` so
-a recently-heard track isn't pulled back in, and prefers the least-recently-played candidates.
+source more than once weights it up) and gates every candidate against the shared ``RecencyEngine``
+so a recently-heard track isn't pulled back in. A dynamic batch is offered least-recently-played
+first and de-prioritizes tracks whose artist is within the artist-recency window (a soft nudge, not
+a hard exclusion, so a single-artist station still plays); a finite source keeps its own
+(materialized) order so it plays through coherently. The selected source groups are randomly
+interleaved across the batch before a seam-aware artist-spacing pass best-effort keeps
+directly-adjacent tracks from sharing an artist, including the currently-queued tail's last artist.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -22,11 +34,13 @@ from typing import TYPE_CHECKING
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
 
+from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.constants import (
-    CACHE_CATEGORY_PLAYER_QUEUE_POOL,
+    MANAGED_POOL_SOURCE_CAP,
     MANAGED_POOL_TARGET,
-    POOL_PER_SOURCE_FETCH,
 )
+from music_assistant.controllers.player_queues.helpers import interleave_groups, space_by_artist
+from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
@@ -48,7 +62,9 @@ class PoolWeightModel(StrEnum):
 class DynamicFillMode(StrEnum):
     """How a dynamic source contributes tracks to the managed pool."""
 
-    SIMILAR = "similar"
+    # a dynamic playlist (radio playlist, station): its own self-managing batch of tracks
+    DYNAMIC = "dynamic"
+    # a finite source (playlist/album/artist): its own unplayed tracks mixed into the pool
     TRACKS = "tracks"
 
 
@@ -66,7 +82,25 @@ class DynamicSource:
     candidates: list[Track] = field(default_factory=list)
 
 
-class ManagedPoolHelper:
+@dataclass(slots=True)
+class _MaterializedSource:
+    """
+    A finite (TRACKS) source materialized once and dequeued progressively across refills.
+
+    ``tracks`` holds the not-yet-dispatched tracks (bounded by ``MANAGED_POOL_SOURCE_CAP``);
+    ``dispatched`` records the item ids already handed to the queue so they are never re-offered and
+    so a larger-than-cap source can page the rest in without repeats; ``fully_paged`` is True once
+    the source has no further tracks to page in (it is exhausted when ``tracks`` is then empty).
+    """
+
+    media_item: MediaItemType
+    multiplicity: int
+    tracks: deque[Track]
+    dispatched: set[str]
+    fully_paged: bool
+
+
+class ManagedPool:
     """Build and top up a queue's bounded managed pool from its dynamic sources."""
 
     def __init__(self, queues: PlayerQueuesController) -> None:
@@ -78,93 +112,8 @@ class ManagedPoolHelper:
         self.queues = queues
         self.mass = queues.mass
         self.logger = queues.logger.getChild("managed_pool")
-        # queue_id -> set of source URIs whose fill mode is SIMILAR (default, absent = TRACKS)
-        self._similar_sources: dict[str, set[str]] = {}
-
-    def fill_mode(self, queue_id: str, uri: str | None) -> DynamicFillMode:
-        """
-        Return the fill mode for a source URI in the given queue.
-
-        :param queue_id: The queue the source belongs to.
-        :param uri: The source's URI.
-        """
-        if uri and uri in self._similar_sources.get(queue_id, ()):
-            return DynamicFillMode.SIMILAR
-        return DynamicFillMode.TRACKS
-
-    def register(
-        self,
-        queue_id: str,
-        radio_source: list[MediaItemType],
-        similar_uris: set[str],
-        *,
-        replace: bool,
-    ) -> None:
-        """
-        Record the fill modes for a queue's dynamic sources and persist them.
-
-        :param queue_id: The queue being (re)configured.
-        :param radio_source: The queue's full list of dynamic sources after this enqueue.
-        :param similar_uris: URIs of sources enqueued with the radio flag (SIMILAR fill mode).
-        :param replace: True to replace the existing fill modes, False to merge (ADD/NEXT).
-        """
-        valid = {uri for item in radio_source if (uri := _uri(item))}
-        existing = set() if replace else self._similar_sources.get(queue_id, set())
-        self._similar_sources[queue_id] = (existing | similar_uris) & valid
-        self._persist(queue_id)
-
-    async def restore(self, queue_id: str, radio_source: list[MediaItemType]) -> None:
-        """
-        Restore the fill modes for a queue from cache after a restart.
-
-        When no cache entry exists (a queue persisted before this feature) every radio_source item
-        was a similar/discovery seed, so all (non-station) sources default to SIMILAR to preserve
-        that pre-feature radio behaviour after an upgrade.
-
-        :param queue_id: The queue being restored.
-        :param radio_source: The queue's restored dynamic sources.
-        """
-        valid = {uri for item in radio_source if (uri := _uri(item))}
-        stored = await self.mass.cache.get(
-            key=queue_id,
-            provider=self.queues.domain,
-            category=CACHE_CATEGORY_PLAYER_QUEUE_POOL,
-        )
-        if stored is not None:
-            self._similar_sources[queue_id] = {uri for uri in stored if uri in valid}
-        else:
-            self._similar_sources[queue_id] = {
-                uri
-                for item in radio_source
-                if not (isinstance(item, Playlist) and item.is_dynamic) and (uri := _uri(item))
-            }
-
-    def forget(self, queue_id: str, *, drop_cache: bool) -> None:
-        """
-        Drop the in-memory fill modes for a queue (and optionally its cache entry).
-
-        :param queue_id: The queue to forget.
-        :param drop_cache: True to also delete the persisted entry (queue cleared/removed).
-        """
-        self._similar_sources.pop(queue_id, None)
-        if drop_cache:
-            self.mass.create_task(
-                self.mass.cache.delete(
-                    key=queue_id,
-                    provider=self.queues.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_POOL,
-                )
-            )
-
-    def transfer(self, source_queue_id: str, target_queue_id: str) -> None:
-        """
-        Copy a queue's fill modes onto another queue (used when a queue is transferred).
-
-        :param source_queue_id: The queue currently holding the dynamic sources.
-        :param target_queue_id: The queue receiving them.
-        """
-        self._similar_sources[target_queue_id] = set(self._similar_sources.get(source_queue_id, ()))
-        self._persist(target_queue_id)
+        # finite-source materialized state, keyed by queue id then source uri; see _MaterializedSource
+        self._materialized: dict[str, dict[str, _MaterializedSource]] = {}
 
     async def fill(self, queue_id: str, *, is_initial: bool) -> list[Track]:
         """
@@ -173,36 +122,92 @@ class ManagedPoolHelper:
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
-        queue = self.queues._queues[queue_id]
-        sources = await self._collect_sources(queue_id, queue)
+        queue_data = self.queues.queue_data(queue_id)
+        queue = queue_data.queue
+        windows = self.queues.recency_windows()
+        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
+        # publish a best-effort recency filter so dynamic-playlist generation can pre-skip recently
+        # played tracks while over-generating; allocate_refill still applies the authoritative gate
+        with track_filter(lambda track: not snapshot.track_recent(track, windows.song_seconds)):
+            # the initial fill skips dynamic playlists (each seeds its own first batch directly); a
+            # top-up folds them in so all sources are mixed, weighted and recency-gated together
+            sources = await self._collect_sources(queue_id, include_dynamic=not is_initial)
         if not sources:
             return []
-        windows = self.queues._smart_shuffle._windows(queue_id)
-        snapshot = await self.mass.music.recency.snapshot(windows, userid=queue.userid)
         # dedupe only against the active (current + unplayed) tail; played history is left out so
-        # recency, not permanent exclusion, decides when a track may return
-        items = self.queues._queue_items[queue_id]
+        # recency, not permanent exclusion, decides when a track may return. Besides exact item
+        # identity we also dedupe on fuzzy same-song keys (title + artist) so a different
+        # release/version of an already-queued song is not pulled in as well.
+        items = self.queues.queue_data(queue_id).items
         start = queue.current_index if queue.current_index is not None else 0
-        pool_keys = {
-            item.media_item for item in items[start:] if isinstance(item.media_item, Track)
-        }
+        pool_keys: set[Track] = set()
+        pool_song_keys: set[tuple[str, str]] = set()
+        for item in items[start:]:
+            if isinstance(item.media_item, Track):
+                pool_keys.add(item.media_item)
+                pool_song_keys.update(song_keys(item.media_item))
         slots = (
             MANAGED_POOL_TARGET
             if is_initial
             else max(MANAGED_POOL_TARGET - self._unplayed(queue), 0)
         )
-        return allocate_refill(
-            sources, slots=slots, pool_keys=pool_keys, snapshot=snapshot, windows=windows
+        # the batch is appended after the current tail, so keep its first track clear of the last
+        # queued item's artist (the seam the listener actually hears)
+        preceding = (
+            _track_artist_set(items[-1].media_item)
+            if items and isinstance(items[-1].media_item, Track)
+            else set()
         )
+        chosen = allocate_refill(
+            sources,
+            slots=slots,
+            pool_keys=pool_keys,
+            pool_song_keys=pool_song_keys,
+            snapshot=snapshot,
+            windows=windows,
+            preceding_artists=preceding,
+        )
+        # advance each finite source's deque: drop what was just dispatched, rotate recency-denied
+        # tracks to the back, page in more if it is draining, and retire it once fully played
+        await self._reconcile_tracks(queue_id, sources, chosen, snapshot, windows)
+        return chosen
 
-    async def _collect_sources(self, queue_id: str, queue: PlayerQueue) -> list[DynamicSource]:
-        """Group the queue's radio_source into dynamic sources and fetch each one's candidates."""
-        # multiplicity = how often a source was added; dynamic playlists/stations self-manage and
-        # are handled by the dedicated dynamic-playlist refill path, so skip them here.
+    def forget(self, queue_id: str) -> None:
+        """Drop all materialized finite-source state for a queue (it was cleared or removed)."""
+        self._materialized.pop(queue_id, None)
+
+    def retain(self, queue_id: str, uris: set[str]) -> None:
+        """
+        Prune materialized finite-source state down to the queue's current source uris.
+
+        Called whenever the queue's sources change so an exhausted/removed source releases its
+        materialized tracks instead of lingering until the queue is torn down.
+
+        :param queue_id: The queue whose sources changed.
+        :param uris: The uris of the sources the queue still has.
+        """
+        if not (materialized := self._materialized.get(queue_id)):
+            return
+        for uri in [uri for uri in materialized if uri not in uris]:
+            del materialized[uri]
+        if not materialized:
+            self._materialized.pop(queue_id, None)
+
+    async def _collect_sources(
+        self, queue_id: str, *, include_dynamic: bool
+    ) -> list[DynamicSource]:
+        """
+        Group the queue's source items into dynamic sources and fetch each one's candidates.
+
+        :param queue_id: The queue being filled.
+        :param include_dynamic: Whether to include dynamic-playlist sources; skipped on the initial
+            fill, where each dynamic playlist seeds its own first batch directly.
+        """
+        # multiplicity = how often a source was added (adding a source more than once weights it up)
         counts: dict[str, int] = {}
         items: dict[str, MediaItemType] = {}
-        for item in queue.radio_source:
-            if isinstance(item, Playlist) and item.is_dynamic:
+        for item in self.queues.queue_data(queue_id).source_items:
+            if isinstance(item, Playlist) and item.is_dynamic and not include_dynamic:
                 continue
             if not (uri := _uri(item)):
                 continue
@@ -210,14 +215,23 @@ class ManagedPoolHelper:
             items.setdefault(uri, item)
         if not items:
             return []
-        preferred = await self._preferred_providers(queue)
+        materialized = self._materialized.setdefault(queue_id, {})
         sources: list[DynamicSource] = []
         for uri, media_item in items.items():
-            fill_mode = self.fill_mode(queue_id, uri)
-            if fill_mode == DynamicFillMode.SIMILAR:
-                candidates = await self._fetch_similar(media_item, preferred=preferred)
+            if isinstance(media_item, Playlist) and media_item.is_dynamic:
+                fill_mode = DynamicFillMode.DYNAMIC
+                candidates = await self._fetch_dynamic(media_item)
             else:
-                candidates = await self._fetch_tracks(media_item, preferred=preferred)
+                # a finite source is materialized once, then its deque feeds (and is advanced by)
+                # every refill so it plays through instead of recycling tracks that age out
+                fill_mode = DynamicFillMode.TRACKS
+                source = materialized.get(uri)
+                if source is None:
+                    source = await self._materialize(media_item, counts[uri])
+                    materialized[uri] = source
+                else:
+                    source.multiplicity = counts[uri]
+                candidates = list(source.tracks)
             sources.append(
                 DynamicSource(
                     media_item=media_item,
@@ -228,63 +242,120 @@ class ManagedPoolHelper:
             )
         return sources
 
-    async def _fetch_similar(
-        self, media_item: MediaItemType, *, preferred: list[str] | None
-    ) -> list[Track]:
-        """
-        Return base + similar tracks for a SIMILAR source.
-
-        :param media_item: The dynamic source to fetch tracks for.
-        :param preferred: Preferred provider instance ids for the similar lookup.
-        """
+    async def _fetch_dynamic(self, media_item: MediaItemType) -> list[Track]:
+        """Fetch the next self-managed batch from a dynamic playlist (radio playlist, station)."""
+        if not isinstance(media_item, Playlist):
+            return []
         with suppress(MusicAssistantError):
-            # always include the base tracks so the pool keeps a steady original+similar mix; the
-            # recency gate and in-pool dedup drop them once stale or already queued
-            return await self.mass.music.get_dynamic_radio_tracks(
-                [media_item],
-                include_base_tracks=True,
-                target_size=POOL_PER_SOURCE_FETCH,
-                preferred_provider_instances=preferred,
-            )
-        return []
-
-    async def _fetch_tracks(
-        self, media_item: MediaItemType, *, preferred: list[str] | None
-    ) -> list[Track]:
-        """Fetch a TRACKS source's own (playable) tracks via its media controller."""
-        controller = self.mass.music.get_controller(media_item.media_type)
-        with suppress(MusicAssistantError):
-            tracks = await controller.radio_mode_base_tracks(media_item, preferred)  # type: ignore[arg-type]
+            tracks = await self.queues.get_playlist_tracks(media_item, start_item=None)
             return [track for track in tracks if isinstance(track, Track) and track.available]
         return []
 
-    async def _preferred_providers(self, queue: PlayerQueue) -> list[str] | None:
-        """Return the queue owner's preferred provider instances, if any."""
-        if (
-            queue.userid
-            and (user := await self.mass.webserver.auth.get_user(queue.userid))
-            and user.provider_filter
-        ):
-            return user.provider_filter
-        return None
+    async def _fetch_tracks(self, media_item: MediaItemType) -> list[Track]:
+        """Fetch a TRACKS source's own (playable) tracks, honoring the user's selection prefs."""
+        with suppress(MusicAssistantError):
+            tracks = await self.queues.get_tracks_for_playback(media_item)
+            return [track for track in tracks if isinstance(track, Track) and track.available]
+        return []
+
+    async def _materialize(
+        self, media_item: MediaItemType, multiplicity: int
+    ) -> _MaterializedSource:
+        """Fetch a finite source's tracks once into a bounded deque for progressive dequeue."""
+        tracks = await self._fetch_tracks(media_item)
+        return _MaterializedSource(
+            media_item=media_item,
+            multiplicity=multiplicity,
+            tracks=deque(tracks[:MANAGED_POOL_SOURCE_CAP]),
+            dispatched=set(),
+            # everything fetched already fits: there is nothing more to page in beyond this deque
+            fully_paged=len(tracks) <= MANAGED_POOL_SOURCE_CAP,
+        )
+
+    async def _reconcile_tracks(
+        self,
+        queue_id: str,
+        sources: list[DynamicSource],
+        chosen: list[Track],
+        snapshot: RecencySnapshot,
+        windows: RecencyWindows,
+    ) -> None:
+        """Advance each finite source's deque for what this refill took, then page/retire it."""
+        materialized = self._materialized.get(queue_id)
+        if not materialized:
+            return
+        chosen_ids = {track.item_id for track in chosen}
+        exhausted: list[str] = []
+        for source in sources:
+            if source.fill_mode != DynamicFillMode.TRACKS:
+                continue
+            if not (uri := _uri(source.media_item)) or (mat := materialized.get(uri)) is None:
+                continue
+            # a duplicated source repeats on the short gap, a singleton on the long song window
+            window = windows.duplicate_gap_seconds if mat.multiplicity > 1 else windows.song_seconds
+            kept: deque[Track] = deque()
+            denied: deque[Track] = deque()
+            for track in mat.tracks:
+                if track.item_id in chosen_ids:
+                    mat.dispatched.add(track.item_id)  # handed to the queue: never offer it again
+                elif window and snapshot.track_recent(track, window):
+                    denied.append(track)  # too recent for now: a fair second chance, at the back
+                else:
+                    kept.append(track)
+            kept.extend(denied)
+            mat.tracks = kept
+            if len(mat.tracks) < MANAGED_POOL_TARGET and not mat.fully_paged:
+                await self._page_in(mat)
+            if not mat.tracks and mat.fully_paged:
+                exhausted.append(uri)
+        for uri in exhausted:
+            materialized.pop(uri, None)
+        if not materialized:
+            self._materialized.pop(queue_id, None)
+        if exhausted:
+            self._retire_sources(queue_id, exhausted)
+
+    async def _page_in(self, mat: _MaterializedSource) -> None:
+        """Pull the next as-yet-unseen tracks from a larger-than-cap source as its deque drains."""
+        have = {track.item_id for track in mat.tracks}
+        for track in await self._fetch_tracks(mat.media_item):
+            if len(mat.tracks) >= MANAGED_POOL_SOURCE_CAP:
+                break
+            if track.item_id in mat.dispatched or track.item_id in have:
+                continue
+            mat.tracks.append(track)
+            have.add(track.item_id)
+        # could not refill toward the cap: every remaining track has been seen, so it is fully paged
+        if len(mat.tracks) < MANAGED_POOL_SOURCE_CAP:
+            mat.fully_paged = True
+
+    def _retire_sources(self, queue_id: str, uris: list[str]) -> None:
+        """Drop fully-played finite sources from the queue so only live sources remain."""
+        queue = self.queues.get(queue_id)
+        if queue is None:
+            return
+        retire = set(uris)
+        remaining = [
+            item
+            for item in self.queues.queue_data(queue_id).source_items
+            if _uri(item) not in retire
+        ]
+        self.queues.store_sources(queue, remaining)
+        self.logger.debug(
+            "Finite source(s) exhausted on queue %s; %d source(s) remain", queue_id, len(remaining)
+        )
+        self.queues.signal_update(queue_id)
 
     def _unplayed(self, queue: PlayerQueue) -> int:
         """Return how many not-yet-played items remain in the queue."""
-        items = self.queues._queue_items.get(queue.queue_id, [])
+        items = (
+            queue_data.items
+            if (queue_data := self.queues.queue_data_or_none(queue.queue_id))
+            else []
+        )
         if queue.current_index is None:
             return len(items)
         return max(len(items) - (queue.current_index + 1), 0)
-
-    def _persist(self, queue_id: str) -> None:
-        """Persist the queue's SIMILAR-source URIs so fill modes survive a restart."""
-        self.mass.create_task(
-            self.mass.cache.set(
-                key=queue_id,
-                data=sorted(self._similar_sources.get(queue_id, ())),
-                provider=self.queues.domain,
-                category=CACHE_CATEGORY_PLAYER_QUEUE_POOL,
-            )
-        )
 
 
 def allocate_refill(
@@ -295,14 +366,19 @@ def allocate_refill(
     snapshot: RecencySnapshot,
     windows: RecencyWindows,
     weight_model: PoolWeightModel = POOL_WEIGHT_MODEL,
+    preceding_artists: set[str] | None = None,
+    pool_song_keys: set[tuple[str, str]] | None = None,
 ) -> list[Track]:
     """
     Pick the next batch of tracks for the managed pool, weighted per source and recency-gated.
 
     Slots are apportioned across sources by weight; each source's candidates are hard-gated against
-    the recency snapshot (a within-window track is excluded entirely) and ordered least-recently-
-    played first. If gating leaves nothing, an ungated least-recently-played fallback is returned so
-    playback never stalls.
+    the recency snapshot (a within-window track is excluded entirely). A dynamic batch is ordered
+    least-recently-played first and de-prioritizes recently-heard artists; a finite (TRACKS) source
+    keeps its own materialized order. If gating leaves nothing, an ungated least-recently-played
+    fallback is returned so playback never stalls. The selected source groups are randomly
+    interleaved while retaining each source's candidate order, then spaced so no two adjacent tracks
+    share an artist.
 
     :param sources: The queue's dynamic sources, each with its already-fetched candidate tracks.
     :param slots: How many tracks to add (0 or fewer returns nothing).
@@ -310,24 +386,34 @@ def allocate_refill(
     :param snapshot: The play-history snapshot to gate/score against.
     :param windows: The configured recency windows.
     :param weight_model: How to weight sources against each other.
+    :param preceding_artists: Artist names of the track that will sit directly before the batch (the
+        seam with the current tail); the first added track is kept clear of it.
+    :param pool_song_keys: Fuzzy same-song keys of the tracks already in the queue, so a different
+        release/version of an already-queued song is skipped as well.
     """
     if slots <= 0 or not sources:
         return []
-    eligible = [_eligible(source, pool_keys, snapshot, windows) for source in sources]
+    pool_song_keys = pool_song_keys or set()
+    eligible = [
+        _eligible(source, pool_keys, pool_song_keys, snapshot, windows) for source in sources
+    ]
     weights = [max(_weight(source, weight_model), 0) for source in sources]
     total_weight = sum(weights) or len(sources)
     shares = [slots * (weight or 0) / total_weight for weight in weights]
     taken = [0.0] * len(sources)
     pointers = [0] * len(sources)
-    chosen: list[Track] = []
+    chosen_by_source: list[list[Track]] = [[] for _ in sources]
     chosen_set: set[Track] = set()
+    chosen_song_keys: set[tuple[str, str]] = set()
     for _ in range(slots):
         best_index = -1
         best_deficit = 0.0
         for index in range(len(sources)):
-            # skip candidates already chosen for another source this round
+            # skip candidates already chosen for another source this round (also as a
+            # different release/version of the same song)
             while pointers[index] < len(eligible[index]) and (
                 eligible[index][pointers[index]] in chosen_set
+                or not chosen_song_keys.isdisjoint(song_keys(eligible[index][pointers[index]]))
             ):
                 pointers[index] += 1
             if pointers[index] >= len(eligible[index]):
@@ -338,11 +424,17 @@ def allocate_refill(
         if best_index == -1:
             break
         track = eligible[best_index][pointers[best_index]]
-        chosen.append(track)
+        chosen_by_source[best_index].append(track)
         chosen_set.add(track)
+        chosen_song_keys.update(song_keys(track))
         taken[best_index] += 1
         pointers[best_index] += 1
-    return chosen or _ungated_fallback(sources, slots, pool_keys, snapshot)
+    batch = (
+        interleave_groups(chosen_by_source)
+        if chosen_set
+        else _ungated_fallback(sources, slots, pool_keys, pool_song_keys, snapshot)
+    )
+    return _space_tracks(batch, preceding_artists)
 
 
 def gate_tracks(
@@ -372,23 +464,46 @@ def gate_tracks(
 def _eligible(
     source: DynamicSource,
     pool_keys: set[Track],
+    pool_song_keys: set[tuple[str, str]],
     snapshot: RecencySnapshot,
     windows: RecencyWindows,
 ) -> list[Track]:
-    """Return a source's candidates minus pool/recency-blocked ones, least-recently-played first."""
+    """
+    Return a source's candidates minus pool/recency-blocked ones.
+
+    A finite (TRACKS) source keeps its materialized deque order so it plays through coherently; a
+    dynamic batch is ordered fresh-artist first (recently-heard artists nudged back), then
+    least-recently-played.
+    """
     # a deliberately-duplicated source uses the short repeat-gap, a singleton the long song window
     window = windows.duplicate_gap_seconds if source.multiplicity > 1 else windows.song_seconds
-    scored: list[tuple[int, int, Track]] = []
+    if source.fill_mode == DynamicFillMode.TRACKS:
+        return [
+            track
+            for track in source.candidates
+            if track not in pool_keys
+            and pool_song_keys.isdisjoint(song_keys(track))
+            and not snapshot.track_recent(track, window)
+        ]
+    scored: list[tuple[int, int, int, Track]] = []
     for track in source.candidates:
-        if track in pool_keys:
+        if track in pool_keys or not pool_song_keys.isdisjoint(song_keys(track)):
             continue
         last_played = snapshot.last_played(track)
         if window and last_played is not None and last_played >= snapshot.now - window:
             continue  # hard recency gate: a within-window track is excluded entirely
-        # never-played (None) sorts ahead of played; then oldest play first
-        scored.append((0 if last_played is None else 1, last_played or 0, track))
-    scored.sort(key=lambda entry: (entry[0], entry[1]))
-    return [track for _, _, track in scored]
+        # a within-artist-window track sorts behind fresh-artist ones (soft, so a single-artist
+        # station still plays); then never-played (None) ahead of played; then oldest play first
+        artist_recent = any(
+            snapshot.artist_recent(artist.name, windows.artist_seconds)
+            for artist in track.artists
+            if artist.name
+        )
+        scored.append(
+            (1 if artist_recent else 0, 0 if last_played is None else 1, last_played or 0, track)
+        )
+    scored.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+    return [entry[3] for entry in scored]
 
 
 def _weight(source: DynamicSource, weight_model: PoolWeightModel) -> int:
@@ -399,16 +514,26 @@ def _weight(source: DynamicSource, weight_model: PoolWeightModel) -> int:
 
 
 def _ungated_fallback(
-    sources: list[DynamicSource], slots: int, pool_keys: set[Track], snapshot: RecencySnapshot
+    sources: list[DynamicSource],
+    slots: int,
+    pool_keys: set[Track],
+    pool_song_keys: set[tuple[str, str]],
+    snapshot: RecencySnapshot,
 ) -> list[Track]:
     """Return the globally least-recently-played candidates, ignoring the recency gate."""
     seen: set[Track] = set()
+    seen_song_keys = set(pool_song_keys)
     pool: list[Track] = []
     for source in sources:
         for track in source.candidates:
-            if track in pool_keys or track in seen:
+            if (
+                track in pool_keys
+                or track in seen
+                or not seen_song_keys.isdisjoint(track_song_keys := song_keys(track))
+            ):
                 continue
             seen.add(track)
+            seen_song_keys.update(track_song_keys)
             pool.append(track)
     pool.sort(
         key=lambda track: (
@@ -417,6 +542,23 @@ def _ungated_fallback(
         )
     )
     return pool[:slots]
+
+
+def _space_tracks(tracks: list[Track], preceding: set[str] | None) -> list[Track]:
+    """
+    Reorder the batch to best-effort keep directly-adjacent tracks from sharing an artist.
+
+    :param tracks: The assembled batch to space.
+    :param preceding: Artist names of the track that will sit directly before the batch (the seam
+        with the current tail); the first track is kept clear of it too.
+    """
+    order = space_by_artist([_track_artist_set(track) for track in tracks], preceding=preceding)
+    return [tracks[index] for index in order]
+
+
+def _track_artist_set(track: Track) -> set[str]:
+    """Return the lowercased set of artist names for a track."""
+    return {artist.name.lower() for artist in track.artists if artist.name}
 
 
 def _uri(media_item: MediaItemType) -> str | None:
