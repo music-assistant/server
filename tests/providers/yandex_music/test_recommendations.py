@@ -27,7 +27,11 @@ from music_assistant.providers.yandex_music.constants import (
 )
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider, _WaveState
 
-from .conftest import DE_JSON_CLIENT
+from .conftest import DE_JSON_CLIENT, provider_dir
+
+_RECOMMENDATION_STRINGS = json.loads((provider_dir() / "strings.json").read_text(encoding="utf-8"))[
+    "media"
+]["recommendations"]
 
 
 @pytest.fixture
@@ -55,9 +59,9 @@ def provider_mock() -> Mock:
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
 
-    # Mix recommendation folders look up a tag's English label via _media_label; stub it to
-    # return the fallback (the title-cased tag slug) plus the bare translation_key.
-    provider._media_label = Mock(side_effect=lambda _group, key, fallback: (fallback, key))
+    # Resolve media labels through the real helper; unauthored keys fall back.
+    provider.mass.translations.get_translation = Mock(return_value=None)
+    provider._media_label = YandexMusicProvider._media_label.__get__(provider, YandexMusicProvider)
 
     return provider
 
@@ -94,7 +98,8 @@ async def test_get_my_wave_recommendations_success(provider_mock: Mock) -> None:
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == MY_WAVE_PLAYLIST_ID
     assert result.provider == provider_mock.instance_id
-    assert result.name == "My Wave"
+    assert result.name == _RECOMMENDATION_STRINGS[MY_WAVE_PLAYLIST_ID]["name"]
+    assert result.translation_key == MY_WAVE_PLAYLIST_ID
     assert result.icon == "mdi-waveform"
     assert len(result.items) > 0
 
@@ -192,7 +197,8 @@ async def test_get_feed_recommendations_success(provider_mock: Mock) -> None:
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "feed"
     assert result.provider == provider_mock.instance_id
-    assert result.name == "Made for You"
+    assert result.name == _RECOMMENDATION_STRINGS["feed"]["name"]
+    assert result.translation_key == "feed"
     assert result.icon == "mdi-account-music"
     assert len(result.items) > 0
 
@@ -273,7 +279,8 @@ async def test_get_chart_recommendations_success(provider_mock: Mock) -> None:
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "chart"
     assert result.provider == provider_mock.instance_id
-    assert result.name == "Chart"
+    assert result.name == _RECOMMENDATION_STRINGS["chart"]["name"]
+    assert result.translation_key == "chart"
     assert result.icon == "mdi-chart-line"
     assert len(result.items) > 0
 
@@ -357,7 +364,8 @@ async def test_get_new_releases_recommendations_success(provider_mock: Mock) -> 
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "new_releases"
     assert result.provider == provider_mock.instance_id
-    assert result.name == "New Releases"
+    assert result.name == _RECOMMENDATION_STRINGS["new_releases"]["name"]
+    assert result.translation_key == "new_releases"
     assert result.icon == "mdi-new-box"
     assert len(result.items) > 0
 
@@ -436,7 +444,8 @@ async def test_get_new_playlists_recommendations_success(provider_mock: Mock) ->
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "new_playlists"
     assert result.provider == provider_mock.instance_id
-    assert result.name == "New Playlists"
+    assert result.name == _RECOMMENDATION_STRINGS["new_playlists"]["name"]
+    assert result.translation_key == "new_playlists"
     assert result.icon == "mdi-playlist-star"
     assert len(result.items) > 0
 
@@ -508,7 +517,8 @@ async def test_get_top_picks_recommendations_success(provider_mock: Mock) -> Non
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "top_picks"
     assert result.provider == provider_mock.instance_id
-    assert result.name == "Top Picks"
+    assert result.name == _RECOMMENDATION_STRINGS["top_picks"]["name"]
+    assert result.translation_key == "top_picks"
     assert result.icon == "mdi-star"
     assert len(result.items) > 0
     # Verify it called with "top" tag
@@ -665,7 +675,7 @@ async def test_get_seasonal_mix_recommendations_winter(provider_mock: Mock) -> N
     mock_parsed_playlist.item_id = "playlist_1"
     mock_parsed_playlist.name = "Winter Playlist"
 
-    # Patch utc() to return January (month 1)
+    # Patch datetime to return January (month 1)
     mock_utc = Mock()
     mock_utc.return_value.month = 1
 
@@ -700,7 +710,7 @@ async def test_get_seasonal_mix_recommendations_summer(provider_mock: Mock) -> N
     mock_parsed_playlist.item_id = "playlist_1"
     mock_parsed_playlist.name = "Summer Playlist"
 
-    # Patch utc() to return July (month 7)
+    # Patch datetime to return July (month 7)
     mock_utc = Mock()
     mock_utc.return_value.month = 7
 
@@ -731,7 +741,7 @@ async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: M
     mock_parsed_playlist.item_id = "playlist_1"
     mock_parsed_playlist.name = "Autumn Playlist"
 
-    # Patch utc() to return March (month 3 - spring)
+    # Patch datetime to return March (month 3 - spring)
     mock_utc = Mock()
     mock_utc.return_value.month = 3
 
