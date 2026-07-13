@@ -440,3 +440,70 @@ async def test_unload_without_registered_route() -> None:
     provider = _make_provider()
 
     await provider.unload()
+
+
+# tree with a playlist folder next to the music: /Playlists/list.m3u + /Artist/track.mp3
+PLAYLIST_TREE: dict[str, list[RawItem]] = {
+    ROOT_ID: [
+        ("playlists-id", "Playlists", True, "2026-01-01", None),
+        ("artist-id", "Artist", True, "2026-01-01", None),
+    ],
+    "playlists-id": [
+        ("list-id", "list.m3u", False, "2026-01-01", 10),
+    ],
+    "artist-id": [
+        ("track-id", "track.mp3", False, "2026-01-02", 1000),
+    ],
+}
+
+
+def _make_playlist_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[_StubCloudProvider, MagicMock]:
+    """Return a provider on PLAYLIST_TREE with tag parsing and track building stubbed."""
+    provider = _make_provider(tree=PLAYLIST_TREE)
+    # the inherited implementation lives in (and imports from) filesystem_local
+    monkeypatch.setattr(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    )
+    track = MagicMock(name="track")
+    provider._parse_track = AsyncMock(return_value=track)  # type: ignore[method-assign]
+    return provider, track
+
+
+async def test_parse_playlist_line_relative_to_playlist_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A line relative to the playlist's own folder resolves through the cloud lookup."""
+    provider, track = _make_playlist_provider(monkeypatch)
+
+    result = await provider._parse_playlist_line("../Artist/track.mp3", "Playlists")
+
+    assert result is track
+    file_item = provider._parse_track.await_args.args[0]  # type: ignore[attr-defined]
+    assert file_item.relative_path == "Artist/track.mp3"
+
+
+async def test_parse_playlist_line_sibling_of_playlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bare filename next to the playlist file resolves relative to its folder."""
+    provider, track = _make_playlist_provider(monkeypatch)
+
+    assert await provider._parse_playlist_line("track.mp3", "Artist") is track
+
+
+async def test_parse_playlist_line_relative_to_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A root-relative line still resolves after the playlist-folder candidate misses."""
+    provider, track = _make_playlist_provider(monkeypatch)
+
+    assert await provider._parse_playlist_line("Artist/track.mp3", "Playlists") is track
+
+
+async def test_parse_playlist_line_missing_file_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A line pointing at a nonexistent file logs a warning instead of raising."""
+    provider, _ = _make_playlist_provider(monkeypatch)
+
+    assert await provider._parse_playlist_line("Missing/nope.mp3", "Playlists") is None
+    provider.logger.warning.assert_called_once()  # type: ignore[attr-defined]
