@@ -402,6 +402,23 @@ class LocalFileSystemProvider(MusicProvider):
                         name=item.filename,
                     )
                 )
+        if self.media_content_type == "music":
+            track_indexes = [
+                index
+                for index, item in enumerate(items)
+                if isinstance(item, ItemMapping) and item.media_type == MediaType.TRACK
+            ]
+            library_tracks = await asyncio.gather(
+                *(
+                    self.mass.music.tracks.get_library_item_by_prov_id(
+                        items[index].item_id, self.instance_id
+                    )
+                    for index in track_indexes
+                )
+            )
+            for index, library_track in zip(track_indexes, library_tracks, strict=True):
+                if library_track:
+                    items[index] = library_track
         return items
 
     async def sync_library(self, media_type: MediaType) -> None:
