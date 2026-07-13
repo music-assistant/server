@@ -30,7 +30,7 @@ dependencies = [
   "music-assistant-frontend==2.17.222",
   "mutagen==1.47.0",
   "orjson==3.11.6",
-  "pillow==12.2.0",
+  "pillow==12.3.0",
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",

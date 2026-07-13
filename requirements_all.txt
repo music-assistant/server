@@ -56,7 +56,7 @@ niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3
 numpy==2.3.5
 orjson==3.11.6
-pillow==12.2.0
+pillow==12.3.0
 pkce==1.0.3
 plexapi==4.18.2
 podcastparser==0.6.11
