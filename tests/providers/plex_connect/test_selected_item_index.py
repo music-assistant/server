@@ -35,7 +35,7 @@ def _make_playqueue(
     items = [SimpleNamespace(playQueueItemID=1000 + n) for n in range(first_track, last_track + 1)]
     return SimpleNamespace(
         items=items,
-        playQueueSelectedItemID=1000 + selected_track if selected_track else None,
+        playQueueSelectedItemID=1000 + selected_track if selected_track is not None else None,
         playQueueSelectedItemOffset=selected_offset,
     )
 
@@ -68,6 +68,13 @@ def test_selected_index_out_of_range_offset() -> None:
     """An offset beyond the fetched items must not raise; default to first item."""
     handler = _QueueHandler()
     playqueue = _make_playqueue(1, 10, selected_track=None, selected_offset=42)
+    assert handler._selected_item_index(playqueue) == 0
+
+
+def test_selected_index_negative_offset() -> None:
+    """A negative offset must not index from the end of the list; default to first item."""
+    handler = _QueueHandler()
+    playqueue = _make_playqueue(1, 10, selected_track=None, selected_offset=-1)
     assert handler._selected_item_index(playqueue) == 0
 
 

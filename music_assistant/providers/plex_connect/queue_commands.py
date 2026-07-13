@@ -159,7 +159,7 @@ class QueueCommandsMixin:
                 if getattr(item, "playQueueItemID", None) == selected_id:
                     return index
         selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0) or 0
-        return selected_offset if selected_offset < len(playqueue.items) else 0
+        return selected_offset if 0 <= selected_offset < len(playqueue.items) else 0
 
     def _source_key_from_play_queue_uri(self, source_uri: str) -> str | None:
         """
