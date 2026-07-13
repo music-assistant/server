@@ -302,7 +302,7 @@ class JellyfinProvider(MusicProvider):
                 .stream(100)
             )
             async for track in stream:
-                if not len(track[ITEM_KEY_MEDIA_STREAMS]):
+                if not len(track.get(ITEM_KEY_MEDIA_STREAMS, [])):
                     self.logger.warning(
                         "Invalid track %s: Does not have any media streams", track[ITEM_KEY_NAME]
                     )
