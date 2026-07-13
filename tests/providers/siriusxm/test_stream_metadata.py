@@ -14,6 +14,7 @@ from sxm.models import (
     XMArt,
     XMArtist,
     XMChannel,
+    XMCut,
     XMCutMarker,
     XMImage,
     XMLiveChannel,
@@ -55,14 +56,14 @@ def _make_channel() -> XMChannel:
     )
 
 
-def _make_live_channel(song: XMSong) -> XMLiveChannel:
+def _make_live_channel(cut: XMCut) -> XMLiveChannel:
     now = datetime.now(UTC)
     cut_marker = XMCutMarker(
         guid="cut-guid",
         time=now - timedelta(minutes=1),
         time_seconds=int((now - timedelta(minutes=1)).timestamp()),
         duration=timedelta(minutes=3),
-        cut=song,
+        cut=cut,
     )
     return XMLiveChannel(
         id=CHANNEL_ID,
@@ -120,6 +121,19 @@ def test_channel_update_falls_back_to_channel_logo() -> None:
 
     metadata = provider._current_stream_details.stream_metadata
     assert metadata is not None
+    assert metadata.image_url == CHANNEL_LOGO_URL
+
+
+def test_channel_update_non_song_cut_uses_channel_logo() -> None:
+    """A cut that is not a song has no album art, so the channel logo is used."""
+    provider = _make_provider()
+    cut = XMCut(title="Talk Segment", artists=[XMArtist(name="Test Host")])
+    _run_channel_updated(provider, _make_live_channel(cut))
+
+    metadata = provider._current_stream_details.stream_metadata
+    assert metadata is not None
+    assert metadata.title == "Talk Segment"
+    assert metadata.artist == "Test Host"
     assert metadata.image_url == CHANNEL_LOGO_URL
 
 
