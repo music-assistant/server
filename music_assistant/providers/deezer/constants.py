@@ -4,6 +4,7 @@
 
 FLOW_PLAYLIST_ID = "flow"
 FLOW_CONFIG_PREFIX = "flow_config_"
+DEFAULT_FLOW_CONFIG_ID = "default"
 SMART_TRACKLIST_PREFIX = "smart_tracklist_"
 RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
 TOP_CHARTS_PLAYLIST_ID = "top_charts"
@@ -22,6 +23,7 @@ PERSONAL_ALBUM_PREFIX = "personal_album_"
 
 FAVORITES_PAGE_SIZE = 50
 AUDIOBOOK_CHAPTERS_PAGE_SIZE = 200
+FLOW_BATCH_COUNT = 2
 
 # -- Browse folder names (used as path segments for routing) --
 
