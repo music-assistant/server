@@ -42,7 +42,7 @@ dependencies = [
   "uv>=0.8.0",
   "librosa==0.11.0",
   "numpy==2.3.5", # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
-  "torch==2.12.1",
+  "torch==2.13.0",
   "torchaudio==2.11.0",
   "gql[all]==4.0.0",
   "aiortc>=1.6.0",
