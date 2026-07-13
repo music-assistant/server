@@ -48,7 +48,7 @@ class MetadataReader:
     async def start(self) -> None:
         """Start reading metadata from the pipe."""
         self._stop = False
-        self._reader_task = asyncio.create_task(self._read_metadata())
+        self._reader_task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
         """Stop reading metadata."""
@@ -57,6 +57,21 @@ class MetadataReader:
             self._reader_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._reader_task
+
+    async def _run(self) -> None:
+        """
+        Keep the pipe reader alive until stopped.
+
+        A dead reader would silently drop all sessioncontrol markers and leave
+        hook writers blocked on the FIFO, so unexpected errors must not be fatal.
+        """
+        while not self._stop:
+            try:
+                await self._read_metadata()
+            except Exception as err:
+                self.logger.error("Metadata reader failed, restarting: %s", err)
+            if not self._stop:
+                await asyncio.sleep(1)
 
     async def _read_metadata(self) -> None:
         """Read metadata from the pipe using async file descriptor."""
@@ -106,8 +121,6 @@ class MetadataReader:
                 # Remove the reader callback
                 loop.remove_reader(self._fd)
 
-        except Exception as err:
-            self.logger.error("Error reading metadata pipe: %s", err)
         finally:
             if self._fd is not None:
                 with suppress(OSError):

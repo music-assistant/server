@@ -39,6 +39,23 @@ async def _wait_for(condition: Any, timeout: float = 2.0) -> None:
             await asyncio.sleep(0.01)
 
 
+async def _write_marker_when_reader_present(
+    pipe_path: str, marker: str, timeout: float = 5.0
+) -> None:
+    """Write a marker without blocking forever when the FIFO has no reader."""
+    async with asyncio.timeout(timeout):
+        while True:
+            try:
+                fd = os.open(pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError:
+                await asyncio.sleep(0.05)
+    try:
+        os.write(fd, f"{marker}\n".encode())
+    finally:
+        os.close(fd)
+
+
 async def test_hook_marker_delivered(pipe_path: str) -> None:
     """A sessioncontrol hook marker is delivered as a play_state update."""
     updates: list[dict[str, Any]] = []
@@ -86,5 +103,33 @@ async def test_reader_backs_off_on_eof(pipe_path: str, monkeypatch: pytest.Monke
         read_counts.clear()
         await asyncio.sleep(0.5)
         assert len(read_counts) < 20
+    finally:
+        await reader.stop()
+
+
+async def test_reader_restarts_after_unexpected_error(
+    pipe_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an unexpected error kills a read, the reader reopens the pipe and keeps working."""
+    updates: list[dict[str, Any]] = []
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
+    real_read = os.read
+    fail_once = True
+
+    def flaky_read(fd: int, size: int) -> bytes:
+        nonlocal fail_once
+        if fd == reader._fd and fail_once:
+            fail_once = False
+            raise ValueError("unexpected error")
+        return real_read(fd, size)
+
+    monkeypatch.setattr(os, "read", flaky_read)
+    await reader.start()
+    try:
+        await _write_marker(pipe_path, "MA_PLAY_BEGIN")
+        await _wait_for(lambda: not fail_once)
+        await _write_marker_when_reader_present(pipe_path, "MA_PLAY_BEGIN")
+        await _wait_for(lambda: updates, timeout=5.0)
+        assert updates[-1] == {"play_state": "playing"}
     finally:
         await reader.stop()
