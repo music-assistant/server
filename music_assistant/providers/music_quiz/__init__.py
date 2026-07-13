@@ -420,8 +420,7 @@ class MusicQuizPlugin(PluginProvider):
                 created_at=time.time(),
             )
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
-            with _system_auth_context():
-                await quiz_strategy.initialize()
+            initial_round_task = await self._prepare_initial_round(quiz_strategy)
             selected_player = self._validate_playback_config(game_config)
             if selected_player is not None:
                 game_config.venue_player_name = selected_player.display_name
@@ -446,7 +445,7 @@ class MusicQuizPlugin(PluginProvider):
                 self._game = game
                 self._quiz_type = quiz_strategy
                 self._answer_type = answer_strategy
-                self._prefetch_round(0)
+                self._next_round_task = initial_round_task
                 self._signal_game_updated()
             await self._store_playback_preference(
                 game_config.playback_mode,
@@ -498,8 +497,7 @@ class MusicQuizPlugin(PluginProvider):
         async with self._game_lock:
             game = self._require_game()
             quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
-            with _system_auth_context():
-                await quiz_strategy.initialize()
+            initial_round_task = await self._prepare_initial_round(quiz_strategy)
             self._cancel_timers()
             self._cancel_next_round_task()
             await self._cancel_reveal_playback_task()
@@ -510,7 +508,7 @@ class MusicQuizPlugin(PluginProvider):
             self._game_generation += 1
             self._quiz_type = quiz_strategy
             self._answer_type = answer_strategy
-            self._prefetch_round(0)
+            self._next_round_task = initial_round_task
             self._schedule_presence_expiry(now)
             if auto_start and _has_active_players(game, now):
                 self._schedule_replay_auto_start(game, now)
@@ -1156,6 +1154,17 @@ class MusicQuizPlugin(PluginProvider):
         )
 
     # ---------- round preparation ----------
+
+    async def _prepare_initial_round(
+        self,
+        quiz_type: QuizType,
+    ) -> asyncio.Task[MusicQuizRound]:
+        """Initialize a quiz type and complete its first round before opening the lobby."""
+        with _system_auth_context():
+            await quiz_type.initialize()
+            task = self.mass.create_task(quiz_type.prepare_round(0, []))
+            await task
+        return task
 
     def _prefetch_round(self, round_index: int) -> None:
         """Prepare an upcoming round in the background."""
