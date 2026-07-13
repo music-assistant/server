@@ -553,6 +553,45 @@ async def test_final_inference_cancellation_stops_long_vocal_loop(
     assert vocal_calls == 1
 
 
+async def test_beat_failure_cancels_vocal_inference(
+    provider: SmartFadesProvider,
+) -> None:
+    """An early beat failure cancels the FireRed branch instead of awaiting it."""
+    vocal_started = asyncio.Event()
+    vocal_cancelled = asyncio.Event()
+    never_finish = asyncio.Event()
+
+    async def run_offloaded(func: Callable[..., object], *_args: object) -> object:
+        if func.__name__ == "_infer_beat_timings":
+            # Fail only once the vocal branch is in flight, so cancellation is observable.
+            await asyncio.wait_for(vocal_started.wait(), timeout=1)
+            return np.array([0.0]), np.array([]), 0
+        if func is infer_firered_chunk:
+            vocal_started.set()
+            try:
+                await never_finish.wait()
+            except asyncio.CancelledError:
+                vocal_cancelled.set()
+                raise
+        raise AssertionError(f"unexpected offload: {func}")
+
+    with (
+        patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
+        pytest.raises(AudioAnalysisError, match="no rhythmic beat"),
+    ):
+        await asyncio.wait_for(
+            provider._run_final_inference(
+                np.zeros((10, 128), dtype=np.float32),
+                None,
+                np.zeros((10, 80), dtype=np.float32),
+                0.1,
+            ),
+            timeout=1,
+        )
+
+    assert vocal_cancelled.is_set()
+
+
 async def test_vocal_worker_keeps_local_state_during_cancel_cleanup(
     provider: SmartFadesProvider,
 ) -> None:

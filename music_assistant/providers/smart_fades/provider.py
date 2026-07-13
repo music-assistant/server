@@ -480,21 +480,25 @@ class SmartFadesProvider(AudioAnalysisProvider):
         vocal_features: np.ndarray,
         duration: float,
     ) -> tuple[tuple[np.ndarray, np.ndarray, int, str | None, str | None], np.ndarray]:
-        """Run beat/key and vocal inference branches and wait for both to settle."""
-        combined = asyncio.gather(
-            self._infer_beats_and_key(beat_features, key_features),
-            self._infer_vocal_activity(vocal_features, duration),
-            return_exceptions=True,
-        )
-        beat_key_result, vocal_result = await combined
-        if isinstance(beat_key_result, BaseException):
-            if isinstance(vocal_result, BaseException):
-                # only one exception can propagate; keep the other in the logs
-                self.logger.debug("FireRed vocal inference also failed: %s", vocal_result)
-            raise beat_key_result
-        if isinstance(vocal_result, BaseException):
-            raise vocal_result
-        return beat_key_result, vocal_result
+        """Run beat/key and vocal inference branches; the first failure cancels the other."""
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                beat_key_task = task_group.create_task(
+                    self._infer_beats_and_key(beat_features, key_features)
+                )
+                vocal_task = task_group.create_task(
+                    self._infer_vocal_activity(vocal_features, duration)
+                )
+        except ExceptionGroup as group:
+            # Unwrap for the base class; prefer the beat/key error since it decides
+            # permanent vs retryable failure recording.
+            beat_key_error = None if beat_key_task.cancelled() else beat_key_task.exception()
+            primary = beat_key_error or group.exceptions[0]
+            for error in group.exceptions:
+                if error is not primary:
+                    self.logger.debug("FireRed vocal inference also failed: %s", error)
+            raise primary from primary.__cause__
+        return beat_key_task.result(), vocal_task.result()
 
     async def _infer_beats_and_key(
         self,
