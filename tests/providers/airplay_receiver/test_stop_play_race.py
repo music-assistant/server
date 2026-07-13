@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.airplay_receiver import AirPlayReceiverProvider
 
@@ -66,7 +67,6 @@ async def test_play_waits_for_inflight_stop(provider: MagicMock) -> None:
     _handle(provider, "stopped")
     _handle(provider, "playing")
 
-    # play must not start while the stop is still in flight
     for _ in range(5):
         await asyncio.sleep(0)
     assert events == []
@@ -90,7 +90,7 @@ async def test_play_without_pending_stop_starts_immediately(provider: MagicMock)
 
 async def test_play_proceeds_when_stop_fails(provider: MagicMock) -> None:
     """A failing stop must not block the new playback from starting."""
-    provider.mass.players.cmd_stop = AsyncMock(side_effect=RuntimeError("boom"))
+    provider.mass.players.cmd_stop = AsyncMock(side_effect=PlayerCommandFailed("boom"))
     provider.mass.player_queues.play_media = AsyncMock()
 
     _handle(provider, "stopped")
