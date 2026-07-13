@@ -15,12 +15,14 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import (
     CONF_ENABLE_GROUPING,
+    CONF_ENABLE_SENDSPIN_BRIDGE,
     CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
     CONF_OUTPUT_FORMAT,
     CONF_PLAYER_IDLE_TIMEOUT,
     CONF_SHOW_STOP_NOTIFICATION,
     DEFAULT_ENABLE_GROUPING,
+    DEFAULT_ENABLE_SENDSPIN_BRIDGE,
     DEFAULT_GROUP_STREAM_MODE,
     DEFAULT_HTTP_PORT,
     DEFAULT_OUTPUT_FORMAT,
@@ -88,6 +90,12 @@ async def get_config_entries(
             type=ConfigEntryType.BOOLEAN,
             required=False,
             default_value=DEFAULT_ENABLE_GROUPING,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_SENDSPIN_BRIDGE,
+            type=ConfigEntryType.BOOLEAN,
+            required=False,
+            default_value=DEFAULT_ENABLE_SENDSPIN_BRIDGE,
         ),
         ConfigEntry(
             key=CONF_GROUP_STREAM_MODE,

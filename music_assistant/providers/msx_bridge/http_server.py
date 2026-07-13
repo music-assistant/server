@@ -13,8 +13,9 @@ from html import escape as html_escape
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
+import aiohttp
 from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
@@ -81,6 +82,23 @@ def _strip_known_extension(value: str) -> str:
     return value
 
 
+def _stamp_qr_on_cover(cover_bytes: bytes, qr_bytes: bytes) -> bytes:
+    """Composite the QR into the cover's bottom-right corner; returns PNG bytes."""
+    from PIL import Image  # noqa: PLC0415  # only needed when the Party plugin is used
+
+    cover = Image.open(io.BytesIO(cover_bytes)).convert("RGB")
+    qr = Image.open(io.BytesIO(qr_bytes)).convert("RGB")
+    # ~28% of the smaller cover side keeps the QR scannable without hiding the art;
+    # NEAREST preserves the hard module edges QR readers need.
+    side = max(48, min(cover.width, cover.height) * 28 // 100)
+    qr = qr.resize((side, side), Image.Resampling.NEAREST)
+    margin = side // 8
+    cover.paste(qr, (cover.width - side - margin, cover.height - side - margin))
+    out = io.BytesIO()
+    cover.save(out, format="PNG")
+    return out.getvalue()
+
+
 def _sort_album_tracks(tracks: list[Any]) -> list[Any]:
     """
     Sort album tracks deterministically.
@@ -112,6 +130,8 @@ class MSXHTTPServer:
         self._active_stream_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._active_stream_transports: dict[str, set[Any]] = {}
         self._party_cache: tuple[float, PartyInfo | None] | None = None
+        self._qr_cover_cache: dict[tuple[str, str], bytes] = {}
+        self._client_prefixes: dict[str, str] = {}
         self._setup_routes()
 
     def _setup_routes(self) -> None:
@@ -207,6 +227,7 @@ class MSXHTTPServer:
         self.app.router.add_get("/api/party", self._handle_party_status)
         self.app.router.add_get("/api/party/qr.svg", self._handle_party_qr)
         self.app.router.add_get("/api/party/qr.png", self._handle_party_qr)
+        self.app.router.add_get("/api/party/qr-cover.png", self._handle_party_qr_cover)
 
         # Playback control — GET (MSX interaction plugin) + POST (web player,
         # dashboard). Never wildcard: extra methods only widen the CSRF surface.
@@ -323,6 +344,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
   background: #1976d2; color: white; cursor: pointer; font-size: 14px; }}
 .btn:hover {{ background: #1565c0; }}
 .link-row {{ margin: 8px 0; }}
+.builder-row {{ margin: 6px 0; }}
+.builder-row label {{ margin-right: 16px; cursor: pointer; }}
 .link-row a {{ color: #1976d2; text-decoration: none; }}
 .link-row a:hover {{ text-decoration: underline; }}
 small {{ color: #666; display: block; margin-top: 4px; }}
@@ -362,6 +385,54 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 <strong>Custom Sendspin URL:</strong><br>
 <code>/web?kiosk=1&amp;sendspin=1&amp;sendspin_url=http://&lt;ma-server&gt;:8927</code>
 </div>
+</div>
+
+<div class="info">
+<h3>Kiosk URL Builder</h3>
+<div id="kiosk-builder">
+<div class="builder-row">
+<label><input type="radio" name="kiosk-mode" value="html5" checked> HTML5</label>
+<label><input type="radio" name="kiosk-mode" value="sendspin"> Sendspin</label>
+</div>
+<div class="builder-row">
+<label><input type="checkbox" data-kiosk-param="controls" checked> Controls</label>
+<label><input type="checkbox" data-kiosk-param="party" checked> Party QR</label>
+<label><input type="checkbox" data-kiosk-param="viz" checked> Visualizer</label>
+<label><input type="checkbox" data-kiosk-param="lyrics" checked> Lyrics</label>
+</div>
+<div class="link-row">
+<a id="kiosk-builder-link" href="/web?kiosk=1" target="_blank">Open kiosk</a>
+</div>
+<code id="kiosk-builder-url"></code>
+</div>
+<script>
+(function () {{
+    var builder = document.getElementById('kiosk-builder');
+    var link = document.getElementById('kiosk-builder-link');
+    var urlOut = document.getElementById('kiosk-builder-url');
+
+    function rebuild() {{
+        var params = ['kiosk=1'];
+        var mode = builder.querySelector('input[name="kiosk-mode"]:checked').value;
+        if (mode === 'sendspin') {{
+            params.push('sendspin=1');
+        }}
+        var boxes = builder.querySelectorAll('input[data-kiosk-param]');
+        for (var i = 0; i < boxes.length; i++) {{
+            // only non-default choices land in the URL
+            if (!boxes[i].checked) {{
+                params.push(boxes[i].getAttribute('data-kiosk-param') + '=0');
+            }}
+        }}
+        var url = location.origin + '/web?' + params.join('&');
+        link.href = url;
+        urlOut.textContent = url;
+    }}
+
+    builder.addEventListener('change', rebuild);
+    rebuild();
+}})();
+</script>
 </div>
 
 <div class="info">
@@ -939,6 +1010,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -962,6 +1034,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -982,6 +1055,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -1000,6 +1074,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -1022,6 +1097,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -1062,6 +1138,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -1591,6 +1668,13 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if artist:
             payload["artist"] = artist
         if image_url:
+            # During a party the play background carries the join QR (MSX has
+            # no overlays); the endpoint falls back to the original image when
+            # the party is over, so a stale cache entry here is harmless.
+            if self._cached_party() and (client_prefix := self._client_prefixes.get(player_id)):
+                image_url = (
+                    f"{client_prefix}/api/party/qr-cover.png?image={quote(image_url, safe='')}"
+                )
             payload["image_url"] = image_url
         if duration is not None:
             payload["duration"] = duration
@@ -1625,6 +1709,27 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             "player_id": player_id,
         }
         msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_sendspin(self, player_id: str, url: str) -> None:
+        """Notify WebSocket clients to open the Sendspin kiosk (bridge stream start)."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_sendspin: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_sendspin: player_id=%s, url=%s, sending to %d client(s)",
+            player_id,
+            url,
+            len(clients),
+        )
+        msg = json.dumps({"type": "sendspin", "url": url, "player_id": player_id})
         for ws in list(clients):
             if not ws.closed:
                 self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
@@ -2108,6 +2213,16 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     # --- Party Mode ---
 
+    def _cached_party(self) -> PartyInfo | None:
+        """Return the last cached party state without refreshing (sync contexts)."""
+        return self._party_cache[1] if self._party_cache else None
+
+    async def _qr_cover_base(self, prefix: str) -> str | None:
+        """Return the QR-cover endpoint base when a party is active, else None."""
+        if await self._get_active_party() is None:
+            return None
+        return f"{prefix}/api/party/qr-cover.png"
+
     async def _get_active_party(self) -> PartyInfo | None:
         """
         Return details of the active party, or None when no party is active.
@@ -2169,6 +2284,87 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             content_type="image/png" if kind == "png" else "image/svg+xml",
             headers={"Cache-Control": "no-store"},
         )
+
+    async def _handle_party_qr_cover(self, request: web.Request) -> web.Response:
+        """
+        Serve a cover image with the party QR stamped into its corner (PNG).
+
+        MSX cannot render overlays, so during a party the playback background
+        is routed through this endpoint. Degrades to a redirect to the
+        original image when the party ended, the source is not ours, or the
+        fetch/composite fails — stale playlist JSON on TVs keeps working.
+        """
+        image_url = request.query.get("image", "")
+        if not image_url:
+            return web.Response(status=400, text="Missing image parameter")
+        # Reject non-MA sources outright — redirecting would be an open
+        # redirect and fetching would be an SSRF proxy.
+        if not self._is_allowed_cover_source(request, image_url):
+            return web.Response(status=400, text="Image source not permitted")
+        party = await self._get_active_party()
+        if party is None:
+            raise web.HTTPFound(location=image_url)
+        cache_key = (image_url, party.qr_version)
+        if (cached := self._qr_cover_cache.get(cache_key)) is None:
+            try:
+                async with self.provider.mass.http_session.get(
+                    image_url,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status != 200:
+                        raise ValueError(f"cover fetch returned HTTP {resp.status}")
+                    cover_bytes = await resp.read()
+                import segno  # noqa: PLC0415  # only needed when the Party plugin is used
+
+                qr_buf = io.BytesIO()
+                segno.make(party.join_url, error="m").save(qr_buf, kind="png", scale=8)
+                cached = _stamp_qr_on_cover(cover_bytes, qr_buf.getvalue())
+            except Exception as err:
+                logger.debug("QR cover composite failed for %s: %s", image_url, err)
+                raise web.HTTPFound(location=image_url) from None
+            # QR rotation changes the cache key; keep the cache tiny and bounded
+            if len(self._qr_cover_cache) >= 32:
+                self._qr_cover_cache.clear()
+            self._qr_cover_cache[cache_key] = cached
+        return web.Response(
+            body=cached,
+            content_type="image/png",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @staticmethod
+    def _url_origin(url: str) -> tuple[str, str | None, int | None]:
+        """Return (scheme, hostname, port); raises ValueError on malformed URLs."""
+        parts = urlsplit(url)
+        # .port is lazy and raises on garbage like "host:8095.evil.example"
+        return (parts.scheme, parts.hostname, parts.port)
+
+    def _is_allowed_cover_source(self, request: web.Request, image_url: str) -> bool:
+        """Only composite covers served by this provider or MA itself (no open proxy)."""
+        try:
+            target_origin = self._url_origin(image_url)
+        except ValueError:
+            return False
+        if target_origin[0] not in ("http", "https") or not target_origin[1]:
+            return False
+        allowed_bases = [self._get_prefix(request)]
+        for source in (
+            getattr(self.provider.mass, "webserver", None),
+            getattr(self.provider.mass, "streams", None),
+        ):
+            base_url = getattr(source, "base_url", None)
+            if isinstance(base_url, str) and base_url.startswith("http"):
+                allowed_bases.append(base_url)
+        # Compare parsed origins, not string prefixes: "http://ma:8095.evil.com"
+        # must not pass for the allowed base "http://ma:8095".
+        for base in allowed_bases:
+            try:
+                if target_origin == self._url_origin(base):
+                    return True
+            except ValueError:
+                continue
+        return False
 
     # --- Playback Control ---
 
@@ -2332,6 +2528,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         Player may be None if registration failed.
         """
         player_id, device_param = self._get_player_id_and_device_param(request)
+        # Remember how this client reaches us — WS pushes have no request context
+        self._client_prefixes[player_id] = self._get_prefix(request)
         remote_ip = request.remote
         # Web player clients pass source=web to distinguish from MSX TV players
         prefix_label = "WEB TV" if request.query.get("source") == "web" else "MSX TV"

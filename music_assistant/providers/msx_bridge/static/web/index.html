@@ -573,11 +573,12 @@
             50% { opacity: 0.6; }
         }
 
-        /* Party QR overlay (top-left) */
+        /* Party QR overlay (top-center) */
         #kiosk-party {
             position: absolute;
             top: 20px;
-            left: 20px;
+            left: 50%;
+            transform: translateX(-50%);
             z-index: 10;
             background: rgba(0, 0, 0, 0.55);
             border-radius: 12px;
@@ -706,6 +707,18 @@
             will-change: height;
             min-height: 8px;
         }
+
+        /* Live spectrum: heights are set inline from FFT data, no keyframes */
+        #eq-bars.eq-live .eq-bar {
+            animation: none;
+            transition: height 0.06s linear;
+        }
+
+        /* Kiosk display toggles (URL params controls/party/viz/lyrics = 0) */
+        #kiosk-player.kiosk-hide-controls #kiosk-controls-panel { display: none !important; }
+        #kiosk-player.kiosk-hide-party #kiosk-party { display: none !important; }
+        #kiosk-player.kiosk-hide-viz #kiosk-equalizer { display: none !important; }
+        #kiosk-player.kiosk-hide-lyrics #kiosk-lyrics { display: none !important; }
 
         @keyframes eqBounce {
             0%   { height: var(--eq-min, 8px); opacity: 0.5; }

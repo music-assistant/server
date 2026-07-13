@@ -143,6 +143,11 @@
                     var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
                     startPositionTimer(0);
                     tvx.InteractionPlugin.executeAction("playlist:" + playlistUrl);
+                } else if (msg.type === "sendspin" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    // Sendspin bridge stream start: open the web kiosk in Sendspin
+                    // mode so its JS client takes over synchronized playback.
+                    stopPositionTimer();
+                    tvx.InteractionPlugin.executeAction("link:" + BRIDGE + msg.url);
                 } else if (msg.type === "seek" && msg.position != null && typeof tvx.InteractionPlugin.executeAction === "function") {
                     var seekSecs = Math.round(msg.position);
                     startPositionTimer(seekSecs);

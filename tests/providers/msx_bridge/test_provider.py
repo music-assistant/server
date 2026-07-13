@@ -7,6 +7,31 @@ from unittest.mock import AsyncMock, Mock, patch
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
+async def test_init_without_sendspin_provider_module(
+    provider: MSXBridgeProvider,
+) -> None:
+    """
+    The provider must load even when the Sendspin provider module is absent.
+
+    In a Music Assistant install that ships no Sendspin provider, importing
+    the bridge manager fails; the MSX provider must degrade to "no bridge"
+    instead of failing to load.
+    """
+    provider.sendspin_bridge_enabled = True
+    with (
+        patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls,
+        patch.object(
+            MSXBridgeProvider,
+            "_make_bridge_manager",
+            side_effect=ImportError("No module named 'music_assistant.providers.sendspin'"),
+        ),
+    ):
+        mock_server_cls.return_value = AsyncMock()
+        await provider.handle_async_init()
+
+    assert provider.bridge_manager is None
+
+
 async def test_handle_async_init(provider: MSXBridgeProvider) -> None:
     """handle_async_init should create an MSXHTTPServer and start it."""
     with patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls:

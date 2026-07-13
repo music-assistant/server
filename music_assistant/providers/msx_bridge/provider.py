@@ -8,17 +8,19 @@ import logging
 import time
 from collections import deque
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     CONF_ENABLE_GROUPING,
+    CONF_ENABLE_SENDSPIN_BRIDGE,
     CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
     CONF_OUTPUT_FORMAT,
     CONF_PLAYER_IDLE_TIMEOUT,
     DEFAULT_ENABLE_GROUPING,
+    DEFAULT_ENABLE_SENDSPIN_BRIDGE,
     DEFAULT_GROUP_STREAM_MODE,
     DEFAULT_HTTP_PORT,
     DEFAULT_OUTPUT_FORMAT,
@@ -29,6 +31,9 @@ from .constants import (
 )
 from .http_server import MSXHTTPServer
 from .player import MSXPlayer
+
+if TYPE_CHECKING:
+    from .sendspin_bridge import MSXSendspinBridgeManager
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +263,8 @@ class MSXBridgeProvider(PlayerProvider):
     http_server: MSXHTTPServer | None = None
     grouping_enabled: bool = True
     group_stream_mode: str = DEFAULT_GROUP_STREAM_MODE
+    sendspin_bridge_enabled: bool = False
+    bridge_manager: MSXSendspinBridgeManager | None = None
     _player_last_activity: dict[str, float]
     _pending_unregisters: dict[str, asyncio.Event]
     _timeout_task: asyncio.Task[None] | None = None
@@ -286,6 +293,21 @@ class MSXBridgeProvider(PlayerProvider):
             "str",
             self.config.get_value(CONF_GROUP_STREAM_MODE, DEFAULT_GROUP_STREAM_MODE),
         )
+        self.sendspin_bridge_enabled = bool(
+            self.config.get_value(CONF_ENABLE_SENDSPIN_BRIDGE, DEFAULT_ENABLE_SENDSPIN_BRIDGE)
+        )
+        # The Sendspin bridge rides on MA's Sendspin provider; an install that
+        # ships no Sendspin provider can't import the manager. That's a valid
+        # setup — degrade to "no bridge" rather than failing to load.
+        try:
+            self.bridge_manager = self._make_bridge_manager()
+        except ImportError:
+            self.bridge_manager = None
+            if self.sendspin_bridge_enabled:
+                self.logger.warning(
+                    "Sendspin bridge enabled but the Sendspin provider is not available; "
+                    "the bridge is disabled"
+                )
         self.http_server = MSXHTTPServer(self, port)
         await self.http_server.start()
         self.logger.info(
@@ -318,6 +340,10 @@ class MSXBridgeProvider(PlayerProvider):
 
         # Cleanup shared streams
         await self.cleanup_shared_streams()
+
+        if self.bridge_manager:
+            await self.bridge_manager.close()
+            self.bridge_manager = None
 
         if self.http_server:
             await self.http_server.stop()
@@ -383,6 +409,8 @@ class MSXBridgeProvider(PlayerProvider):
         await self.mass.players.register(player)
         self._player_last_activity[player_id] = time.monotonic()
         self.logger.info("Registered MSX player: %s (%s)", name, player_id)
+        if self.bridge_manager:
+            await self.bridge_manager.evaluate_bridge(player)
         return player
 
     def _player_display_name_from_id(
@@ -531,6 +559,8 @@ class MSXBridgeProvider(PlayerProvider):
         unregister_event = asyncio.Event()
         self._pending_unregisters[player_id] = unregister_event
         try:
+            if self.bridge_manager:
+                await self.bridge_manager.remove_bridge(player_id, permanent=True)
             await self.mass.players.unregister(player_id)
         finally:
             self._pending_unregisters.pop(player_id, None)
@@ -574,6 +604,12 @@ class MSXBridgeProvider(PlayerProvider):
                     task = self.mass.create_task(self._handle_player_unregister(player.player_id))
                     self._background_tasks.add(task)
                     task.add_done_callback(self._background_tasks.discard)
+
+    def _make_bridge_manager(self) -> MSXSendspinBridgeManager:
+        """Import and construct the Sendspin bridge manager (raises ImportError if absent)."""
+        from .sendspin_bridge import MSXSendspinBridgeManager  # noqa: PLC0415
+
+        return MSXSendspinBridgeManager(self)
 
     # --- Group Stream Management ---
 

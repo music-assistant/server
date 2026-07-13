@@ -161,6 +161,7 @@ def map_tracks_to_msx_playlist(
     player_id: str,
     provider: MSXBridgeProvider,
     device_param: str = "",
+    qr_cover_base: str | None = None,
 ) -> MsxContent:
     """
     Map a list of MA Track objects to an MSX Content page for playlist playback.
@@ -168,6 +169,9 @@ def map_tracks_to_msx_playlist(
     MSX ``playlist:{URL}`` loads a standard Content Root Object.
     Each item uses ``action: "audio:{URL}"`` so MSX can play them sequentially.
     The page-level ``action`` auto-starts playback at the requested track index.
+
+    :param qr_cover_base: When set (active party), item backgrounds are routed
+        through this QR-compositing endpoint so the join QR shows on covers.
     """
     msx_items = []
     for track in tracks:
@@ -180,6 +184,9 @@ def map_tracks_to_msx_playlist(
             else (artist or duration_str or None)
         )
         image_url = get_image_url(track, provider)
+        background = image_url
+        if qr_cover_base and image_url:
+            background = f"{qr_cover_base}?image={quote(image_url, safe='')}"
 
         action = _build_audio_action(
             prefix=prefix,
@@ -195,7 +202,7 @@ def map_tracks_to_msx_playlist(
                 label=label,
                 player_label=track.name,
                 image=image_url,
-                background=image_url,
+                background=background,
                 duration=duration,
                 action=action,
             )
