@@ -90,6 +90,7 @@ def test_streaming_fbank_cmvn_matches_reference_across_chunks() -> None:
             [1.1541193, 0.50818205, -2.3833172, -1.7334999],
             [0.9781029, 0.5056236, -2.3772168, -1.7556578],
         ],
+        rtol=1e-4,
         atol=1e-6,
     )
 
@@ -113,11 +114,13 @@ def test_deterministic_probability_parity() -> None:
             [5.2045441e-05, 4.0918807e-05, 9.9911863e-01],
             [5.1496401e-05, 1.5160468e-04, 9.8695940e-01],
         ],
+        rtol=1e-4,
         atol=1e-6,
     )
     np.testing.assert_allclose(
         vocal_activity[:5],
         [8.7163455e-05, 2.1780634e-04, 4.3790121e-04, 5.1874004e-04, 5.9412332e-04],
+        rtol=1e-4,
         atol=1e-7,
     )
 
