@@ -22,10 +22,16 @@ def append_device_param(url: str, device_param: str) -> str:
     return f"{url}{sep}{device_param}"
 
 
-def get_image_url(item: Any, provider: MSXBridgeProvider) -> str | None:
-    """Get an image URL for a media item."""
+def get_image_url(item: Any, provider: MSXBridgeProvider, prefer_proxy: bool = False) -> str | None:
+    """
+    Get an image URL for a media item.
+
+    :param prefer_proxy: Route the image through the MA imageproxy so the URL
+        points at the MA server (rather than a remote CDN). Needed for the
+        party QR-cover compositor, which only accepts MA-hosted sources.
+    """
     if hasattr(item, "image") and item.image:
-        return provider.mass.metadata.get_image_url(item.image)
+        return provider.mass.metadata.get_image_url(item.image, prefer_proxy=prefer_proxy)
     return None
 
 
@@ -185,8 +191,13 @@ def map_tracks_to_msx_playlist(
         )
         image_url = get_image_url(track, provider)
         background = image_url
-        if qr_cover_base and image_url:
-            background = f"{qr_cover_base}?image={quote(image_url, safe='')}"
+        if qr_cover_base:
+            # The compositor only accepts MA-hosted images; a remote CDN cover
+            # would be rejected (400) and vanish. Route it through the MA
+            # imageproxy so the QR-stamped background actually loads.
+            proxied = get_image_url(track, provider, prefer_proxy=True)
+            if proxied:
+                background = f"{qr_cover_base}?image={quote(proxied, safe='')}"
 
         action = _build_audio_action(
             prefix=prefix,

@@ -7,6 +7,7 @@ import json
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
+from urllib.parse import parse_qs, urlsplit
 
 import segno
 from aiohttp.test_utils import TestClient as AiohttpTestClient
@@ -239,6 +240,38 @@ def test_playlist_backgrounds_use_qr_cover_when_party_active(
     assert "cover.jpg" in item.background
     # the small thumbnail stays a clean cover
     assert item.image == COVER_URL
+
+
+def test_playlist_qr_cover_uses_proxied_image_for_external_cover(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """
+    QR-cover backgrounds wrap the MA-proxied cover URL, not the external one.
+
+    A remotely-accessible cover resolves to an external CDN URL the qr-cover
+    endpoint rejects (400) — the composited background must wrap the MA-proxied
+    URL instead, so the cover still loads on the TV during a party.
+    """
+
+    def _get_image(_image: object, prefer_proxy: bool = False, **_kw: object) -> str:
+        return "http://ma.local:8095/imageproxy/abc" if prefer_proxy else "https://cdn.ext/art.jpg"
+
+    mass_mock.metadata.get_image_url = Mock(side_effect=_get_image)
+    playlist = map_tracks_to_msx_playlist(
+        [_track_mock()],
+        0,
+        "http://tv-host:8099",
+        "msx_test",
+        provider,
+        qr_cover_base="http://tv-host:8099/api/party/qr-cover.png",
+    )
+    assert playlist.items is not None
+    bg = playlist.items[0].background
+    assert bg is not None
+    inner = parse_qs(urlsplit(bg).query)["image"][0]
+    assert inner == "http://ma.local:8095/imageproxy/abc"  # proxied, not external CDN
+    # the small thumbnail stays the direct (non-proxied) cover
+    assert playlist.items[0].image == "https://cdn.ext/art.jpg"
 
 
 def test_playlist_backgrounds_unchanged_without_party(
