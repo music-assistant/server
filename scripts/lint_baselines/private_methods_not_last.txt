@@ -40,9 +40,6 @@ music_assistant/providers/lastfm_recommendations/__init__.py	4
 music_assistant/providers/lastfm_recommendations/api_client.py	12
 music_assistant/providers/lastfm_recommendations/recommendations.py	2
 music_assistant/providers/mpd/player.py	7
-music_assistant/providers/msx_bridge/http_server.py	10
-music_assistant/providers/msx_bridge/player.py	9
-music_assistant/providers/msx_bridge/provider.py	21
 music_assistant/providers/musiccast/musiccast.py	39
 music_assistant/providers/musiccast/player.py	18
 music_assistant/providers/musicme/provider.py	11
