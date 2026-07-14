@@ -9,13 +9,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
-    PlanMetrics,
-    TransitionPlan,
     TransitionTier,
-)
-from music_assistant.controllers.streams.smart_fades.planner_pkg.candidates import (
-    Candidate,
-    CandidateSpec,
 )
 from music_assistant.controllers.streams.smart_fades.planner_pkg.context import (
     TransitionContext,
@@ -36,33 +30,7 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     VocalMask,
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
-
-
-def _candidate(
-    *,
-    bars: int = 8,
-    ideal: int = 8,
-    collision: float = 0.0,
-    weighted: float = 0.0,
-    trim: float = 0.0,
-    vocal_fade: float = 0.0,
-    on_downbeat: bool = True,
-    duration: float = 20.0,
-    one_sided: str | None = None,
-    tier: TransitionTier = TransitionTier.FULL_BLEND,
-) -> Candidate:
-    spec = CandidateSpec(
-        tier=tier, bars=bars, anchor_s=None, entry_s=None, one_sided_vocal=one_sided
-    )
-    plan = TransitionPlan(tier=tier, fade_out_window=duration, crossfade_duration=duration)
-    metrics = PlanMetrics(
-        audible_outgoing_trim=trim,
-        outgoing_vocal_fade_seconds=vocal_fade,
-        anchor_on_downbeat=on_downbeat,
-        collision_seconds=collision,
-        weighted_collision_seconds=weighted,
-    )
-    return Candidate(spec=spec, plan=plan, metrics=metrics, ideal_bars=ideal)
+from tests.controllers.streams.smart_fades.conftest import build_test_candidate as _candidate
 
 
 def _ctx(
