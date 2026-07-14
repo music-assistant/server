@@ -41,10 +41,11 @@ from music_assistant.controllers.streams.smart_fades.structure import point_in_m
 from music_assistant.controllers.streams.smart_fades.vocal import (
     VocalMask,
     collision_metrics,
+    mask_saturated,
     merge_windows,
 )
 
-from .context import _mask_saturated, choose_tier, time_stretch_bpm_percentage_threshold
+from .context import choose_tier, time_stretch_bpm_percentage_threshold
 
 if TYPE_CHECKING:
     import logging
@@ -143,17 +144,26 @@ class CandidateGenerator(ABC):
 
 
 class EnergyLadderGenerator(CandidateGenerator):
-    """Emits the tier's bar-count ladder at the default and kick anchors, across entry options."""
+    """Emits the tier's bar-count ladder at each viable anchor, across entry options."""
 
     name = "energy-ladder"
 
     def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
-        """Emit one spec per (rung, entry option) at the default anchor and the kick anchor."""
+        """Emit one spec per (rung, entry option) at the default, full-band and pinned anchors."""
         ladder = bars_ladder(ctx, ctx.tier)
         ideal = ladder[0]
         anchors: list[float | None] = [None]
-        if ctx.kick_anchor is not None and ctx.kick_anchor != ctx.default_anchor:
-            anchors.append(ctx.kick_anchor)
+        # the default anchor is already kick-folded, so the alternative worth
+        # exploring on a kick-timed track is the pure full-band mix-out anchor
+        if (
+            ctx.kick_anchor is not None
+            and ctx.mix_out_anchor is not None
+            and ctx.mix_out_anchor != ctx.default_anchor
+        ):
+            anchors.append(ctx.mix_out_anchor)
+        a_pin = _fade_onset_pin(ctx)
+        if a_pin < ctx.default_anchor:
+            anchors.append(a_pin)
         for anchor in anchors:
             for bars in ladder:
                 for entry in _entry_options(ctx, bars):
@@ -165,6 +175,10 @@ class EnergyLadderGenerator(CandidateGenerator):
                         source=self.name,
                         ideal_bars=ideal,
                     )
+        # the doubled overlap is a full-blend privilege: a shorter tier's
+        # ladder never reaches 16 bars, one-sided relaxation or not
+        if ctx.tier is not TransitionTier.FULL_BLEND:
+            return
         one_sided = _one_sided_instrumental_side(ctx)
         if one_sided is None:
             return
@@ -248,17 +262,18 @@ class VocalOnsetEntryGenerator(CandidateGenerator):
         """Emit the vocal-onset-aligned entry at the tier's ideal rung, or nothing when illegal."""
         if ctx.vocal_in_placement is None or not ctx.vocal_in_placement.windows:
             return
-        if _mask_saturated(ctx.vocal_in_placement, float(SMART_CROSSFADE_DURATION)):
+        if mask_saturated(ctx.vocal_in_placement, float(SMART_CROSSFADE_DURATION)):
             return
         ideal = bars_ladder(ctx, ctx.tier)[0]
         bar_b = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
         entry = ctx.vocal_in_placement.windows[0][0] - ideal * bar_b
         if entry < 0.0 or point_in_mask(ctx.vocal_in_placement, entry):
             return
+        a_pin = _fade_onset_pin(ctx)
         yield CandidateSpec(
             tier=ctx.tier,
             bars=ideal,
-            anchor_s=None,
+            anchor_s=a_pin if a_pin < ctx.default_anchor else None,
             entry_s=entry,
             source=self.name,
             ideal_bars=ideal,
@@ -273,84 +288,6 @@ def default_generators() -> tuple[CandidateGenerator, ...]:
         ProtectiveAnchorGenerator(),
         VocalOnsetEntryGenerator(),
     )
-
-
-def _vocal_duties(ctx: TransitionContext) -> tuple[float, float] | None:
-    """Outgoing/incoming vocal duty fractions the instrumental-blend gates key on, or None."""
-    if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
-        return None
-    out_duty = sum(right - left for left, right in ctx.vocal_out_scoring.windows) / max(
-        ctx.audio_end, 0.001
-    )
-    in_duty = sum(right - left for left, right in ctx.vocal_in_scoring.windows) / float(
-        SMART_CROSSFADE_DURATION
-    )
-    return out_duty, in_duty
-
-
-def _one_sided_instrumental_side(ctx: TransitionContext) -> str | None:
-    """Which side (the one WITH vocals) earns the one-sided 16-bar rung, or None."""
-    duties = _vocal_duties(ctx)
-    if duties is None:
-        return None
-    out_duty, in_duty = duties
-    out_ok = out_duty <= instrumental_duty_max
-    in_ok = in_duty <= instrumental_duty_max
-    if out_ok == in_ok:
-        # both qualify (already the ladder's plain ideal) or neither does
-        return None
-    assert ctx.vocal_out_scoring is not None  # narrowed by _vocal_duties
-    assert ctx.vocal_in_scoring is not None
-    if out_ok:
-        if ctx.outgoing_profile is None:
-            return None
-        media_mask = _shift_windows(ctx.vocal_out_scoring, ctx.buffer_offset)
-        region_end = ctx.buffer_offset + ctx.audio_end
-        confirmed = instrumental_claim_confirmed(
-            ctx.outgoing_profile, media_mask, ctx.buffer_offset, region_end
-        )
-        return "incoming" if confirmed else None
-    if ctx.incoming_profile is None:
-        return None
-    confirmed = instrumental_claim_confirmed(
-        ctx.incoming_profile, ctx.vocal_in_scoring, 0.0, float(SMART_CROSSFADE_DURATION)
-    )
-    return "outgoing" if confirmed else None
-
-
-def _shift_windows(mask: VocalMask, offset: float) -> VocalMask:
-    """Shift a mask's windows by a constant offset (buffer-local <-> media time)."""
-    return VocalMask(windows=[(left + offset, right + offset) for left, right in mask.windows])
-
-
-def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
-    """B entries for a rung: exact groove alignment first (when legal), else the natural entry."""
-    import numpy as np  # noqa: PLC0415
-
-    bar_b = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
-    options: list[float] = []
-    deep = ctx.natural_entry - bars * bar_b
-    if deep > 0.0 and len(ctx.incoming.downbeats):
-        downbeats = ctx.incoming.downbeats
-        snapped = float(downbeats[np.argmin(np.abs(downbeats - deep))])
-        in_mask = ctx.vocal_in_placement is not None and point_in_mask(
-            ctx.vocal_in_placement, snapped
-        )
-        if snapped >= 0.0 and not in_mask:
-            options.append(snapped)
-    if ctx.natural_entry not in options:
-        options.append(ctx.natural_entry)
-    return options
-
-
-def _nearest_protective_anchor(ctx: TransitionContext, target: float) -> float:
-    """Earliest protective downbeat at/after target within the RMS-audible boundary."""
-    candidates = [
-        downbeat for downbeat in ctx.protective_downbeats if target <= downbeat <= ctx.audio_end
-    ]
-    if candidates:
-        return candidates[0]
-    return min(target, ctx.audio_end)
 
 
 class CandidateFactory:
@@ -862,3 +799,94 @@ class _AnchoredTail:
     beats: npt.NDArray[np.float32]
     downbeats: npt.NDArray[np.float32]
     extrapolated_downbeats: npt.NDArray[np.float32]
+
+
+def _vocal_duties(ctx: TransitionContext) -> tuple[float, float] | None:
+    """Outgoing/incoming vocal duty fractions the instrumental-blend gates key on, or None."""
+    if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
+        return None
+    out_duty = sum(right - left for left, right in ctx.vocal_out_scoring.windows) / max(
+        ctx.audio_end, 0.001
+    )
+    in_duty = sum(right - left for left, right in ctx.vocal_in_scoring.windows) / float(
+        SMART_CROSSFADE_DURATION
+    )
+    return out_duty, in_duty
+
+
+def _one_sided_instrumental_side(ctx: TransitionContext) -> str | None:
+    """Which side (the one WITH vocals) earns the one-sided 16-bar rung, or None."""
+    duties = _vocal_duties(ctx)
+    if duties is None:
+        return None
+    out_duty, in_duty = duties
+    out_ok = out_duty <= instrumental_duty_max
+    in_ok = in_duty <= instrumental_duty_max
+    if out_ok == in_ok:
+        # both qualify (already the ladder's plain ideal) or neither does
+        return None
+    assert ctx.vocal_out_scoring is not None  # narrowed by _vocal_duties
+    assert ctx.vocal_in_scoring is not None
+    if out_ok:
+        if ctx.outgoing_profile is None:
+            return None
+        media_mask = _shift_windows(ctx.vocal_out_scoring, ctx.buffer_offset)
+        region_end = ctx.buffer_offset + ctx.audio_end
+        confirmed = instrumental_claim_confirmed(
+            ctx.outgoing_profile, media_mask, ctx.buffer_offset, region_end
+        )
+        return "incoming" if confirmed else None
+    if ctx.incoming_profile is None:
+        return None
+    confirmed = instrumental_claim_confirmed(
+        ctx.incoming_profile, ctx.vocal_in_scoring, 0.0, float(SMART_CROSSFADE_DURATION)
+    )
+    return "outgoing" if confirmed else None
+
+
+def _shift_windows(mask: VocalMask, offset: float) -> VocalMask:
+    """Shift a mask's windows by a constant offset (buffer-local <-> media time)."""
+    return VocalMask(windows=[(left + offset, right + offset) for left, right in mask.windows])
+
+
+def _fade_onset_pin(ctx: TransitionContext) -> float:
+    """Buffer-local anchor pin ahead of a detected mastered fade, else the default anchor."""
+    if ctx.fade_onset is None:
+        return ctx.default_anchor
+    # never pin inside A's own vocal window: exiting mid-phrase is the exact
+    # defect this pin fixes, so the vocal end floors the pin
+    lead_end = ctx.vocal_out_placement.last_end() if ctx.vocal_out_placement else 0.0
+    onset_local = max(ctx.fade_onset, lead_end)
+    if onset_local < MIN_EFFECTIVE_FADE_BUFFER:
+        return ctx.default_anchor
+    return min(ctx.default_anchor, onset_local)
+
+
+def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
+    """B entries for a rung: exact groove alignment first (when legal), else the natural entry."""
+    import numpy as np  # noqa: PLC0415
+
+    bar_b = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
+    options: list[float] = []
+    deep = ctx.natural_entry - bars * bar_b
+    if deep > 0.0 and len(ctx.incoming.downbeats):
+        downbeats = ctx.incoming.downbeats
+        snapped = float(downbeats[np.argmin(np.abs(downbeats - deep))])
+        in_mask = ctx.vocal_in_placement is not None and point_in_mask(
+            ctx.vocal_in_placement, snapped
+        )
+        if snapped >= 0.0 and not in_mask:
+            options.append(snapped)
+    if ctx.natural_entry not in options:
+        options.append(ctx.natural_entry)
+    return options
+
+
+def _nearest_protective_anchor(ctx: TransitionContext, target: float) -> float:
+    """Earliest protective downbeat at/after target within the RMS-audible boundary."""
+    candidates = [
+        downbeat for downbeat in ctx.protective_downbeats if target <= downbeat <= ctx.audio_end
+    ]
+    if candidates:
+        return candidates[0]
+    return min(target, ctx.audio_end)

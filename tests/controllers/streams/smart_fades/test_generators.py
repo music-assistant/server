@@ -137,24 +137,24 @@ class TestEnergyLadderGenerator:
         assert all(s.source == "energy-ladder" for s in specs)
         assert all(s.one_sided_vocal is None for s in specs)
 
-    def test_kick_anchor_variant_emitted_when_present_and_differing(self) -> None:
-        """A kick anchor distinct from the default anchor doubles every rung at that anchor."""
-        ctx = _base_ctx(kick_anchor=10.0, default_anchor=45.0)
+    def test_full_band_anchor_variant_emitted_on_a_kick_timed_track(self) -> None:
+        """A kick-folded default anchor also explores the ladder at the pure full-band anchor."""
+        ctx = _base_ctx(kick_anchor=10.0, default_anchor=10.0, mix_out_anchor=30.0)
         specs = list(EnergyLadderGenerator().generate(ctx))
 
-        assert {s.anchor_s for s in specs} == {None, 10.0}
-        assert {s.bars for s in specs if s.anchor_s == 10.0} == {8, 4, 2, 1}
+        assert {s.anchor_s for s in specs} == {None, 30.0}
+        assert {s.bars for s in specs if s.anchor_s == 30.0} == {8, 4, 2, 1}
 
-    def test_no_kick_anchor_variant_when_equal_to_default(self) -> None:
-        """A kick anchor equal to the default anchor emits no duplicate rungs."""
-        ctx = _base_ctx(kick_anchor=45.0, default_anchor=45.0)
+    def test_no_full_band_variant_when_it_equals_the_default_anchor(self) -> None:
+        """A full-band anchor equal to the (kick-folded) default emits no duplicate rungs."""
+        ctx = _base_ctx(kick_anchor=45.0, default_anchor=45.0, mix_out_anchor=45.0)
         specs = list(EnergyLadderGenerator().generate(ctx))
 
         assert {s.anchor_s for s in specs} == {None}
 
-    def test_no_kick_anchor_variant_when_absent(self) -> None:
-        """No kick anchor at all emits only the default-anchor rungs."""
-        ctx = _base_ctx(kick_anchor=None)
+    def test_no_full_band_variant_without_a_kick_anchor(self) -> None:
+        """A track with no kick anchor keeps the single (default) anchor."""
+        ctx = _base_ctx(kick_anchor=None, default_anchor=45.0, mix_out_anchor=45.0)
         specs = list(EnergyLadderGenerator().generate(ctx))
 
         assert {s.anchor_s for s in specs} == {None}
@@ -193,6 +193,99 @@ class TestEnergyLadderGenerator:
         specs = list(EnergyLadderGenerator().generate(ctx))
 
         assert not [s for s in specs if s.bars == instrumental_blend_bars]
+
+    def test_one_sided_16_bars_denied_on_tempo_blend_tier(self) -> None:
+        """A cross-check-confirmed pair on the TEMPO_BLEND tier earns no one-sided 16 bars."""
+        ctx = self._confirmed_one_sided_ctx(tier=TransitionTier.TEMPO_BLEND)
+        specs = list(EnergyLadderGenerator().generate(ctx))
+
+        assert not [s for s in specs if s.one_sided_vocal is not None]
+        assert not [s for s in specs if s.bars == instrumental_blend_bars]
+
+    def test_one_sided_16_bars_denied_on_quick_fade_tier(self) -> None:
+        """A cross-check-confirmed pair on the QUICK_FADE tier earns no one-sided 16 bars."""
+        ctx = self._confirmed_one_sided_ctx(tier=TransitionTier.QUICK_FADE)
+        specs = list(EnergyLadderGenerator().generate(ctx))
+
+        assert not [s for s in specs if s.one_sided_vocal is not None]
+        assert not [s for s in specs if s.bars == instrumental_blend_bars]
+
+    def test_one_sided_16_bars_denied_on_cross_meter_pair(self) -> None:
+        """A cross-meter (quick-fade) pair earns no one-sided 16 bars either."""
+        ctx = self._confirmed_one_sided_ctx(tier=TransitionTier.QUICK_FADE, cross_meter=True)
+        specs = list(EnergyLadderGenerator().generate(ctx))
+
+        assert not [s for s in specs if s.one_sided_vocal is not None]
+        assert not [s for s in specs if s.bars == instrumental_blend_bars]
+
+    def _confirmed_one_sided_ctx(self, **overrides: object) -> TransitionContext:
+        """Build the cross-check-confirmed one-sided context, then force the given tier facts."""
+        out = _out_analysis_with_quiet_tail(elevated_spike=False)
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(5.0, 25.0)])
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        # fixture sanity: this pair DOES earn the one-sided rung on its real tier
+        assert any(s.one_sided_vocal is not None for s in EnergyLadderGenerator().generate(ctx))
+        return dataclasses.replace(ctx, **overrides)
+
+
+class TestFadeOnsetPin:
+    """The mastered-fade pin: the ladder is also emitted just ahead of a detected fade."""
+
+    def test_ladder_also_emitted_at_the_fade_onset_pin(self) -> None:
+        """A fade onset ahead of the default anchor pins a second full rung set there."""
+        ctx = _base_ctx(fade_onset=20.0, default_anchor=45.0)
+        specs = list(EnergyLadderGenerator().generate(ctx))
+
+        assert {s.anchor_s for s in specs} == {None, 20.0}
+        assert {s.bars for s in specs if s.anchor_s == 20.0} == {8, 4, 2, 1}
+
+    def test_pin_is_floored_at_the_outgoing_vocal_end(self) -> None:
+        """A fade onset inside A's own vocal window pins at the vocal end instead."""
+        ctx = _base_ctx(
+            fade_onset=20.0,
+            default_anchor=45.0,
+            vocal_out_placement=VocalMask(windows=[(0.0, 30.0)]),
+        )
+        specs = list(EnergyLadderGenerator().generate(ctx))
+
+        assert {s.anchor_s for s in specs} == {None, 30.0}
+
+    def test_no_pin_when_onset_leaves_too_little_tail(self) -> None:
+        """A fade onset under the minimum effective buffer emits no pinned rungs."""
+        ctx = _base_ctx(fade_onset=5.0, default_anchor=45.0)
+        specs = list(EnergyLadderGenerator().generate(ctx))
+
+        assert {s.anchor_s for s in specs} == {None}
+
+    def test_vocal_onset_entry_is_built_at_the_pin(self) -> None:
+        """With a detected fade, the vocal-onset entry spec anchors at the pin, not the default."""
+        ctx = _base_ctx(
+            fade_onset=20.0,
+            default_anchor=45.0,
+            vocal_in_placement=VocalMask(windows=[(20.0, 25.0)]),
+        )
+        specs = list(VocalOnsetEntryGenerator().generate(ctx))
+
+        assert len(specs) == 1
+        assert specs[0].anchor_s == 20.0
+
+    def test_real_mastered_fade_fixture_produces_the_pin(self) -> None:
+        """An end-to-end mastered-fade fixture yields ctx.fade_onset and the pinned rung set."""
+        t = np.linspace(0.0, 240.0, 1800)
+        # a -14dB monotone ramp from media 210s with a frozen spectrum:
+        # the D2 mastered-fadeout signature (>=10dB drop, still audible)
+        gain_db = np.where(t < 210.0, 0.0, -(t - 210.0) / 30.0 * 14.0)
+        band = (0.3 * 10.0 ** (gain_db / 20.0)).astype(np.float32)
+        out = _analysis_with_bands(band, band, band, band, duration=240.0)
+        inc = _analysis(120.0, duration=240.0)
+
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert ctx.fade_onset is not None, "fixture must trigger the mastered-fade detector"
+        assert ctx.fade_onset < ctx.default_anchor
+
+        specs = list(EnergyLadderGenerator().generate(ctx))
+        pinned = [s for s in specs if s.anchor_s == ctx.fade_onset]
+        assert {s.bars for s in pinned} == {8, 4, 2, 1}
 
 
 class TestCodaAnchorGenerator:

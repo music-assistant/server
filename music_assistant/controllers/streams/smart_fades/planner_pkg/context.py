@@ -53,6 +53,7 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     VocalHysteresisConfig,
     VocalMask,
     build_vocal_windows,
+    mask_saturated,
     parse_vocal_probabilities,
 )
 
@@ -601,7 +602,7 @@ def _detect_coda_zone(
         return None
     media_out = _vocal_out_media_mask(vocal_out_placement, buffer_offset)
     tail_start = buffer_offset
-    out_saturated = _mask_saturated(media_out, max(0.001, duration - tail_start))
+    out_saturated = mask_saturated(media_out, max(0.001, duration - tail_start))
     if out_saturated:
         # a saturated (near-continuous vocal) outro supplies no fine structure
         # to distinguish a coda from the rest of the track
@@ -653,9 +654,3 @@ def _vocal_out_media_mask(vocal_out_placement: VocalMask | None, buffer_offset: 
             for left, right in vocal_out_placement.windows
         ]
     )
-
-
-def _mask_saturated(mask: VocalMask, span: float) -> bool:
-    """Whether a mask's windows cover >=90% of a span (near-continuous vocal, no fine structure)."""
-    covered = sum(right - left for left, right in mask.windows)
-    return covered >= 0.9 * max(0.001, span)

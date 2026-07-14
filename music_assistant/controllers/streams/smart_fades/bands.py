@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.models import BAND_RMS_BANDS, BandProfile
+from music_assistant.controllers.streams.smart_fades.structure import point_in_mask
 
 if TYPE_CHECKING:
     import numpy as np
@@ -236,7 +237,7 @@ def instrumental_claim_confirmed(
         return True
     vad_silent = np.array(
         [
-            not any(left <= bar_start < right for left, right in vocal_mask.windows)
+            not point_in_mask(vocal_mask, float(bar_start))
             for bar_start in profile.bar_starts[in_range]
         ]
     )

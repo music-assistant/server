@@ -211,6 +211,17 @@ def build_vocal_windows(
     return VocalMask(windows=windows)
 
 
+def mask_saturated(mask: VocalMask, span: float) -> bool:
+    """
+    Whether a mask's windows cover >=90% of a span (near-continuous vocal, no fine structure).
+
+    :param mask: Vocal-activity mask to measure.
+    :param span: Length in seconds of the range the mask was built over.
+    """
+    covered = sum(right - left for left, right in mask.windows)
+    return covered >= 0.9 * max(0.001, span)
+
+
 def merge_windows(windows: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """
     Merge overlapping or touching (left, right) intervals into their minimal covering set.
