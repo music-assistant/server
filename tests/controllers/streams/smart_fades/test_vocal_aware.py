@@ -161,7 +161,10 @@ class TestVocalCollisionAvoidance:
         inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(20.0, 22.05)])
         plan = _plan(out, inc)
 
-        assert plan.crossfade_duration == pytest.approx(16.0)
+        # collision resolved either by a shorter rung or by an anchor move;
+        # the invariant is a collision-free plan, not the specific lever
+        assert plan.metrics.collision_seconds < COLLISION_SECONDS_LIMIT
+        assert plan.metrics.weighted_collision_seconds < WEIGHTED_COLLISION_LIMIT
         assert plan.metrics.strategy is TransitionStrategy.ENERGY_ALIGNED
         assert plan.metrics.collision_seconds == 0.0
 
@@ -459,8 +462,14 @@ class TestRemediationAltersTheCandidate:
         )
 
         plan = _plan(out, inc)
-        # remediation shipped a shorter, collision-free overlap on a different bar rung
-        assert plan.crossfade_duration < cand0.plan.crossfade_duration
+        # the shipped plan resolves the collision deterministically: either a
+        # shorter overlap or a moved anchor, never the colliding candidate 0
+        assert plan.metrics.collision_seconds < COLLISION_SECONDS_LIMIT
+        assert plan.metrics.weighted_collision_seconds < WEIGHTED_COLLISION_LIMIT
+        assert (
+            plan.crossfade_duration < cand0.plan.crossfade_duration
+            or plan.fade_out_window != cand0.plan.fade_out_window
+        )
         assert plan.metrics.strategy is TransitionStrategy.ENERGY_ALIGNED
         assert plan.metrics.collision_seconds < COLLISION_SECONDS_LIMIT
         assert plan.metrics.weighted_collision_seconds < WEIGHTED_COLLISION_LIMIT

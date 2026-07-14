@@ -261,10 +261,11 @@ class ProtectiveAnchorGenerator(CandidateGenerator):
                 trim_anchor = _nearest_protective_anchor(ctx, trim_target, prefer_earliest=False)
                 if trim_anchor not in anchors:
                     anchors.append(trim_anchor)
-            # entry options mirror the energy ladder so a protected anchor can
-            # keep an aligned (or remediated) entry instead of forcing natural
+            # the factory-chosen (beat-aligned) entry leads, as the old
+            # protection rebuild pinned it; explicit groove/natural options
+            # follow so a remediated entry stays reachable too
             for rung_anchor in anchors:
-                for entry in _entry_options(ctx, bars):
+                for entry in [None, *_entry_options(ctx, bars)]:
                     yield CandidateSpec(
                         tier=ctx.tier,
                         bars=bars,

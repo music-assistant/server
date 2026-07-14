@@ -380,8 +380,24 @@ class TestProtectiveAnchorGenerator:
         # can keep an aligned entry instead of forcing the natural one
         for bars in (8, 4, 2, 1):
             emitted = {s.entry_s for s in specs if s.bars == bars}
-            assert emitted == set(_entry_options(ctx, bars))
+            assert emitted == {None, *_entry_options(ctx, bars)}
         assert all(s.ideal_bars == 8 for s in specs)
+
+    def test_factory_chosen_entry_is_first_among_protective_entries(self) -> None:
+        """Each protective rung leads with entry_s=None so beat alignment stays reachable."""
+        ctx = _base_ctx(
+            vocal_out_placement=VocalMask(windows=[(0.0, 30.0)]),
+            protective_downbeats=(10.0, 20.0, 32.0, 35.0, 40.0),
+            audio_end=45.0,
+        )
+        specs = list(ProtectiveAnchorGenerator().generate(ctx))
+
+        for bars in (8, 4, 2, 1):
+            entries = [s.entry_s for s in specs if s.bars == bars]
+            # None (factory beat alignment) comes first: with equal penalties
+            # the selector tie-breaks by emission order
+            assert entries[0] is None
+            assert len(entries) > 1
 
     def test_emits_trim_closing_anchor_for_short_rungs(self) -> None:
         """Short rungs also anchor near audio_end to close the audible-trim gap."""
