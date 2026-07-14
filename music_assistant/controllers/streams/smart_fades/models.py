@@ -171,6 +171,11 @@ class EqPlan:
     mid_out: ShelfSchedule | None = None
     mid_in: ShelfSchedule | None = None
 
+    @classmethod
+    def neutral(cls, swap_at: float = 0.0) -> EqPlan:
+        """Return an EqPlan that renders no shelves at all."""
+        return cls(swap_at=swap_at, low_out=None, low_in=None, high_out=None, high_in=None)
+
     def with_mid_depth_scaled(self, shrink: float, *, bypass_below_db: float) -> EqPlan:
         """
         Return a copy with both mid schedules' depth scaled by ``shrink`` (fraction to KEEP).
@@ -275,7 +280,7 @@ class TransitionPlan:
     # audible end of the fade-out tail (buffer-local seconds)
     fade_out_window: float
     crossfade_duration: float
-    eq_plan: EqPlan
+    eq_plan: EqPlan = field(default_factory=EqPlan.neutral)
     tempo_plan: TempoPlan = field(default_factory=TempoPlan)
     fadeout_trim: FadeOutTrim | None = None
     # seconds trimmed off the incoming head for beat alignment
