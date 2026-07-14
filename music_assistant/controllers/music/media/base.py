@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABCMeta, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     ItemMappingSummary,
+    MediaCollection,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemMetadataSummary,
@@ -216,7 +217,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return query, {}
 
     @property
-    def summary_query(self) -> tuple[str, dict[str, Any]]:
+    def summary_quer(self) -> tuple[str, dict[str, Any]]:
         """
         Return the slim SELECT query used for summary listings and its bound query params.
 
@@ -373,7 +374,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         *,
         summary: bool = True,
         **kwargs: Any,
-    ) -> list[ItemCls]:
+    ) -> Sequence[ItemCls | MediaCollection]:
         """
         Get the library items for this mediatype.
 
@@ -1125,7 +1126,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         played_only: bool = False,
         in_library_only: bool = False,
         summary: bool = False,
-    ) -> list[ItemCls]:
+        collapse_collections: bool = False,
+    ) -> list[ItemCls | MediaCollection]:
         """Fetch MediaItem records from database by building the query."""
         query_params = dict(extra_query_params) if extra_query_params else {}
         query_parts: list[str] = list(extra_query_parts) if extra_query_parts else []
@@ -1166,9 +1168,45 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         for key, value in base_query_params.items():
             query_params.setdefault(key, value)
 
+        if collapse_collections:
+            sql_query = await self._adapt_query_for_collections(
+                sql_query, query_params, summary=summary
+            )
+
         db_rows = await self.mass.music.database.get_rows_from_query(
             sql_query, query_params, limit=limit, offset=offset
         )
+        if collapse_collections:
+            items: Sequence[ItemCls | MediaCollection] = []
+            for db_row in db_rows:
+                if db_row["type"] == "single":
+                    items.append(
+                        cast(
+                            "ItemCls",
+                            self.item_cls.from_dict(
+                                self._parse_db_row(json_loads(db_row["media_data"]))
+                            ),
+                        )
+                    )
+                elif db_row["type"] == "collection":
+                    items.append(
+                        MediaCollection(
+                            item_id=db_row["name"],
+                            name=db_row["name"],
+                            provider="library",
+                            provider_mappings=set(),
+                            items=UniqueList(
+                                [
+                                    cast(
+                                        "ItemCls",
+                                        self.item_cls.from_dict(self._parse_db_row(json_loads(x))),
+                                    )
+                                    for x in json_loads(db_row["media_data"])
+                                ]
+                            ),
+                        )
+                    )
+            return items
         if summary:
             return [cast("ItemCls", self._parse_summary_row(db_row)) for db_row in db_rows]
         return [
@@ -1279,7 +1317,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             {self.db_table}.last_played AS last_played,
             {self.db_table}.timestamp_added AS timestamp_added,
             {self.db_table}.timestamp_modified AS timestamp_modified,
-            json_extract({self.db_table}.metadata, '$.images') AS images"""
+            json_extract({self.db_table}.metadata, '$.images') AS images,
+            json_extract({self.db_table}.metadata, '$.collections') AS collections"""
 
     async def _localized_search_fallback(
         self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
@@ -1763,3 +1802,75 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
             for raw_mapping in json_loads(db_row["artists"])
         )
+
+    async def _adapt_query_for_collections(
+        self, sql_query: str, query_params: dict[str, Any], summary: bool
+    ) -> str:
+        # get column names of base query
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            sql_query, query_params, limit=1, offset=0
+        )
+        # create a sql json_object which queries all these columns
+        json_object = "json_object(" + ",".join([f"'{x}',{x}" for x in db_rows[0].keys()]) + ")"  # noqa: SIM118
+
+        collections_column = (
+            "collections" if summary else 'json_extract("metadata", "$.collections")'
+        )
+
+        return f"""
+        WITH
+            joined_table as ({sql_query}),
+            collection_extract as (
+                SELECT
+                    name as media_name,
+                    json_extract(iter_coll.value, "$.title") as collection_title,
+                    json_extract(iter_coll.value, "$.sequence") as collection_sequence,
+                    {json_object} as media_data
+                FROM (
+                    SELECT * FROM joined_table
+                ), json_each({collections_column}) as iter_coll
+            )
+        SELECT
+            'collection' as type,
+            collection_title as name,
+            json_group_array(media_data) as media_data
+        FROM (
+            SELECT * FROM collection_extract
+            ORDER BY collection_title,
+            -- null case
+            CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+            -- numeric before text
+            CASE
+                WHEN collection_sequence IS NOT NULL
+                    AND collection_sequence GLOB '[0-9]*'
+                    AND collection_sequence NOT GLOB '*[^0-9]*'
+                THEN 0
+                    WHEN collection_sequence IS NOT NULL
+                THEN 1
+            END,
+            -- order NUMERIC
+            CASE
+                WHEN collection_sequence IS NOT NULL
+                    AND collection_sequence GLOB '[0-9]*'
+                    AND collection_sequence NOT GLOB '*[^0-9]*'
+                THEN CAST(collection_sequence AS INTEGER)
+            END,
+            -- order TEXT
+            CASE
+                WHEN collection_sequence IS NOT NULL
+                THEN collection_sequence
+            END COLLATE NOCASE,
+            -- order by media name if no sequence given
+            CASE
+                WHEN collection_sequence IS NULL
+                THEN media_name
+            END COLLATE NOCASE
+        )
+        GROUP BY collection_title
+
+        UNION ALL
+
+        SELECT 'single', name, {json_object} FROM joined_table
+            WHERE {collections_column} IS NULL
+                OR {collections_column} = "[]"
+        """
