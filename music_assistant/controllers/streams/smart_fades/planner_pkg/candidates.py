@@ -360,6 +360,10 @@ class CandidateFactory:
             ideal_bars=spec.ideal_bars or spec.bars,
         )
 
+    def score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
+        """Score an arbitrary (spec, plan) pair against this context, for a plan edited post-build."""
+        return self._score(spec, plan)
+
     @property
     def _bpm_ratio(self) -> float:
         """Tempo ratio between the incoming and outgoing track."""
