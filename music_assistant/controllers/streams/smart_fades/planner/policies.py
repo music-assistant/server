@@ -77,12 +77,11 @@ class VocalCollisionPolicy(Policy):
             or metrics.weighted_collision_seconds >= self.weighted_collision_limit
         ):
             return Verdict.veto("vocal collision exceeds the guard limit")
-        penalty = (
-            metrics.weighted_collision_seconds
-            / self.weighted_collision_limit
-            * self.weighted_penalty_scale
-        )
-        return Verdict.ok(penalty)
+        # quadratic in the normalized residue: overlap is a threshold percept,
+        # so near-inaudible low-gain residue stays cheap while the cost climbs
+        # steeply toward the veto boundary (panel-recommended shape)
+        normalized = metrics.weighted_collision_seconds / self.weighted_collision_limit
+        return Verdict.ok(normalized**2 * self.weighted_penalty_scale)
 
 
 class VocalTruncationPolicy(Policy):

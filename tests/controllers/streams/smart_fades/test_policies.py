@@ -154,8 +154,8 @@ class TestVocalCollisionPolicy:
 
         assert self.policy.evaluate(candidate, ctx).vetoed is False
 
-    def test_penalty_proportional_to_weighted_collision(self) -> None:
-        """Penalty scales linearly with weighted collision seconds, doubling with it."""
+    def test_penalty_quadratic_in_weighted_collision(self) -> None:
+        """Sub-limit penalty is quadratic: near-inaudible residue is cheap, near-veto is steep."""
         ctx = _ctx(vocal_out_scoring=_MASK, vocal_in_scoring=_MASK)
         low = _candidate(weighted=0.1)
         high = _candidate(weighted=0.2)
@@ -163,8 +163,15 @@ class TestVocalCollisionPolicy:
         low_penalty = self.policy.evaluate(low, ctx).penalty
         high_penalty = self.policy.evaluate(high, ctx).penalty
 
-        assert low_penalty == pytest.approx(0.1 / WEIGHTED_COLLISION_LIMIT * 20.0)
-        assert high_penalty == pytest.approx(2 * low_penalty)
+        assert low_penalty == pytest.approx((0.1 / WEIGHTED_COLLISION_LIMIT) ** 2 * 20.0)
+        assert high_penalty == pytest.approx(4 * low_penalty)
+
+    def test_penalty_approaches_scale_at_the_veto_boundary(self) -> None:
+        """Just under the veto the penalty approaches the full scale (steep boundary)."""
+        ctx = _ctx(vocal_out_scoring=_MASK, vocal_in_scoring=_MASK)
+        near = _candidate(weighted=WEIGHTED_COLLISION_LIMIT - 1e-6)
+
+        assert self.policy.evaluate(near, ctx).penalty == pytest.approx(20.0, abs=0.01)
 
 
 class TestVocalTruncationPolicy:
