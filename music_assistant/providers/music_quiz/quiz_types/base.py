@@ -74,7 +74,7 @@ class QuizType(ABC):
     """
 
     answer_type: ClassVar[MusicQuizAnswerType]
-    warm_up_lyrics: ClassVar[bool] = False
+    prefetch_lyrics: ClassVar[bool] = False
     reveal_auto_advance_delay: ClassVar[float | None] = None
     completed_reveal_auto_advance_delay: ClassVar[float | None] = None
 
