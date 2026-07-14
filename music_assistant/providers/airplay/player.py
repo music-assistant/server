@@ -407,7 +407,12 @@ class AirPlayPlayer(Player):
             # setup StreamSession for player (and its sync childs if any)
             sync_clients = self._get_sync_clients()
             provider = cast("AirPlayProvider", self.provider)
-            stream_session = AirPlayStreamSession(provider, sync_clients, AIRPLAY_FLOW_PCM_FORMAT)
+            stream_session = AirPlayStreamSession(
+                provider,
+                sync_clients,
+                AIRPLAY_FLOW_PCM_FORMAT,
+                media,
+            )
             await stream_session.start(audio_source)
             self._attr_elapsed_time = time.time() - stream_session.start_time
             self._attr_elapsed_time_last_updated = time.time()

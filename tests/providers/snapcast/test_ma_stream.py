@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.enums import ContentType
 
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 
@@ -29,6 +30,60 @@ def _make_stream(
         media=media,
         stream_name=name,
     )
+
+
+def test_transport_format_uses_snapserver_codec() -> None:
+    """The reported final format follows the codec configured on Snapserver."""
+    provider = MagicMock()
+    provider._use_builtin_server = True
+    provider._snapcast_server_transport_codec = "opus"
+    stream = _make_stream(provider)
+
+    output_format = stream._get_transport_format()
+
+    assert output_format.content_type == ContentType.OPUS
+    assert output_format.codec_type == ContentType.OPUS
+    assert output_format.sample_rate == 48000
+    assert output_format.bit_depth == 16
+
+
+def test_external_transport_format_reads_uri_codec() -> None:
+    """External Snapserver codec is read from the stream URI query."""
+    provider = MagicMock()
+    provider._use_builtin_server = False
+    stream = _make_stream(provider)
+    stream.snap_stream = MagicMock(
+        _stream={"uri": {"query": {"codec": "flac"}}},
+    )
+
+    output_format = stream._get_transport_format()
+
+    assert output_format.content_type == ContentType.FLAC
+    assert output_format.codec_type == ContentType.FLAC
+
+
+def test_output_plan_is_registered_for_all_snapcast_members() -> None:
+    """Every client consuming a shared Snapcast stream gets the same output path."""
+    provider = MagicMock()
+    stream = _make_stream(provider)
+    stream.media.source_id = "queue-1"
+    stream.media.custom_data = {"session_id": "session-1"}
+    stream.snap_stream = MagicMock(identifier="stream-1")
+    group = MagicMock(
+        stream="stream-1",
+        clients=["snap-child"],
+    )
+    provider._snapserver.groups = [group]
+    provider._get_ma_id.return_value = "child"
+    output_path = MagicMock(player_ids=["leader"])
+    stream._output_plan = MagicMock(output_path=output_path)
+
+    stream._register_output_plan()
+
+    registered_ids = {
+        call.args[0] for call in provider.mass.streams.audio_processing.update_output.call_args_list
+    }
+    assert registered_ids == {"leader", "child"}
 
 
 @pytest.mark.asyncio

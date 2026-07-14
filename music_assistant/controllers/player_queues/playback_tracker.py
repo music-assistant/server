@@ -148,13 +148,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # This is enough to detect any changes in the DSPDetails
         # (so child count changed, or any output format changed)
         output_formats = []
-        if output_format := player.extra_data.get("output_format"):
-            output_formats.append(str(output_format))
+        if output := self.mass.streams.audio_processing.get_player_output(player.player_id):
+            output_formats.append(str(output.output_format))
         for child_id in player.state.group_members:
-            if (child := self.mass.players.get_player(child_id)) and (
-                output_format := child.extra_data.get("output_format")
-            ):
-                output_formats.append(str(output_format))
+            if output := self.mass.streams.audio_processing.get_player_output(child_id):
+                output_formats.append(str(output.output_format))
             else:
                 output_formats.append("unknown")
 

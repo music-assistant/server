@@ -33,7 +33,7 @@ def _make_session(
     leader.stream = MagicMock()
     leader.stream.running = True
 
-    session = AirPlayStreamSession(prov, [leader], pcm_format)
+    session = AirPlayStreamSession(prov, [leader], pcm_format, MagicMock())
     session.start_time = start_time
     session.seconds_streamed = seconds_streamed
     session.start_ntp = 1  # dummy
