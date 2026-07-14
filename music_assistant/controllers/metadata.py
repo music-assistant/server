@@ -1182,7 +1182,7 @@ class MetaDataController(CoreController):
         ):
             if queue.current_item and queue.current_item.media_item:
                 if station_image := queue.current_item.media_item.image:
-                    return station_image.path
+                    return self.get_image_url(station_image)
         return None
 
     @staticmethod
