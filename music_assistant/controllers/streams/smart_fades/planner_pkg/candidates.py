@@ -566,7 +566,9 @@ class CandidateFactory:
         audible_outgoing_trim = max(0.0, ctx.audio_end - plan.fade_out_window)
         anchor_on_downbeat = self._is_on_downbeat(plan.fade_out_window)
         if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
-            # vocal-aware metrics stay at their energy-only defaults
+            # deliberate extension over the old planner (which never scored the
+            # energy-only path): policies need real trim/downbeat facts on every
+            # candidate; only the vocal-dependent fields keep their defaults
             return PlanMetrics(
                 strategy=spec.strategy,
                 audible_outgoing_trim=audible_outgoing_trim,
