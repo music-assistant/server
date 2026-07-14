@@ -38,7 +38,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -223,7 +228,10 @@ class RadiothekProvider(MusicProvider):
         if self.catchup_proto not in ("progressive", "hls"):
             self.catchup_proto = "progressive"
 
-        await self._get_bundle(force=True)
+        try:
+            await self._get_bundle(force=True)
+        except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
+            raise ProviderUnavailableError(f"Unable to fetch ORF station bundle: {err}") from err
 
     # ----------------------------
     # HTTP / caching helpers
@@ -238,7 +246,7 @@ class RadiothekProvider(MusicProvider):
             resp.raise_for_status()
             data = await resp.json()
             if not isinstance(data, dict):
-                raise TypeError("Expected JSON object")
+                raise InvalidDataError("Expected JSON object")
             return data
 
     async def _get_bundle(self, force: bool = False) -> dict[str, Any]:
@@ -247,7 +255,7 @@ class RadiothekProvider(MusicProvider):
         try:
             self._bundle = await self._http_get_json(API_BUNDLE)
             return self._bundle
-        except (ClientError, TimeoutError, ValueError) as err:
+        except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
             self.logger.warning("Failed to fetch bundle.json: %s", err)
             if self._bundle is not None:
                 return self._bundle
