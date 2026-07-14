@@ -351,12 +351,15 @@ def test_protocol_output_is_registered_for_parent(monkeypatch: pytest.MonkeyPatc
     """A protocol transport contributes output details to its user-facing parent."""
     mass = MagicMock()
     player = MagicMock(player_id="protocol-1", protocol_parent_id="player-1")
+    player.state.active_group = None
+    player.state.synced_to = None
     mass.players.get_player.return_value = player
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    mass.config.get_raw_player_config_value.return_value = "stereo"
+    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: (
+        False if isinstance(default, bool) else "left"
+    )
     audio = StreamsAudio(cast("Any", mass))
     monkeypatch.setattr(audio, "_resolve_player_dsp_config", lambda _player: DSPConfig())
-    monkeypatch.setattr(audio, "is_output_limiter_enabled", lambda _player: False)
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_S16LE,
         codec_type=ContentType.PCM_S16LE,
@@ -374,7 +377,37 @@ def test_protocol_output_is_registered_for_parent(monkeypatch: pytest.MonkeyPatc
     )
 
     assert plan.output_path.player_ids == ["player-1"]
+    assert plan.output_path.channels is not None
+    assert plan.output_path.channels.mode == AudioChannelMode.LEFT
+    assert not plan.output_path.limiter.enabled
+    assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
+        "player-1"
+    }
     assert mass.streams.audio_processing.update_output.call_args.args[0] == "player-1"
+
+
+@pytest.mark.asyncio
+async def test_protocol_output_format_uses_parent_channel_config() -> None:
+    """Output format channel selection reads the user-facing parent config."""
+    mass = MagicMock()
+    mass.config.get_raw_player_config_value.return_value = "left"
+    player = MagicMock(player_id="protocol-1", protocol_parent_id="player-1")
+    player.get_supported_sample_rates.return_value = [(44100, 16)]
+    audio = StreamsAudio(cast("Any", mass))
+
+    output_format = await audio.get_output_format(
+        "flac",
+        player,
+        content_sample_rate=44100,
+        content_bit_depth=16,
+    )
+
+    assert output_format.channels == 1
+    mass.config.get_raw_player_config_value.assert_called_once_with(
+        "player-1",
+        "output_channels",
+        "stereo",
+    )
 
 
 @pytest.mark.asyncio

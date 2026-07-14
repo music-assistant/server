@@ -1257,7 +1257,7 @@ class StreamsAudio:
 
     def is_output_limiter_enabled(self, player: Player) -> bool:
         """Check if the player has the output limiter enabled."""
-        deciding_player_id = player.player_id
+        deciding_player_id = player.protocol_parent_id or player.player_id
         if player.state.active_group:
             deciding_player_id = player.state.active_group
         elif player.state.synced_to:
@@ -1319,7 +1319,7 @@ class StreamsAudio:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
         channel_value = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_OUTPUT_CHANNELS, "stereo"
+            destination_player_id, CONF_OUTPUT_CHANNELS, "stereo"
         )
         channel_mode = (
             AudioChannelMode(channel_value)
@@ -1428,7 +1428,9 @@ class StreamsAudio:
             content_type = ContentType.from_bit_depth(output_bit_depth)
 
         output_channels_str = self.mass.config.get_raw_player_config_value(
-            player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
+            player.protocol_parent_id or player.player_id,
+            CONF_OUTPUT_CHANNELS,
+            "stereo",
         )
         fmt = AudioFormat(
             content_type=content_type,
