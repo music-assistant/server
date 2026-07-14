@@ -216,8 +216,6 @@ class RadiothekProvider(MusicProvider):
         try:
             await self._get_bundle(force=True)
         except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
-            # the core only retries failed loads for MusicAssistantError subclasses
-            # (network may not be up yet when MA starts at boot)
             raise ProviderUnavailableError(f"Unable to fetch ORF station bundle: {err}") from err
 
     # ----------------------------
