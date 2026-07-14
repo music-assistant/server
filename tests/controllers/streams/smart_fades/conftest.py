@@ -25,18 +25,23 @@ def _analysis_with_bands(
     mid: float | list[float] | np.ndarray,
     high: float | list[float] | np.ndarray,
     duration: float = 240.0,
+    key: str | None = "A",
+    mode: str | None = "minor",
 ) -> AudioAnalysisData:
     """
     Build an analysis row with v2 ``band_rms`` envelopes for band-profile tests.
 
     Each band accepts either a constant level or a 1800-bin array, so callers
     can vary a band's envelope over time (e.g. a kick that drops out midway).
+    Defaults to a self-compatible key so a clean pair earns the full-blend tier.
 
     :param low: Low-band envelope, constant level or 1800-bin array.
     :param low_mid: Low-mid-band envelope, constant level or 1800-bin array.
     :param mid: Mid-band envelope, constant level or 1800-bin array.
     :param high: High-band envelope, constant level or 1800-bin array.
     :param duration: Track duration in seconds.
+    :param key: Detected key pitch class (Camelot key gating).
+    :param mode: Detected mode, "major" or "minor".
     """
     beats = np.arange(0.0, duration, 0.5, dtype=np.float32)
     return AudioAnalysisData(
@@ -45,6 +50,8 @@ def _analysis_with_bands(
         beats=beats.tolist(),
         downbeats=beats[::4].tolist(),
         rms_energy=np.full(1800, 0.5, dtype=np.float32).tolist(),
+        key=key,
+        mode=mode,
         extra_data={
             "band_rms": {
                 "low": _envelope(low),

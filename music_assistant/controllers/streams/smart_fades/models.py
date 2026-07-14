@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field, replace
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.filters import ShelfType
@@ -40,6 +41,17 @@ class SmartFadeNotApplicable(Exception):
     """Raised when the tracks cannot yield a smart crossfade and the caller should fall back."""
 
 
+class TransitionTier(Enum):
+    """How ambitious the transition is, decided from tempo, key and blendability."""
+
+    # stretch range + key compatible: long, fully-featured DJ blend
+    FULL_BLEND = "full_blend"
+    # stretch range but keys clash: shorter energy-anchored blend
+    TEMPO_BLEND = "tempo_blend"
+    # tempos incompatible or material not blendable: short downbeat-snapped fade
+    QUICK_FADE = "quick_fade"
+
+
 @dataclass(slots=True)
 class Deck:
     """
@@ -53,6 +65,8 @@ class Deck:
     bpm: float
     beats: npt.NDArray[np.float32]
     downbeats: npt.NDArray[np.float32]
+    # time signature numerator; callers fall back to 4 when analysis omits it
+    beats_per_bar: int = 4
 
 
 @dataclass(slots=True)
@@ -216,6 +230,38 @@ class FadeOutTrim:
     trimmed_seconds: float
 
 
+class TransitionStrategy(StrEnum):
+    """How a vocal-aware plan's final overlap was ultimately decided."""
+
+    # a normal phrased candidate cleared the vocal-collision guard
+    ENERGY_ALIGNED = "energy_aligned"
+    # every phrased candidate collided; shipped the click-free equal-power fallback
+    SHORT_VOCAL_HANDOFF = "short_vocal_handoff"
+
+
+@dataclass(frozen=True, slots=True)
+class PlanMetrics:
+    """
+    Vocal-aware plan telemetry; every field defaults to its energy-only value.
+
+    Populated only when both tracks carry a validated FireRed vocal-activity
+    timeline; an energy-only plan (vocal data absent/invalid) keeps these
+    defaults untouched.
+    """
+
+    strategy: TransitionStrategy = TransitionStrategy.ENERGY_ALIGNED
+    # seconds of RMS-audible outgoing material dropped before the crossfade start
+    audible_outgoing_trim: float = 0.0
+    # seconds of outgoing vocal activity that fall inside the rendered crossfade
+    outgoing_vocal_fade_seconds: float = 0.0
+    # whether the final fade_out_window sits on an outgoing downbeat
+    anchor_on_downbeat: bool = False
+    # simultaneous outgoing/incoming vocal overlap in rendered-crossfade seconds
+    collision_seconds: float = 0.0
+    # gain-weighted overlap (the acrossfade curve's simultaneous-power integral)
+    weighted_collision_seconds: float = 0.0
+
+
 @dataclass(slots=True)
 class TransitionPlan:
     """
@@ -224,6 +270,8 @@ class TransitionPlan:
     All times are in the outgoing track's buffer-local seconds.
     """
 
+    # how ambitious the transition is; drives overlap length, tempo and EQ
+    tier: TransitionTier
     # audible end of the fade-out tail (buffer-local seconds)
     fade_out_window: float
     crossfade_duration: float
@@ -232,3 +280,4 @@ class TransitionPlan:
     fadeout_trim: FadeOutTrim | None = None
     # seconds trimmed off the incoming head for beat alignment
     fadein_trim_start: float | None = None
+    metrics: PlanMetrics = field(default_factory=PlanMetrics)

@@ -17,6 +17,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     ShelfSchedule,
     SmartFadeNotApplicable,
     TransitionPlan,
+    TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -33,16 +34,23 @@ def _analysis(
     bpm: float,
     duration: float = 240.0,
     rms_energy: np.ndarray | None = None,
+    key: str | None = "A",
+    mode: str | None = "minor",
 ) -> AudioAnalysisData:
     interval = 60.0 / bpm
     count = int(duration / interval) + 1
     beats = _beats(0.0, count, interval)
+    # a normal (non-silent) track with a known key earns the full-blend tier;
+    # tests that need a silent tail or a bare energy-only track override these
+    energy = rms_energy if rms_energy is not None else np.full(1800, 0.5, dtype=np.float32)
     return AudioAnalysisData(
         duration=duration,
         bpm=bpm,
         beats=beats.tolist(),
         downbeats=beats[::4].tolist(),
-        rms_energy=rms_energy.tolist() if rms_energy is not None else None,
+        rms_energy=energy.tolist(),
+        key=key,
+        mode=mode,
     )
 
 
@@ -132,6 +140,42 @@ class TestSmartCrossFadePlanner:
         plan = _plan(_analysis(120.0), _analysis(120.0), buffer=float(SMART_CROSSFADE_DURATION))
         assert plan.fade_out_window <= SMART_CROSSFADE_DURATION + 1e-6
 
+    def test_late_incoming_entry_reduces_the_candidate_bars(self) -> None:
+        """A late-starting incoming grid rejects the 16/8-bar rungs and lands on a smaller one."""
+        inc = _analysis(120.0, duration=240.0)
+        # incoming's first downbeat at 33s leaves only ~6 downbeats before the 45s
+        # buffer end — not enough to align a 16- or 8-bar overlap, but plenty for 4
+        inc.beats = (np.asarray(inc.beats, dtype=np.float32) + 33.0).tolist()
+        inc.downbeats = (np.asarray(inc.downbeats, dtype=np.float32) + 33.0).tolist()
+        plan = _plan(_analysis(120.0, duration=240.0), inc)
+        assert plan.crossfade_duration == pytest.approx(8.0)
+        assert plan.fadein_trim_start == pytest.approx(33.0)
+
+    def test_valid_entry_too_late_for_the_bars_duration_reduces_the_rungs_too(self) -> None:
+        """A found entry point that still overflows the buffer also demotes the candidate."""
+        out = _analysis(120.0, duration=240.0)
+        inc = _analysis(120.0, duration=240.0)
+        # a beat-level entry is found at 20s (too few downbeats for the downbeat
+        # branch), which fits the 8-bar (16s) overlap but not the 16-bar (32s) one
+        inc.beats = np.arange(20.0, 45.0, 0.1, dtype=np.float32).tolist()
+        inc.downbeats = [20.0]
+        plan = _plan(out, inc)
+        assert plan.crossfade_duration == pytest.approx(16.0)
+        assert plan.fadein_trim_start == pytest.approx(20.0)
+
+    def test_entry_fit_uses_the_tempo_compensated_duration(self) -> None:
+        """A valid entry is not rejected when tempo compensation makes the overlap fit."""
+        planner = SmartCrossFadePlanner(LOGGER)
+        planner._prepare_decks(_analysis(120.0), _analysis(124.0), 45.0)
+
+        plan = planner._build_candidate(16, entry=14.0)
+
+        assert plan is not None
+        assert plan.tempo_plan
+        assert plan.fadein_trim_start == pytest.approx(14.0)
+        assert plan.fadein_trim_start is not None
+        assert plan.fadein_trim_start + plan.crossfade_duration <= SMART_CROSSFADE_DURATION
+
     def test_swap_lands_on_incoming_groove_entry(self) -> None:
         """B's groove entry inside the overlap becomes the bass-swap moment."""
         inc = _analysis(120.0, duration=240.0)
@@ -169,6 +213,178 @@ class TestSmartCrossFadePlanner:
         assert span == pytest.approx(expected, rel=0.05)
         midpoint = (ramp[0][0] + ramp[-1][0]) / 2
         assert midpoint == pytest.approx(plan.eq_plan.swap_at, abs=0.2)
+
+
+class TestTransitionTier:
+    """The transition tier is chosen from meter, blendability, tempo and key."""
+
+    def test_compatible_key_4_4_pair_is_full_blend_8_bars(self) -> None:
+        """
+        A clean, key-compatible, same-tempo 4/4 pair earns the full blend at 8 bars.
+
+        The doubled 16-bar overlap must be EARNED by verified near-instrumental
+        FireRed data on both decks; without vocal data the corpus-backed 8-bar
+        default rules (real DJ transitions cluster at 32 beats).
+        """
+        # A minor and C major are relative major/minor: the same Camelot slot
+        plan = _plan(
+            _analysis(120.0, key="A", mode="minor"), _analysis(120.0, key="C", mode="major")
+        )
+        assert plan.tier is TransitionTier.FULL_BLEND
+        bar = 4 * 60.0 / 120.0
+        assert round(plan.crossfade_duration / bar) == 8
+
+    def test_incompatible_key_is_tempo_blend_8_bars(self) -> None:
+        """Clashing keys demote a same-tempo pair to the shorter 8-bar tempo blend."""
+        plan = _plan(
+            _analysis(120.0, key="A", mode="minor"), _analysis(120.0, key="F#", mode="major")
+        )
+        assert plan.tier is TransitionTier.TEMPO_BLEND
+        bar = 4 * 60.0 / 120.0
+        assert round(plan.crossfade_duration / bar) == 8
+
+    def test_missing_key_is_tempo_blend(self) -> None:
+        """An unknown key can never earn the full blend; it demotes to a tempo blend."""
+        plan = _plan(_analysis(120.0, key=None, mode=None), _analysis(120.0, key=None, mode=None))
+        assert plan.tier is TransitionTier.TEMPO_BLEND
+        assert round(plan.crossfade_duration / (4 * 60.0 / 120.0)) == 8
+
+    def test_large_bpm_gap_is_quick_fade(self) -> None:
+        """A tempo gap beyond the stretch threshold has no beat-matched blend: quick fade."""
+        plan = _plan(_analysis(120.0), _analysis(150.0))
+        assert plan.tier is TransitionTier.QUICK_FADE
+        assert not plan.tempo_plan
+
+    def test_bpm_gap_within_8_percent_still_earns_a_ramped_blend(self) -> None:
+        """The stretch window is ±8% (research: tier-1 population triples vs ±5%)."""
+        plan = _plan(_analysis(120.0), _analysis(128.0))
+        assert plan.tier is not TransitionTier.QUICK_FADE
+        assert plan.tempo_plan
+
+    def test_cross_meter_is_quick_fade(self) -> None:
+        """Two different meters share no bar grid to blend across: quick fade."""
+        out = _analysis(120.0)
+        out.beats_per_bar = 4
+        inc = _analysis(120.0)
+        inc.beats_per_bar = 3
+        plan = _plan(out, inc)
+        assert plan.tier is TransitionTier.QUICK_FADE
+
+
+class TestEnergyMixOut:
+    """The outgoing anchor follows the energy/kick mix-out point, snapped to a downbeat."""
+
+    def test_energy_decay_moves_anchor_to_the_mix_out_downbeat(self) -> None:
+        """An outro whose energy decays below the mix-out floor anchors at that (downbeat) point."""
+        bins = np.full(1800, 0.5, dtype=np.float32)
+        t = np.linspace(0, 240.0, 1800)
+        bins[t >= 220.0] = 0.2  # audible but below 0.7*sustained: mixed out, not silent
+        planner = SmartCrossFadePlanner(LOGGER)
+        plan = planner.plan(_analysis(120.0, rms_energy=bins), _analysis(120.0), 45.0)
+        # anchored at the mix-out point (media 220 -> buffer-local 25), well before the
+        # RMS-audible boundary, and snapped to a real downbeat
+        assert plan.fade_out_window == pytest.approx(25.0, abs=0.3)
+        assert planner._audio_end > plan.fade_out_window + 1.0
+        assert float(np.min(np.abs(planner._grid_downbeats - plan.fade_out_window))) < 0.05
+
+    def test_low_band_kick_drop_anchors_after_the_last_kick(self) -> None:
+        """A kick-timed track whose low band drops out anchors just after the last kick bar."""
+
+        def env(value: float) -> np.ndarray:
+            return np.full(1800, value, dtype=np.float32)
+
+        t = np.linspace(0, 240.0, 1800)
+        low = env(1.0)
+        low[t >= 218.0] = 0.05  # the kick drops out ~22s before the buffer end
+        out = _analysis_with_bands(low, env(0.5), env(0.5), env(0.3))
+        inc = _analysis_with_bands(env(1.0), env(0.5), env(0.5), env(0.3))
+        planner = SmartCrossFadePlanner(LOGGER)
+        plan = planner.plan(out, inc, 45.0)
+        # the low anchor lands just after the last kick bar, never past the RMS boundary,
+        # and on a real downbeat
+        assert plan.fade_out_window < planner._audio_end - 1.0
+        assert plan.fade_out_window == pytest.approx(21.0, abs=1.5)
+        assert float(np.min(np.abs(planner._grid_downbeats - plan.fade_out_window))) < 0.05
+
+    def test_low_band_entry_beyond_the_buffer_is_ignored(self) -> None:
+        """A future kick cannot drive entry or EQ decisions for the buffered head."""
+        t = np.linspace(0, 240.0, 1800)
+        low = np.where(t < 60.0, 0.01, 1.0).astype(np.float32)
+        other = np.full(1800, 0.2, dtype=np.float32)
+        incoming = _analysis_with_bands(low, other, other, other)
+        planner = SmartCrossFadePlanner(LOGGER)
+
+        planner._prepare_decks(_analysis(120.0), incoming, 45.0)
+
+        assert planner._incoming_entry == 0.0
+
+
+class TestCandidateBuildGuards:
+    """Regression guards for the candidate build state machine."""
+
+    def test_dead_grid_before_energetic_buffer_end_does_not_inflate_quick_fade(self) -> None:
+        """
+        A beatless-but-energetic outro keeps the quick fade at its intended bar count.
+
+        When the downbeat grid dies well before the buffer end, the anchor↔grid
+        gap must not be added to the overlap: a 1-bar quick fade on a 30% tempo
+        clash must stay near one bar, never span the whole gap.
+        """
+        out = _analysis(120.0, duration=240.0)
+        beats = np.asarray(out.beats, dtype=np.float32)
+        out.beats = beats[beats <= 230.0].tolist()
+        downbeats = np.asarray(out.downbeats, dtype=np.float32)
+        out.downbeats = downbeats[downbeats <= 230.0].tolist()
+        inc = _analysis(156.0, duration=240.0)
+
+        plan = _plan(out, inc)
+
+        assert plan.tier is TransitionTier.QUICK_FADE
+        bar_out = 4 * 60.0 / 120.0
+        assert plan.crossfade_duration <= 2 * bar_out + 0.1
+
+    def test_protected_intro_before_late_drop_degrades_instead_of_asserting(self) -> None:
+        """
+        A sung intro ahead of a late bass drop must yield a plan, never raise.
+
+        The rolling-intro deep-trim guard finds no legal cut anywhere in the
+        buffer (every bar is low-silent but voice-active until the drop, which
+        no overlap can reach); the 1-bar floor must still ship a candidate.
+        """
+
+        def env(value: float) -> np.ndarray:
+            return np.full(1800, value, dtype=np.float32)
+
+        t = np.linspace(0, 240.0, 1800)
+        low = np.where(t < 60.0, 0.02, 1.0).astype(np.float32)
+        inc = _analysis_with_bands(low, env(0.6), env(0.6), env(0.3))
+        rms = np.full(1800, 0.2, dtype=np.float32)
+        rms[t >= 35.0] = 1.0
+        inc.rms_energy = rms.tolist()
+        out = _analysis_with_bands(env(1.0), env(0.5), env(0.5), env(0.3))
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.crossfade_duration > 0.0
+
+    def test_re_anchored_tier_downgrade_caps_the_bar_count(self) -> None:
+        """
+        A re-anchor that downgrades the tier also caps the inherited bar count.
+
+        The shortened tail flips FULL_BLEND to QUICK_FADE (which drops the
+        tempo ramp); the overlap must then shrink to the quick-fade ladder too,
+        or a long un-beatmatched overlap ships gated only by the vocal guard.
+        """
+        planner = SmartCrossFadePlanner(LOGGER)
+        planner._prepare_decks(_analysis(80.0), _analysis(83.2), 45.0)
+
+        candidate = planner._build_candidate(8, anchor=20.0, entry=0.0)
+
+        assert candidate is not None
+        assert candidate.tier is TransitionTier.QUICK_FADE
+        assert not candidate.tempo_plan
+        # 4-bar quick-fade cap at 80 BPM (3s bars) plus sub-bar anchor slack
+        assert candidate.crossfade_duration <= 15.0
 
 
 def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, AudioAnalysisData]:
@@ -467,7 +683,7 @@ class TestHighShelfReciprocalAndWash:
         assert eq.high_out.steps[-1][1] == pytest.approx(-20.0)
         assert eq.high_in.steps[0][1] == pytest.approx(-20.0)
         assert eq.high_out.steps[-1][0] == pytest.approx(47.0, abs=0.1)
-        assert eq.high_in.steps[-1][0] == pytest.approx(7.0, abs=0.1)
+        assert eq.high_in.steps[-1][0] == pytest.approx(6.0, abs=0.1)
 
     def test_mid_corridor_incoming_scales_duck_to_half_depth(self) -> None:
         """B's F_high in the gate's mid-corridor (~0.04) scales A's duck to ~-10dB."""
@@ -727,10 +943,12 @@ class TestPredictedDipGuard:
         assert eq.low_out.steps[-1][1] == pytest.approx(-26.0)
         assert eq.low_in is not None
         assert eq.low_in.steps[0][1] == pytest.approx(-26.0)
-        # ramp span keeps the shipped proportional length (half the overlap,
-        # here unclamped) — no steepening happened
+        # ramp span keeps the shipped proportional length (half the overlap),
+        # clamped to the 8-bar ceiling — no steepening remediation happened
+        bar_in = 4 * 60.0 / planner.incoming.bpm
+        expected_span = min(plan.crossfade_duration / 2, planner.bass_swap_max_bars * bar_in)
         ramp = eq.low_in.steps[1:]
-        assert ramp[-1][0] - ramp[0][0] == pytest.approx(plan.crossfade_duration / 2, rel=0.05)
+        assert ramp[-1][0] - ramp[0][0] == pytest.approx(expected_span, rel=0.05)
 
     def test_normal_house_pair_is_untouched(self) -> None:
         """A normal (mid-bypassed) house pair keeps its shipped schedules unchanged."""
