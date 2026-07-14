@@ -21,3 +21,8 @@ DEFAULT_ARTIST: Final[str] = "TeddyCloud"
 
 # How long (seconds) to keep the parsed tag index in memory before refetching.
 TAG_CACHE_TTL: Final[int] = 60
+
+# Derived total durations are persisted via mass.cache so they survive restarts. Tonie
+# content is immutable (the cache is keyed by audio_id), so keep it around for a long time.
+CACHE_CATEGORY_DURATION: Final[int] = 0
+DURATION_CACHE_TTL: Final[int] = 86400 * 365

@@ -45,9 +45,11 @@ from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    CACHE_CATEGORY_DURATION,
     CONF_URL,
     CONTENT_DOWNLOAD_PATH,
     DEFAULT_ARTIST,
+    DURATION_CACHE_TTL,
     TAF_HEADER_SIZE,
     TAG_CACHE_TTL,
     TAG_INDEX_PATH,
@@ -125,8 +127,6 @@ class TeddyCloudProvider(MusicProvider):
         # small in-memory cache of the parsed tag index (uid -> raw tag dict)
         self._tags: dict[str, dict[str, Any]] = {}
         self._tags_fetched_at: float = 0.0
-        # uid -> total duration in seconds (immutable content, so never expires)
-        self._durations: dict[str, int] = {}
 
         # verify we can reach the server and that the tag index is well-formed
         try:
@@ -221,7 +221,8 @@ class TeddyCloudProvider(MusicProvider):
             resp.raise_for_status()
             payload = await resp.json(content_type=None)
 
-        raw_tags = payload.get("tags") if isinstance(payload, dict) else payload
+        # getTagIndex always returns an object with a "tags" array.
+        raw_tags = payload.get("tags") if isinstance(payload, dict) else None
         if not isinstance(raw_tags, list):
             raise MediaNotFoundError("Unexpected response from TeddyCloud getTagIndex")
 
@@ -263,15 +264,22 @@ class TeddyCloudProvider(MusicProvider):
 
     async def _total_seconds(self, tag: dict[str, Any]) -> int | None:
         """
-        Derive the tonie's total duration from its TAF header (cached).
+        Derive the tonie's total duration from its TAF header (persistently cached).
 
-        Reads only the 4096-byte header and combines num_bytes + the last chapter's
-        page offset with its start time (the file's own byte-rate). Best-effort: on any
-        failure we return None and the caller falls back to the last chapter's start.
+        Reads only the 4096-byte header and combines num_bytes + the last chapter's page
+        offset with its start time (the file's own byte-rate). The result is stored in
+        ``mass.cache`` keyed by the immutable audio_id, so it survives restarts and each
+        unique content is probed at most once. Best-effort: on any failure we return None
+        and the caller falls back to the last chapter's start.
         """
-        uid = str(tag.get("uid") or "")
-        if uid in self._durations:
-            return self._durations[uid]
+        cache_key = self._audio_id(tag)
+        if not cache_key:
+            return None
+        cached = await self.mass.cache.get(
+            key=cache_key, provider=self.instance_id, category=CACHE_CATEGORY_DURATION
+        )
+        if cached is not None:
+            return int(cached)
         seconds = tag.get("trackSeconds")
         if not isinstance(seconds, list) or not seconds or not seconds[-1]:
             return None
@@ -281,7 +289,7 @@ class TeddyCloudProvider(MusicProvider):
                 resp.raise_for_status()
                 header = await resp.content.readexactly(TAF_HEADER_SIZE)
         except (aiohttp.ClientError, TimeoutError, EOFError) as err:
-            self.logger.debug("Duration probe failed for %s: %s", uid, err)
+            self.logger.debug("Duration probe failed for %s: %s", cache_key, err)
             return None
         num_bytes, last_page = _parse_taf_header(header)
         if not num_bytes or not last_page:
@@ -290,12 +298,29 @@ class TeddyCloudProvider(MusicProvider):
         total = round(num_bytes * last_time / (last_page * TAF_HEADER_SIZE))
         if total < last_time:
             return None
-        self._durations[uid] = total
+        await self.mass.cache.set(
+            key=cache_key,
+            data=total,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_DURATION,
+            expiration=DURATION_CACHE_TTL,
+        )
         return total
 
     # ------------------------------------------------------------------ #
     # parsing helpers
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _audio_id(tag: dict[str, Any]) -> str:
+        """
+        Return the tonie's content id from its source path (e.g. .../audioID/1615475317.taf).
+
+        This identifies the immutable audio content, so it's used as the duration cache key.
+        Falls back to the tag uid when no source path is available.
+        """
+        audio_id = str(tag.get("source") or "").rsplit("/", 1)[-1].removesuffix(".taf")
+        return audio_id or str(tag.get("uid") or "")
 
     @staticmethod
     def _info(tag: dict[str, Any], key: str) -> Any:
@@ -415,9 +440,9 @@ class TeddyCloudProvider(MusicProvider):
             book.duration = total_seconds
         elif chapters:
             book.duration = int(chapters[-1].start)
-        # The tonie's audio_id (from the source path, e.g. .../audioID/1600000000.taf) is
-        # a unix timestamp of when the content was created — a meaningful date_added.
-        audio_id = str(tag.get("source") or "").rsplit("/", 1)[-1].removesuffix(".taf")
+        # The tonie's audio_id is a unix timestamp of when the content was created, which
+        # makes a meaningful date_added.
+        audio_id = self._audio_id(tag)
         if audio_id.isdigit():
             with suppress(ValueError, OSError, OverflowError):
                 book.date_added = from_utc_timestamp(int(audio_id))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Self
+from typing import Any, Self, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -77,6 +77,8 @@ def mass_mock() -> Mock:
     """Return a mock MusicAssistant instance."""
     mass = Mock()
     mass.http_session = Mock()
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
     return mass
 
 
@@ -109,7 +111,6 @@ def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> TeddyCl
     prov.base_url = "http://teddycloud.local"
     prov._tags = {}
     prov._tags_fetched_at = 0.0
-    prov._durations = {}
     return prov
 
 
@@ -241,24 +242,33 @@ def test_parse_audiobook_custom_tonie_has_no_publisher(provider: TeddyCloudProvi
 async def test_total_seconds_from_header(
     provider: TeddyCloudProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Duration is derived from the TAF byte-rate and cached per uid."""
+    """Duration is derived from the TAF byte-rate and persisted to mass.cache."""
     # byte-rate: 8_192_000 bytes over page 1000 (=1000*4096 bytes) at t=540 -> total 1080
     header = _make_taf_header(num_bytes=8_192_000, page_nums=[0, 1000])
     monkeypatch.setattr(provider.mass.http_session, "get", Mock(return_value=_FakeResponse(header)))
-    tag = _tag(trackSeconds=[0, 540])
+    tag = _tag(trackSeconds=[0, 540])  # audio_id 1600000000 is the cache key
 
     total = await provider._total_seconds(tag)
 
     assert total == 1080
-    assert provider._durations[tag["uid"]] == 1080
+    # the derived value is written to the persistent cache under the audio_id
+    cache_set = cast("AsyncMock", provider.mass.cache.set)
+    cache_set.assert_awaited_once()
+    await_args = cache_set.await_args
+    assert await_args is not None
+    assert await_args.kwargs["key"] == "1600000000"
+    assert await_args.kwargs["data"] == 1080
 
-    # a second call is served from cache (no extra HTTP call)
+
+async def test_total_seconds_uses_cache(
+    provider: TeddyCloudProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cached duration is returned without probing the TAF header over HTTP."""
+    monkeypatch.setattr(provider.mass.cache, "get", AsyncMock(return_value=1080))
     monkeypatch.setattr(
-        provider.mass.http_session,
-        "get",
-        Mock(side_effect=AssertionError("should be cached")),
+        provider.mass.http_session, "get", Mock(side_effect=AssertionError("should not fetch"))
     )
-    assert await provider._total_seconds(tag) == 1080
+    assert await provider._total_seconds(_tag(trackSeconds=[0, 540])) == 1080
 
 
 async def test_total_seconds_rejects_impossible_result(
