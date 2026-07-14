@@ -5220,10 +5220,17 @@ async def test_create_game_rejects_invalid_difficulty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_config_entries_reports_unavailable_ai() -> None:
+@pytest.mark.parametrize(
+    "providers",
+    [
+        [],
+        [MagicMock()],
+    ],
+)
+async def test_get_config_entries_reports_unavailable_ai(providers: list[object]) -> None:
     """Disable AI enhancements and explain when no AI provider is available."""
     mass = MagicMock()
-    mass.get_providers_supporting_feature.return_value = []
+    mass.get_providers_supporting_feature.return_value = providers
 
     entries = await get_config_entries(mass)
 
