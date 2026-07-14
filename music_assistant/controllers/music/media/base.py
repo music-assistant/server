@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABCMeta, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, TypeVar, cast, final
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
@@ -217,7 +217,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return query, {}
 
     @property
-    def summary_quer(self) -> tuple[str, dict[str, Any]]:
+    def summary_query(self) -> tuple[str, dict[str, Any]]:
         """
         Return the slim SELECT query used for summary listings and its bound query params.
 
@@ -361,6 +361,59 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return await self.mass.music.database.get_count_from_query(sql_query)
         return await self.mass.music.database.get_count(self.db_table)
 
+    if TYPE_CHECKING:
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: Literal[False] = False,
+            **kwargs: Any,
+        ) -> list[ItemCls]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: Literal[True],
+            **kwargs: Any,
+        ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: bool,
+            **kwargs: Any,
+        ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
+
     async def library_items(
         self,
         favorite: bool | None = None,
@@ -373,8 +426,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         played_only: bool = False,
         *,
         summary: bool = True,
+        collapse_collections: bool = False,
         **kwargs: Any,
-    ) -> Sequence[ItemCls | MediaCollection]:
+    ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """
         Get the library items for this mediatype.
 
@@ -400,6 +454,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             played_only=played_only,
             in_library_only=True,
             summary=summary,
+            collapse_collections=collapse_collections,
         )
         if (
             kwargs.get("_localized_fallback", True)
@@ -497,7 +552,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
         if provider_instance_id_or_domain == "library":
-            return await self.library_items(search=search_query, limit=limit, summary=False)
+            return await self.library_items(
+                search=search_query, limit=limit, summary=False, collapse_collections=False
+            )
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
@@ -1110,6 +1167,68 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         This is used to link objects of different providers/qualities together.
         """
 
+    if TYPE_CHECKING:
+
+        @overload
+        async def get_library_items_by_query(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str | None = None,
+            provider_filter: list[str] | None = None,
+            extra_query_parts: list[str] | None = None,
+            extra_query_params: dict[str, Any] | None = None,
+            extra_join_parts: list[str] | None = None,
+            genre_ids: int | list[int] | None = None,
+            played_only: bool = False,
+            in_library_only: bool = False,
+            summary: bool = False,
+            *,
+            collapse_collections: Literal[True],
+        ) -> list[ItemCls | MediaCollection[ItemCls]]: ...
+
+        @overload
+        async def get_library_items_by_query(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str | None = None,
+            provider_filter: list[str] | None = None,
+            extra_query_parts: list[str] | None = None,
+            extra_query_params: dict[str, Any] | None = None,
+            extra_join_parts: list[str] | None = None,
+            genre_ids: int | list[int] | None = None,
+            played_only: bool = False,
+            in_library_only: bool = False,
+            summary: bool = False,
+            *,
+            collapse_collections: Literal[False] = False,
+        ) -> list[ItemCls]: ...
+
+        @overload
+        async def get_library_items_by_query(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str | None = None,
+            provider_filter: list[str] | None = None,
+            extra_query_parts: list[str] | None = None,
+            extra_query_params: dict[str, Any] | None = None,
+            extra_join_parts: list[str] | None = None,
+            genre_ids: int | list[int] | None = None,
+            played_only: bool = False,
+            in_library_only: bool = False,
+            summary: bool = False,
+            *,
+            collapse_collections: bool,
+        ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]: ...
+
     @final
     async def get_library_items_by_query(  # noqa: PLR0913
         self,
@@ -1126,8 +1245,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         played_only: bool = False,
         in_library_only: bool = False,
         summary: bool = False,
+        *,
         collapse_collections: bool = False,
-    ) -> list[ItemCls | MediaCollection]:
+    ) -> list[ItemCls] | list[ItemCls | MediaCollection[ItemCls]]:
         """Fetch MediaItem records from database by building the query."""
         query_params = dict(extra_query_params) if extra_query_params else {}
         query_parts: list[str] = list(extra_query_parts) if extra_query_parts else []
@@ -1177,7 +1297,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query, query_params, limit=limit, offset=offset
         )
         if collapse_collections:
-            items: Sequence[ItemCls | MediaCollection] = []
+            items: list[ItemCls | MediaCollection[ItemCls]] = []
             for db_row in db_rows:
                 if db_row["type"] == "single":
                     items.append(
@@ -1190,7 +1310,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     )
                 elif db_row["type"] == "collection":
                     items.append(
-                        MediaCollection(
+                        MediaCollection[ItemCls](
                             item_id=db_row["name"],
                             name=db_row["name"],
                             provider="library",

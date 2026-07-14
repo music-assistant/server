@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from json import loads as json_loads
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
@@ -63,9 +63,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         api_base = self.api_base
         self.mass.register_api_command(
             f"music/{api_base}/audiobook_versions", self.versions, required_scope=Scope.LIBRARY_READ
-        )
-        self.mass.register_api_command(
-            f"music/{api_base}/collections", self.collections, required_scope=Scope.LIBRARY_READ
         )
 
     @property
@@ -148,6 +145,59 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             """
         return query, params
 
+    if TYPE_CHECKING:
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: Literal[False] = False,
+            **kwargs: Any,
+        ) -> list[Audiobook]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: Literal[True],
+            **kwargs: Any,
+        ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str = "sort_name",
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            *,
+            summary: bool = True,
+            collapse_collections: bool,
+            **kwargs: Any,
+        ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
+
     async def library_items(
         self,
         favorite: bool | None = None,
@@ -162,7 +212,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         summary: bool = True,
         collapse_collections: bool = False,
         **kwargs: Any,
-    ) -> Sequence[Audiobook | MediaCollection]:
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
         Get in-database audiobooks.
 
