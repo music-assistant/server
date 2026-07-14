@@ -57,6 +57,7 @@ def _ctx() -> TransitionContext:
         buffer_duration=45.0,
         buffer_offset=0.0,
         audio_end=45.0,
+        default_anchor=45.0,
         mix_out_anchor=None,
         kick_anchor=None,
         fade_onset=None,

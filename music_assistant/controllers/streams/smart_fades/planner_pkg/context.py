@@ -129,6 +129,10 @@ class TransitionContext:
     buffer_duration: float
     buffer_offset: float
     audio_end: float
+    # the kick-folded, downbeat-snapped anchor (the old planner's pristine
+    # effective_end): the tier keyed on it, and it is where a candidate with
+    # no explicit anchor cues the tail
+    default_anchor: float
     mix_out_anchor: float | None
     kick_anchor: float | None
     fade_onset: float | None
@@ -236,7 +240,7 @@ def build_transition_context(
     # the tier reads the kick-folded anchor (the old planner's effective_end),
     # never the pure full-band mix_out_anchor: a kick-timed track's blendability
     # window ends where its kick dies, exactly as the old masked grid did
-    cross_meter, tier = _choose_tier(outgoing, incoming, tier_anchor)
+    cross_meter, tier = choose_tier(outgoing, incoming, tier_anchor)
     bpm_diff_percent = _bpm_diff_percent(outgoing.bpm, incoming.bpm)
 
     # fade detection is a per-transition fact regardless of which anchor a
@@ -285,6 +289,7 @@ def build_transition_context(
         buffer_duration=buffer_duration,
         buffer_offset=buffer_offset,
         audio_end=audio_end,
+        default_anchor=tier_anchor,
         mix_out_anchor=mix_out_anchor,
         kick_anchor=kick_anchor,
         fade_onset=fade_onset,
@@ -541,7 +546,7 @@ def _build_incoming_mask(
     )
 
 
-def _choose_tier(
+def choose_tier(
     outgoing: Deck,
     incoming: Deck,
     tier_anchor: float,
