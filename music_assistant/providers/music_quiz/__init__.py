@@ -220,16 +220,20 @@ async def get_config_entries(
     :param values: The (intermediate) raw values for config entries sent with the action.
     """
     ai_available = "trivia" in get_available_quiz_types(mass)
+    ai_setting = ConfigEntry(
+        key=CONF_USE_AI_DISTRACTORS,
+        type=ConfigEntryType.BOOLEAN,
+        required=False,
+        default_value=False,
+        read_only=not ai_available,
+    )
+    if ai_available:
+        return (ai_setting,)
     return (
+        ai_setting,
         ConfigEntry(
-            key=CONF_USE_AI_DISTRACTORS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=False,
-        ),
-        ConfigEntry(
-            key="ai_available" if ai_available else "ai_unavailable",
-            type=ConfigEntryType.LABEL if ai_available else ConfigEntryType.ALERT,
+            key="ai_unavailable",
+            type=ConfigEntryType.ALERT,
         ),
     )
 
