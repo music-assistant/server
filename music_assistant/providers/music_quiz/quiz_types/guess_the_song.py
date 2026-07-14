@@ -57,7 +57,7 @@ class GuessTheSongQuizType(QuizType):
     """Quiz type where players guess the currently playing track."""
 
     answer_type = MusicQuizAnswerType.MULTIPLE_CHOICE
-    warm_up_lyrics = True
+    prefetch_lyrics = True
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:

@@ -893,7 +893,7 @@ class MusicQuizPlugin(PluginProvider):
     async def _start_next_round(self) -> None:
         """Prepare the next round, start its playback (if any) and open the answering phase."""
         with _system_auth_context():
-            game, quiz_type, answer_type = self._require_game_strategies()
+            game, _, answer_type = self._require_game_strategies()
             round_index = len(game.rounds)
             next_round = await self._prepare_playable_round(round_index)
             started_at = time.time()
@@ -908,8 +908,6 @@ class MusicQuizPlugin(PluginProvider):
                 started_at + answer_window,
                 task_id=self._reveal_timer_id,
             )
-            if next_round.track_uri and quiz_type.warm_up_lyrics:
-                self._warm_up_lyrics(next_round.track_uri)
             self._prefetch_round(round_index + 1)
             self._signal_game_updated()
 
@@ -1162,9 +1160,21 @@ class MusicQuizPlugin(PluginProvider):
         """Initialize a quiz type and complete its first round before opening the lobby."""
         with _system_auth_context():
             await quiz_type.initialize()
-            task = self.mass.create_task(quiz_type.prepare_round(0, []))
+            task = self.mass.create_task(self._prepare_round(quiz_type, 0, []))
             await task
         return task
+
+    async def _prepare_round(
+        self,
+        quiz_type: QuizType,
+        round_index: int,
+        previous_rounds: list[MusicQuizRound],
+    ) -> MusicQuizRound:
+        """Prepare a round and its required assets."""
+        game_round = await quiz_type.prepare_round(round_index, previous_rounds)
+        if game_round.track_uri and quiz_type.prefetch_lyrics:
+            await self._fetch_lyrics(game_round.track_uri)
+        return game_round
 
     def _prefetch_round(self, round_index: int) -> None:
         """Prepare an upcoming round in the background."""
@@ -1174,7 +1184,7 @@ class MusicQuizPlugin(PluginProvider):
         game, quiz_type, _ = self._require_game_strategies()
         with _system_auth_context():
             self._next_round_task = self.mass.create_task(
-                quiz_type.prepare_round(round_index, list(game.rounds))
+                self._prepare_round(quiz_type, round_index, list(game.rounds))
             )
 
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
@@ -1188,13 +1198,15 @@ class MusicQuizPlugin(PluginProvider):
                 if prepared.round_index == round_index:
                     return prepared
             except asyncio.CancelledError:
-                pass
+                current_task = asyncio.current_task()
+                if current_task is None or current_task.cancelling():
+                    raise
             except Exception as err:
                 self.logger.warning(
                     "Prefetched Music Quiz round failed, preparing a fresh one: %s", err
                 )
         with _system_auth_context():
-            return await quiz_type.prepare_round(round_index, list(game.rounds))
+            return await self._prepare_round(quiz_type, round_index, list(game.rounds))
 
     def _cancel_next_round_task(self) -> None:
         """Cancel a pending round prefetch task."""
@@ -1301,23 +1313,14 @@ class MusicQuizPlugin(PluginProvider):
             and game.current_round_index == round_index
         )
 
-    def _warm_up_lyrics(self, track_uri: str) -> None:
-        """Fetch/caches the track lyrics so they are ready when revealed."""
-        with _system_auth_context():
-            self.mass.create_task(
-                self._fetch_lyrics(track_uri),
-                task_id=f"music_quiz_lyrics_{self.instance_id}",
-                abort_existing=True,
-            )
-
     async def _fetch_lyrics(self, track_uri: str) -> None:
-        """Best-effort lyrics warm-up for the given track."""
+        """Fetch lyrics for a prepared round."""
         try:
             track = await self.mass.music.get_item_by_uri(track_uri)
             if isinstance(track, Track):
                 await self.mass.metadata.get_track_lyrics(track)
         except Exception as err:
-            self.logger.debug("Lyrics warm-up failed for %s: %s", track_uri, err)
+            self.logger.debug("Lyrics prefetch failed for %s: %s", track_uri, err)
 
     # ---------- playback ----------
 

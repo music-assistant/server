@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Coroutine
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.auth import Scope, User, UserRole
@@ -1682,14 +1682,91 @@ async def test_venue_listener_is_restored_before_each_audio_track(quiz_type: str
 
 
 @pytest.mark.asyncio
-async def test_guess_the_song_warms_lyrics_through_quiz_capability() -> None:
-    """Keep lyrics warm-up enabled for guess-the-song rounds."""
+async def test_guess_the_song_prefetches_lyrics_with_prepared_rounds() -> None:
+    """Wait for first-round lyrics and prefetch next-round lyrics during playback."""
     plugin = _create_plugin()
-    plugin._warm_up_lyrics = MagicMock()  # type: ignore[method-assign]
+    first_lyrics_started = asyncio.Event()
+    continue_first_lyrics = asyncio.Event()
+    next_lyrics_started = asyncio.Event()
+    continue_next_lyrics = asyncio.Event()
 
-    await _create_started_game(plugin, player_names=())
+    async def _fetch_lyrics(track_uri: str) -> None:
+        if track_uri == "library://track/0":
+            first_lyrics_started.set()
+            await continue_first_lyrics.wait()
+            return
+        assert track_uri == "library://track/1"
+        next_lyrics_started.set()
+        await continue_next_lyrics.wait()
 
-    plugin._warm_up_lyrics.assert_called_once_with("library://track/0")
+    fetch_lyrics = AsyncMock(side_effect=_fetch_lyrics)
+    plugin._fetch_lyrics = fetch_lyrics  # type: ignore[method-assign]
+    create_task = asyncio.create_task(
+        plugin.create_game(
+            round_count=2,
+            source_uris=["library://playlist/1"],
+            name="Test Quiz",
+        )
+    )
+    await first_lyrics_started.wait()
+    assert not create_task.done()
+
+    continue_first_lyrics.set()
+    await create_task
+    fetch_lyrics.assert_awaited_once_with("library://track/0")
+
+    await plugin.start_game()
+    await next_lyrics_started.wait()
+    next_round_task = plugin._next_round_task
+    assert next_round_task is not None
+    assert not next_round_task.done()
+    assert _phase(plugin) == MusicQuizPhase.ANSWERING
+    cast("AsyncMock", plugin._play_track).assert_awaited_once_with("library://track/0")
+
+    continue_next_lyrics.set()
+    await next_round_task
+    assert fetch_lyrics.await_args_list == [
+        call("library://track/0"),
+        call("library://track/1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_next_round_during_lyrics_prefetch_preserves_reveal() -> None:
+    """Propagate cancellation without preparing or starting another round."""
+    plugin = _create_plugin()
+    next_lyrics_started = asyncio.Event()
+    next_lyrics_attempts = 0
+
+    async def _fetch_lyrics(track_uri: str) -> None:
+        nonlocal next_lyrics_attempts
+        if track_uri == "library://track/0":
+            return
+        assert track_uri == "library://track/1"
+        next_lyrics_attempts += 1
+        if next_lyrics_attempts == 1:
+            next_lyrics_started.set()
+            await asyncio.Future()
+
+    plugin._fetch_lyrics = AsyncMock(side_effect=_fetch_lyrics)  # type: ignore[method-assign]
+    await _create_started_game(plugin, player_names=(), round_count=2)
+    await next_lyrics_started.wait()
+    await plugin.reveal()
+
+    next_round_task = asyncio.create_task(plugin.next_round())
+    await asyncio.sleep(0)
+    assert not next_round_task.done()
+    next_round_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await next_round_task
+
+    game = plugin._game
+    assert game is not None
+    assert game.phase == MusicQuizPhase.REVEAL
+    assert len(game.rounds) == 1
+    assert next_lyrics_attempts == 1
+    cast("AsyncMock", plugin._play_track).assert_awaited_once_with("library://track/0")
 
 
 @pytest.mark.asyncio
@@ -1964,7 +2041,8 @@ async def test_trivia_replacement_blocks_concurrent_listen_in_recreation() -> No
 async def test_disabled_trivia_serialization_and_listen_in_remain_non_audio() -> None:  # noqa: PLR0915
     """Expose flat redacted Trivia state without playback, lyrics, or listen-in."""
     plugin = _create_plugin(use_ai_distractors=True)
-    plugin._warm_up_lyrics = MagicMock()  # type: ignore[method-assign]
+    fetch_lyrics = AsyncMock()
+    plugin._fetch_lyrics = fetch_lyrics  # type: ignore[method-assign]
     prepare_round = AsyncMock(side_effect=_make_text_trivia_round)
     with (
         patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
@@ -2002,7 +2080,7 @@ async def test_disabled_trivia_serialization_and_listen_in_remain_non_audio() ->
         ) == ("off", "off", False)
         assert _phase(plugin) == MusicQuizPhase.ANSWERING
         cast("AsyncMock", plugin._play_track).assert_not_awaited()
-        plugin._warm_up_lyrics.assert_not_called()
+        fetch_lyrics.assert_not_awaited()
 
         public_state = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]["state"]
         assert public_state["quiz_type"] == "trivia"
@@ -2890,12 +2968,13 @@ async def test_music_timeline_create_uses_flat_config_and_derived_answer_type() 
 
 
 @pytest.mark.asyncio
-async def test_music_timeline_placement_auto_reveals_without_bonuses_and_never_warms_lyrics() -> (
+async def test_music_timeline_placement_auto_reveals_without_bonuses_and_never_prefetches_lyrics() -> (
     None
 ):
-    """Complete on placement, preserve playback, and skip lyrics warm-up for Music Timeline."""
+    """Complete on placement, preserve playback, and skip lyrics prefetch for Music Timeline."""
     plugin = _create_plugin()
-    plugin._warm_up_lyrics = MagicMock()  # type: ignore[method-assign]
+    fetch_lyrics = AsyncMock()
+    plugin._fetch_lyrics = fetch_lyrics  # type: ignore[method-assign]
     with (
         patch(
             "music_assistant.providers.music_quiz.quiz_types.music_timeline.MusicTimelineQuizType.initialize",
@@ -2961,7 +3040,7 @@ async def test_music_timeline_placement_auto_reveals_without_bonuses_and_never_w
         cast("AsyncMock", plugin._play_track).assert_awaited_with(
             "library://track/music_timeline-0"
         )
-        plugin._warm_up_lyrics.assert_not_called()
+        fetch_lyrics.assert_not_awaited()
         assert state["current_round"]["revealed_entry"]["release_year"] == 2000
         assert [entry["entry_id"] for entry in state["current_round"]["timeline"]] == [
             "anchor",
