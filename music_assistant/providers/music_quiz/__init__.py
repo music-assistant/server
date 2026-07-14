@@ -1580,6 +1580,7 @@ class MusicQuizPlugin(PluginProvider):
             and not state.hide_in_ui
             and not state.needs_setup
             and state.synced_to is None
+            and state.active_group is None
             and state.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
             and player.is_native_player
             and player.provider.domain != SENDSPIN_DOMAIN
