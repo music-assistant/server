@@ -498,6 +498,7 @@ def get_ffmpeg_args(
     loglevel: str = "error",
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
+    filter_params = list(filter_params)
     if extra_args is None:
         extra_args = []
     if extra_input_args is None:

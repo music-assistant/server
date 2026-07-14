@@ -1293,7 +1293,9 @@ class StreamsAudio:
         """
         filter_params: list[str] = []
         player = self.mass.players.get_player(player_id)
-        destination_player_id = player.protocol_parent_id or player_id if player else player_id
+        destination_player_id = (
+            player.protocol_parent_id if player and player.protocol_parent_id else player_id
+        )
         if player:
             dsp = self._resolve_player_dsp_config(player)
             limiter_enabled = self.is_output_limiter_enabled(player)
