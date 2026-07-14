@@ -690,11 +690,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         :param provider_item_ids: When given, batch-match this list of provider
             item ids in a single query (the plural form of provider_item_id);
-            takes precedence over provider_item_id when both are passed.
+            takes precedence over provider_item_id when both are passed. An
+            empty list matches nothing (distinct from None, which applies no
+            item-id filter).
         """
         assert provider_instance_id_or_domain != "library"
         assert provider_domain != "library"
         assert provider_instance != "library"
+        if provider_item_ids is not None and not provider_item_ids:
+            return []
         subquery_parts: list[str] = []
         query_params: dict[str, Any] = {}
         if provider_instance:

@@ -1176,7 +1176,10 @@ class SonicSimilarityPlugin(PluginProvider):
                 async with semaphore:
                     try:
                         track = await self.mass.music.tracks.get_provider_item(item_id, provider)
-                    except MusicAssistantError as err:
+                    except Exception as err:
+                        # A flaky provider fetch (get_provider_item only suppresses
+                        # MediaNotFoundError) must map this one tail candidate to a
+                        # miss, not abort the whole /similar via the gather below.
                         self.logger.debug(
                             "candidate provider fallback failed for %s/%s: %s",
                             provider,

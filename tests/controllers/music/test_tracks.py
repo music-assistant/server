@@ -99,3 +99,22 @@ async def test_by_prov_id_batches_item_ids_into_in_clause(music: MusicController
     assert "provider_mappings.provider_item_id IN (:item_id_0, :item_id_1, :item_id_2)" in subquery
     assert captured_params["prov_id"] == "spotify"
     assert [captured_params[f"item_id_{i}"] for i in range(3)] == ["x", "y", "z"]
+
+
+@pytest.mark.asyncio
+async def test_by_prov_id_empty_item_ids_matches_nothing(music: MusicController) -> None:
+    """An explicit empty provider_item_ids returns [] (not the whole provider library)."""
+    ran = False
+
+    async def mock_query(*_args: Any, **_kwargs: Any) -> list[Any]:
+        nonlocal ran
+        ran = True
+        return []
+
+    with patch.object(music.tracks, "get_library_items_by_query", mock_query):
+        result = await music.tracks.get_library_items_by_prov_id(
+            provider_instance_id_or_domain="spotify", provider_item_ids=[]
+        )
+
+    assert result == []
+    assert ran is False  # short-circuits before it can build an unconstrained query

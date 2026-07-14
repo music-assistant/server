@@ -179,6 +179,29 @@ async def test_library_miss_uses_bounded_provider_fallback(
 
 
 @pytest.mark.asyncio
+async def test_fallback_isolates_unexpected_errors(
+    make_plugin: Callable[..., Any], mock_mass: MagicMock
+) -> None:
+    """A non-MusicAssistantError from the fallback maps to a miss, never aborts the batch."""
+    plugin = make_plugin()
+    _wire_library(mock_mass, {})  # everything misses -> provider fallback
+
+    async def _provider_item(item_id: str, _provider: str) -> MagicMock:
+        if item_id == "boom":
+            raise TimeoutError("provider hung")  # not a MusicAssistantError
+        return make_track(item_id, provider=SP)
+
+    mock_mass.music.tracks.get_provider_item = AsyncMock(side_effect=_provider_item)
+
+    resolved = await plugin._resolve_candidate_track_map(
+        [_cand("boom", SP, 0.5), _cand("ok", SP, 0.6)]
+    )
+
+    assert resolved[("boom", SP)] is None  # unexpected error -> miss, not a raise
+    assert resolved[("ok", SP)] is not None  # sibling still resolved: the batch survived
+
+
+@pytest.mark.asyncio
 async def test_provider_fallback_concurrency_is_bounded(
     make_plugin: Callable[..., Any], mock_mass: MagicMock
 ) -> None:
