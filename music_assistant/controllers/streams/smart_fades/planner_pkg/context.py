@@ -227,7 +227,7 @@ def build_transition_context(
         )
     )
 
-    cross_meter, tier = _choose_tier(outgoing, incoming, mix_out_anchor, audio_end)
+    cross_meter, tier = _choose_tier(outgoing, incoming, mix_out_anchor)
     bpm_diff_percent = _bpm_diff_percent(outgoing.bpm, incoming.bpm)
 
     # fade detection is a per-transition fact regardless of which anchor a
@@ -505,10 +505,8 @@ def _choose_tier(
     outgoing: Deck,
     incoming: Deck,
     mix_out_anchor: float,
-    audio_end: float,
 ) -> tuple[bool, TransitionTier]:
     """Pick the transition tier; anything that casts doubt on a long blend picks a shorter one."""
-    del audio_end  # kept for signature symmetry with the other per-anchor detectors
     cross_meter = outgoing.beats_per_bar != incoming.beats_per_bar
     if cross_meter:
         # no shared bar grid to beatmatch or blend across
