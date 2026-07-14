@@ -802,6 +802,67 @@ async def migrate_database(  # noqa: PLR0915
             )
             await database.execute(f"ALTER TABLE {table} DROP COLUMN external_ids")
 
+    if prev_version <= 52:
+        audio_analysis_table_exists = await database.get_rows_from_query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+            {"table_name": DB_TABLE_AUDIO_ANALYSIS},
+            limit=1,
+        )
+        if audio_analysis_table_exists:
+            result = await database.execute(
+                f"""WITH RECURSIVE
+                null_centroids AS (
+                    SELECT
+                        aa.id,
+                        '$.spectral_centroid[' || centroid.key || ']' AS path,
+                        row_number() OVER (
+                            PARTITION BY aa.id
+                            ORDER BY CAST(centroid.key AS INTEGER)
+                        ) AS sequence
+                    FROM {DB_TABLE_AUDIO_ANALYSIS} AS aa,
+                        json_each(aa.analysis_data, '$.spectral_centroid') AS centroid
+                    WHERE aa.aa_provider_domain = :aa_provider_domain
+                        AND json_valid(aa.analysis_data)
+                        AND aa.analysis_data LIKE '%null%'
+                        AND json_type(aa.analysis_data, '$.spectral_centroid') = 'array'
+                        AND centroid.type = 'null'
+                ),
+                repaired(id, analysis_data, sequence) AS (
+                    SELECT aa.id, aa.analysis_data, 0
+                    FROM {DB_TABLE_AUDIO_ANALYSIS} AS aa
+                    WHERE aa.id IN (SELECT id FROM null_centroids)
+
+                    UNION ALL
+
+                    SELECT
+                        repaired.id,
+                        json_set(repaired.analysis_data, null_centroids.path, 0.0),
+                        null_centroids.sequence
+                    FROM repaired
+                    JOIN null_centroids
+                        ON null_centroids.id = repaired.id
+                        AND null_centroids.sequence = repaired.sequence + 1
+                )
+                UPDATE {DB_TABLE_AUDIO_ANALYSIS} AS aa
+                SET analysis_data = (
+                    SELECT repaired.analysis_data
+                    FROM repaired
+                    WHERE repaired.id = aa.id
+                    ORDER BY repaired.sequence DESC
+                    LIMIT 1
+                )
+                WHERE aa.id IN (SELECT id FROM null_centroids)
+                RETURNING id""",
+                {"aa_provider_domain": "smart_fades"},
+            )
+            repaired_rows = await result.fetchall()
+            if repaired_rows:
+                logger.info(
+                    "Repaired null spectral centroid values in %d Smart Fades "
+                    "audio analysis row(s)",
+                    len(repaired_rows),
+                )
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:
