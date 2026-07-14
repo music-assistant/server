@@ -5221,7 +5221,7 @@ async def test_create_game_rejects_invalid_difficulty() -> None:
 
 @pytest.mark.asyncio
 async def test_get_config_entries_reports_unavailable_ai() -> None:
-    """Disable AI enhancements and explain when no AI provider is available."""
+    """Explain when no AI provider is available without locking the preference."""
     mass = MagicMock()
     mass.get_providers_supporting_feature.return_value = []
 
@@ -5232,7 +5232,7 @@ async def test_get_config_entries_reports_unavailable_ai() -> None:
     assert ai_entry.type == ConfigEntryType.BOOLEAN
     assert ai_entry.default_value is False
     assert ai_entry.required is False
-    assert ai_entry.read_only is True
+    assert ai_entry.read_only is False
     assert entries[1].type == ConfigEntryType.ALERT
     mass.get_providers_supporting_feature.assert_called_once_with(ProviderFeature.AI_QUERY)
 

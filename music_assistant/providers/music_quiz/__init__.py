@@ -226,7 +226,6 @@ async def get_config_entries(
             type=ConfigEntryType.BOOLEAN,
             required=False,
             default_value=False,
-            read_only=not ai_available,
         ),
         ConfigEntry(
             key="ai_available" if ai_available else "ai_unavailable",
