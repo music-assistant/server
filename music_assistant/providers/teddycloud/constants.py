@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Final
 
-# Provider-specific config entry key. Username, password and verify_ssl reuse the
-# shared keys from music_assistant.constants.
+# Provider-specific config entry key (the TeddyCloud server base URL).
 CONF_URL: Final[str] = "url"
 
 # TeddyCloud HTTP API.

@@ -41,7 +41,6 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 
@@ -115,10 +114,6 @@ def _parse_taf_header(header: bytes) -> tuple[int | None, int | None]:
 class TeddyCloudProvider(MusicProvider):
     """Music provider that exposes TeddyCloud (Toniebox) content as audiobooks."""
 
-    base_url: str
-    verify_ssl: bool
-    _auth: aiohttp.BasicAuth | None
-
     async def handle_async_init(self) -> None:
         """Read config, prepare the HTTP client and verify connectivity."""
         base_url = str(self.config.get_value(CONF_URL)).rstrip("/")
@@ -127,10 +122,6 @@ class TeddyCloudProvider(MusicProvider):
         if not base_url.startswith(("http://", "https://")):
             base_url = f"http://{base_url}"
         self.base_url = base_url
-        self.verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
-        username = self.config.get_value(CONF_USERNAME)
-        password = self.config.get_value(CONF_PASSWORD)
-        self._auth = aiohttp.BasicAuth(str(username), str(password or "")) if username else None
         # small in-memory cache of the parsed tag index (uid -> raw tag dict)
         self._tags: dict[str, dict[str, Any]] = {}
         self._tags_fetched_at: float = 0.0
@@ -140,12 +131,12 @@ class TeddyCloudProvider(MusicProvider):
         # verify we can reach the server and that the tag index is well-formed
         try:
             await self._fetch_tags(force=True)
-        except MediaNotFoundError as err:
-            raise LoginFailed(str(err)) from err
-        except aiohttp.ClientError as err:
+        except (MediaNotFoundError, aiohttp.ClientError) as err:
             raise LoginFailed(
-                f"Cannot reach TeddyCloud at {self.base_url}: {err}. Check the server URL "
-                "includes the correct scheme (http:// or https://) and port."
+                f"Cannot reach TeddyCloud at {self.base_url}: {err}",
+                translation_key="login_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[self.base_url],
             ) from err
 
     @property
@@ -189,8 +180,8 @@ class TeddyCloudProvider(MusicProvider):
 
     @property
     def _session(self) -> aiohttp.ClientSession:
-        """Return the shared aiohttp session honouring the verify_ssl setting."""
-        return self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+        """Return the shared aiohttp session."""
+        return self.mass.http_session
 
     def _abs_url(self, path_or_url: str) -> str:
         """Turn a possibly-relative TeddyCloud path into an absolute URL."""
@@ -226,7 +217,7 @@ class TeddyCloudProvider(MusicProvider):
             return self._tags
 
         url = f"{self.base_url}{TAG_INDEX_PATH}"
-        async with self._session.get(url, auth=self._auth) as resp:
+        async with self._session.get(url) as resp:
             resp.raise_for_status()
             payload = await resp.json(content_type=None)
 
@@ -286,9 +277,7 @@ class TeddyCloudProvider(MusicProvider):
             return None
         try:
             timeout = aiohttp.ClientTimeout(total=20)
-            async with self._session.get(
-                self._content_url(tag), auth=self._auth, timeout=timeout
-            ) as resp:
+            async with self._session.get(self._content_url(tag), timeout=timeout) as resp:
                 resp.raise_for_status()
                 header = await resp.content.readexactly(TAF_HEADER_SIZE)
         except (aiohttp.ClientError, TimeoutError, EOFError) as err:

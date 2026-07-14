@@ -77,7 +77,6 @@ def mass_mock() -> Mock:
     """Return a mock MusicAssistant instance."""
     mass = Mock()
     mass.http_session = Mock()
-    mass.http_session_no_ssl = Mock()
     return mass
 
 
@@ -108,8 +107,6 @@ def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> TeddyCl
     """Return a TeddyCloudProvider with the state handle_async_init would set (no network)."""
     prov = TeddyCloudProvider(mass_mock, manifest_mock, config_mock, SUPPORTED_FEATURES)
     prov.base_url = "http://teddycloud.local"
-    prov.verify_ssl = True
-    prov._auth = None
     prov._tags = {}
     prov._tags_fetched_at = 0.0
     prov._durations = {}
@@ -337,7 +334,7 @@ async def test_handle_async_init_prepends_scheme(
     """A server entered as a bare host/IP is normalized to an http:// base URL."""
     config = Mock()
     config.instance_id = "teddycloud_test"
-    values: dict[str, Any] = {"url": "192.168.3.225", "log_level": "INFO", "verify_ssl": True}
+    values: dict[str, Any] = {"url": "192.168.3.225", "log_level": "INFO"}
     config.get_value.side_effect = lambda key, default=None: values.get(key, default)
     prov = TeddyCloudProvider(mass_mock, manifest_mock, config, SUPPORTED_FEATURES)
     monkeypatch.setattr(

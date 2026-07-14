@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, CONF_VERIFY_SSL
-
 from .constants import CONF_URL
 from .provider import TeddyCloudProvider
 
@@ -32,10 +30,10 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+    mass: MusicAssistant,  # noqa: ARG001
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """
     Return Config entries to setup this provider.
@@ -44,7 +42,6 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ruff: noqa: ARG001
     return (
         ConfigEntry(
             key="label",
@@ -54,22 +51,5 @@ async def get_config_entries(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
             required=True,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            advanced=True,
-            default_value=True,
         ),
     )
