@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import Scope, UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -24,7 +24,6 @@ from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackSta
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.controllers.player_queues.helpers import build_queue_item
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
@@ -616,8 +615,6 @@ class PartyPlugin(PluginProvider):
         :param boost: If True, insert at the front of the guest section (play next).
         :returns: Result dict with success status and queue position info.
         """
-        self._validate_guest_access()
-
         # Check if guest access is enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
@@ -701,7 +698,6 @@ class PartyPlugin(PluginProvider):
         :param queue_item_id: The queue_item_id of the item to boost.
         :returns: Result dict with success status.
         """
-        self._validate_guest_access()
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
         if not self.config.get_value(CONF_ENABLE_BOOST):
@@ -860,17 +856,6 @@ class PartyPlugin(PluginProvider):
             )
 
     @staticmethod
-    def _validate_guest_access() -> None:
-        """
-        Validate the current user is an authenticated dedicated guest.
-
-        :raises InvalidDataError: If the user is not a dedicated guest.
-        """
-        user = get_current_user()
-        if not user or user.role != UserRole.GUEST:
-            raise InvalidDataError("This endpoint is only available to party guests")
-
-    @staticmethod
     def _queue_contains_uri(queue_items: list[QueueItem], uri: str) -> bool:
         """Return whether the queue already contains the given item URI."""
         return any(queue_item.uri == uri for queue_item in queue_items)
@@ -909,8 +894,6 @@ class PartyPlugin(PluginProvider):
 
         :returns: Result dict with success status.
         """
-        self._validate_guest_access()
-
         # Check if guest access and skip are enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
@@ -946,7 +929,6 @@ class PartyPlugin(PluginProvider):
         :param web_player_id: The player_id of the guest's web player.
         :returns: Result dict with success status and the party queue ID.
         """
-        self._validate_guest_access()
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
 
@@ -972,8 +954,6 @@ class PartyPlugin(PluginProvider):
         :param web_player_id: The player_id of the guest's web player.
         :returns: Result dict with success status.
         """
-        self._validate_guest_access()
-
         async with self._session_lock:
             if self._session is not None:
                 await self._session.remove_guest_listener(web_player_id)
@@ -987,7 +967,6 @@ class PartyPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._validate_guest_access()
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return False
 

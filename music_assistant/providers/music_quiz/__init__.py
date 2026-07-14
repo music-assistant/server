@@ -58,7 +58,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from music_assistant_models.auth import Scope, UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -76,7 +76,6 @@ from music_assistant_models.media_items import Track
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
-    get_current_user,
     impersonated_user,
 )
 from music_assistant.helpers import guest_access
@@ -563,7 +562,6 @@ class MusicQuizPlugin(PluginProvider):
         :return: The player's private player_id (their credential for further
             game commands) and their personalized game state.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             player_name = name.strip()[:MAX_PLAYER_NAME_LENGTH]
@@ -597,7 +595,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param player_id: The player's private player_id.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             player = _get_player(game, player_id)
@@ -611,7 +608,6 @@ class MusicQuizPlugin(PluginProvider):
         :param player_id: The player's private player_id.
         :return: True when the player still exists, otherwise False.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             if self._game is None or (player := _find_player(self._game, player_id)) is None:
                 return False
@@ -629,7 +625,6 @@ class MusicQuizPlugin(PluginProvider):
         :param player_id: The player's private player_id.
         :param submission: Discriminated answer submission.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             submission_type = submission.get("answer_type")
@@ -651,7 +646,6 @@ class MusicQuizPlugin(PluginProvider):
         :param player_id: The player's private player_id.
         :param suggestion_id: Selected suggestion ID.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             if game.answer_type != MusicQuizAnswerType.MULTIPLE_CHOICE:
@@ -668,7 +662,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param player_id: The player's private player_id.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             player = _get_player(game, player_id)
@@ -691,7 +684,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._validate_guest_access()
         # hold the playback lock across resolving and joining the session so a
         # guest can never be attached to a session that is being torn down
         async with self._playback_lock:
@@ -707,7 +699,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._validate_guest_access()
         async with self._playback_lock:
             if self._playback_session is not None:
                 await self._playback_session.remove_guest_listener(web_player_id)
@@ -718,7 +709,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._validate_guest_access()
         async with self._playback_lock:
             session = await self._get_or_create_session_locked()
             return session is not None and session.can_listen_in(web_player_id)
@@ -759,21 +749,6 @@ class MusicQuizPlugin(PluginProvider):
         ):
             raise InvalidDataError("Music Quiz game strategy identity mismatch")
         return game, self._quiz_type, self._answer_type
-
-    @staticmethod
-    def _validate_guest_access() -> None:
-        """
-        Validate the current user is an authenticated dedicated guest.
-
-        :raises InvalidDataError: If the user is not a dedicated guest.
-        """
-        user = get_current_user()
-        if not user or user.role != UserRole.GUEST:
-            raise InvalidDataError(
-                "This action is only available to Music Quiz guests",
-                translation_key="music_quiz_guest_only",
-                translation_owner=TRANSLATION_OWNER,
-            )
 
     def _submit_player_answer(
         self,
