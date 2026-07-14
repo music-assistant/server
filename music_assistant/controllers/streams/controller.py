@@ -19,11 +19,7 @@ from uuid import uuid4
 
 from aiofiles.os import wrap
 from aiohttp import web
-from music_assistant_models.audio_processing import (
-    AudioCrossfadeDetails,
-    AudioCrossfadeState,
-    AudioOverlayDetails,
-)
+from music_assistant_models.audio_processing import AudioQueueProcessing
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -74,8 +70,7 @@ from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio import StreamsAudio, overlay_active
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.controllers.streams.audio_processing import (
-    AudioProcessingRegistry,
-    get_input_details,
+    AudioProcessingManager,
 )
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
@@ -86,7 +81,6 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
     get_available_buffer_sizes,
 )
-from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.audio import (
     calculate_content_length,
     get_content_length,
@@ -178,7 +172,7 @@ class StreamsController(CoreController):
         self.announcements: dict[str, AnnounceData] = {}
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
-        self.audio_processing = AudioProcessingRegistry(mass)
+        self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
         # Number of queue streams (single item or flow) actively serving a player right now.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -665,7 +659,6 @@ class StreamsController(CoreController):
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
-            crossfade_reason_code: str | None = None
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
@@ -680,7 +673,6 @@ class StreamsController(CoreController):
                     player.state.name,
                 )
                 crossfade_mode = CrossfadeMode.DISABLED
-                crossfade_reason_code = "gapless_playback_unsupported"
 
             # pick output format based on the streamdetails and player capabilities
             pcm_format = await self.audio.select_pcm_format(
@@ -744,9 +736,10 @@ class StreamsController(CoreController):
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 crossfade_mode=crossfade_mode,
-                standard_crossfade_duration=standard_crossfade_duration,
+                overlay_enabled=(
+                    queue_item.media_type == MediaType.RADIO and overlay_active(queue)
+                ),
                 session_id=session_id,
-                crossfade_reason_code=crossfade_reason_code,
             )
 
             if crossfade_mode != CrossfadeMode.DISABLED:
@@ -984,15 +977,12 @@ class StreamsController(CoreController):
         if request.method != "GET":
             return resp
 
-        standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
-            CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
-        )
         self._update_audio_processing_context(
             queue=queue,
             queue_item=start_queue_item,
             pcm_format=flow_pcm_format,
             crossfade_mode=crossfade_mode,
-            standard_crossfade_duration=standard_crossfade_duration,
+            overlay_enabled=overlay_active(queue),
             session_id=session_id,
         )
         output_plan = self.audio.get_player_output_plan(
@@ -1280,11 +1270,7 @@ class StreamsController(CoreController):
                     queue_item=start_queue_item,
                     pcm_format=pcm_format,
                     crossfade_mode=crossfade_mode,
-                    standard_crossfade_duration=self.mass.config.get_raw_core_config_value(
-                        CONF_PLAYER_QUEUES,
-                        CONF_CROSSFADE_DURATION,
-                        8,
-                    ),
+                    overlay_enabled=overlay_active(queue),
                     session_id=queue_session_id,
                 )
                 flow_stream = self.audio.get_queue_flow_stream(
@@ -1313,10 +1299,8 @@ class StreamsController(CoreController):
                         if queue_item.media_type == MediaType.TRACK
                         else CrossfadeMode.DISABLED
                     ),
-                    standard_crossfade_duration=self.mass.config.get_raw_core_config_value(
-                        CONF_PLAYER_QUEUES,
-                        CONF_CROSSFADE_DURATION,
-                        8,
+                    overlay_enabled=(
+                        queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                     ),
                     session_id=queue_session_id,
                 )
@@ -1559,8 +1543,7 @@ class StreamsController(CoreController):
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         crossfade_mode: CrossfadeMode,
-        standard_crossfade_duration: int,
-        crossfade_reason_code: str | None = None,
+        overlay_enabled: bool,
         session_id: str | None = None,
     ) -> None:
         """
@@ -1570,8 +1553,7 @@ class StreamsController(CoreController):
         :param queue_item: Queue item being prepared.
         :param pcm_format: Shared PCM format leaving queue processing.
         :param crossfade_mode: Effective crossfade mode for the item.
-        :param standard_crossfade_duration: Configured standard crossfade duration.
-        :param crossfade_reason_code: Reason the configured crossfade was bypassed.
+        :param overlay_enabled: Whether an overlay is mixed into this stream.
         :param session_id: Queue session that owns processing-detail updates.
         """
         if queue_item.streamdetails is None:
@@ -1584,58 +1566,19 @@ class StreamsController(CoreController):
         ):
             return
         self.audio_processing.start_session(queue.queue_id, processing_session_id)
-        source_format = queue_item.streamdetails.audio_format
-        if queue_item.media_type == MediaType.AUDIO_SOURCE:
-            input_format = pcm_format
-        else:
-            input_format = AudioFormat(
-                content_type=ContentType.from_bit_depth(source_format.bit_depth),
-                sample_rate=source_format.sample_rate,
-                bit_depth=source_format.bit_depth,
-                channels=source_format.channels,
-            )
-        crossfade = None
-        if queue.crossfade_enabled and queue_item.media_type == MediaType.TRACK:
-            next_item = self.mass.player_queues.get_next_item(
-                queue.queue_id,
-                queue_item.queue_item_id,
-            )
-            crossfade_state = AudioCrossfadeState.PENDING
-            reason_code = crossfade_reason_code
-            if crossfade_mode == CrossfadeMode.DISABLED:
-                crossfade_state = AudioCrossfadeState.BYPASSED
-            elif next_item is None:
-                crossfade_state = AudioCrossfadeState.BYPASSED
-                reason_code = "next_item_unavailable"
-            crossfade = AudioCrossfadeDetails(
-                mode=crossfade_mode,
-                state=crossfade_state,
-                from_queue_item_id=queue_item.queue_item_id,
-                to_queue_item_id=next_item.queue_item_id if next_item else None,
-                planned_duration=(
-                    SMART_CROSSFADE_DURATION
-                    if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-                    else standard_crossfade_duration
-                ),
-                reason_code=reason_code,
-            )
-        overlay = (
-            AudioOverlayDetails(
-                source=queue.overlay_source,
-                volume_percent=queue.overlay_volume,
-            )
-            if overlay_active(queue)
-            else None
-        )
         self.audio_processing.update_item_context(
             queue_id=queue.queue_id,
             session_id=processing_session_id,
             queue_item_id=queue_item.queue_item_id,
-            input_details=get_input_details(queue_item.streamdetails),
-            input_format=input_format,
-            output_format=pcm_format,
-            crossfade=crossfade,
-            overlay=overlay,
+            queue_processing=AudioQueueProcessing(
+                pcm_format=pcm_format,
+                playback_speed=cast(
+                    "float",
+                    queue_item.extra_attributes.get("playback_speed", 1.0),
+                ),
+                crossfade_mode=crossfade_mode,
+                overlay_active=overlay_enabled,
+            ),
             alters_audio=queue_item.streamdetails.fade_in,
         )
 

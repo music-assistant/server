@@ -75,8 +75,8 @@ def test_output_plan_is_registered_for_all_snapcast_members() -> None:
     )
     provider._snapserver.groups = [group]
     provider._get_ma_id.return_value = "child"
-    output_path = MagicMock(player_ids=["leader"])
-    stream._output_plan = MagicMock(output_path=output_path)
+    output_details = MagicMock(player_ids=["leader"])
+    stream._output_plan = MagicMock(output_details=output_details)
 
     stream._register_output_plan()
 

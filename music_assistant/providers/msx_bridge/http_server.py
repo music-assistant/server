@@ -1286,7 +1286,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             shared_stream = await self.provider.get_or_create_shared_stream(
                 group_id, media_uri, audio_chunks
             )
-            shared_stream.output_path = output_plan.output_path
+            shared_stream.output_plan = output_plan
         else:
             # Member but no existing stream - wait briefly for leader
             logger.info(
@@ -1314,13 +1314,13 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         queue_id = getattr(media, "source_id", None)
         session_id = get_media_session_id(media)
         if (
-            shared_stream.output_path is not None
+            shared_stream.output_plan is not None
             and queue_id is not None
             and session_id is not None
         ):
             self.provider.mass.streams.audio_processing.update_output(
                 player_id,
-                shared_stream.output_path,
+                shared_stream.output_plan,
                 queue_id=queue_id,
                 session_id=session_id,
                 queue_item_id=getattr(media, "queue_item_id", None),

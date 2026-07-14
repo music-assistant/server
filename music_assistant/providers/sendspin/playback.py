@@ -1251,12 +1251,11 @@ class SendspinPlaybackSession:
         requires_transform = dsp_enabled or output_channels != "stereo" or custom_filter_graph
         if output_plan is not None:
             if not requires_transform:
-                output_plan.output_path.limiter.enabled = False
-                output_plan.output_path.limiter.threshold_dbfs = None
+                output_plan.output_details.dsp.output_limiter = False
             if self._queue_id is not None and self._queue_session_id is not None:
                 self.player.mass.streams.audio_processing.update_output(
-                    output_plan.output_path.player_ids[0],
-                    output_plan.output_path,
+                    output_plan.output_details.player_ids[0],
+                    output_plan,
                     queue_id=self._queue_id,
                     session_id=self._queue_session_id,
                 )

@@ -483,7 +483,7 @@ class SnapcastMAStream:
         session_id = get_media_session_id(self.media)
         if self._output_plan is None or queue_id is None or session_id is None:
             return
-        player_ids = set(self._output_plan.output_path.player_ids)
+        player_ids = set(self._output_plan.output_details.player_ids)
         if self.snap_stream:
             for group in self._provider._snapserver.groups:
                 if group.stream != self.snap_stream.identifier:
@@ -494,7 +494,7 @@ class SnapcastMAStream:
         for player_id in player_ids:
             self._mass.streams.audio_processing.update_output(
                 player_id,
-                self._output_plan.output_path,
+                self._output_plan,
                 queue_id=queue_id,
                 session_id=session_id,
             )

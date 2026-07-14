@@ -1,4 +1,4 @@
-"""Tests for runtime audio processing plans and snapshots."""
+"""Tests for effective audio processing plans and stream details."""
 
 from __future__ import annotations
 
@@ -8,84 +8,65 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.audio_processing import (
-    AudioChannelMode,
+    AudioDSPDetails,
     AudioFidelity,
-    AudioInputDetails,
-    AudioLimiterDetails,
-    AudioOutputPath,
-    AudioProcessingState,
+    AudioNormalizationDetails,
+    AudioOutputDetails,
+    AudioProcessingChain,
     AudioQuality,
+    AudioQueueProcessing,
 )
-from music_assistant_models.dsp import DSPConfig, DSPState, ToneControlFilter
-from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
+from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPState, ToneControlFilter
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import (
-    AudioProcessingRegistry,
+    AudioOutputPlan,
+    AudioProcessingManager,
     get_audio_quality,
     get_normalization_details,
 )
 
 
+def _format(
+    content_type: ContentType,
+    sample_rate: int = 44100,
+    bit_depth: int = 16,
+    *,
+    channels: int = 2,
+    bit_rate: int | None = None,
+) -> AudioFormat:
+    """Return an AudioFormat with matching container and codec."""
+    return AudioFormat(
+        content_type=content_type,
+        codec_type=content_type,
+        sample_rate=sample_rate,
+        bit_depth=bit_depth,
+        channels=channels,
+        bit_rate=bit_rate,
+    )
+
+
 @pytest.mark.parametrize(
     ("audio_format", "expected"),
     [
-        (
-            AudioFormat(
-                content_type=ContentType.FLAC,
-                codec_type=ContentType.FLAC,
-                sample_rate=44100,
-                bit_depth=16,
-            ),
-            AudioQuality.LOSSLESS,
-        ),
-        (
-            AudioFormat(
-                content_type=ContentType.FLAC,
-                codec_type=ContentType.FLAC,
-                sample_rate=96000,
-                bit_depth=24,
-            ),
-            AudioQuality.HI_RES,
-        ),
-        (
-            AudioFormat(
-                content_type=ContentType.MP3,
-                codec_type=ContentType.MP3,
-                bit_rate=320,
-            ),
-            AudioQuality.STANDARD,
-        ),
-        (
-            AudioFormat(
-                content_type=ContentType.AAC,
-                codec_type=ContentType.AAC,
-                bit_rate=128,
-            ),
-            AudioQuality.LOW,
-        ),
-        (
-            AudioFormat(
-                content_type=ContentType.MP3,
-                codec_type=ContentType.MP3,
-                bit_rate=128000,
-            ),
-            AudioQuality.LOW,
-        ),
-        (
-            AudioFormat(
-                content_type=ContentType.AAC,
-                codec_type=ContentType.AAC,
-                bit_rate=None,
-            ),
-            AudioQuality.UNKNOWN,
-        ),
+        (_format(ContentType.FLAC, 44100, 16), AudioQuality.LOSSLESS),
+        (_format(ContentType.FLAC, 96000, 24), AudioQuality.HI_RES),
+        (_format(ContentType.MP3, bit_rate=320), AudioQuality.STANDARD),
+        (_format(ContentType.AAC, bit_rate=128), AudioQuality.LOW),
+        (_format(ContentType.MP3, bit_rate=128000), AudioQuality.LOW),
+        (_format(ContentType.AAC), AudioQuality.UNKNOWN),
     ],
 )
 def test_get_audio_quality(audio_format: AudioFormat, expected: AudioQuality) -> None:
-    """Audio quality classification uses codec, resolution and bitrate facts."""
+    """Quality classification uses codec, resolution and normalized bitrate."""
     assert get_audio_quality(audio_format) == expected
 
 
@@ -107,195 +88,235 @@ def test_get_normalization_details_uses_album_measurement() -> None:
     assert details.applied_gain_db == -2.5
 
 
-def test_get_dynamic_normalization_details() -> None:
-    """Dynamic normalization reports its live targets without a static gain."""
-    streamdetails = _streamdetails()
-    streamdetails.volume_normalization_mode = VolumeNormalizationMode.DYNAMIC
-    streamdetails.target_loudness = -17.0
+def test_audio_processing_manager_attaches_grouped_chain() -> None:
+    """A complete chain is attached to StreamDetails with grouped outputs."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, lossy_plan = _manager_context()
+    assert streamdetails.audio_processing is None
 
-    details = get_normalization_details(streamdetails, applied_gain_db=None)
-
-    assert details is not None
-    assert details.measurement_source.value == "live"
-    assert details.target_true_peak_dbtp == -2.0
-    assert details.target_loudness_range_lu == 10.0
-    assert details.applied_gain_db is None
-
-
-def test_audio_processing_registry_groups_outputs() -> None:
-    """Snapshots group identical paths and summarize mixed output quality."""
-    registry, _mass, _queue_data, output_path, lossy_output_path = _registry_context()
-    assert registry.update_output(
+    assert manager.update_output(
         "player-2",
-        output_path,
+        lossless_plan,
         queue_id="queue-1",
         session_id="session-1",
         queue_item_id="item-1",
     )
-    assert registry.update_output(
+    assert manager.update_output(
         "player-1",
-        output_path,
+        lossless_plan,
         queue_id="queue-1",
         session_id="session-1",
         queue_item_id="item-1",
     )
-    assert registry.update_output(
+    assert manager.update_output(
         "player-3",
-        lossy_output_path,
+        lossy_plan,
         queue_id="queue-1",
         session_id="session-1",
         queue_item_id="item-1",
     )
 
-    snapshot = registry.get("queue-1")
-
-    assert snapshot is not None
-    assert snapshot.state == AudioProcessingState.READY
-    assert snapshot.outputs[0].player_ids == ["player-1", "player-2"]
-    assert snapshot.outputs[0].fidelity == AudioFidelity(
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.input_fidelity.quality == AudioQuality.HI_RES
+    assert chain.queue_processing is not None
+    assert chain.outputs[0].player_ids == ["player-1", "player-2"]
+    assert chain.outputs[0].fidelity == AudioFidelity(
         quality=AudioQuality.HI_RES,
         bit_perfect=True,
     )
-    assert snapshot.outputs[1].player_ids == ["player-3"]
-    assert snapshot.outputs[1].fidelity == AudioFidelity(
+    assert chain.outputs[1].player_ids == ["player-3"]
+    assert chain.outputs[1].fidelity == AudioFidelity(
         quality=AudioQuality.LOW,
         bit_perfect=False,
     )
-    assert snapshot.fidelity is not None
-    assert snapshot.fidelity.min_output_quality == AudioQuality.LOW
-    assert snapshot.fidelity.max_output_quality == AudioQuality.HI_RES
 
 
-def test_registry_detects_bitrate_changes_without_using_prefetched_output() -> None:
-    """Serialized format changes update fidelity without replacing the current item."""
-    registry, _mass, _queue_data, output_path, lossy_output_path = _registry_context()
-    registry.update_output(
+def test_prefetched_output_does_not_replace_current_chain() -> None:
+    """An output prepared for the next item does not change the current item."""
+    manager, mass, queue_data, streamdetails, lossless_plan, lossy_plan = _manager_context()
+    next_streamdetails = _streamdetails(item_id="item-2")
+    next_item = SimpleNamespace(queue_item_id="item-2", streamdetails=next_streamdetails)
+    queue_data.items.append(next_item)
+    mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: (
+        next_item if item_id == "item-2" else queue_data.items[0]
+    )
+    manager.update_output(
         "player-1",
-        output_path,
+        lossless_plan,
         queue_id="queue-1",
         session_id="session-1",
         queue_item_id="item-1",
     )
-    registry.update_output(
-        "player-3",
-        lossy_output_path,
-        queue_id="queue-1",
-        session_id="session-1",
-        queue_item_id="item-1",
+    current_chain = streamdetails.audio_processing
+
+    manager.update_item_context(
+        "queue-1",
+        "session-1",
+        "item-2",
+        AudioQueueProcessing(pcm_format=lossless_plan.input_format),
     )
-    assert lossy_output_path.output_format is not None
-    lossy_output_path.output_format.bit_rate = 320
-    assert registry.update_output(
-        "player-3",
-        lossy_output_path,
-        queue_id="queue-1",
-        session_id="session-1",
-        queue_item_id="item-1",
-    )
-    updated_snapshot = registry.get("queue-1")
-    assert updated_snapshot is not None
-    assert updated_snapshot.outputs[1].fidelity.quality == AudioQuality.STANDARD
-    assert updated_snapshot.fidelity is not None
-    assert updated_snapshot.fidelity.min_output_quality == AudioQuality.STANDARD
-    assert registry.update_output(
+    manager.update_output(
         "player-1",
-        lossy_output_path,
+        lossy_plan,
         queue_id="queue-1",
         session_id="session-1",
         queue_item_id="item-2",
     )
-    current_snapshot = registry.get("queue-1")
-    assert current_snapshot is not None
-    assert current_snapshot.outputs[0].fidelity.quality == AudioQuality.HI_RES
+
+    assert streamdetails.audio_processing == current_chain
+    assert next_streamdetails.audio_processing is not None
+    assert next_streamdetails.audio_processing.outputs[0].fidelity.quality == AudioQuality.LOW
 
 
-def test_hidden_fade_in_prevents_bit_perfect_claim() -> None:
-    """A fade-in affects fidelity without becoming a public chain stage."""
-    registry, _mass, _queue_data, output_path, _lossy_output_path = _registry_context()
-    registry.update_output(
+def test_context_refresh_preserves_runtime_normalization() -> None:
+    """A second consumer does not erase normalization resolved at stream time."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    normalization = AudioNormalizationDetails(
+        mode=VolumeNormalizationMode.DYNAMIC,
+        target_lufs=-17.0,
+    )
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=lossless_plan.input_format,
+        pcm_format=lossless_plan.input_format,
+        normalization=normalization,
+        playback_speed=1.0,
+    )
+    manager.update_output(
         "player-1",
-        output_path,
-        queue_id="queue-1",
-        session_id="session-1",
-        queue_item_id="item-1",
-    )
-    snapshot = registry.get("queue-1")
-    assert snapshot is not None
-    assert snapshot.input is not None
-    assert snapshot.queue_processing is not None
-    assert snapshot.queue_processing.input_format is not None
-    assert snapshot.queue_processing.output_format is not None
-
-    registry.update_item_context(
-        queue_id="queue-1",
-        session_id="session-1",
-        queue_item_id="item-1",
-        input_details=snapshot.input,
-        input_format=snapshot.queue_processing.input_format,
-        output_format=snapshot.queue_processing.output_format,
-        alters_audio=True,
-    )
-
-    updated = registry.get("queue-1")
-    assert updated is not None
-    assert updated.outputs[0].fidelity.bit_perfect is False
-
-
-def test_intermediate_format_conversion_prevents_bit_perfect_claim() -> None:
-    """A restored final resolution does not hide a lower-resolution handoff."""
-    registry, _mass, _queue_data, output_path, _lossy_output_path = _registry_context()
-    output_path.handoff_format = AudioFormat(
-        content_type=ContentType.PCM_S24LE,
-        sample_rate=48000,
-        bit_depth=24,
-        channels=2,
-    )
-    registry.update_output(
-        "player-1",
-        output_path,
+        lossless_plan,
         queue_id="queue-1",
         session_id="session-1",
         queue_item_id="item-1",
     )
 
-    snapshot = registry.get("queue-1")
+    manager.update_item_context(
+        "queue-1",
+        "session-1",
+        "item-1",
+        AudioQueueProcessing(
+            pcm_format=lossless_plan.input_format,
+            crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+        ),
+    )
 
-    assert snapshot is not None
-    assert snapshot.outputs[0].fidelity.bit_perfect is False
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.queue_processing is not None
+    assert chain.queue_processing.normalization == normalization
+    assert chain.outputs[0].fidelity.bit_perfect is False
 
 
-def test_registry_rejects_superseded_and_cleared_sessions() -> None:
+def test_manager_rejects_superseded_and_cleared_sessions() -> None:
     """Late producers cannot update or recreate a replacement queue session."""
-    registry, mass, queue_data, output_path, _lossy_output_path = _registry_context()
-    registry.start_session("queue-1", "session-2")
-    assert mass.signal_event.call_args.kwargs["data"] is None
+    manager, mass, queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    assert streamdetails.to_dict()["audio_processing"] is not None
+
+    mass.player_queues.signal_update.reset_mock()
+    manager.start_session("queue-1", "session-2")
     queue_data.session_id = "session-2"
-    assert not registry.update_output(
+    assert streamdetails.to_dict()["audio_processing"] is None
+    mass.player_queues.signal_update.assert_called_once_with("queue-1")
+    assert not manager.update_output(
         "stale-player",
-        output_path,
+        lossless_plan,
         queue_id="queue-1",
         session_id="session-1",
     )
-    assert registry.update_output(
+
+    manager.update_item_context(
+        "queue-1",
+        "session-2",
+        "item-1",
+        AudioQueueProcessing(pcm_format=lossless_plan.input_format),
+    )
+    manager.update_output(
         "current-player",
-        output_path,
+        lossless_plan,
         queue_id="queue-1",
         session_id="session-2",
+        queue_item_id="item-1",
     )
-    registry.clear("queue-1", session_id="session-1")
-    assert registry.get_player_output("stale-player") is None
-    registry.clear("queue-1", session_id="session-2")
-    assert not registry.update_output(
+    assert streamdetails.to_dict()["audio_processing"] is not None
+    mass.player_queues.signal_update.reset_mock()
+    manager.clear("queue-1", "session-2")
+    assert streamdetails.to_dict()["audio_processing"] is None
+    mass.player_queues.signal_update.assert_called_once_with("queue-1")
+    assert not manager.update_output(
         "late-player",
-        output_path,
+        lossless_plan,
         queue_id="queue-1",
         session_id="session-2",
     )
-    assert registry.get_player_output("late-player") is None
+
+
+def test_manager_prunes_played_item_chains() -> None:
+    """Advancing the queue drops processing state from completed items."""
+    manager, mass, queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    assert streamdetails.audio_processing is not None
+    next_streamdetails = _streamdetails(item_id="item-2")
+    next_item = SimpleNamespace(queue_item_id="item-2", streamdetails=next_streamdetails)
+    queue_data.items.append(next_item)
+    queue_data.queue.current_index = 1
+    queue_data.queue.current_item = next_item
+    mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: (
+        next_item if item_id == "item-2" else queue_data.items[0]
+    )
+
+    manager.update_item_context(
+        "queue-1",
+        "session-1",
+        "item-2",
+        AudioQueueProcessing(pcm_format=lossless_plan.input_format),
+    )
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=lossless_plan.input_format,
+        pcm_format=lossless_plan.input_format,
+        normalization=None,
+        playback_speed=1.0,
+    )
+
+    assert streamdetails.audio_processing is None
+
+
+def test_hidden_and_intermediate_processing_prevents_bit_perfect_claim() -> None:
+    """Hidden fades and lower-resolution handoffs prevent bit-perfect output."""
+    manager, _mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context(
+        alters_audio=True
+    )
+    output_plan.handoff_format = _format(ContentType.PCM_S24LE, 48000, 24)
+
+    manager.update_output(
+        "player-1",
+        output_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert streamdetails.audio_processing is not None
+    assert streamdetails.audio_processing.outputs[0].fidelity.bit_perfect is False
 
 
 def test_player_output_plan_matches_ffmpeg_filters() -> None:
-    """The typed output path describes the FFmpeg filters returned to callers."""
+    """Typed output details describe the FFmpeg filters returned to callers."""
     mass = MagicMock()
     mass.players.get_player.return_value = None
     mass.config.get_player_dsp_config.return_value = DSPConfig(
@@ -306,20 +327,8 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     )
     mass.config.get_raw_player_config_value.return_value = "left"
     audio = StreamsAudio(cast("Any", mass))
-    input_format = AudioFormat(
-        content_type=ContentType.PCM_F32LE,
-        codec_type=ContentType.PCM_F32LE,
-        sample_rate=96000,
-        bit_depth=32,
-        channels=2,
-    )
-    output_format = AudioFormat(
-        content_type=ContentType.FLAC,
-        codec_type=ContentType.FLAC,
-        sample_rate=48000,
-        bit_depth=16,
-        channels=1,
-    )
+    input_format = _format(ContentType.PCM_F32LE, 96000, 32)
+    output_format = _format(ContentType.FLAC, 48000, 16, channels=1)
 
     plan = audio.get_player_output_plan(
         "player-1",
@@ -333,22 +342,20 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     assert plan.filter_params[0] == "volume=-1.0dB"
     assert "pan=mono|c0=FL" in plan.filter_params
     assert plan.filter_params[-1] == "alimiter=limit=-2dB:level=false:asc=true"
-    assert plan.output_path.dsp.state == DSPState.ENABLED
-    assert plan.output_path.channels is not None
-    assert plan.output_path.channels.mode == AudioChannelMode.LEFT
-    assert plan.output_path.limiter == AudioLimiterDetails(
-        enabled=True,
-        threshold_dbfs=-2.0,
+    assert plan.output_details.dsp == AudioDSPDetails(
+        state=DSPState.ENABLED,
+        input_gain=-1.0,
+        filters=[ToneControlFilter(enabled=True, bass_level=2.0)],
+        output_gain=-0.5,
+        output_limiter=True,
     )
-    assert plan.output_path.resampling is not None
-    assert plan.output_path.resampling.method.value in {"soxr", "swr"}
-    assert plan.output_path.dithering is not None
-    assert plan.output_path.output_format == output_format
+    assert plan.output_details.source_channel == AudioChannel.FL
+    assert plan.output_details.output_format == output_format
     mass.streams.audio_processing.update_output.assert_called_once()
 
 
-def test_protocol_output_is_registered_for_parent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A protocol transport contributes output details to its user-facing parent."""
+def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Protocol output details use the user-facing parent configuration."""
     mass = MagicMock()
     player = MagicMock(player_id="protocol-1", protocol_parent_id="player-1")
     player.state.active_group = None
@@ -356,17 +363,11 @@ def test_protocol_output_is_registered_for_parent(monkeypatch: pytest.MonkeyPatc
     mass.players.get_player.return_value = player
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
     mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: (
-        False if isinstance(default, bool) else "left"
+        False if isinstance(default, bool) else "right"
     )
     audio = StreamsAudio(cast("Any", mass))
     monkeypatch.setattr(audio, "_resolve_player_dsp_config", lambda _player: DSPConfig())
-    pcm_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE,
-        codec_type=ContentType.PCM_S16LE,
-        sample_rate=44100,
-        bit_depth=16,
-        channels=2,
-    )
+    pcm_format = _format(ContentType.PCM_S16LE, 44100, 16)
 
     plan = audio.get_player_output_plan(
         "protocol-1",
@@ -376,65 +377,26 @@ def test_protocol_output_is_registered_for_parent(monkeypatch: pytest.MonkeyPatc
         session_id="session-1",
     )
 
-    assert plan.output_path.player_ids == ["player-1"]
-    assert plan.output_path.channels is not None
-    assert plan.output_path.channels.mode == AudioChannelMode.LEFT
-    assert not plan.output_path.limiter.enabled
+    assert plan.output_details.player_ids == ["player-1"]
+    assert plan.output_details.source_channel == AudioChannel.FR
+    assert not plan.output_details.dsp.output_limiter
     assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
         "player-1"
     }
-    assert mass.streams.audio_processing.update_output.call_args.args[0] == "player-1"
-
-
-@pytest.mark.asyncio
-async def test_protocol_output_format_uses_parent_channel_config() -> None:
-    """Output format channel selection reads the user-facing parent config."""
-    mass = MagicMock()
-    mass.config.get_raw_player_config_value.return_value = "left"
-    player = MagicMock(player_id="protocol-1", protocol_parent_id="player-1")
-    player.get_supported_sample_rates.return_value = [(44100, 16)]
-    audio = StreamsAudio(cast("Any", mass))
-
-    output_format = await audio.get_output_format(
-        "flac",
-        player,
-        content_sample_rate=44100,
-        content_bit_depth=16,
-    )
-
-    assert output_format.channels == 1
-    mass.config.get_raw_player_config_value.assert_called_once_with(
-        "player-1",
-        "output_channels",
-        "stereo",
-    )
 
 
 @pytest.mark.asyncio
 async def test_stale_flow_generator_does_not_mutate_active_session() -> None:
     """A deferred flow generator exits before clearing newer session state."""
     mass = MagicMock()
-    queue_data = SimpleNamespace(
-        session_id="session-2",
-        flow_mode_stream_log=["current"],
-    )
+    queue_data = SimpleNamespace(session_id="session-2", flow_mode_stream_log=["current"])
     mass.player_queues.queue_data.return_value = queue_data
     audio = StreamsAudio(cast("Any", mass))
-    queue = SimpleNamespace(
-        queue_id="queue-1",
-        display_name="Queue",
-        flow_mode=False,
-    )
-    pcm_format = AudioFormat(
-        content_type=ContentType.PCM_F32LE,
-        sample_rate=48000,
-        bit_depth=32,
-        channels=2,
-    )
+    queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", flow_mode=False)
     stream = audio.get_queue_flow_stream(
         cast("Any", queue),
         MagicMock(),
-        pcm_format,
+        _format(ContentType.PCM_F32LE, 48000, 32),
         session_id="session-1",
     )
 
@@ -445,81 +407,67 @@ async def test_stale_flow_generator_does_not_mutate_active_session() -> None:
     assert queue_data.flow_mode_stream_log == ["current"]
 
 
-def _registry_context() -> tuple[
-    AudioProcessingRegistry,
+def _manager_context(
+    *,
+    alters_audio: bool = False,
+) -> tuple[
+    AudioProcessingManager,
     MagicMock,
     SimpleNamespace,
-    AudioOutputPath,
-    AudioOutputPath,
+    StreamDetails,
+    AudioOutputPlan,
+    AudioOutputPlan,
 ]:
-    """Return a registry with one hi-res queue item and two output path templates."""
+    """Return one prepared queue item and two output plan templates."""
     mass = MagicMock()
     streamdetails = _streamdetails()
     queue_item = SimpleNamespace(queue_item_id="item-1", streamdetails=streamdetails)
-    queue = SimpleNamespace(current_item=queue_item, next_item=None, current_index=0)
-    queue_data = SimpleNamespace(session_id="session-1", items=[queue_item])
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        current_item=queue_item,
+        next_item=None,
+        current_index=0,
+    )
+    queue_data = SimpleNamespace(session_id="session-1", items=[queue_item], queue=queue)
     mass.player_queues.get.return_value = queue
+    mass.player_queues.get_active_queue.return_value = queue
+    mass.player_queues.get_item.return_value = queue_item
     mass.player_queues.queue_data_or_none.return_value = queue_data
     mass.streams.audio.get_stream_dsp_details.return_value = {}
-    registry = AudioProcessingRegistry(mass)
-    pcm_format = AudioFormat(
-        content_type=ContentType.PCM_S24LE,
-        codec_type=ContentType.PCM_S24LE,
-        sample_rate=96000,
-        bit_depth=24,
-        channels=2,
+    manager = AudioProcessingManager(mass)
+    pcm_format = _format(ContentType.PCM_S24LE, 96000, 24)
+    manager.start_session("queue-1", "session-1")
+    manager.update_item_context(
+        "queue-1",
+        "session-1",
+        "item-1",
+        AudioQueueProcessing(pcm_format=pcm_format),
+        alters_audio=alters_audio,
     )
-    registry.start_session("queue-1", "session-1")
-    registry.update_item_context(
-        queue_id="queue-1",
-        session_id="session-1",
-        queue_item_id="item-1",
-        input_details=AudioInputDetails(
-            source_format=streamdetails.audio_format,
-            server_input_format=streamdetails.audio_format,
-            fidelity=AudioFidelity(quality=AudioQuality.HI_RES),
+    lossless_plan = AudioOutputPlan(
+        filter_params=[],
+        output_details=AudioOutputDetails(
+            dsp=AudioDSPDetails(state=DSPState.DISABLED),
+            output_format=_format(ContentType.FLAC, 96000, 24),
         ),
         input_format=pcm_format,
-        output_format=pcm_format,
     )
-    lossless_output = AudioOutputPath(
-        input_format=pcm_format,
-        limiter=AudioLimiterDetails(enabled=False),
-        output_format=AudioFormat(
-            content_type=ContentType.FLAC,
-            codec_type=ContentType.FLAC,
-            sample_rate=96000,
-            bit_depth=24,
-            channels=2,
+    lossy_plan = AudioOutputPlan(
+        filter_params=[],
+        output_details=AudioOutputDetails(
+            dsp=AudioDSPDetails(state=DSPState.DISABLED),
+            output_format=_format(ContentType.MP3, 48000, 16, bit_rate=128),
         ),
-    )
-    lossy_output = AudioOutputPath(
         input_format=pcm_format,
-        limiter=AudioLimiterDetails(enabled=False),
-        output_format=AudioFormat(
-            content_type=ContentType.MP3,
-            codec_type=ContentType.MP3,
-            sample_rate=48000,
-            bit_depth=16,
-            channels=2,
-            bit_rate=128,
-        ),
     )
-    return registry, mass, queue_data, lossless_output, lossy_output
+    return manager, mass, queue_data, streamdetails, lossless_plan, lossy_plan
 
 
-def _streamdetails() -> StreamDetails:
+def _streamdetails(item_id: str = "item-1") -> StreamDetails:
     """Return hi-res lossless stream details."""
     return StreamDetails(
         provider="provider",
-        item_id="track",
-        audio_format=AudioFormat(
-            content_type=ContentType.FLAC,
-            codec_type=ContentType.FLAC,
-            sample_rate=96000,
-            bit_depth=24,
-            channels=2,
-            bit_rate=3200,
-        ),
+        item_id=item_id,
+        audio_format=_format(ContentType.FLAC, 96000, 24, bit_rate=3200),
         media_type=MediaType.TRACK,
     )

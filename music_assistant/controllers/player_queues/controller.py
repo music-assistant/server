@@ -83,7 +83,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models import BackgroundTask
-    from music_assistant_models.audio_processing import AudioProcessingChain
     from music_assistant_models.config_entries import (
         ConfigEntry,
         ConfigValueOption,
@@ -216,13 +215,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Return PlayerQueue by queue_id or None if not found."""
         queue_data = self._queue_data.get(queue_id)
         return queue_data.queue if queue_data else None
-
-    @api_command("player_queues/audio_processing_chain", required_scope=Scope.QUEUES_READ)
-    def get_audio_processing_chain(self, queue_id: str) -> AudioProcessingChain | None:
-        """Return the current audio processing snapshot for a queue."""
-        if queue_id not in self._queue_data:
-            return None
-        return self.mass.streams.audio_processing.get(queue_id)
 
     def queue_data(self, queue_id: str) -> PlayerQueueData:
         """
@@ -1472,9 +1464,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if items_changed:
             queue_data.items_cache_dirty = True
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
+        self.mass.streams.audio_processing.prune(queue_id)
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
-        self.mass.streams.audio_processing.refresh(queue_id)
         # also signal update to the player itself so it can update its current_media
         self.mass.players.trigger_player_update(queue_id)
         # persist the (settings-bearing) queue state, debounced so a burst of updates or the

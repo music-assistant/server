@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 from music_assistant_models.audio_processing import (
-    AudioLimiterDetails,
-    AudioOutputPath,
+    AudioDSPDetails,
+    AudioOutputDetails,
 )
 from music_assistant_models.dsp import DSPConfig
 from music_assistant_models.enums import ContentType
@@ -33,16 +33,17 @@ def test_limiter_is_not_reported_when_shared_channel_skips_it(
         bit_depth=32,
         channels=2,
     )
-    output_path = AudioOutputPath(
+    output_details = AudioOutputDetails(
         player_ids=["member"],
-        input_format=pcm_format,
-        limiter=AudioLimiterDetails(enabled=True, threshold_dbfs=-2.0),
+        dsp=AudioDSPDetails(output_limiter=True),
         output_format=pcm_format,
     )
-    player.mass.streams.audio.get_player_output_plan.return_value = AudioOutputPlan(
+    output_plan = AudioOutputPlan(
         filter_params=["alimiter=limit=-2dB:level=false:asc=true"],
-        output_path=output_path,
+        output_details=output_details,
+        input_format=pcm_format,
     )
+    player.mass.streams.audio.get_player_output_plan.return_value = output_plan
     session = SendspinPlaybackSession(player)
     session._pcm_format = pcm_format
     session._queue_id = "queue-1"
@@ -52,11 +53,10 @@ def test_limiter_is_not_reported_when_shared_channel_skips_it(
     config = session._read_pipeline_config("member")
 
     assert not config.requires_transform
-    assert not output_path.limiter.enabled
-    assert output_path.limiter.threshold_dbfs is None
+    assert not output_details.dsp.output_limiter
     player.mass.streams.audio_processing.update_output.assert_called_once_with(
         "member",
-        output_path,
+        output_plan,
         queue_id="queue-1",
         session_id="session-1",
     )
