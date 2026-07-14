@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
+    Deck,
     PlanMetrics,
     TransitionPlan,
     TransitionTier,
@@ -17,7 +18,6 @@ from music_assistant.controllers.streams.smart_fades.planner_pkg.candidates impo
     CandidateSpec,
 )
 from music_assistant.controllers.streams.smart_fades.planner_pkg.context import (
-    Deck,
     TransitionContext,
 )
 from music_assistant.controllers.streams.smart_fades.planner_pkg.policies import (

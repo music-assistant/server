@@ -23,10 +23,6 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
 from .candidates import Candidate
 from .context import TransitionContext
 
-# An audible outgoing phrase cut by more than this many seconds reads as a
-# truncation rather than an inaudible tail sliver
-MAX_TRUNCATED_VOCAL = 0.25
-
 # The tier ladder's rungs, largest first, that a candidate's bar count is
 # measured against (matches the old planner's candidate-bar-count ladder)
 _RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
@@ -68,28 +64,40 @@ class Policy(ABC):
 class VocalCollisionPolicy(Policy):
     """Veto or penalize simultaneous outgoing/incoming vocal overlap inside the crossfade."""
 
+    collision_seconds_limit: float = COLLISION_SECONDS_LIMIT
+    weighted_collision_limit: float = WEIGHTED_COLLISION_LIMIT
+    weighted_penalty_scale: float = 20.0
+
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
         if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
             return Verdict.ok()
         metrics = candidate.metrics
         if (
-            metrics.collision_seconds >= COLLISION_SECONDS_LIMIT
-            or metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
+            metrics.collision_seconds >= self.collision_seconds_limit
+            or metrics.weighted_collision_seconds >= self.weighted_collision_limit
         ):
             return Verdict.veto("vocal collision exceeds the guard limit")
-        penalty = metrics.weighted_collision_seconds / WEIGHTED_COLLISION_LIMIT * 20.0
+        penalty = (
+            metrics.weighted_collision_seconds
+            / self.weighted_collision_limit
+            * self.weighted_penalty_scale
+        )
         return Verdict.ok(penalty)
 
 
 class VocalTruncationPolicy(Policy):
     """Veto a candidate that cuts off an audible outgoing vocal phrase."""
 
+    # An audible outgoing phrase cut by more than this many seconds reads as a
+    # truncation rather than an inaudible tail sliver
+    max_truncated_vocal: float = 0.25
+
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
         if ctx.vocal_out_scoring is None:
             return Verdict.ok()
-        if candidate.metrics.outgoing_vocal_fade_seconds > MAX_TRUNCATED_VOCAL:
+        if candidate.metrics.outgoing_vocal_fade_seconds > self.max_truncated_vocal:
             return Verdict.veto("truncates an audible outgoing vocal phrase")
         return Verdict.ok()
 
@@ -97,22 +105,25 @@ class VocalTruncationPolicy(Policy):
 class AudibleTrimPolicy(Policy):
     """Veto a short fade that trims more audible outgoing material than it spans, else penalize it."""
 
+    short_fade_seconds: float = SHORT_FADE_SECONDS
+    trim_penalty_per_second: float = 1.0
+
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
         plan = candidate.plan
         trim = candidate.metrics.audible_outgoing_trim
-        if plan.crossfade_duration <= SHORT_FADE_SECONDS and trim > plan.crossfade_duration:
+        if plan.crossfade_duration <= self.short_fade_seconds and trim > plan.crossfade_duration:
             return Verdict.veto("audible trim exceeds a short fade's own duration")
-        return Verdict.ok(trim * 1.0)
+        return Verdict.ok(trim * self.trim_penalty_per_second)
 
 
 class OverlapPreferencePolicy(Policy):
     """Prefer the tier's top rung, the context's chosen tier, and two-sided vocal relief."""
 
-    rung_penalty_per_step = 10.0
-    tier_penalty_per_step = 15.0
-    one_sided_incoming_penalty = 5.0
-    one_sided_outgoing_penalty = 12.0
+    rung_penalty_per_step: float = 10.0
+    tier_penalty_per_step: float = 15.0
+    one_sided_incoming_penalty: float = 5.0
+    one_sided_outgoing_penalty: float = 12.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
@@ -139,8 +150,8 @@ class OverlapPreferencePolicy(Policy):
 class AnchorAlignmentPolicy(Policy):
     """Prefer downbeat-anchored fades and groove-aligned incoming entries."""
 
-    downbeat_penalty = 4.0
-    entry_misalignment_penalty = 2.0
+    downbeat_penalty: float = 4.0
+    entry_misalignment_penalty: float = 2.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
