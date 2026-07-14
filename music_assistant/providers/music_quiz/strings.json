@@ -21,6 +21,12 @@
     "use_ai_distractors": {
       "label": "Enhance the Experience with AI",
       "description": "When enabled, the quiz uses a configured AI provider (such as Home Assistant, which provides LLM access) to enhance the experience — for example, generating more convincing fake answers for each round. Falls back to the built-in behavior when no AI provider is available."
+    },
+    "ai_available": {
+      "label": "An AI provider is available to Music Quiz."
+    },
+    "ai_unavailable": {
+      "label": "No AI provider is currently available to Music Quiz. Configure a compatible AI provider before enabling AI enhancements."
     }
   },
   "errors": {

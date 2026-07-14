@@ -206,7 +206,7 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
+    mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
@@ -219,12 +219,18 @@ async def get_config_entries(
     :param action: Optional action key called from config entries UI.
     :param values: The (intermediate) raw values for config entries sent with the action.
     """
+    ai_available = "trivia" in get_available_quiz_types(mass)
     return (
         ConfigEntry(
             key=CONF_USE_AI_DISTRACTORS,
             type=ConfigEntryType.BOOLEAN,
             required=False,
             default_value=False,
+            read_only=not ai_available,
+        ),
+        ConfigEntry(
+            key="ai_available" if ai_available else "ai_unavailable",
+            type=ConfigEntryType.LABEL if ai_available else ConfigEntryType.ALERT,
         ),
     )
 

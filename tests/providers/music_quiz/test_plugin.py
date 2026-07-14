@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProviderFeature,
     QueueOption,
 )
 from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
@@ -5219,14 +5220,31 @@ async def test_create_game_rejects_invalid_difficulty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_config_entries_only_exposes_provider_level_settings() -> None:
-    """Keep per-game playback choices out of provider configuration."""
+async def test_get_config_entries_reports_unavailable_ai() -> None:
+    """Disable AI enhancements and explain when no AI provider is available."""
     mass = MagicMock()
+    mass.get_providers_supporting_feature.return_value = []
 
     entries = await get_config_entries(mass)
 
-    assert [entry.key for entry in entries] == ["use_ai_distractors"]
+    assert [entry.key for entry in entries] == ["use_ai_distractors", "ai_unavailable"]
     ai_entry = entries[0]
     assert ai_entry.type == ConfigEntryType.BOOLEAN
     assert ai_entry.default_value is False
     assert ai_entry.required is False
+    assert ai_entry.read_only is True
+    assert entries[1].type == ConfigEntryType.ALERT
+    mass.get_providers_supporting_feature.assert_called_once_with(ProviderFeature.AI_QUERY)
+
+
+@pytest.mark.asyncio
+async def test_get_config_entries_reports_available_ai() -> None:
+    """Allow AI enhancements and confirm when an AI provider is available."""
+    mass = MagicMock()
+    mass.get_providers_supporting_feature.return_value = [MagicMock(spec=PluginProvider)]
+
+    entries = await get_config_entries(mass)
+
+    assert [entry.key for entry in entries] == ["use_ai_distractors", "ai_available"]
+    assert entries[0].read_only is False
+    assert entries[1].type == ConfigEntryType.LABEL
