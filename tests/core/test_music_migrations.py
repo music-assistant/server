@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_PLAYLOG
 from music_assistant.controllers.music import MusicController
 from music_assistant.helpers.database import DatabaseConnection
 
@@ -85,12 +86,14 @@ async def _create_legacy_playlog_table(database: DatabaseConnection) -> None:
     await database.commit()
 
 
-async def _run_migration(mass: MusicAssistant, database: DatabaseConnection) -> None:
+async def _run_migration(
+    mass: MusicAssistant, database: DatabaseConnection, prev_version: int = 41
+) -> None:
     """Run the library db migration against the given database."""
     await mass.cache._setup_database()
     controller = MusicController(mass)
     controller._database = database
-    await controller._MusicController__migrate_database(prev_version=41)  # type: ignore[attr-defined]
+    await controller._MusicController__migrate_database(prev_version=prev_version)  # type: ignore[attr-defined]
 
 
 async def test_migration_rebuilds_playlog_with_stale_unique_constraint(
@@ -155,3 +158,41 @@ async def test_migration_leaves_correct_playlog_untouched(
     assert (await database.get_rows_from_query(table_sql_query))[0]["sql"] == table_sql_before
     rows = await database.get_rows(DB_TABLE_PLAYLOG)
     assert len(rows) == 1
+
+
+async def test_migration_repairs_null_smart_fades_centroids(
+    mass_minimal: MusicAssistant,
+    database: DatabaseConnection,
+) -> None:
+    """Null spectral centroid values in legacy Smart Fades analysis rows become 0.0."""
+    await database.execute(
+        f"""CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [aa_provider_domain] TEXT NOT NULL,
+            [analysis_data] json NOT NULL)"""
+    )
+    rows = {
+        1: ("smart_fades", '{"spectral_centroid": [1.5, null, 2.5, null], "bpm": 120}'),
+        2: ("smart_fades", '{"spectral_centroid": [1.0, 2.0], "bpm": 100}'),
+        # null centroids from another analysis provider must not be touched
+        3: ("other_domain", '{"spectral_centroid": [null], "bpm": 100}'),
+        # a corrupt payload must not abort the migration
+        4: ("smart_fades", '{"spectral_centroid": [null'),
+    }
+    for row_id, (domain, analysis_data) in rows.items():
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} (id, aa_provider_domain, analysis_data) "
+            "VALUES (:id, :domain, :analysis_data)",
+            {"id": row_id, "domain": domain, "analysis_data": analysis_data},
+        )
+    await database.commit()
+
+    await _run_migration(mass_minimal, database, prev_version=42)
+
+    repaired = {
+        row["id"]: row["analysis_data"] for row in await database.get_rows(DB_TABLE_AUDIO_ANALYSIS)
+    }
+    assert json.loads(repaired[1]) == {"spectral_centroid": [1.5, 0.0, 2.5, 0.0], "bpm": 120}
+    # untouched rows must not be rewritten at all, hence the exact-string compare
+    for untouched_id in (2, 3, 4):
+        assert repaired[untouched_id] == rows[untouched_id][1]

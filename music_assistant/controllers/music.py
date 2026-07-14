@@ -122,7 +122,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 42
+DB_SCHEMA_VERSION: Final[int] = 43
 # tracks longer that this will not be included in radio mode
 RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60
 _DYNAMIC_RADIO_BASE_SAMPLE_SIZE: Final[int] = 5
@@ -3112,6 +3112,75 @@ class MusicController(CoreController):
                     f"FROM {DB_TABLE_PLAYLOG}_old WHERE userid IS NOT NULL"
                 )
                 await self.database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}_old")
+
+        if prev_version <= 42:
+            audio_analysis_table_exists = await self.database.get_rows_from_query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+                {"table_name": DB_TABLE_AUDIO_ANALYSIS},
+                limit=1,
+            )
+            if audio_analysis_table_exists:
+                # SQLite does not guarantee WHERE-term evaluation order, so a bare
+                # json_valid() term cannot reliably shield json_each()/json_type()
+                # from raising on malformed rows - guard their input directly instead
+                result = await self.database.execute(
+                    f"""WITH RECURSIVE
+                    null_centroids AS (
+                        SELECT
+                            aa.id,
+                            '$.spectral_centroid[' || centroid.key || ']' AS path,
+                            row_number() OVER (
+                                PARTITION BY aa.id
+                                ORDER BY CAST(centroid.key AS INTEGER)
+                            ) AS sequence
+                        FROM {DB_TABLE_AUDIO_ANALYSIS} AS aa,
+                            json_each(
+                                CASE WHEN json_valid(aa.analysis_data)
+                                    THEN aa.analysis_data END,
+                                '$.spectral_centroid'
+                            ) AS centroid
+                        WHERE aa.aa_provider_domain = :aa_provider_domain
+                            AND aa.analysis_data LIKE '%null%'
+                            AND json_type(
+                                CASE WHEN json_valid(aa.analysis_data)
+                                    THEN aa.analysis_data END,
+                                '$.spectral_centroid'
+                            ) = 'array'
+                            AND centroid.type = 'null'
+                    ),
+                    repaired(id, analysis_data, sequence) AS (
+                        SELECT aa.id, aa.analysis_data, 0
+                        FROM {DB_TABLE_AUDIO_ANALYSIS} AS aa
+                        WHERE aa.id IN (SELECT id FROM null_centroids)
+
+                        UNION ALL
+
+                        SELECT
+                            repaired.id,
+                            json_set(repaired.analysis_data, null_centroids.path, 0.0),
+                            null_centroids.sequence
+                        FROM repaired
+                        JOIN null_centroids
+                            ON null_centroids.id = repaired.id
+                            AND null_centroids.sequence = repaired.sequence + 1
+                    )
+                    UPDATE {DB_TABLE_AUDIO_ANALYSIS} AS aa
+                    SET analysis_data = (
+                        SELECT repaired.analysis_data
+                        FROM repaired
+                        WHERE repaired.id = aa.id
+                        ORDER BY repaired.sequence DESC
+                        LIMIT 1
+                    )
+                    WHERE aa.id IN (SELECT id FROM null_centroids)""",
+                    {"aa_provider_domain": "smart_fades"},
+                )
+                if result.rowcount:
+                    self.logger.info(
+                        "Repaired null spectral centroid values in %d Smart Fades "
+                        "audio analysis row(s)",
+                        result.rowcount,
+                    )
 
         # save changes
         await self.database.commit()
