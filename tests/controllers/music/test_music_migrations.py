@@ -10,6 +10,7 @@ from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLOG,
     DB_TABLE_SETTINGS,
@@ -276,6 +277,50 @@ async def test_migrate_database_backfills_external_id_lookup(
     )
     assert not old_indexes
     await music.database.close()
+
+
+async def test_migration_repairs_null_smart_fades_centroids(
+    database: DatabaseConnection,
+) -> None:
+    """Null spectral centroid values in legacy Smart Fades analysis rows become 0.0."""
+    await database.execute(
+        f"""CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [aa_provider_domain] TEXT NOT NULL,
+            [analysis_data] json NOT NULL)"""
+    )
+    rows = {
+        1: ("smart_fades", '{"spectral_centroid": [1.5, null, 2.5, null], "bpm": 120}'),
+        2: ("smart_fades", '{"spectral_centroid": [1.0, 2.0], "bpm": 100}'),
+        # null centroids from another analysis provider must not be touched
+        3: ("other_domain", '{"spectral_centroid": [null], "bpm": 100}'),
+        # a corrupt payload must not abort the migration
+        4: ("smart_fades", '{"spectral_centroid": [null'),
+    }
+    for row_id, (domain, analysis_data) in rows.items():
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} (id, aa_provider_domain, analysis_data) "
+            "VALUES (:id, :domain, :analysis_data)",
+            {"id": row_id, "domain": domain, "analysis_data": analysis_data},
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=52,
+        create_tables=AsyncMock(),
+    )
+
+    repaired = {
+        row["id"]: row["analysis_data"] for row in await database.get_rows(DB_TABLE_AUDIO_ANALYSIS)
+    }
+    assert repaired[1] == '{"spectral_centroid":[1.5,0.0,2.5,0.0],"bpm":120}'
+    for untouched_id in (2, 3, 4):
+        assert repaired[untouched_id] == rows[untouched_id][1]
 
 
 async def test_migration_populates_fts_tables(database: DatabaseConnection) -> None:

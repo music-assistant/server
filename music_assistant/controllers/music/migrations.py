@@ -809,6 +809,9 @@ async def migrate_database(  # noqa: PLR0915
             limit=1,
         )
         if audio_analysis_table_exists:
+            # SQLite does not guarantee WHERE-term evaluation order, so a bare
+            # json_valid() term cannot reliably shield json_each()/json_type()
+            # from raising on malformed rows - guard their input directly instead
             result = await database.execute(
                 f"""WITH RECURSIVE
                 null_centroids AS (
@@ -820,11 +823,18 @@ async def migrate_database(  # noqa: PLR0915
                             ORDER BY CAST(centroid.key AS INTEGER)
                         ) AS sequence
                     FROM {DB_TABLE_AUDIO_ANALYSIS} AS aa,
-                        json_each(aa.analysis_data, '$.spectral_centroid') AS centroid
+                        json_each(
+                            CASE WHEN json_valid(aa.analysis_data)
+                                THEN aa.analysis_data END,
+                            '$.spectral_centroid'
+                        ) AS centroid
                     WHERE aa.aa_provider_domain = :aa_provider_domain
-                        AND json_valid(aa.analysis_data)
                         AND aa.analysis_data LIKE '%null%'
-                        AND json_type(aa.analysis_data, '$.spectral_centroid') = 'array'
+                        AND json_type(
+                            CASE WHEN json_valid(aa.analysis_data)
+                                THEN aa.analysis_data END,
+                            '$.spectral_centroid'
+                        ) = 'array'
                         AND centroid.type = 'null'
                 ),
                 repaired(id, analysis_data, sequence) AS (
@@ -851,16 +861,14 @@ async def migrate_database(  # noqa: PLR0915
                     ORDER BY repaired.sequence DESC
                     LIMIT 1
                 )
-                WHERE aa.id IN (SELECT id FROM null_centroids)
-                RETURNING id""",
+                WHERE aa.id IN (SELECT id FROM null_centroids)""",
                 {"aa_provider_domain": "smart_fades"},
             )
-            repaired_rows = await result.fetchall()
-            if repaired_rows:
+            if result.rowcount:
                 logger.info(
                     "Repaired null spectral centroid values in %d Smart Fades "
                     "audio analysis row(s)",
-                    len(repaired_rows),
+                    result.rowcount,
                 )
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
