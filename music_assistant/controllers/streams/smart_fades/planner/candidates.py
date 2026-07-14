@@ -250,18 +250,29 @@ class ProtectiveAnchorGenerator(CandidateGenerator):
         anchor = _nearest_protective_anchor(ctx, target)
         ladder = bars_ladder(ctx, ctx.tier)
         ideal = ladder[0]
+        bar_seconds = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
         for bars in ladder:
+            # the old protection had two re-anchor triggers: cover the last
+            # vocal phrase, and close a short fade's audible-trim gap; emit
+            # both anchors so each stays reachable as a candidate
+            anchors = [anchor]
+            trim_target = ctx.audio_end - bars * bar_seconds
+            if trim_target > anchor:
+                trim_anchor = _nearest_protective_anchor(ctx, trim_target, prefer_earliest=False)
+                if trim_anchor not in anchors:
+                    anchors.append(trim_anchor)
             # entry options mirror the energy ladder so a protected anchor can
             # keep an aligned (or remediated) entry instead of forcing natural
-            for entry in _entry_options(ctx, bars):
-                yield CandidateSpec(
-                    tier=ctx.tier,
-                    bars=bars,
-                    anchor_s=anchor,
-                    entry_s=entry,
-                    source=self.name,
-                    ideal_bars=ideal,
-                )
+            for rung_anchor in anchors:
+                for entry in _entry_options(ctx, bars):
+                    yield CandidateSpec(
+                        tier=ctx.tier,
+                        bars=bars,
+                        anchor_s=rung_anchor,
+                        entry_s=entry,
+                        source=self.name,
+                        ideal_bars=ideal,
+                    )
 
 
 class VocalOnsetEntryGenerator(CandidateGenerator):

@@ -371,13 +371,33 @@ class TestProtectiveAnchorGenerator:
         specs = list(ProtectiveAnchorGenerator().generate(ctx))
 
         assert {s.bars for s in specs} == {8, 4, 2, 1}
-        assert {s.anchor_s for s in specs} == {32.0}
+        # every rung anchors at the vocal-end downbeat; short rungs add a
+        # trim-closing anchor near audio_end (asserted separately)
+        assert all(
+            any(s.anchor_s == 32.0 for s in specs if s.bars == bars) for bars in (8, 4, 2, 1)
+        )
         # entry options mirror the energy ladder EXACTLY, so a protected anchor
         # can keep an aligned entry instead of forcing the natural one
         for bars in (8, 4, 2, 1):
             emitted = {s.entry_s for s in specs if s.bars == bars}
             assert emitted == set(_entry_options(ctx, bars))
         assert all(s.ideal_bars == 8 for s in specs)
+
+    def test_emits_trim_closing_anchor_for_short_rungs(self) -> None:
+        """Short rungs also anchor near audio_end to close the audible-trim gap."""
+        ctx = _base_ctx(
+            vocal_out_placement=VocalMask(windows=[(0.0, 18.0)]),
+            protective_downbeats=(10.0, 20.0, 32.0, 40.0, 42.0, 44.0),
+            audio_end=45.0,
+        )
+        specs = list(ProtectiveAnchorGenerator().generate(ctx))
+
+        # 120 BPM 4/4 -> a 1-bar (2s) rung's trim-closing target is 43.0; the
+        # LAST qualifying downbeat closes the gap as tightly as possible
+        one_bar_anchors = {s.anchor_s for s in specs if s.bars == 1}
+        assert 44.0 in one_bar_anchors
+        # the vocal-end anchor stays available too
+        assert 20.0 in one_bar_anchors
 
     def test_falls_back_to_target_when_no_downbeat_qualifies(self) -> None:
         """No qualifying protective downbeat falls back to the (clamped) target itself."""
@@ -388,7 +408,7 @@ class TestProtectiveAnchorGenerator:
         )
         specs = list(ProtectiveAnchorGenerator().generate(ctx))
 
-        assert {s.anchor_s for s in specs} == {30.0}
+        assert 30.0 in {s.anchor_s for s in specs}
 
 
 class TestVocalOnsetEntryGenerator:
