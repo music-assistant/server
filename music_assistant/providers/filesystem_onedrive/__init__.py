@@ -1,4 +1,4 @@
-"""Google Drive filesystem provider for Music Assistant."""
+"""OneDrive filesystem provider for Music Assistant."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from .constants import (
     CONF_FOLDER_ID,
     CONF_REFRESH_TOKEN,
 )
-from .provider import GoogleDriveFileSystemProvider
+from .provider import OneDriveFileSystemProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -45,7 +45,7 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     # mass calls handle_async_init after setup returns; calling it here too
     # would register the stream route twice
-    return GoogleDriveFileSystemProvider(mass, manifest, config)
+    return OneDriveFileSystemProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -77,7 +77,7 @@ async def get_config_entries(
                 )
             )
         if not client_id or not client_secret:
-            raise LoginFailed("Enter the Google OAuth Client ID and Client Secret first")
+            raise LoginFailed("Enter the Microsoft OAuth Client ID and Client Secret first")
         values[CONF_REFRESH_TOKEN] = await authorize(
             mass, str(values["session_id"]), client_id, client_secret
         )
