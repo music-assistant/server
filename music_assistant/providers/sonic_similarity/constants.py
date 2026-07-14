@@ -51,6 +51,11 @@ RECOMMEND_ITEM_LIMIT: int = 12
 # Scales genre/year rerank bonus down to the audio-distance range so it nudges, not dominates.
 METADATA_BONUS_SCALE: float = 0.1
 
+# Cap on concurrent provider (network) lookups for scoring candidates that miss the
+# library bulk query. The common path is one bulk DB query per provider; only the rare
+# analyzed-but-unlibraried track falls here, so a small bound keeps its tail off the loop.
+PROVIDER_FALLBACK_CONCURRENCY: int = 5
+
 # Group weights match FEATURE_GROUPS in vectors.py; `genre`/`era` are rerank-only knobs.
 # Weights are deliberately non-uniform (tuned by per-group informativeness), not all 1.0.
 SIMILARITY_PRESETS: dict[str, dict[str, float]] = {

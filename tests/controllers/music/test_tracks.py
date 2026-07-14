@@ -76,3 +76,26 @@ async def test_explicit_filter_default_is_none(music: MusicController) -> None:
     with patch.object(music.tracks, "get_library_items_by_query", mock_query):
         await music.tracks.library_items(limit=10)
         assert not any("explicit" in part.lower() for part in captured_parts)
+
+
+@pytest.mark.asyncio
+async def test_by_prov_id_batches_item_ids_into_in_clause(music: MusicController) -> None:
+    """provider_item_ids builds a single parameterized IN (...) subquery."""
+    captured_parts: list[str] = []
+    captured_params: dict[str, Any] = {}
+
+    async def mock_query(*_args: Any, **kwargs: Any) -> list[Any]:
+        captured_parts.extend(kwargs.get("extra_query_parts", []))
+        captured_params.update(kwargs.get("extra_query_params", {}))
+        return []
+
+    with patch.object(music.tracks, "get_library_items_by_query", mock_query):
+        await music.tracks.get_library_items_by_prov_id(
+            provider_instance_id_or_domain="spotify",
+            provider_item_ids=["x", "y", "z"],
+        )
+
+    subquery = " ".join(captured_parts)
+    assert "provider_mappings.provider_item_id IN (:item_id_0, :item_id_1, :item_id_2)" in subquery
+    assert captured_params["prov_id"] == "spotify"
+    assert [captured_params[f"item_id_{i}"] for i in range(3)] == ["x", "y", "z"]
