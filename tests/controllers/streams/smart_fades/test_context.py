@@ -9,11 +9,13 @@ import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import TransitionTier
+from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.planner_pkg.context import (
     TransitionContext,
     build_transition_context,
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
+from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
 
 LOGGER = logging.getLogger(__name__)
 
@@ -93,3 +95,35 @@ def test_context_is_frozen() -> None:
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         context.buffer_duration = 999.0  # type: ignore[misc]
+
+
+def test_context_tier_folds_kick_anchor_like_the_old_planner() -> None:
+    """
+    A kick drop that shortens the anchored tail demotes the tier, matching the old planner.
+
+    The old planner folded the kick anchor into effective_end before masking
+    the downbeat grid its blendability check reads; the context must reproduce
+    that even though it keeps mix_out_anchor and kick_anchor as separate facts.
+    """
+
+    def env(value: float) -> np.ndarray:
+        return np.full(1800, value, dtype=np.float32)
+
+    t = np.linspace(0, 240.0, 1800)
+    low = env(1.0)
+    low[t >= 208.0] = 0.05  # kick dies at media 208 -> kick anchor at buffer-local 11
+    out = _analysis_with_bands(low, env(0.5), env(0.5), env(0.3))
+    rms = np.full(1800, 0.5, dtype=np.float32)
+    rms[t >= 225.0] = 0.2  # full-band mix-out at buffer-local ~30, audible to the end
+    out.rms_energy = rms.tolist()
+    inc = _analysis_with_bands(env(1.0), env(0.5), env(0.5), env(0.3))
+
+    context = _context(out, inc)
+
+    # both anchors are separate facts on the context...
+    assert context.kick_anchor == pytest.approx(11.0, abs=0.1)
+    assert context.mix_out_anchor == pytest.approx(29.0, abs=2.0)
+    # ...but the tier keys on the kick-folded window: only 6 downbeats fit
+    # before the kick anchor, so the tail is not blendable
+    assert context.tier is TransitionTier.QUICK_FADE
+    assert context.tier is SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0).tier

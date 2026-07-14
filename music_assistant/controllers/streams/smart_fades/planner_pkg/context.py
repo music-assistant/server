@@ -204,9 +204,15 @@ def build_transition_context(
     outgoing_profile = build_band_profile(fade_out_analysis)
     incoming_profile = build_band_profile(fade_in_analysis)
 
-    buffer_offset, audio_end, mix_out_anchor, kick_anchor, grid_beats, grid_downbeats = (
-        _cue_outgoing_tail(outgoing, outgoing_profile, buffer_duration)
-    )
+    (
+        buffer_offset,
+        audio_end,
+        tier_anchor,
+        mix_out_anchor,
+        kick_anchor,
+        grid_beats,
+        grid_downbeats,
+    ) = _cue_outgoing_tail(outgoing, outgoing_profile, buffer_duration)
     outgoing = replace(outgoing, beats=grid_beats, downbeats=grid_downbeats)
 
     # Extrapolated up to the true RMS-audible boundary rather than the (possibly
@@ -227,7 +233,10 @@ def build_transition_context(
         )
     )
 
-    cross_meter, tier = _choose_tier(outgoing, incoming, mix_out_anchor)
+    # the tier reads the kick-folded anchor (the old planner's effective_end),
+    # never the pure full-band mix_out_anchor: a kick-timed track's blendability
+    # window ends where its kick dies, exactly as the old masked grid did
+    cross_meter, tier = _choose_tier(outgoing, incoming, tier_anchor)
     bpm_diff_percent = _bpm_diff_percent(outgoing.bpm, incoming.bpm)
 
     # fade detection is a per-transition fact regardless of which anchor a
@@ -256,7 +265,7 @@ def build_transition_context(
         vocal_out_placement,
         fade_onset_media,
         buffer_offset,
-        mix_out_anchor,
+        tier_anchor,
         fade_out_analysis.duration or 0.0,
     )
 
@@ -294,16 +303,22 @@ def build_transition_context(
 
 def _cue_outgoing_tail(
     outgoing: Deck, outgoing_profile: BandProfile | None, buffer_duration: float
-) -> tuple[float, float, float, float | None, npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+) -> tuple[
+    float, float, float, float, float | None, npt.NDArray[np.float32], npt.NDArray[np.float32]
+]:
     """
     Anchor the outgoing tail at its energy mix-out point, snapped to a downbeat.
 
-    Returns ``(buffer_offset, audio_end, mix_out_anchor, kick_anchor, grid_beats,
-    grid_downbeats)``. The kick (low-band) anchor is computed alongside but
-    never folds into ``mix_out_anchor`` - which one a candidate should start
-    from is a candidate-factory decision. ``grid_beats``/``grid_downbeats`` are
-    the unmasked (only dropping pre-buffer beats) buffer-local grids, for a
-    later candidate to mask to whichever anchor it picks.
+    Returns ``(buffer_offset, audio_end, tier_anchor, mix_out_anchor,
+    kick_anchor, grid_beats, grid_downbeats)``. ``tier_anchor`` is the
+    kick-FOLDED anchor the old planner called ``effective_end``: applicability
+    and the tier decision key on it, so a kick-timed track keeps its original
+    (shorter) blendability window. ``mix_out_anchor`` (pure full-band) and
+    ``kick_anchor`` (low-band, ``None`` if ineligible) stay separate facts -
+    which one a candidate should start from is a candidate-factory decision.
+    ``grid_beats``/``grid_downbeats`` are the unmasked (only dropping
+    pre-buffer beats) buffer-local grids, for a later candidate to mask to
+    whichever anchor it picks.
     """
     # ACTUAL buffer length, not the constant 45s: the holdback yield loop leaves
     # up to ~1s less depending on chunk boundaries, and every buffer-local
@@ -322,11 +337,13 @@ def _cue_outgoing_tail(
     )
     kick_anchor = _apply_low_mix_out(outgoing, outgoing_profile, raw_mix_out, buffer_offset)
 
-    mix_out_anchor = min(silence_end, raw_mix_out)
-    if mix_out_anchor < MIN_EFFECTIVE_FADE_BUFFER:
-        raise SmartFadeNotApplicable(
-            f"outgoing tail is mostly silent ({mix_out_anchor:.1f}s audible)"
-        )
+    # the old planner folded the kick anchor into effective_end BEFORE snapping
+    # and masking the grids, so applicability and the blendability window (and
+    # thus the tier) are kick-aware; the fold stays tier-decision-local here
+    folded_mix_out = kick_anchor if kick_anchor is not None else raw_mix_out
+    tier_anchor = min(silence_end, folded_mix_out)
+    if tier_anchor < MIN_EFFECTIVE_FADE_BUFFER:
+        raise SmartFadeNotApplicable(f"outgoing tail is mostly silent ({tier_anchor:.1f}s audible)")
 
     # Shift fade-out beats from full-track to buffer-local coordinates
     beats = outgoing.beats - buffer_offset
@@ -341,25 +358,48 @@ def _cue_outgoing_tail(
     # may extend the (about to be downbeat-snapped) anchor back up to, never past
     audio_end = min(silence_end, buffer_duration)
 
+    tier_anchor = _snap_anchor(tier_anchor, buffer_duration, grid_downbeats, outgoing)
+    if tier_anchor < MIN_EFFECTIVE_FADE_BUFFER:
+        raise SmartFadeNotApplicable(
+            f"outgoing tail too short after anchoring ({tier_anchor:.1f}s)"
+        )
+    mix_out_anchor = (
+        tier_anchor
+        if kick_anchor is None
+        else _snap_anchor(min(silence_end, raw_mix_out), buffer_duration, grid_downbeats, outgoing)
+    )
+
+    return (
+        buffer_offset,
+        audio_end,
+        tier_anchor,
+        mix_out_anchor,
+        kick_anchor,
+        grid_beats,
+        grid_downbeats,
+    )
+
+
+def _snap_anchor(
+    anchor: float,
+    buffer_duration: float,
+    grid_downbeats: npt.NDArray[np.float32],
+    outgoing: Deck,
+) -> float:
+    """Snap a tail anchor back to the last real downbeat within ~2 bars, or to the buffer end."""
     # Sub-half-second slack is not worth trimming: RMS bin granularity is
     # ~0.1-0.2s for typical track lengths, so finer precision is illusory
-    if mix_out_anchor >= buffer_duration - 0.5:
+    if anchor >= buffer_duration - 0.5:
         # Without the trim the rendered stream still ends at buffer_duration,
         # so the anchor must follow it or every schedule lands early
-        mix_out_anchor = buffer_duration
-    else:
-        # Snap the anchor back to the last real downbeat within ~2 bars so the
-        # crossfade ends cleanly on the 1 rather than at an arbitrary RMS bin edge
-        bar_seconds = outgoing.beats_per_bar * 60.0 / outgoing.bpm
-        in_window = grid_downbeats[grid_downbeats <= mix_out_anchor]
-        if len(in_window) and mix_out_anchor - float(in_window[-1]) < 2 * bar_seconds:
-            mix_out_anchor = float(in_window[-1])
-        if mix_out_anchor < MIN_EFFECTIVE_FADE_BUFFER:
-            raise SmartFadeNotApplicable(
-                f"outgoing tail too short after anchoring ({mix_out_anchor:.1f}s)"
-            )
-
-    return buffer_offset, audio_end, mix_out_anchor, kick_anchor, grid_beats, grid_downbeats
+        return buffer_duration
+    # Snap the anchor back to the last real downbeat within ~2 bars so the
+    # crossfade ends cleanly on the 1 rather than at an arbitrary RMS bin edge
+    bar_seconds = outgoing.beats_per_bar * 60.0 / outgoing.bpm
+    in_window = grid_downbeats[grid_downbeats <= anchor]
+    if len(in_window) and anchor - float(in_window[-1]) < 2 * bar_seconds:
+        return float(in_window[-1])
+    return anchor
 
 
 def _apply_low_mix_out(
@@ -504,14 +544,14 @@ def _build_incoming_mask(
 def _choose_tier(
     outgoing: Deck,
     incoming: Deck,
-    mix_out_anchor: float,
+    tier_anchor: float,
 ) -> tuple[bool, TransitionTier]:
     """Pick the transition tier; anything that casts doubt on a long blend picks a shorter one."""
     cross_meter = outgoing.beats_per_bar != incoming.beats_per_bar
     if cross_meter:
         # no shared bar grid to beatmatch or blend across
         return cross_meter, TransitionTier.QUICK_FADE
-    anchored_downbeats = outgoing.downbeats[outgoing.downbeats <= mix_out_anchor]
+    anchored_downbeats = outgoing.downbeats[outgoing.downbeats <= tier_anchor]
     if not _tail_is_blendable(anchored_downbeats):
         return cross_meter, TransitionTier.QUICK_FADE
     if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > time_stretch_bpm_percentage_threshold:
@@ -548,7 +588,7 @@ def _detect_coda_zone(
     vocal_out_placement: VocalMask | None,
     fade_onset_media: float | None,
     buffer_offset: float,
-    mix_out_anchor: float,
+    tier_anchor: float,
     duration: float,
 ) -> CodaZone | None:
     """Detect a validated outro/coda zone over the buffered tail, if any."""
@@ -561,7 +601,7 @@ def _detect_coda_zone(
         # a saturated (near-continuous vocal) outro supplies no fine structure
         # to distinguish a coda from the rest of the track
         return None
-    earliest = _coda_earliest(outgoing, outgoing_profile, media_out, buffer_offset, mix_out_anchor)
+    earliest = _coda_earliest(outgoing, outgoing_profile, media_out, buffer_offset, tier_anchor)
     return detect_coda_zone(
         outgoing_profile,
         media_out,
@@ -581,7 +621,7 @@ def _coda_earliest(
     outgoing_profile: BandProfile | None,
     media_out: VocalMask,
     buffer_offset: float,
-    mix_out_anchor: float,
+    tier_anchor: float,
 ) -> float:
     """Media time before which no coda bar may start: past A's vocal and its kick."""
     lead_end = media_out.last_end()
@@ -594,7 +634,7 @@ def _coda_earliest(
             # begins after that bar rings out
             kick_end += outgoing.beats_per_bar * 60.0 / outgoing.bpm
     if kick_end is None:
-        kick_end = buffer_offset + mix_out_anchor
+        kick_end = buffer_offset + tier_anchor
     return max(lead_end, kick_end)
 
 
