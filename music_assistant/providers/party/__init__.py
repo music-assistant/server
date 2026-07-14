@@ -453,17 +453,19 @@ class PartyPlugin(PluginProvider):
         )
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "party/listen_in", self.listen_in, required_scope=Scope.QUEUES_CONTROL
+                "party/listen_in", self.listen_in, required_scope=Scope.PLAYERS_CONTROL
             )
         )
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "party/stop_listen_in", self.stop_listen_in, required_scope=Scope.QUEUES_CONTROL
+                "party/stop_listen_in",
+                self.stop_listen_in,
+                required_scope=Scope.PLAYERS_CONTROL,
             )
         )
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "party/can_listen_in", self.can_listen_in, required_scope=Scope.QUEUES_CONTROL
+                "party/can_listen_in", self.can_listen_in, required_scope=Scope.PLAYERS_CONTROL
             )
         )
 

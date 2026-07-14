@@ -172,3 +172,6 @@ async def test_guest_readable_commands_use_guest_scope() -> None:
     }
     assert scopes["party/url"] == Scope.PROVIDERS_READ
     assert scopes["party/config"] == Scope.PROVIDERS_READ
+    assert scopes["party/listen_in"] == Scope.PLAYERS_CONTROL
+    assert scopes["party/stop_listen_in"] == Scope.PLAYERS_CONTROL
+    assert scopes["party/can_listen_in"] == Scope.PLAYERS_CONTROL

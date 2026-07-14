@@ -270,8 +270,7 @@ class MusicQuizPlugin(PluginProvider):
             self._unregister_handles.append(
                 self.mass.register_api_command(command, handler, required_scope=Scope.USERS_INVITE)
             )
-        # guest game commands: any authenticated user passes the API layer,
-        # the handlers themselves validate the caller is the quiz guest user
+        # Participant game commands are available to any authenticated user.
         guest_commands: tuple[tuple[str, _ApiHandler], ...] = (
             ("music_quiz/info", self.get_game_info),
             ("music_quiz/join", self.join_game),
