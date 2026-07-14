@@ -1298,16 +1298,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         if collapse_collections:
             items: list[ItemCls | MediaCollection[ItemCls]] = []
+
+            def _parse_method(x: str) -> ItemCls:
+                if summary:
+                    return cast("ItemCls", self._parse_summary_row(json_loads(x)))
+                return cast(
+                    "ItemCls",
+                    self.item_cls.from_dict(self._parse_db_row(json_loads(x))),
+                )
+
             for db_row in db_rows:
                 if db_row["type"] == "single":
-                    items.append(
-                        cast(
-                            "ItemCls",
-                            self.item_cls.from_dict(
-                                self._parse_db_row(json_loads(db_row["media_data"]))
-                            ),
-                        )
-                    )
+                    items.append(_parse_method(db_row["media_data"]))
                 elif db_row["type"] == "collection":
                     items.append(
                         MediaCollection[ItemCls](
@@ -1316,13 +1318,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                             provider="library",
                             provider_mappings=set(),
                             items=UniqueList(
-                                [
-                                    cast(
-                                        "ItemCls",
-                                        self.item_cls.from_dict(self._parse_db_row(json_loads(x))),
-                                    )
-                                    for x in json_loads(db_row["media_data"])
-                                ]
+                                [_parse_method(x) for x in json_loads(db_row["media_data"])]
                             ),
                         )
                     )
