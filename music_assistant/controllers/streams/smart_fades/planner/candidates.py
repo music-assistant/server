@@ -70,6 +70,8 @@ instrumental_duty_max: float = 0.05
 tempo_blend_bars: int = 8
 # QUICK_FADE bars by BPM incompatibility: (max diff %, bars); beyond -> 1 bar
 quick_fade_ladder: tuple[tuple[float, int], ...] = ((12.0, 4), (20.0, 2))
+# phrase-aligned rung set every ladder walks, largest first
+RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
 
 # Deep-trim guard: a bar is protected when its low band is silent but its
 # voice/melody bands are active (cutting there beheads a sung intro)
@@ -130,7 +132,7 @@ def bars_ladder(ctx: TransitionContext, tier: TransitionTier) -> list[int]:
         ideal = instrumental_blend_bars
     else:
         ideal = full_blend_bars
-    return [bars for bars in (16, 8, 4, 2, 1) if bars <= ideal]
+    return [bars for bars in RUNG_LADDER if bars <= ideal]
 
 
 class CandidateGenerator(ABC):
@@ -334,7 +336,13 @@ class CandidateFactory:
         # requested bar count still reflects the old tier, so cap it at the new
         # tier's largest rung or a long overlap ships without its tempo ramp
         _, tier = choose_tier(self._ctx.outgoing, self._ctx.incoming, tail.effective_end)
-        bars = min(spec.bars, bars_ladder(self._ctx, tier)[0])
+        bars_cap = bars_ladder(self._ctx, tier)[0]
+        if spec.one_sided_vocal is not None and tier is TransitionTier.FULL_BLEND:
+            # the one-sided relaxation's ceiling is declared by its generator
+            # (panel-reviewed 16-bar rung); the ladder alone only grants 16
+            # to both-instrumental pairs
+            bars_cap = max(bars_cap, instrumental_blend_bars)
+        bars = min(spec.bars, bars_cap)
 
         fadein_start_pos = (
             spec.entry_s if spec.entry_s is not None else self._choose_fadein_entry(tail, bars)

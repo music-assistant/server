@@ -11,7 +11,6 @@ collides with the incoming track's vocal.
 from __future__ import annotations
 
 from dataclasses import replace
-from dataclasses import replace as replace_spec
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.bands import (
@@ -123,7 +122,12 @@ class PlanAssembler:
         never needs it); this is where the bass/mid/high handover for the
         selected winner is computed and folded in.
         """
-        return replace(candidate.plan, eq_plan=self._choose_eq(candidate.plan))
+        # the winner's metrics ride along: consumers read them off the plan
+        return replace(
+            candidate.plan,
+            eq_plan=self._choose_eq(candidate.plan),
+            metrics=candidate.metrics,
+        )
 
     def _choose_eq(self, plan: TransitionPlan) -> EqPlan:
         """Plan the low/mid/high EQ handover, centered on the swap point."""
@@ -580,7 +584,7 @@ class EmergencyHandoffFactory:
                 target = max(target, ctx.audio_end - plan0.crossfade_duration)
             target = min(target, ctx.audio_end)
             anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=vocal_would_be_cut)
-            spec = replace_spec(base_spec, anchor_s=anchor)
+            spec = replace(base_spec, anchor_s=anchor)
             rebuilt = self._factory.build(spec)
             assert rebuilt is not None  # the 1-bar rung always yields a candidate
             candidate = rebuilt

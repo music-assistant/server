@@ -12,6 +12,7 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CandidateFactory,
     CandidateSpec,
     bars_ladder,
+    default_generators,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
@@ -200,3 +201,37 @@ class TestFactoryMetrics:
         candidate = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 1))
         assert candidate is not None
         assert candidate.ideal_bars == 1
+
+
+class TestOneSidedSixteenBarCap:
+    """The factory honors the one-sided relaxation's 16-bar ceiling."""
+
+    def test_one_sided_spec_builds_at_sixteen_bars(self) -> None:
+        """A confirmed one-sided 16-bar spec must not be capped back to the ladder's 8."""
+        # outgoing sings in its audible tail (media ~200-215s of 240s)
+        vocal = [0.0] * 1800
+        for i in range(1500, 1612):
+            vocal[i] = 0.9
+        out = _analysis(120.0, duration=240.0)
+        out.extra_data = {"vocal_activity": vocal}
+        # incoming is instrumental with a quiet-mid intro, so the mid-band
+        # RMS cross-check confirms its claim over the first 45s
+        mid = np.full(1800, 1.0, dtype=np.float32)
+        mid[:360] = 0.05
+        inc = _analysis_with_bands(1.0, 0.3, mid, 0.3, duration=240.0)
+        inc.extra_data["vocal_activity"] = [0.0] * 1800
+
+        ctx = _ctx(out, inc)
+        specs = [
+            s
+            for g in default_generators()
+            for s in g.generate(ctx)
+            if s.one_sided_vocal is not None
+        ]
+        assert specs, "fixture must earn the one-sided 16-bar rung"
+        candidate = CandidateFactory(ctx, LOGGER).build(specs[0])
+
+        assert candidate is not None
+        assert candidate.spec.bars == 16
+        bar = 4 * 60.0 / 120.0
+        assert round(candidate.plan.crossfade_duration / bar) >= 12

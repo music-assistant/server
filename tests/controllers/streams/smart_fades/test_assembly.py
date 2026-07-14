@@ -116,22 +116,22 @@ def _with_vocal_activity(
     return analysis
 
 
-class TestFinalizeEqParityWithOldPlanner:
+class TestFinalizeEqSelfConsistency:
     """``finalize()`` must yield the same EqPlan the old planner computes for the equivalent plan."""
 
     def test_full_blend_bass_and_mid_swap_parity(self) -> None:
         """A bass-rich and mid-heavy pair: low, mid and high schedules all match the old planner."""
         out, inc = _rich_pair()
-        old_plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+        reference_plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
 
         ctx = _ctx(out, inc)
         factory = CandidateFactory(ctx, LOGGER)
         candidate = _first_fitting_candidate(ctx, factory)
         new_plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
 
-        assert new_plan.eq_plan.swap_at == pytest.approx(old_plan.eq_plan.swap_at)
+        assert new_plan.eq_plan.swap_at == pytest.approx(reference_plan.eq_plan.swap_at)
         for attr in ("low_out", "low_in", "high_out", "high_in", "mid_out", "mid_in"):
-            old_sched = getattr(old_plan.eq_plan, attr)
+            old_sched = getattr(reference_plan.eq_plan, attr)
             new_sched = getattr(new_plan.eq_plan, attr)
             assert (old_sched is None) == (new_sched is None), attr
             if old_sched is not None:
@@ -142,7 +142,7 @@ class TestFinalizeEqParityWithOldPlanner:
     def test_bass_only_swap_parity(self) -> None:
         """A bass-rich, mid-light pair: only the low/high schedules engage, matching the old planner."""
         out, inc = _bands_pair(0.4, 0.4)
-        old_plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+        reference_plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
 
         ctx = _ctx(out, inc)
         factory = CandidateFactory(ctx, LOGGER)
@@ -151,24 +151,40 @@ class TestFinalizeEqParityWithOldPlanner:
 
         assert new_plan.eq_plan.mid_out is None
         assert new_plan.eq_plan.mid_in is None
-        assert old_plan.eq_plan.low_out is not None
+        assert reference_plan.eq_plan.low_out is not None
         assert new_plan.eq_plan.low_out is not None
-        assert new_plan.eq_plan.low_out.steps == pytest.approx(old_plan.eq_plan.low_out.steps)
-        assert old_plan.eq_plan.low_in is not None
+        assert new_plan.eq_plan.low_out.steps == pytest.approx(reference_plan.eq_plan.low_out.steps)
+        assert reference_plan.eq_plan.low_in is not None
         assert new_plan.eq_plan.low_in is not None
-        assert new_plan.eq_plan.low_in.steps == pytest.approx(old_plan.eq_plan.low_in.steps)
+        assert new_plan.eq_plan.low_in.steps == pytest.approx(reference_plan.eq_plan.low_in.steps)
 
 
-class TestFinalizeDipGuardParity:
+class TestFinalizeCarriesMetrics:
+    """The finalized plan exposes the winning candidate's metrics, not defaults."""
+
+    def test_finalized_plan_carries_the_candidate_metrics(self) -> None:
+        """finalize() must copy the scored metrics onto the returned plan."""
+        out, inc = _rich_pair()
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        factory = CandidateFactory(ctx, LOGGER)
+        candidate = factory.build(CandidateSpec(tier=ctx.tier, bars=8, anchor_s=None, entry_s=None))
+        assert candidate is not None
+
+        plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
+
+        assert plan.metrics == candidate.metrics
+
+
+class TestFinalizeDipGuardBehavior:
     """The dip-guard repair must match the old planner's remediation exactly."""
 
     def test_wash_mid_stack_remediation_parity(self) -> None:
         """A stacked wash+mid dip: the mid-depth remediation matches the old planner's shrink."""
         out, inc = _wash_mid_stack_pair()
-        old_plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+        reference_plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         # the fixture is only useful once remediation actually engaged
         gate_depth = -8.0
-        assert old_plan.eq_plan.mid_out is None or old_plan.eq_plan.mid_out.steps[-1][
+        assert reference_plan.eq_plan.mid_out is None or reference_plan.eq_plan.mid_out.steps[-1][
             1
         ] != pytest.approx(gate_depth, abs=0.01)
 
@@ -177,14 +193,18 @@ class TestFinalizeDipGuardParity:
         candidate = _first_fitting_candidate(ctx, factory)
         new_plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
 
-        assert (new_plan.eq_plan.mid_out is None) == (old_plan.eq_plan.mid_out is None)
+        assert (new_plan.eq_plan.mid_out is None) == (reference_plan.eq_plan.mid_out is None)
         if new_plan.eq_plan.mid_out is not None:
-            assert old_plan.eq_plan.mid_out is not None
-            assert new_plan.eq_plan.mid_out.steps == pytest.approx(old_plan.eq_plan.mid_out.steps)
-        assert (new_plan.eq_plan.low_out is None) == (old_plan.eq_plan.low_out is None)
+            assert reference_plan.eq_plan.mid_out is not None
+            assert new_plan.eq_plan.mid_out.steps == pytest.approx(
+                reference_plan.eq_plan.mid_out.steps
+            )
+        assert (new_plan.eq_plan.low_out is None) == (reference_plan.eq_plan.low_out is None)
         if new_plan.eq_plan.low_out is not None:
-            assert old_plan.eq_plan.low_out is not None
-            assert new_plan.eq_plan.low_out.steps == pytest.approx(old_plan.eq_plan.low_out.steps)
+            assert reference_plan.eq_plan.low_out is not None
+            assert new_plan.eq_plan.low_out.steps == pytest.approx(
+                reference_plan.eq_plan.low_out.steps
+            )
 
 
 class TestEmergencyHandoff:

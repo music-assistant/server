@@ -20,12 +20,11 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     WEIGHTED_COLLISION_LIMIT,
 )
 
-from .candidates import Candidate
+from .candidates import RUNG_LADDER, Candidate, VocalOnsetEntryGenerator
 from .context import TransitionContext
 
 # The tier ladder's rungs, largest first, that a candidate's bar count is
 # measured against (matches the old planner's candidate-bar-count ladder)
-_RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
 # Ambition ordering of the transition tiers, most ambitious first
 _TIER_ORDER: tuple[TransitionTier, ...] = (
     TransitionTier.FULL_BLEND,
@@ -153,7 +152,7 @@ class OverlapPreferencePolicy(Policy):
     @staticmethod
     def _rung_gap(bars: int, ideal_bars: int) -> int:
         """Ladder-index distance of ``bars`` below ``ideal_bars`` in the (16,8,4,2,1) ladder."""
-        return _RUNG_LADDER.index(bars) - _RUNG_LADDER.index(ideal_bars)
+        return RUNG_LADDER.index(bars) - RUNG_LADDER.index(ideal_bars)
 
     @staticmethod
     def _tier_step(spec_tier: TransitionTier, ctx_tier: TransitionTier) -> int:
@@ -175,7 +174,7 @@ class AnchorAlignmentPolicy(Policy):
         spec = candidate.spec
         # a generator-pinned entry counts as groove-aligned only when the
         # generator itself already lands it on the vocal onset
-        if spec.entry_s is not None and spec.source != "vocal-onset-entry":
+        if spec.entry_s is not None and spec.source != VocalOnsetEntryGenerator.name:
             penalty += self.entry_misalignment_penalty
         return Verdict.ok(penalty)
 

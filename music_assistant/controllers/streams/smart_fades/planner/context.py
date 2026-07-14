@@ -134,6 +134,8 @@ class TransitionContext:
     # effective_end): the tier keyed on it, and it is where a candidate with
     # no explicit anchor cues the tail
     default_anchor: float
+    # the pure full-band mix-out anchor, kept as a diagnostic fact only: no
+    # generator anchors here (a full-band variant would defeat the kick fold)
     mix_out_anchor: float | None
     kick_anchor: float | None
     fade_onset: float | None

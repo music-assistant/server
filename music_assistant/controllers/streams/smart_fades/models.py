@@ -247,11 +247,12 @@ class TransitionStrategy(StrEnum):
 @dataclass(frozen=True, slots=True)
 class PlanMetrics:
     """
-    Vocal-aware plan telemetry; every field defaults to its energy-only value.
+    Per-plan telemetry; every field defaults to its energy-only value.
 
-    Populated only when both tracks carry a validated FireRed vocal-activity
-    timeline; an energy-only plan (vocal data absent/invalid) keeps these
-    defaults untouched.
+    The trim and downbeat facts are populated on every plan; the vocal fields
+    (collision, retained vocal time) additionally need both tracks to carry a
+    validated FireRed vocal-activity timeline and keep their defaults on an
+    energy-only plan.
     """
 
     strategy: TransitionStrategy = TransitionStrategy.ENERGY_ALIGNED

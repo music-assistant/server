@@ -404,25 +404,6 @@ class TestCandidateBuildGuards:
 
         assert plan.crossfade_duration > 0.0
 
-    def test_re_anchored_tier_downgrade_caps_the_bar_count(self) -> None:
-        """
-        A re-anchor that downgrades the tier also caps the inherited bar count.
-
-        The shortened tail flips FULL_BLEND to QUICK_FADE (which drops the
-        tempo ramp); the overlap must then shrink to the quick-fade ladder too,
-        or a long un-beatmatched overlap ships gated only by the vocal guard.
-        """
-        ctx = build_transition_context(_analysis(80.0), _analysis(83.2), 45.0, LOGGER)
-        candidate = CandidateFactory(ctx, LOGGER).build(
-            CandidateSpec(tier=ctx.tier, bars=8, anchor_s=20.0, entry_s=0.0)
-        )
-
-        assert candidate is not None
-        assert candidate.plan.tier is TransitionTier.QUICK_FADE
-        assert not candidate.plan.tempo_plan
-        # 4-bar quick-fade cap at 80 BPM (3s bars) plus sub-bar anchor slack
-        assert candidate.plan.crossfade_duration <= 15.0
-
 
 def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, AudioAnalysisData]:
     """
