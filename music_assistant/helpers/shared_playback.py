@@ -27,7 +27,11 @@ from functools import partial
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlayerFeature
-from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedFeaturedException,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -186,6 +190,42 @@ class SharedPlaybackSession:
             )
         await self.mass.players.cmd_set_members(self._player_id, player_ids_to_add=[web_player_id])
         self._guest_listeners.add(web_player_id)
+
+    async def restore_guest_listeners(self) -> None:
+        """
+        Restore tracked guest listeners missing from the host player's group.
+
+        Missing or temporarily incompatible guest players remain tracked so a
+        later playback transition can restore them after they reconnect.
+        """
+        host_player = self._get_host_player()
+        if host_player is None or not self._guest_listeners:
+            return
+        group_members = set(host_player.state.group_members)
+        for web_player_id in sorted(self._guest_listeners):
+            if web_player_id in group_members:
+                continue
+            guest_player = self.mass.players.get_player(web_player_id)
+            if (
+                guest_player is None
+                or not guest_player.state.available
+                or not self.can_listen_in(web_player_id)
+            ):
+                continue
+            try:
+                await self.mass.players.cmd_set_members(
+                    self._player_id,
+                    player_ids_to_add=[web_player_id],
+                )
+            except MusicAssistantError as err:
+                LOGGER.warning(
+                    "Could not restore guest listener %s to shared playback session %s: %s",
+                    web_player_id,
+                    self._player_id,
+                    err,
+                )
+                continue
+            group_members.add(web_player_id)
 
     async def remove_guest_listener(self, web_player_id: str) -> None:
         """

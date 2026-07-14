@@ -49,31 +49,32 @@ class AppleMusicRecommendationManager:
 
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Retrieve a dynamic list of tracks based on the provided item."""
-        # Apple Music only provides ~2 tracks per call, cap at 6 to avoid flooding the API.
-        limit = min(limit, 6)
+        """
+        Retrieve tracks similar to the provided track.
+
+        :param prov_track_id: The Apple Music track ID.
+        :param limit: Maximum number of tracks to return.
+        """
+        if limit <= 0:
+            return []
         endpoint = f"me/stations/next-tracks/ra.{prov_track_id}"
-        found_tracks: list[Track] = []
-        while len(found_tracks) < limit:
-            try:
-                response = await self.api.post_data(endpoint, include="artists")
-            except ClientResponseError as err:
-                if err.status == 500:
-                    self.logger.debug(
-                        "Similar tracks unavailable for %s (%s)", prov_track_id, endpoint
-                    )
-                    break
-                raise
-            if not response or not response.get("data"):
-                break
-            track_ids = [track["id"] for track in response["data"] if track and track["id"]]
-            rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
-            for track in response["data"]:
-                if track and track["id"]:
-                    found_tracks.append(
-                        parse_track(self.provider, track, rating_response.get(track["id"]))
-                    )
-        return found_tracks
+        try:
+            response = await self.api.post_data(endpoint, include="artists")
+        except ClientResponseError as err:
+            if err.status == 500:
+                self.logger.debug("Similar tracks unavailable for %s (%s)", prov_track_id, endpoint)
+                return []
+            raise
+        if not response:
+            return []
+        tracks = [track for track in response.get("data", []) if track and track.get("id")][:limit]
+        if not tracks:
+            return []
+        track_ids = [track["id"] for track in tracks]
+        rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
+        return [
+            parse_track(self.provider, track, rating_response.get(track["id"])) for track in tracks
+        ]
 
     @use_cache(3600 * 24)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:

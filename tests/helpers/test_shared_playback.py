@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -59,6 +59,17 @@ def _create_venue_player(
     player.state.can_group_with = can_group_with or set()
     player.state.group_members = group_members or []
     return player
+
+
+async def _wait_for(condition: Callable[[], bool], timeout: float = 5.0) -> None:
+    """Wait until the given condition returns true."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if condition():
+            return
+        await asyncio.sleep(0.05)
+    raise TimeoutError("Condition not met within timeout")
 
 
 # ==================== VENUE mode ====================
@@ -128,6 +139,75 @@ async def test_venue_add_and_remove_guest_listener() -> None:
     )
 
 
+async def test_venue_restores_remembered_listener_only_when_missing() -> None:
+    """Restore a tracked listener after its actual group membership disappears."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    guest_player = MagicMock()
+    mass = _create_mock_mass(venue_player)
+    mass.players.get_player.side_effect = lambda player_id: (
+        venue_player if player_id == "venue_player" else guest_player
+    )
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+    await session.add_guest_listener("web_player_1")
+    venue_player.state.group_members = ["venue_player", "web_player_1"]
+    mass.players.cmd_set_members.reset_mock()
+
+    await session.restore_guest_listeners()
+    mass.players.cmd_set_members.assert_not_awaited()
+
+    venue_player.state.group_members = ["venue_player"]
+    await session.restore_guest_listeners()
+
+    mass.players.cmd_set_members.assert_awaited_once_with(
+        "venue_player", player_ids_to_add=["web_player_1"]
+    )
+    assert session._guest_listeners == {"web_player_1"}
+
+
+async def test_venue_restore_skips_disappeared_listener() -> None:
+    """Keep a missing listener remembered without blocking playback restoration."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    guest_player = MagicMock()
+    mass = _create_mock_mass(venue_player)
+    players = {
+        "venue_player": venue_player,
+        "web_player_1": guest_player,
+    }
+    mass.players.get_player.side_effect = players.get
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+    await session.add_guest_listener("web_player_1")
+    mass.players.cmd_set_members.reset_mock()
+    players.pop("web_player_1")
+
+    await session.restore_guest_listeners()
+
+    mass.players.cmd_set_members.assert_not_awaited()
+    assert session._guest_listeners == {"web_player_1"}
+
+
+async def test_venue_restore_failure_does_not_block_playback() -> None:
+    """Keep listener restoration best-effort when grouping temporarily fails."""
+    venue_player = _create_venue_player(can_group_with={"web_player_1"})
+    guest_player = MagicMock()
+    mass = _create_mock_mass(venue_player)
+    mass.players.get_player.side_effect = lambda player_id: (
+        venue_player if player_id == "venue_player" else guest_player
+    )
+    session = await SharedPlaybackSession.create_venue(mass, "venue_player")
+    await session.add_guest_listener("web_player_1")
+    mass.players.cmd_set_members.reset_mock()
+    mass.players.cmd_set_members.side_effect = UnsupportedFeaturedException(
+        "Grouping temporarily unavailable"
+    )
+
+    await session.restore_guest_listeners()
+
+    mass.players.cmd_set_members.assert_awaited_once_with(
+        "venue_player", player_ids_to_add=["web_player_1"]
+    )
+    assert session._guest_listeners == {"web_player_1"}
+
+
 async def test_venue_add_guest_listener_unsupported() -> None:
     """Attaching an incompatible web player raises."""
     venue_player = _create_venue_player(can_group_with=set())
@@ -194,6 +274,52 @@ async def test_create_remote_session(mass: MusicAssistant) -> None:
     assert mass.players.get_player(session.player_id) is None
     # with the virtual host player gone, listen-in is no longer possible
     assert session.can_listen_in(guest_player_id) is False
+
+
+async def test_remote_session_restores_listener_before_next_track(
+    mass: MusicAssistant,
+) -> None:
+    """Restore real Sendspin membership after stop before the next queue track."""
+    sendspin = cast("SendspinProvider | None", mass.get_provider("sendspin"))
+    assert sendspin is not None
+    await mass.config.save_provider_config("test", {})
+    assert mass.get_provider("test") is not None
+    session = await SharedPlaybackSession.create_remote(
+        mass,
+        owner_instance_id=sendspin.instance_id,
+        display_name="Test Party",
+    )
+    guest_player_id = await sendspin.create_virtual_player(
+        owner_instance_id=sendspin.instance_id,
+        display_name="Guest",
+    )
+    host_player = mass.players.get_player(session.player_id)
+    assert host_player is not None
+    host_player.update_state(signal_event=False)
+
+    try:
+        await session.add_guest_listener(guest_player_id)
+        await _wait_for(lambda: guest_player_id in host_player.state.group_members)
+        await mass.player_queues.play_media(session.queue_id, "test://track/0_0_0")
+        await mass.player_queues.stop(session.queue_id)
+        await mass.players.cmd_set_members(
+            session.player_id,
+            player_ids_to_remove=[guest_player_id],
+        )
+        await _wait_for(lambda: guest_player_id not in host_player.state.group_members)
+
+        await session.restore_guest_listeners()
+        await _wait_for(lambda: guest_player_id in host_player.state.group_members)
+        await mass.player_queues.play_media(session.queue_id, "test://track/0_0_1")
+
+        queue = mass.player_queues.get(session.queue_id)
+        assert queue is not None
+        assert queue.current_item is not None
+        assert queue.current_item.uri == "test://track/0_0_1"
+        assert session._guest_listeners == {guest_player_id}
+    finally:
+        await session.close()
+        await sendspin.remove_virtual_player(guest_player_id)
 
 
 async def test_create_remote_session_deterministic_id(mass: MusicAssistant) -> None:
