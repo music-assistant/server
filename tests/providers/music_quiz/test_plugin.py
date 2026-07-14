@@ -131,6 +131,8 @@ def _make_venue_player(
             enabled=enabled,
             hide_in_ui=hidden,
             needs_setup=needs_setup,
+            synced_to=None,
+            group_members=[],
             type=player_type,
             supported_features=supported_features,
         ),
@@ -653,10 +655,14 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         "Z Bathroom",
         playback_state=PlaybackState.PLAYING,
     )
+    playing_bathroom.state.group_members = ["bathroom", "bedroom"]
+    synced_child = _make_venue_player("bedroom", "Synced Child")
+    synced_child.state.synced_to = "bathroom"
     excluded = [
         _make_venue_player("unavailable", "Unavailable", available=False),
         _make_venue_player("disabled", "Disabled", enabled=False),
         _make_venue_player("hidden", "Hidden", hidden=True),
+        synced_child,
         _make_venue_player("needs-setup", "Needs Setup", needs_setup=True),
         _make_venue_player("protocol", "Protocol", player_type=PlayerType.PROTOCOL),
         _make_venue_player("display", "Display", player_type=PlayerType.DISPLAY),
@@ -852,7 +858,7 @@ async def test_explicit_venue_create_persists_game_authoritative_playback() -> N
     create_remote.assert_not_awaited()
 
 
-@pytest.mark.parametrize("venue_player_id", [None, "unknown", "unavailable"])
+@pytest.mark.parametrize("venue_player_id", [None, "unknown", "unavailable", "synced"])
 @pytest.mark.asyncio
 async def test_invalid_explicit_venue_create_preserves_existing_game(
     venue_player_id: str | None,
@@ -860,10 +866,14 @@ async def test_invalid_explicit_venue_create_preserves_existing_game(
     """Reject missing or ineligible venue targets without mutating game state."""
     plugin = _create_plugin()
     valid_player = _make_venue_player("valid", "Valid")
+    valid_player.state.group_members = ["valid", "synced"]
     unavailable_player = _make_venue_player("unavailable", "Unavailable", available=False)
+    synced_player = _make_venue_player("synced", "Synced")
+    synced_player.state.synced_to = "valid"
     cast("MagicMock", plugin.mass.players.all_players).return_value = [
         valid_player,
         unavailable_player,
+        synced_player,
     ]
     await plugin.create_game(
         source_uris=["library://playlist/1"],
