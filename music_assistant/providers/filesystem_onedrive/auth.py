@@ -148,7 +148,7 @@ class MAOneDriveAuth:
         if (new_refresh := payload.get("refresh_token")) and new_refresh != self._refresh_token:
             self._refresh_token = new_refresh
             self.mass.config.set_raw_provider_config_value(
-                self._instance_id, CONF_REFRESH_TOKEN, new_refresh, encrypted=True
+                self._instance_id, CONF_REFRESH_TOKEN, new_refresh, encrypted=True, immediate=True
             )
         return self._access_token
 
