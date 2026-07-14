@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -318,7 +319,8 @@ async def test_migration_repairs_null_smart_fades_centroids(
     repaired = {
         row["id"]: row["analysis_data"] for row in await database.get_rows(DB_TABLE_AUDIO_ANALYSIS)
     }
-    assert repaired[1] == '{"spectral_centroid":[1.5,0.0,2.5,0.0],"bpm":120}'
+    assert json.loads(repaired[1]) == {"spectral_centroid": [1.5, 0.0, 2.5, 0.0], "bpm": 120}
+    # untouched rows must not be rewritten at all, hence the exact-string compare
     for untouched_id in (2, 3, 4):
         assert repaired[untouched_id] == rows[untouched_id][1]
 
