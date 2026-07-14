@@ -85,6 +85,7 @@ async def test_refresh_playlist_metadata_batch_query_excludes_dynamic_playlists(
     ctrl = _controller()
     mass = Mock()
     mass.music.playlists.get_library_items_by_query = AsyncMock(return_value=[])
+    mass.music.database.get_rows_from_query = AsyncMock(return_value=[])
     ctrl.mass = mass
 
     await ctrl._refresh_playlist_metadata_batch()

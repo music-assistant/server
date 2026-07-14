@@ -394,13 +394,17 @@ class MetaDataController(
     async def _scan_missing_artist_metadata(self) -> None:
         """Scan for artists with missing metadata."""
         update_current_task_progress_text("Searching for artists with missing metadata")
+        await self._report_corrupt_metadata_rows(DB_TABLE_ARTISTS)
         missing_images = (
             f"(json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
         )
         missing_description = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.description') ISNULL"
         never_refreshed = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL"
-        query = f"({missing_images} OR {missing_description}) AND {never_refreshed}"
+        query = (
+            f"{_valid_metadata_guard(DB_TABLE_ARTISTS)} AND "
+            f"({missing_images} OR {missing_description}) AND {never_refreshed}"
+        )
         artists = await self.mass.music.artists.get_library_items_by_query(
             limit=METADATA_SCAN_BATCH_SIZE,
             order_by="random",
@@ -430,8 +434,10 @@ class MetaDataController(
     async def _refresh_playlist_metadata_batch(self) -> None:
         """Refresh metadata for a small batch of library playlists."""
         update_current_task_progress_text("Searching for playlists needing metadata refresh")
+        await self._report_corrupt_metadata_rows(DB_TABLE_PLAYLISTS)
         refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
+            f"{_valid_metadata_guard(DB_TABLE_PLAYLISTS)} AND "
             f"{DB_TABLE_PLAYLISTS}.is_dynamic = 0 AND ("
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before})"
@@ -473,3 +479,26 @@ class MetaDataController(
         removed = await cleanup_thumb_cache(self.mass.cache_path, max_size_mb * 1024 * 1024)
         if removed:
             self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)
+
+    async def _report_corrupt_metadata_rows(self, table: str) -> None:
+        """Report library rows whose metadata column holds invalid JSON."""
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, name FROM {table} "
+            f"WHERE {table}.metadata IS NOT NULL AND NOT json_valid({table}.metadata)",
+            limit=25,
+        )
+        for row in rows:
+            message = (
+                f"'{row['name']}' has corrupt metadata and was skipped. To repair, remove "
+                f"'{row['name']}' from the library; it will be re-added with fresh metadata "
+                f"on the next library sync ({table} id {row['item_id']})."
+            )
+            report_current_task_failure(message)
+            self.logger.warning(message)
+
+
+def _valid_metadata_guard(table: str) -> str:
+    """Return a query part that excludes rows with invalid JSON in the metadata column."""
+    # sqlite's json functions raise a fatal 'malformed JSON' error on invalid input,
+    # which would fail the entire scan query because of a single corrupt row
+    return f"({table}.metadata IS NULL OR json_valid({table}.metadata))"
