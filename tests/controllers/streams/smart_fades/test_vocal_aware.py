@@ -22,7 +22,19 @@ from music_assistant.controllers.streams.smart_fades.models import (
     TransitionStrategy,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
+from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    CandidateFactory,
+    CandidateSpec,
+    bars_ladder,
+)
+from music_assistant.controllers.streams.smart_fades.planner.context import (
+    build_transition_context,
+)
 from music_assistant.controllers.streams.smart_fades.renderer import TransitionRenderer
+from music_assistant.controllers.streams.smart_fades.vocal import (
+    COLLISION_SECONDS_LIMIT,
+    WEIGHTED_COLLISION_LIMIT,
+)
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 LOGGER = logging.getLogger(__name__)
@@ -157,14 +169,14 @@ class TestVocalCollisionAvoidance:
         """Confirm the 16-bar candidate this scenario skips really does breach the guard."""
         out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(228.0, 230.05)])
         inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(20.0, 22.05)])
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner._prepare_decks(out, inc, 45.0)
-        candidate = planner._build_candidate(16)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        candidate = CandidateFactory(ctx, LOGGER).build(
+            CandidateSpec(tier=ctx.tier, bars=16, anchor_s=None, entry_s=None)
+        )
         assert candidate is not None
-        _, metrics = planner._protect_outgoing_vocal(16, candidate)
         assert (
-            metrics.collision_seconds >= planner.collision_seconds_limit
-            or metrics.weighted_collision_seconds >= planner.weighted_collision_limit
+            candidate.metrics.collision_seconds >= COLLISION_SECONDS_LIMIT
+            or candidate.metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
         )
 
 
@@ -221,12 +233,11 @@ class TestOutgoingVocalRetention:
         duration = 200.0
         bpm = 100.0
         probe_out = _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3))
-        probe = SmartCrossFadePlanner(LOGGER)
-        probe.plan(probe_out, _analysis(bpm, duration), 45.0)
-        assert probe._audio_end > probe.effective_end + 0.1, "fixture needs a real snap gap"
+        probe_ctx = build_transition_context(probe_out, _analysis(bpm, duration), 45.0, LOGGER)
+        assert probe_ctx.audio_end > probe_ctx.default_anchor + 0.1, "fixture needs a real snap gap"
 
         buffer_offset = duration - 45.0
-        vocal_end_buffer_local = (probe.effective_end + probe._audio_end) / 2
+        vocal_end_buffer_local = (probe_ctx.default_anchor + probe_ctx.audio_end) / 2
         vocal_end_media = vocal_end_buffer_local + buffer_offset
 
         out = _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3))
@@ -235,17 +246,17 @@ class TestOutgoingVocalRetention:
 
         plan = _plan(out, inc, 45.0)
         assert plan.fade_out_window >= vocal_end_buffer_local - 1e-6
-        assert plan.fade_out_window > probe.effective_end + 1e-6
+        assert plan.fade_out_window > probe_ctx.default_anchor + 1e-6
 
     def test_retention_never_exceeds_the_rms_audible_boundary(self) -> None:
         """Even a vocal claiming to run past the RMS boundary caps the anchor at that boundary."""
         duration = 200.0
         bpm = 100.0
-        probe = SmartCrossFadePlanner(LOGGER)
-        probe.plan(
+        probe_ctx = build_transition_context(
             _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3)),
             _analysis(bpm, duration),
             45.0,
+            LOGGER,
         )
 
         out = _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3))
@@ -254,7 +265,7 @@ class TestOutgoingVocalRetention:
         inc = _with_vocal_activity(_analysis(bpm, duration), [])
 
         plan = _plan(out, inc, 45.0)
-        assert plan.fade_out_window <= probe._audio_end + 1e-6
+        assert plan.fade_out_window <= probe_ctx.audio_end + 1e-6
 
 
 class TestScheduleRecomputationAfterAnchorMovement:
@@ -265,12 +276,11 @@ class TestScheduleRecomputationAfterAnchorMovement:
         duration = 200.0
         bpm = 100.0
         probe_out = _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3))
-        probe = SmartCrossFadePlanner(LOGGER)
-        probe.plan(probe_out, _analysis(bpm, duration), 45.0)
-        assert probe._audio_end > probe.effective_end + 0.1, "fixture needs a real snap gap"
+        probe_ctx = build_transition_context(probe_out, _analysis(bpm, duration), 45.0, LOGGER)
+        assert probe_ctx.audio_end > probe_ctx.default_anchor + 0.1, "fixture needs a real snap gap"
 
         buffer_offset = duration - 45.0
-        vocal_end_buffer_local = (probe.effective_end + probe._audio_end) / 2
+        vocal_end_buffer_local = (probe_ctx.default_anchor + probe_ctx.audio_end) / 2
         vocal_end_media = vocal_end_buffer_local + buffer_offset
 
         out = _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3))
@@ -279,7 +289,7 @@ class TestScheduleRecomputationAfterAnchorMovement:
 
         plan = _plan(out, inc, 45.0)
         # the anchor really did move, so this exercises the rebuild, not a no-op
-        assert plan.fade_out_window > probe.effective_end + 1e-6
+        assert plan.fade_out_window > probe_ctx.default_anchor + 1e-6
 
         assert 0.0 <= plan.eq_plan.swap_at <= plan.crossfade_duration
         if plan.eq_plan.low_out is not None:
@@ -295,23 +305,26 @@ class TestScheduleRecomputationAfterAnchorMovement:
         duration = 200.0
         bpm = 100.0
         probe_out = _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3))
-        probe = SmartCrossFadePlanner(LOGGER)
-        probe.plan(probe_out, _analysis(bpm, duration), 45.0)
+        probe_ctx = build_transition_context(probe_out, _analysis(bpm, duration), 45.0, LOGGER)
 
         buffer_offset = duration - 45.0
-        vocal_end_buffer_local = (probe.effective_end + probe._audio_end) / 2
+        vocal_end_buffer_local = (probe_ctx.default_anchor + probe_ctx.audio_end) / 2
         vocal_end_media = vocal_end_buffer_local + buffer_offset
 
         out = _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3))
         out = _with_vocal_activity(out, [(vocal_end_media - 0.5, vocal_end_media)])
         inc = _with_vocal_activity(_analysis(bpm, duration), [])
 
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
-        pristine_candidate = planner._build_candidate(1)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        # the pristine (unprotected) candidate always anchors at the energy-only
+        # default, ignoring the vocal retention the winning plan applied
+        pristine_candidate = CandidateFactory(ctx, LOGGER).build(
+            CandidateSpec(tier=ctx.tier, bars=1, anchor_s=None, entry_s=None)
+        )
         assert pristine_candidate is not None
-        assert pristine_candidate.fade_out_window != plan.fade_out_window
-        assert pristine_candidate.fadeout_trim != plan.fadeout_trim
+        assert pristine_candidate.plan.fade_out_window != plan.fade_out_window
+        assert pristine_candidate.plan.fadeout_trim != plan.fadeout_trim
 
     def test_rebuild_preserves_a_remediated_incoming_entry(self) -> None:
         """Moving the outgoing anchor keeps the incoming entry selected by remediation."""
@@ -321,16 +334,23 @@ class TestScheduleRecomputationAfterAnchorMovement:
         out = _with_vocal_activity(out, [(189.0, 190.0)])
         inc = _with_vocal_activity(_analysis(bpm, duration), [])
 
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner._prepare_decks(out, inc, 45.0)
-        candidate = planner._build_candidate(2, entry=4.8)
-        assert candidate is not None
-        assert candidate.fadein_trim_start == pytest.approx(4.8)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        factory = CandidateFactory(ctx, LOGGER)
+        pristine = factory.build(CandidateSpec(tier=ctx.tier, bars=2, anchor_s=None, entry_s=4.8))
+        assert pristine is not None
+        assert pristine.plan.fadein_trim_start == pytest.approx(4.8)
 
-        protected, _metrics = planner._protect_outgoing_vocal(2, candidate)
-
-        assert protected.fade_out_window > candidate.fade_out_window
-        assert protected.fadein_trim_start == pytest.approx(candidate.fadein_trim_start)
+        # the old planner's protection rebuilt the candidate at the protective
+        # anchor with its entry pinned; the factory must honor the same spec
+        # combination instead of silently resetting the entry
+        vocal_end = min(ctx.vocal_out_placement.last_end(), ctx.audio_end)  # type: ignore[union-attr]
+        anchor = next(db for db in ctx.protective_downbeats if db >= vocal_end)
+        protected = factory.build(
+            CandidateSpec(tier=ctx.tier, bars=2, anchor_s=anchor, entry_s=4.8)
+        )
+        assert protected is not None
+        assert protected.plan.fade_out_window > pristine.plan.fade_out_window
+        assert protected.plan.fadein_trim_start == pytest.approx(4.8)
 
 
 class TestShortFadeAudibleTrimBound:
@@ -367,15 +387,19 @@ class TestShortFadeAudibleTrimBound:
         )
         inc = _with_vocal_activity(inc, [])
 
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner._prepare_decks(out, inc, buffer_duration)
-        naive_candidate = planner._build_candidate(1)
+        ctx = build_transition_context(out, inc, buffer_duration, LOGGER)
+        naive_candidate = CandidateFactory(ctx, LOGGER).build(
+            CandidateSpec(tier=ctx.tier, bars=1, anchor_s=None, entry_s=None)
+        )
         assert naive_candidate is not None
-        naive_gap = planner._audio_end - naive_candidate.fade_out_window
-        assert naive_gap > naive_candidate.crossfade_duration, "fixture needs a real violation"
+        naive_gap = ctx.audio_end - naive_candidate.plan.fade_out_window
+        assert naive_gap > naive_candidate.plan.crossfade_duration, "fixture needs a real violation"
 
-        _protected, metrics = planner._protect_outgoing_vocal(1, naive_candidate)
-        assert metrics.audible_outgoing_trim <= naive_candidate.crossfade_duration + 1e-6
+        protected = SmartCrossFadePlanner(LOGGER).plan(out, inc, buffer_duration)
+        assert (
+            protected.metrics.audible_outgoing_trim
+            <= naive_candidate.plan.crossfade_duration + 1e-6
+        )
 
 
 class TestHighHopesStyleFalsePositive:
@@ -407,10 +431,9 @@ class TestHighHopesStyleFalsePositive:
         out = _with_vocal_activity(out, [(229.5, 238.5)])
         inc = _with_vocal_activity(_analysis(bpm, duration), [])
 
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner.plan(out, inc, 45.0)
-        assert planner._vocal_out_mask is not None
-        assert planner._vocal_out_mask.windows == []
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert ctx.vocal_out_placement is not None
+        assert ctx.vocal_out_placement.windows == []
 
 
 class TestRemediationAltersTheCandidate:
@@ -421,21 +444,26 @@ class TestRemediationAltersTheCandidate:
         out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(228.0, 230.05)])
         inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(20.0, 22.05)])
 
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner._prepare_decks(out, inc, 45.0)
-        tier = planner._choose_tier()
-        bars0, cand0 = planner._energy_candidate(tier)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        bars0 = bars_ladder(ctx, ctx.tier)[0]
+        cand0 = CandidateFactory(ctx, LOGGER).build(
+            CandidateSpec(tier=ctx.tier, bars=bars0, anchor_s=None, entry_s=None)
+        )
+        assert cand0 is not None
         # the full-blend candidate 0 spans 16 bars and genuinely collides
         assert bars0 == 16
-        assert round(cand0.crossfade_duration / (4 * 60.0 / 120.0)) == 16
-        assert planner._guard_fires(cand0)
+        assert round(cand0.plan.crossfade_duration / (4 * 60.0 / 120.0)) == 16
+        assert (
+            cand0.metrics.collision_seconds >= COLLISION_SECONDS_LIMIT
+            or cand0.metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
+        )
 
         plan = _plan(out, inc)
         # remediation shipped a shorter, collision-free overlap on a different bar rung
-        assert plan.crossfade_duration < cand0.crossfade_duration
+        assert plan.crossfade_duration < cand0.plan.crossfade_duration
         assert plan.metrics.strategy is TransitionStrategy.ENERGY_ALIGNED
-        assert plan.metrics.collision_seconds < planner.collision_seconds_limit
-        assert plan.metrics.weighted_collision_seconds < planner.weighted_collision_limit
+        assert plan.metrics.collision_seconds < COLLISION_SECONDS_LIMIT
+        assert plan.metrics.weighted_collision_seconds < WEIGHTED_COLLISION_LIMIT
         # the search is a pure function of the inputs
         assert _plan(out, inc) == plan
 

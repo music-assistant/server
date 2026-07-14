@@ -9,16 +9,16 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import TransitionStrategy
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
-from music_assistant.controllers.streams.smart_fades.planner_pkg.assembly import (
+from music_assistant.controllers.streams.smart_fades.planner.assembly import (
     EmergencyHandoffFactory,
     PlanAssembler,
 )
-from music_assistant.controllers.streams.smart_fades.planner_pkg.candidates import (
+from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CandidateFactory,
     CandidateSpec,
     bars_ladder,
 )
-from music_assistant.controllers.streams.smart_fades.planner_pkg.context import (
+from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
 )

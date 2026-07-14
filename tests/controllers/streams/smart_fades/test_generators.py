@@ -9,15 +9,16 @@ import numpy as np
 
 from music_assistant.controllers.streams.smart_fades.bands import build_band_profile
 from music_assistant.controllers.streams.smart_fades.models import Deck, TransitionTier
-from music_assistant.controllers.streams.smart_fades.planner_pkg.candidates import (
+from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CodaAnchorGenerator,
     EnergyLadderGenerator,
     ProtectiveAnchorGenerator,
     VocalOnsetEntryGenerator,
+    _entry_options,
     default_generators,
     instrumental_blend_bars,
 )
-from music_assistant.controllers.streams.smart_fades.planner_pkg.context import (
+from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
 )
@@ -133,17 +134,18 @@ class TestEnergyLadderGenerator:
 
         assert {s.bars for s in specs} == {8, 4, 2, 1}
         assert {s.anchor_s for s in specs} == {None}
-        assert all(s.ideal_bars == 8 for s in specs)
-        assert all(s.source == "energy-ladder" for s in specs)
-        assert all(s.one_sided_vocal is None for s in specs)
 
-    def test_full_band_anchor_variant_emitted_on_a_kick_timed_track(self) -> None:
-        """A kick-folded default anchor also explores the ladder at the pure full-band anchor."""
+    def test_no_full_band_anchor_variant_on_a_kick_timed_track(self) -> None:
+        """The kick-folded default anchor is authoritative: no pure full-band variant is emitted."""
         ctx = _base_ctx(kick_anchor=10.0, default_anchor=10.0, mix_out_anchor=30.0)
         specs = list(EnergyLadderGenerator().generate(ctx))
 
-        assert {s.anchor_s for s in specs} == {None, 30.0}
-        assert {s.bars for s in specs if s.anchor_s == 30.0} == {8, 4, 2, 1}
+        # a full-band variant would let a longer blend win past the kick
+        # die-out, defeating the researched kick handover
+        assert {s.anchor_s for s in specs} == {None}
+        assert {s.bars for s in specs} == {8, 4, 2, 1}
+        assert all(s.source == "energy-ladder" for s in specs)
+        assert all(s.one_sided_vocal is None for s in specs)
 
     def test_no_full_band_variant_when_it_equals_the_default_anchor(self) -> None:
         """A full-band anchor equal to the (kick-folded) default emits no duplicate rungs."""
@@ -298,9 +300,17 @@ class TestCodaAnchorGenerator:
             "coda_zone": zone,
             "outgoing_profile": build_band_profile(profile),
             "buffer_offset": 195.0,
+            # coda shifting is vocal-remediation-scoped: it needs a timeline
+            "vocal_out_placement": VocalMask(windows=[(1.0, 2.0)]),
             **overrides,
         }
         return _base_ctx(**merged)
+
+    def test_emits_nothing_without_a_vocal_timeline(self) -> None:
+        """Coda shifting is a vocal remediation: the energy-only path never coda-shifts."""
+        zone = CodaZone(start_s=200.0, end_s=216.0)
+        ctx = self._profile_ctx(zone, vocal_out_placement=None)
+        assert list(CodaAnchorGenerator().generate(ctx)) == []
 
     def test_emits_nothing_when_zone_is_none(self) -> None:
         """No coda zone means no coda-anchored candidates at all."""
@@ -362,7 +372,11 @@ class TestProtectiveAnchorGenerator:
 
         assert {s.bars for s in specs} == {8, 4, 2, 1}
         assert {s.anchor_s for s in specs} == {32.0}
-        assert all(s.entry_s is None for s in specs)
+        # entry options mirror the energy ladder EXACTLY, so a protected anchor
+        # can keep an aligned entry instead of forcing the natural one
+        for bars in (8, 4, 2, 1):
+            emitted = {s.entry_s for s in specs if s.bars == bars}
+            assert emitted == set(_entry_options(ctx, bars))
         assert all(s.ideal_bars == 8 for s in specs)
 
     def test_falls_back_to_target_when_no_downbeat_qualifies(self) -> None:

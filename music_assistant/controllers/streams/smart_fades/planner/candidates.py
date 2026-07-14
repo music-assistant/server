@@ -152,21 +152,21 @@ class EnergyLadderGenerator(CandidateGenerator):
         """Emit one spec per (rung, entry option) at the default, full-band and pinned anchors."""
         ladder = bars_ladder(ctx, ctx.tier)
         ideal = ladder[0]
+        # the default anchor is already kick-folded; a pure full-band variant
+        # would let a longer blend win past the kick die-out, defeating the
+        # researched kick handover, so it is deliberately not emitted
         anchors: list[float | None] = [None]
-        # the default anchor is already kick-folded, so the alternative worth
-        # exploring on a kick-timed track is the pure full-band mix-out anchor
-        if (
-            ctx.kick_anchor is not None
-            and ctx.mix_out_anchor is not None
-            and ctx.mix_out_anchor != ctx.default_anchor
-        ):
-            anchors.append(ctx.mix_out_anchor)
         a_pin = _fade_onset_pin(ctx)
         if a_pin < ctx.default_anchor:
             anchors.append(a_pin)
         for anchor in anchors:
             for bars in ladder:
-                for entry in _entry_options(ctx, bars):
+                # the default anchor keeps the factory-chosen entry (grid
+                # alignment + rolling intro), exactly like the old energy
+                # candidate; explicit entry options are pin-scoped, like the
+                # old remediation rungs they came from
+                entries = [None] if anchor is None else _entry_options(ctx, bars)
+                for entry in entries:
                     yield CandidateSpec(
                         tier=ctx.tier,
                         bars=bars,
@@ -183,7 +183,8 @@ class EnergyLadderGenerator(CandidateGenerator):
         if one_sided is None:
             return
         for anchor in anchors:
-            for entry in _entry_options(ctx, instrumental_blend_bars):
+            entries = [None] if anchor is None else _entry_options(ctx, instrumental_blend_bars)
+            for entry in entries:
                 yield CandidateSpec(
                     tier=ctx.tier,
                     bars=instrumental_blend_bars,
@@ -202,6 +203,11 @@ class CodaAnchorGenerator(CandidateGenerator):
 
     def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
         """Emit the zone's fitting rung(s) at the coda anchor, or nothing without a valid zone."""
+        # coda shifting is a vocal-collision remediation: without a vocal
+        # timeline the zone was validated against an empty mask and the old
+        # planner never coda-shifted, so stay inactive on the energy-only path
+        if ctx.vocal_out_placement is None:
+            return
         if ctx.coda_zone is None or ctx.outgoing_profile is None:
             return
         zone = ctx.coda_zone
@@ -243,14 +249,17 @@ class ProtectiveAnchorGenerator(CandidateGenerator):
         ladder = bars_ladder(ctx, ctx.tier)
         ideal = ladder[0]
         for bars in ladder:
-            yield CandidateSpec(
-                tier=ctx.tier,
-                bars=bars,
-                anchor_s=anchor,
-                entry_s=None,
-                source=self.name,
-                ideal_bars=ideal,
-            )
+            # entry options mirror the energy ladder so a protected anchor can
+            # keep an aligned (or remediated) entry instead of forcing natural
+            for entry in _entry_options(ctx, bars):
+                yield CandidateSpec(
+                    tier=ctx.tier,
+                    bars=bars,
+                    anchor_s=anchor,
+                    entry_s=entry,
+                    source=self.name,
+                    ideal_bars=ideal,
+                )
 
 
 class VocalOnsetEntryGenerator(CandidateGenerator):
@@ -270,14 +279,24 @@ class VocalOnsetEntryGenerator(CandidateGenerator):
         if entry < 0.0 or point_in_mask(ctx.vocal_in_placement, entry):
             return
         a_pin = _fade_onset_pin(ctx)
-        yield CandidateSpec(
-            tier=ctx.tier,
-            bars=ideal,
-            anchor_s=a_pin if a_pin < ctx.default_anchor else None,
-            entry_s=entry,
-            source=self.name,
-            ideal_bars=ideal,
-        )
+        anchors: list[float | None] = [a_pin if a_pin < ctx.default_anchor else None]
+        # the old planner's protection rebuild preserved a remediated entry at
+        # the protective anchor; emitting the combination keeps that reachable
+        if ctx.vocal_out_placement is not None and ctx.vocal_out_placement.windows:
+            protective = _nearest_protective_anchor(
+                ctx, min(ctx.vocal_out_placement.last_end(), ctx.audio_end)
+            )
+            if protective not in anchors and protective != ctx.default_anchor:
+                anchors.append(protective)
+        for anchor in anchors:
+            yield CandidateSpec(
+                tier=ctx.tier,
+                bars=ideal,
+                anchor_s=anchor,
+                entry_s=entry,
+                source=self.name,
+                ideal_bars=ideal,
+            )
 
 
 def default_generators() -> tuple[CandidateGenerator, ...]:
@@ -886,11 +905,21 @@ def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
     return options
 
 
-def _nearest_protective_anchor(ctx: TransitionContext, target: float) -> float:
-    """Earliest protective downbeat at/after target within the RMS-audible boundary."""
+def _nearest_protective_anchor(
+    ctx: TransitionContext, target: float, *, prefer_earliest: bool = True
+) -> float:
+    """
+    Protective downbeat at/after target within the RMS-audible boundary.
+
+    :param ctx: The transition context.
+    :param target: Earliest buffer-local position the anchor may take.
+    :param prefer_earliest: Use the first qualifying downbeat (protecting a
+        vocal needs only just enough extra room) instead of the last (closing
+        an audible-trim gap as tightly as possible).
+    """
     candidates = [
         downbeat for downbeat in ctx.protective_downbeats if target <= downbeat <= ctx.audio_end
     ]
     if candidates:
-        return candidates[0]
+        return candidates[0] if prefer_earliest else candidates[-1]
     return min(target, ctx.audio_end)

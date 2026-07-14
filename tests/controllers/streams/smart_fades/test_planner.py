@@ -19,7 +19,16 @@ from music_assistant.controllers.streams.smart_fades.models import (
     TransitionPlan,
     TransitionTier,
 )
-from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
+from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner, assembly
+from music_assistant.controllers.streams.smart_fades.planner.assembly import PlanAssembler
+from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    CandidateFactory,
+    CandidateSpec,
+)
+from music_assistant.controllers.streams.smart_fades.planner.context import (
+    TransitionContext,
+    build_transition_context,
+)
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
 
@@ -66,6 +75,32 @@ def _plan(
     fade_out: AudioAnalysisData, fade_in: AudioAnalysisData, buffer: float = 45.0
 ) -> TransitionPlan:
     return SmartCrossFadePlanner(LOGGER).plan(fade_out, fade_in, buffer)
+
+
+def _swap_notch(
+    ctx: TransitionContext, assembler: PlanAssembler, plan: TransitionPlan
+) -> tuple[float, float]:
+    """
+    Reconstruct assembly._choose_eq's notch window.
+
+    The notch is no longer instance state (dropped as dead state in Task 8); it is
+    rebuilt here from the same private method and module tunables ``_choose_eq`` uses.
+    """
+    bar_in = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
+    swap_at = assembler._choose_swap_point(plan.crossfade_duration, plan.fadein_trim_start)
+    swap_len = min(
+        max(
+            assembly.bass_swap_fraction * plan.crossfade_duration,
+            assembly.bass_swap_min_bars * bar_in,
+        ),
+        assembly.bass_swap_max_bars * bar_in,
+        plan.crossfade_duration,
+    )
+    swap_at = min(swap_at, plan.crossfade_duration - swap_len / 2)
+    start_in = max(0.0, swap_at - swap_len / 2)
+    if plan.eq_plan.low_out is None and plan.eq_plan.low_in is None:
+        return (-1.0, -1.0)
+    return (start_in, start_in + swap_len)
 
 
 class TestSmartCrossFadePlanner:
@@ -165,12 +200,13 @@ class TestSmartCrossFadePlanner:
 
     def test_entry_fit_uses_the_tempo_compensated_duration(self) -> None:
         """A valid entry is not rejected when tempo compensation makes the overlap fit."""
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner._prepare_decks(_analysis(120.0), _analysis(124.0), 45.0)
+        ctx = build_transition_context(_analysis(120.0), _analysis(124.0), 45.0, LOGGER)
+        candidate = CandidateFactory(ctx, LOGGER).build(
+            CandidateSpec(tier=ctx.tier, bars=16, anchor_s=None, entry_s=14.0)
+        )
 
-        plan = planner._build_candidate(16, entry=14.0)
-
-        assert plan is not None
+        assert candidate is not None
+        plan = candidate.plan
         assert plan.tempo_plan
         assert plan.fadein_trim_start == pytest.approx(14.0)
         assert plan.fadein_trim_start is not None
@@ -279,13 +315,15 @@ class TestEnergyMixOut:
         bins = np.full(1800, 0.5, dtype=np.float32)
         t = np.linspace(0, 240.0, 1800)
         bins[t >= 220.0] = 0.2  # audible but below 0.7*sustained: mixed out, not silent
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(_analysis(120.0, rms_energy=bins), _analysis(120.0), 45.0)
+        out = _analysis(120.0, rms_energy=bins)
+        inc = _analysis(120.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         # anchored at the mix-out point (media 220 -> buffer-local 25), well before the
         # RMS-audible boundary, and snapped to a real downbeat
         assert plan.fade_out_window == pytest.approx(25.0, abs=0.3)
-        assert planner._audio_end > plan.fade_out_window + 1.0
-        assert float(np.min(np.abs(planner._grid_downbeats - plan.fade_out_window))) < 0.05
+        assert ctx.audio_end > plan.fade_out_window + 1.0
+        assert float(np.min(np.abs(ctx.outgoing.downbeats - plan.fade_out_window))) < 0.05
 
     def test_low_band_kick_drop_anchors_after_the_last_kick(self) -> None:
         """A kick-timed track whose low band drops out anchors just after the last kick bar."""
@@ -298,13 +336,13 @@ class TestEnergyMixOut:
         low[t >= 218.0] = 0.05  # the kick drops out ~22s before the buffer end
         out = _analysis_with_bands(low, env(0.5), env(0.5), env(0.3))
         inc = _analysis_with_bands(env(1.0), env(0.5), env(0.5), env(0.3))
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         # the low anchor lands just after the last kick bar, never past the RMS boundary,
         # and on a real downbeat
-        assert plan.fade_out_window < planner._audio_end - 1.0
+        assert plan.fade_out_window < ctx.audio_end - 1.0
         assert plan.fade_out_window == pytest.approx(21.0, abs=1.5)
-        assert float(np.min(np.abs(planner._grid_downbeats - plan.fade_out_window))) < 0.05
+        assert float(np.min(np.abs(ctx.outgoing.downbeats - plan.fade_out_window))) < 0.05
 
     def test_low_band_entry_beyond_the_buffer_is_ignored(self) -> None:
         """A future kick cannot drive entry or EQ decisions for the buffered head."""
@@ -312,11 +350,10 @@ class TestEnergyMixOut:
         low = np.where(t < 60.0, 0.01, 1.0).astype(np.float32)
         other = np.full(1800, 0.2, dtype=np.float32)
         incoming = _analysis_with_bands(low, other, other, other)
-        planner = SmartCrossFadePlanner(LOGGER)
 
-        planner._prepare_decks(_analysis(120.0), incoming, 45.0)
+        ctx = build_transition_context(_analysis(120.0), incoming, 45.0, LOGGER)
 
-        assert planner._incoming_entry == 0.0
+        assert ctx.natural_entry == 0.0
 
 
 class TestCandidateBuildGuards:
@@ -375,16 +412,16 @@ class TestCandidateBuildGuards:
         tempo ramp); the overlap must then shrink to the quick-fade ladder too,
         or a long un-beatmatched overlap ships gated only by the vocal guard.
         """
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner._prepare_decks(_analysis(80.0), _analysis(83.2), 45.0)
-
-        candidate = planner._build_candidate(8, anchor=20.0, entry=0.0)
+        ctx = build_transition_context(_analysis(80.0), _analysis(83.2), 45.0, LOGGER)
+        candidate = CandidateFactory(ctx, LOGGER).build(
+            CandidateSpec(tier=ctx.tier, bars=8, anchor_s=20.0, entry_s=0.0)
+        )
 
         assert candidate is not None
-        assert candidate.tier is TransitionTier.QUICK_FADE
-        assert not candidate.tempo_plan
+        assert candidate.plan.tier is TransitionTier.QUICK_FADE
+        assert not candidate.plan.tempo_plan
         # 4-bar quick-fade cap at 80 BPM (3s bars) plus sub-bar anchor slack
-        assert candidate.crossfade_duration <= 15.0
+        assert candidate.plan.crossfade_duration <= 15.0
 
 
 def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, AudioAnalysisData]:
@@ -631,8 +668,7 @@ class TestHighShelfReciprocalAndWash:
     def test_wash_mode_deepens_and_mirrors_b_restore(self) -> None:
         """Wash mode: A's duck deepens to -26 over the SAME rendered window as B's restore."""
         out, inc = _wash_pair()
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         bar_out = 4 * 60.0 / 120.0
         assert plan.crossfade_duration >= 8 * bar_out
         eq = plan.eq_plan
@@ -644,7 +680,7 @@ class TestHighShelfReciprocalAndWash:
         # itself starts at steps[1] — high_out is A INPUT time, high_in is
         # rendered (B post-trim) time, so map A's ramp back before comparing
         ratio = 1.0  # equal BPMs on both sides -> no tempo stretch
-        cf_start_input = planner.effective_end - plan.crossfade_duration * ratio
+        cf_start_input = plan.fade_out_window - plan.crossfade_duration * ratio
         duck_start_rendered = (eq.high_out.steps[1][0] - cf_start_input) / ratio
         duck_end_rendered = (eq.high_out.steps[-1][0] - cf_start_input) / ratio
         assert duck_start_rendered == pytest.approx(eq.high_in.steps[1][0], abs=0.2)
@@ -657,13 +693,12 @@ class TestHighShelfReciprocalAndWash:
         # against the overlap end — the reviewer's overrun reproduction
         t = np.linspace(0, 240.0, 1800)
         inc.rms_energy = np.where(t < 14.0, 0.05, 0.5).astype(np.float32).tolist()
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         eq = plan.eq_plan
         assert eq.high_out is not None
         assert eq.high_out.steps[-1][1] == pytest.approx(-26.0, abs=0.2)  # wash engaged
         # A INPUT time: the duck must complete at or before the crossfade end
-        assert eq.high_out.steps[-1][0] <= planner.effective_end + 1e-6
+        assert eq.high_out.steps[-1][0] <= plan.fade_out_window + 1e-6
 
     def test_wash_mode_skipped_when_levels_differ_more_than_6db(self) -> None:
         """Both sides bright but loudness-referenced levels differ >6dB: normal reciprocal ease."""
@@ -723,7 +758,7 @@ def _gain_at(
 
 
 def _predicted_power_curve(
-    planner: SmartCrossFadePlanner, plan: TransitionPlan, n_samples: int = 200
+    ctx: TransitionContext, plan: TransitionPlan, n_samples: int = 200
 ) -> list[tuple[float, float]]:
     """
     Sample the predicted combined power curve P(t) across the overlap.
@@ -737,16 +772,17 @@ def _predicted_power_curve(
     eq = plan.eq_plan
     duration = plan.crossfade_duration
     ratio = plan.tempo_plan.steps[-1][1] if plan.tempo_plan else 1.0
-    cf_start_input = planner.effective_end - duration * ratio
-    w_a_out, w_b_in = planner._swap_windows(planner.bass_swap_window_bars)
-    assert planner.outgoing_profile is not None
-    assert planner.incoming_profile is not None
+    cf_start_input = plan.fade_out_window - duration * ratio
+    assembler = PlanAssembler(ctx, LOGGER)
+    w_a_out, w_b_in = assembler._swap_windows(plan.fade_out_window, assembly.bass_swap_window_bars)
+    assert ctx.outgoing_profile is not None
+    assert ctx.incoming_profile is not None
     f_a = {
-        band: window_fraction(planner.outgoing_profile, band, *w_a_out)
+        band: window_fraction(ctx.outgoing_profile, band, *w_a_out)
         for band in ("low", "low_mid", "mid", "high")
     }
     f_b = {
-        band: window_fraction(planner.incoming_profile, band, *w_b_in)
+        band: window_fraction(ctx.incoming_profile, band, *w_b_in)
         for band in ("low", "low_mid", "mid", "high")
     }
     schedules_a = {"low": eq.low_out, "mid": eq.mid_out, "high": eq.high_out}
@@ -856,12 +892,13 @@ def _wash_no_low_stack_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
 
 
 def _unguarded_plan(
-    out: AudioAnalysisData, inc: AudioAnalysisData
-) -> tuple[SmartCrossFadePlanner, TransitionPlan]:
+    out: AudioAnalysisData, inc: AudioAnalysisData, monkeypatch: pytest.MonkeyPatch
+) -> TransitionPlan:
     """Plan with the dip guard effectively disabled (budget set beyond any real dip)."""
-    planner = SmartCrossFadePlanner(LOGGER)
-    planner.max_predicted_dip_db = 1000.0
-    return planner, planner.plan(out, inc, 45.0)
+    # scoped so a guarded plan built later in the same test sees the real budget
+    with monkeypatch.context() as scoped:
+        scoped.setattr(assembly, "max_predicted_dip_db", 1000.0)
+        return SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
 
 
 class TestScaleMidDepth:
@@ -906,20 +943,21 @@ class TestPredictedDipGuard:
     never shallowed).
     """
 
-    def test_outside_notch_dip_reduces_mid_depth(self) -> None:
+    def test_outside_notch_dip_reduces_mid_depth(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A >3dB dip outside the notch (wash + pinned mid stack) shrinks the mid depth."""
         out, inc = _wash_mid_stack_pair()
-        _, unguarded = _unguarded_plan(out, inc)
+        unguarded = _unguarded_plan(out, inc, monkeypatch)
         assert unguarded.eq_plan.mid_out is not None
         gate_depth = unguarded.eq_plan.mid_out.steps[-1][1]
         assert gate_depth == pytest.approx(-8.0, abs=0.2)
 
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         eq = plan.eq_plan
-        curve = _predicted_power_curve(planner, plan)
-        dip = _max_plateau_to_valley_drop_db(curve, exclude=planner._swap_notch)
-        assert dip <= planner.max_predicted_dip_db + 0.2
+        curve = _predicted_power_curve(ctx, plan)
+        notch = _swap_notch(ctx, PlanAssembler(ctx, LOGGER), plan)
+        dip = _max_plateau_to_valley_drop_db(curve, exclude=notch)
+        assert dip <= assembly.max_predicted_dip_db + 0.2
         # remediation shrank the mid depth (or bypassed it) vs the gate's value
         if eq.mid_out is not None:
             assert abs(eq.mid_out.steps[-1][1]) < abs(gate_depth)
@@ -929,15 +967,16 @@ class TestPredictedDipGuard:
     def test_full_depth_house_notch_is_not_remediated(self) -> None:
         """A full-depth bass swap's >3dB in-notch dip is the intentional gesture: untouched."""
         out, inc = _bands_pair(0.7, 0.7)
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         eq = plan.eq_plan
-        curve = _predicted_power_curve(planner, plan)
+        curve = _predicted_power_curve(ctx, plan)
+        notch = _swap_notch(ctx, PlanAssembler(ctx, LOGGER), plan)
         # the notch itself dips well past the budget...
-        assert _max_plateau_to_valley_drop_db(curve) > planner.max_predicted_dip_db
+        assert _max_plateau_to_valley_drop_db(curve) > assembly.max_predicted_dip_db
         # ...but outside it the plan is within budget, so nothing is remediated:
-        assert _max_plateau_to_valley_drop_db(curve, exclude=planner._swap_notch) <= (
-            planner.max_predicted_dip_db
+        assert _max_plateau_to_valley_drop_db(curve, exclude=notch) <= (
+            assembly.max_predicted_dip_db
         )
         assert eq.low_out is not None
         assert eq.low_out.steps[-1][1] == pytest.approx(-26.0)
@@ -945,20 +984,21 @@ class TestPredictedDipGuard:
         assert eq.low_in.steps[0][1] == pytest.approx(-26.0)
         # ramp span keeps the shipped proportional length (half the overlap),
         # clamped to the 8-bar ceiling — no steepening remediation happened
-        bar_in = 4 * 60.0 / planner.incoming.bpm
-        expected_span = min(plan.crossfade_duration / 2, planner.bass_swap_max_bars * bar_in)
+        bar_in = 4 * 60.0 / ctx.incoming.bpm
+        expected_span = min(plan.crossfade_duration / 2, assembly.bass_swap_max_bars * bar_in)
         ramp = eq.low_in.steps[1:]
         assert ramp[-1][0] - ramp[0][0] == pytest.approx(expected_span, rel=0.05)
 
     def test_normal_house_pair_is_untouched(self) -> None:
         """A normal (mid-bypassed) house pair keeps its shipped schedules unchanged."""
         out, inc = _bands_pair(0.4, 0.4)
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         eq = plan.eq_plan
-        curve = _predicted_power_curve(planner, plan)
-        assert _max_plateau_to_valley_drop_db(curve, exclude=planner._swap_notch) <= (
-            planner.max_predicted_dip_db
+        curve = _predicted_power_curve(ctx, plan)
+        notch = _swap_notch(ctx, PlanAssembler(ctx, LOGGER), plan)
+        assert _max_plateau_to_valley_drop_db(curve, exclude=notch) <= (
+            assembly.max_predicted_dip_db
         )
         assert eq.mid_out is None
         assert eq.mid_in is None
@@ -967,12 +1007,13 @@ class TestPredictedDipGuard:
         assert eq.low_in is not None
         assert eq.low_in.steps[0][1] == pytest.approx(-26.0)
 
-    def test_remediation_never_shallows_the_low_endpoint(self) -> None:
+    def test_remediation_never_shallows_the_low_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Even when remediation reaches the low ramps, their endpoint gains are untouched."""
         out, inc = _wash_low_stack_pair()
-        _, unguarded = _unguarded_plan(out, inc)
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        unguarded = _unguarded_plan(out, inc, monkeypatch)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         eq, ueq = plan.eq_plan, unguarded.eq_plan
         # remediation fired (mid differs from the unguarded plan)...
         assert (eq.mid_out is None) or (
@@ -989,50 +1030,44 @@ class TestPredictedDipGuard:
     def test_remediated_low_ramp_steepens_to_the_two_bar_floor(self) -> None:
         """When steepening engages, the ramp lands exactly at the 2-bar floor, never below."""
         out, inc = _wash_low_stack_pair()
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         eq = plan.eq_plan
         assert eq.low_in is not None
         bar_in = 4 * 60.0 / 120.0
         ramp = eq.low_in.steps[1:]
         span = ramp[-1][0] - ramp[0][0]
-        assert span == pytest.approx(planner.bass_swap_min_bars * bar_in, rel=0.01)
-
-    def test_notch_narrows_after_low_ramp_steepening(self) -> None:
-        """After step-2 remediation, the notch reflects the steepened (2-bar) ramp."""
-        out, inc = _wash_low_stack_pair()
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
-        assert plan.eq_plan.low_in is not None
-        ramp = plan.eq_plan.low_in.steps[1:]
-        assert planner._swap_notch == pytest.approx((ramp[0][0], ramp[-1][0]), abs=0.01)
+        assert span == pytest.approx(assembly.bass_swap_min_bars * bar_in, rel=0.01)
 
     def test_bass_light_pair_gets_no_notch_exemption(self) -> None:
         """No low swap engaged: the notch never exempts a sample (no handover to exempt)."""
         out, inc = _bands_pair(0.05, 0.05)
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         assert plan.eq_plan.low_out is None
         assert plan.eq_plan.low_in is None
         # the notch must not swallow any real sample in [0, crossfade_duration]
-        assert not (0.0 <= planner._swap_notch[0] <= plan.crossfade_duration) or not (
-            0.0 <= planner._swap_notch[1] <= plan.crossfade_duration
+        notch = _swap_notch(ctx, PlanAssembler(ctx, LOGGER), plan)
+        assert not (0.0 <= notch[0] <= plan.crossfade_duration) or not (
+            0.0 <= notch[1] <= plan.crossfade_duration
         )
 
-    def test_step2_on_bass_light_pair_keeps_the_sentinel_notch(self) -> None:
+    def test_step2_on_bass_light_pair_keeps_the_sentinel_notch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Reaching step 2 with no low swap must not fabricate an in-overlap notch exemption."""
         out, inc = _wash_no_low_stack_pair()
-        _, unguarded = _unguarded_plan(out, inc)
+        unguarded = _unguarded_plan(out, inc, monkeypatch)
         # the mid swap engaged and remediation had to fire (deep wash dip)...
         assert unguarded.eq_plan.mid_out is not None
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
         # ...on a bass-light pair, so there are no low schedules to steepen
         assert plan.eq_plan.low_out is None
         assert plan.eq_plan.low_in is None
         # the notch must stay the sentinel: no real sample in [0, crossfade_duration]
-        assert not (0.0 <= planner._swap_notch[0] <= plan.crossfade_duration) or not (
-            0.0 <= planner._swap_notch[1] <= plan.crossfade_duration
+        notch = _swap_notch(ctx, PlanAssembler(ctx, LOGGER), plan)
+        assert not (0.0 <= notch[0] <= plan.crossfade_duration) or not (
+            0.0 <= notch[1] <= plan.crossfade_duration
         )
 
     def test_dip_guard_is_a_no_op_when_already_within_budget(self) -> None:
@@ -1047,7 +1082,7 @@ class TestBandConservation:
     """TEST-ONLY: where both sides pass their gate floor, one deck stays within 6dB of unity."""
 
     def _conserves(
-        self, planner: SmartCrossFadePlanner, plan: TransitionPlan, band: str, gate_floor: float
+        self, ctx: TransitionContext, plan: TransitionPlan, band: str, gate_floor: float
     ) -> bool:
         """
         Check conservation for one band: True when the invariant holds.
@@ -1065,12 +1100,15 @@ class TestBandConservation:
         eq = plan.eq_plan
         ratio = plan.tempo_plan.steps[-1][1] if plan.tempo_plan else 1.0
         duration = plan.crossfade_duration
-        cf_start_input = planner.effective_end - duration * ratio
-        w_a_out, w_b_in = planner._swap_windows(planner.bass_swap_window_bars)
-        assert planner.outgoing_profile is not None
-        assert planner.incoming_profile is not None
-        f_a = window_fraction(planner.outgoing_profile, band, *w_a_out)
-        f_b = window_fraction(planner.incoming_profile, band, *w_b_in)
+        cf_start_input = plan.fade_out_window - duration * ratio
+        assembler = PlanAssembler(ctx, LOGGER)
+        w_a_out, w_b_in = assembler._swap_windows(
+            plan.fade_out_window, assembly.bass_swap_window_bars
+        )
+        assert ctx.outgoing_profile is not None
+        assert ctx.incoming_profile is not None
+        f_a = window_fraction(ctx.outgoing_profile, band, *w_a_out)
+        f_b = window_fraction(ctx.incoming_profile, band, *w_b_in)
         if f_a < gate_floor or f_b < gate_floor:
             return True  # gate floor not cleared on both sides: invariant N/A
         schedule_a = {"low": eq.low_out, "mid": eq.mid_out, "high": eq.high_out}[band]
@@ -1094,21 +1132,21 @@ class TestBandConservation:
     def test_holds_for_bass_rich_plan(self) -> None:
         """Representative engaged plan: both bass-rich, full low swap engaged."""
         out, inc = _bands_pair(0.4, 0.4)
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
-        assert self._conserves(planner, plan, "low", planner.low_gate_lo)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+        assert self._conserves(ctx, plan, "low", assembly.low_gate_lo)
 
     def test_holds_for_mid_and_low_engaged_plan(self) -> None:
         """Representative engaged plan: both low and mid swaps engaged (_rich_pair)."""
         out, inc = _rich_pair()
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
-        assert self._conserves(planner, plan, "low", planner.low_gate_lo)
-        assert self._conserves(planner, plan, "mid", planner.mid_gate_lo)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+        assert self._conserves(ctx, plan, "low", assembly.low_gate_lo)
+        assert self._conserves(ctx, plan, "mid", assembly.mid_gate_lo)
 
     def test_holds_for_wash_mode_plan(self) -> None:
         """Representative engaged plan: cymbal-wash mode on the high band."""
         out, inc = _wash_pair()
-        planner = SmartCrossFadePlanner(LOGGER)
-        plan = planner.plan(out, inc, 45.0)
-        assert self._conserves(planner, plan, "high", planner.high_gate_lo)
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+        assert self._conserves(ctx, plan, "high", assembly.high_gate_lo)

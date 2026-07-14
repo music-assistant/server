@@ -5,15 +5,15 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import TransitionTier
-from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
-from music_assistant.controllers.streams.smart_fades.planner_pkg.candidates import (
+from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CandidateFactory,
     CandidateSpec,
     bars_ladder,
 )
-from music_assistant.controllers.streams.smart_fades.planner_pkg.context import (
+from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
 )
@@ -64,46 +64,42 @@ def _first_fitting(ctx: TransitionContext, factory: CandidateFactory) -> object:
     raise AssertionError("the 1-bar rung must always yield a candidate")
 
 
-class TestFactoryParityWithOldPlanner:
-    """The factory's timed fields must match the old planner's energy candidate."""
+class TestFactoryGoldenTiming:
+    """
+    The factory's timed fields are pinned to golden values from the old planner.
 
-    def test_energy_candidate_timing_parity(self) -> None:
+    The old monolithic planner (``_prepare_decks``/``_choose_tier``/
+    ``_energy_candidate``/``_build_candidate``) was deleted at the task-9
+    switchover; these values were captured from it, live, on these exact
+    fixtures, before deletion.
+    """
+
+    def test_energy_candidate_timing_matches_the_old_planner(self) -> None:
         """The default-spec ladder walk reproduces the old planner's energy candidate timing."""
         out, inc = _analysis(120.0, duration=240.0), _analysis(122.0, duration=240.0)
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner._prepare_decks(out, inc, 45.0)
-        tier = planner._choose_tier()
-        _bars, old_plan = planner._energy_candidate(tier)
 
         ctx = _ctx(out, inc)
         candidate = _first_fitting(ctx, CandidateFactory(ctx, LOGGER))
 
-        assert candidate.plan.tier is old_plan.tier
-        assert candidate.plan.fade_out_window == old_plan.fade_out_window
-        assert candidate.plan.crossfade_duration == old_plan.crossfade_duration
-        assert candidate.plan.fadein_trim_start == old_plan.fadein_trim_start
-        assert candidate.plan.tempo_plan.steps == old_plan.tempo_plan.steps
-        assert (candidate.plan.fadeout_trim is None) == (old_plan.fadeout_trim is None)
-        if candidate.plan.fadeout_trim is not None and old_plan.fadeout_trim is not None:
-            assert candidate.plan.fadeout_trim.end_pos == old_plan.fadeout_trim.end_pos
+        assert candidate.plan.tier is TransitionTier.FULL_BLEND
+        assert candidate.plan.fade_out_window == 45.0
+        assert candidate.plan.crossfade_duration == pytest.approx(13.770492, abs=1e-5)
+        assert candidate.plan.fadein_trim_start == 0.0
+        assert len(candidate.plan.tempo_plan.steps) == 4
+        assert candidate.plan.fadeout_trim is None
 
-    def test_explicit_anchor_parity_with_old_build_candidate(self) -> None:
-        """An explicitly re-anchored spec reproduces the old _build_candidate timing."""
+    def test_explicit_anchor_timing_matches_the_old_build_candidate(self) -> None:
+        """An explicitly re-anchored spec reproduces the old ``_build_candidate`` timing."""
         out, inc = _analysis(80.0, duration=240.0), _analysis(83.2, duration=240.0)
-        planner = SmartCrossFadePlanner(LOGGER)
-        planner._prepare_decks(out, inc, 45.0)
-        planner._choose_tier()
-        old_plan = planner._build_candidate(8, anchor=20.0, entry=0.0)
-        assert old_plan is not None
 
         ctx = _ctx(out, inc)
         candidate = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 8, anchor_s=20.0, entry_s=0.0))
 
         assert candidate is not None
-        assert candidate.plan.tier is old_plan.tier
-        assert candidate.plan.fade_out_window == old_plan.fade_out_window
-        assert candidate.plan.crossfade_duration == old_plan.crossfade_duration
-        assert candidate.plan.fadein_trim_start == old_plan.fadein_trim_start
+        assert candidate.plan.tier is TransitionTier.QUICK_FADE
+        assert candidate.plan.fade_out_window == 20.0
+        assert candidate.plan.crossfade_duration == pytest.approx(14.0, abs=1e-5)
+        assert candidate.plan.fadein_trim_start == 0.0
 
 
 class TestCandidateBuildGuards:

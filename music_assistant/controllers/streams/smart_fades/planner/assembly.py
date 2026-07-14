@@ -11,6 +11,7 @@ collides with the incoming track's vocal.
 from __future__ import annotations
 
 from dataclasses import replace
+from dataclasses import replace as replace_spec
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.bands import (
@@ -35,6 +36,7 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     COLLISION_SECONDS_LIMIT,
     MAX_HANDOFF_SECONDS,
     MIN_HANDOFF_SECONDS,
+    SHORT_FADE_SECONDS,
     WEIGHTED_COLLISION_LIMIT,
 )
 
@@ -547,25 +549,44 @@ class EmergencyHandoffFactory:
         vocal onset so the handoff needs no EQ to hide anything.
         """
         ctx = self._ctx
-        assert ctx.vocal_out_placement is not None  # narrowed by the caller
-        assert ctx.vocal_in_placement is not None
-        target = min(ctx.vocal_out_placement.last_end(), ctx.audio_end)
-        anchor = _nearest_protective_anchor(ctx, target)
-        spec = CandidateSpec(
+        base_spec = CandidateSpec(
             tier=ctx.tier,
             bars=1,
-            anchor_s=anchor,
+            anchor_s=None,
             entry_s=ctx.natural_entry,
             strategy=TransitionStrategy.SHORT_VOCAL_HANDOFF,
             source="emergency-handoff",
             ideal_bars=1,
         )
-        candidate = self._factory.build(spec)
+        candidate = self._factory.build(base_spec)
         assert candidate is not None  # the 1-bar rung always yields a candidate
+        spec = base_spec
 
-        incoming_onset = (
-            ctx.vocal_in_placement.windows[0][0] if ctx.vocal_in_placement.windows else 0.0
+        # old-planner protection semantics: extend the anchor (never past the
+        # RMS-audible boundary) far enough to cover any outgoing vocal the
+        # handoff would cut short, AND to keep a short fade's audible trim
+        # within its own overlap length
+        out_mask = ctx.vocal_out_placement
+        last_vocal_end = min(out_mask.last_end(), ctx.audio_end) if out_mask is not None else 0.0
+        plan0 = candidate.plan
+        vocal_would_be_cut = last_vocal_end > plan0.fade_out_window + 1e-9
+        overtrims_short_fade = (
+            plan0.crossfade_duration <= SHORT_FADE_SECONDS
+            and ctx.audio_end - plan0.fade_out_window > plan0.crossfade_duration + 1e-9
         )
+        if vocal_would_be_cut or overtrims_short_fade:
+            target = max(plan0.fade_out_window, last_vocal_end)
+            if overtrims_short_fade:
+                target = max(target, ctx.audio_end - plan0.crossfade_duration)
+            target = min(target, ctx.audio_end)
+            anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=vocal_would_be_cut)
+            spec = replace_spec(base_spec, anchor_s=anchor)
+            rebuilt = self._factory.build(spec)
+            assert rebuilt is not None  # the 1-bar rung always yields a candidate
+            candidate = rebuilt
+
+        in_mask = ctx.vocal_in_placement
+        incoming_onset = in_mask.windows[0][0] if in_mask is not None and in_mask.windows else 0.0
         duration = max(MIN_HANDOFF_SECONDS, min(MAX_HANDOFF_SECONDS, incoming_onset - 0.1))
         handoff = self._as_handoff(candidate.plan, duration)
         metrics = self._factory.score(spec, handoff)

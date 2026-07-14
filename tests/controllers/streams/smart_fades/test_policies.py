@@ -11,10 +11,10 @@ from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
     TransitionTier,
 )
-from music_assistant.controllers.streams.smart_fades.planner_pkg.context import (
+from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
 )
-from music_assistant.controllers.streams.smart_fades.planner_pkg.policies import (
+from music_assistant.controllers.streams.smart_fades.planner.policies import (
     AnchorAlignmentPolicy,
     AudibleTrimPolicy,
     OverlapPreferencePolicy,
@@ -182,24 +182,31 @@ class TestVocalTruncationPolicy:
         assert verdict.vetoed is False
         assert verdict.penalty == 0.0
 
-    def test_vetoes_above_max_truncated_vocal(self) -> None:
-        """An outgoing vocal fade past the 0.25s threshold vetoes the candidate."""
-        candidate = _candidate(vocal_fade=0.26)
-        ctx = _ctx(vocal_out_scoring=_MASK)
+    def test_vetoes_when_audible_vocal_extends_past_the_anchor(self) -> None:
+        """A phrase cut off by the anchor trim (beyond 0.25s) vetoes the candidate."""
+        candidate = _candidate(duration=20.0)
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(18.0, 21.0)]))
 
         assert self.policy.evaluate(candidate, ctx).vetoed is True
 
-    def test_no_veto_at_max_truncated_vocal(self) -> None:
-        """Exactly at the 0.25s threshold does not veto (strictly-greater test)."""
-        candidate = _candidate(vocal_fade=0.25)
-        ctx = _ctx(vocal_out_scoring=_MASK)
+    def test_no_veto_at_exactly_the_truncation_threshold(self) -> None:
+        """Exactly 0.25s of cut vocal does not veto (strictly-greater test)."""
+        candidate = _candidate(duration=20.0)
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(20.0, 20.25)]))
 
         assert self.policy.evaluate(candidate, ctx).vetoed is False
 
-    def test_no_veto_below_max_truncated_vocal(self) -> None:
-        """A short outgoing vocal fade well under the threshold does not veto."""
-        candidate = _candidate(vocal_fade=0.1)
-        ctx = _ctx(vocal_out_scoring=_MASK)
+    def test_no_veto_when_the_vocal_rides_the_fade_untruncated(self) -> None:
+        """A long phrase entirely inside the fade window is normal, never a truncation."""
+        candidate = _candidate(duration=20.0)
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(5.0, 19.5)]))
+
+        assert self.policy.evaluate(candidate, ctx).vetoed is False
+
+    def test_inaudible_vocal_past_the_rms_boundary_never_counts(self) -> None:
+        """Windows beyond audio_end are inaudible and cannot register as truncation."""
+        candidate = _candidate(duration=20.0)
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(46.0, 50.0)]))
 
         assert self.policy.evaluate(candidate, ctx).vetoed is False
 
@@ -212,14 +219,15 @@ class TestAudibleTrimPolicy:
     def test_vetoes_when_short_fade_trims_past_its_own_duration(self) -> None:
         """A crossfade at the short-fade limit that trims more than it spans vetoes."""
         candidate = _candidate(duration=SHORT_FADE_SECONDS, trim=SHORT_FADE_SECONDS + 0.5)
-        ctx = _ctx()
+        # the hard rule is vocal-protection-scoped: it needs a vocal timeline
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[]))
 
         assert self.policy.evaluate(candidate, ctx).vetoed is True
 
     def test_no_veto_when_trim_equals_short_fade_duration(self) -> None:
         """A short fade whose trim exactly equals its duration does not veto (strict >)."""
         candidate = _candidate(duration=SHORT_FADE_SECONDS, trim=SHORT_FADE_SECONDS)
-        ctx = _ctx()
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[]))
 
         assert self.policy.evaluate(candidate, ctx).vetoed is False
 

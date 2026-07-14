@@ -11,7 +11,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     TransitionPlan,
     TransitionTier,
 )
-from music_assistant.controllers.streams.smart_fades.planner_pkg.candidates import (
+from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     Candidate,
     CandidateSpec,
 )

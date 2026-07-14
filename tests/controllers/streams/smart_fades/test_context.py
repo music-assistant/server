@@ -10,7 +10,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import TransitionTier
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
-from music_assistant.controllers.streams.smart_fades.planner_pkg.context import (
+from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
 )

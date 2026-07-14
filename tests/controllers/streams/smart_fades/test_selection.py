@@ -8,10 +8,10 @@ import logging
 import numpy as np
 
 from music_assistant.controllers.streams.smart_fades.models import Deck, TransitionTier
-from music_assistant.controllers.streams.smart_fades.planner_pkg.candidates import Candidate
-from music_assistant.controllers.streams.smart_fades.planner_pkg.context import TransitionContext
-from music_assistant.controllers.streams.smart_fades.planner_pkg.policies import Policy, Verdict
-from music_assistant.controllers.streams.smart_fades.planner_pkg.selection import (
+from music_assistant.controllers.streams.smart_fades.planner.candidates import Candidate
+from music_assistant.controllers.streams.smart_fades.planner.context import TransitionContext
+from music_assistant.controllers.streams.smart_fades.planner.policies import Policy, Verdict
+from music_assistant.controllers.streams.smart_fades.planner.selection import (
     CandidateSelector,
     ScoredCandidate,
 )

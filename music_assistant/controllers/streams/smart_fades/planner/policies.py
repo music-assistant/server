@@ -97,7 +97,15 @@ class VocalTruncationPolicy(Policy):
         """Judge one candidate against the shared per-transition context."""
         if ctx.vocal_out_scoring is None:
             return Verdict.ok()
-        if candidate.metrics.outgoing_vocal_fade_seconds > self.max_truncated_vocal:
+        # truncation = audible vocal BEYOND the candidate's anchor (cut off by the
+        # trim), not vocal inside the fade - a phrase riding the fade is normal
+        anchor = candidate.plan.fade_out_window
+        truncated = sum(
+            min(right, ctx.audio_end) - max(left, anchor)
+            for left, right in ctx.vocal_out_scoring.windows
+            if min(right, ctx.audio_end) > max(left, anchor)
+        )
+        if truncated > self.max_truncated_vocal:
             return Verdict.veto("truncates an audible outgoing vocal phrase")
         return Verdict.ok()
 
@@ -112,7 +120,13 @@ class AudibleTrimPolicy(Policy):
         """Judge one candidate against the shared per-transition context."""
         plan = candidate.plan
         trim = candidate.metrics.audible_outgoing_trim
-        if plan.crossfade_duration <= self.short_fade_seconds and trim > plan.crossfade_duration:
+        # the hard rule is vocal-protection-scoped, like the old planner's:
+        # an energy-only kick anchor legitimately trims a long audible outro
+        if (
+            ctx.vocal_out_scoring is not None
+            and plan.crossfade_duration <= self.short_fade_seconds
+            and trim > plan.crossfade_duration
+        ):
             return Verdict.veto("audible trim exceeds a short fade's own duration")
         return Verdict.ok(trim * self.trim_penalty_per_second)
 
