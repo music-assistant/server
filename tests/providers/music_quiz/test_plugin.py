@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import AudioError, InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
+from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     impersonated_user,
@@ -313,6 +314,7 @@ def _create_plugin(
     source_item.name = "Test Playlist"
     source_item.media_type = MediaType.PLAYLIST
     plugin.mass.music.get_item = AsyncMock(return_value=source_item)
+    plugin.mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=0))
     plugin.signal_provider_event = MagicMock()  # type: ignore[method-assign, misc]
     plugin._play_track = AsyncMock()  # type: ignore[method-assign]
     plugin._stop_playback = AsyncMock()  # type: ignore[method-assign]
@@ -1262,6 +1264,8 @@ async def test_reset_prepares_replay_round_and_start_reuses_it() -> None:
         assert plugin._next_round_task is not None
         assert plugin._next_round_task.done()
         assert prepare_round.await_count == 2
+        assert isinstance(plugin._quiz_type, GuessTheSongQuizType)
+        assert initial_round.track_uri in plugin._quiz_type._recent_track_uris
 
         await plugin.start_game()
 
@@ -2813,6 +2817,8 @@ async def test_disabled_trivia_reset_delete_and_recreate_keep_lifecycle_non_audi
         assert game.config.language == "zh-Hans-CN"
         assert game.rounds == []
         assert initialize.await_count == 2
+        assert isinstance(plugin._quiz_type, TriviaQuizType)
+        assert plugin._quiz_type._recent_track_uris == {"library://track/trivia-0"}
         await plugin.delete_game()
         assert plugin._game is None
         cast("AsyncMock", plugin._stop_playback).assert_not_awaited()
@@ -3360,6 +3366,11 @@ async def test_music_timeline_reset_preserves_config_and_reinitializes_strategy(
     game = plugin._game
     assert game is not None
     assert initialize.await_count == 2
+    assert plugin._quiz_type is not None
+    assert plugin._quiz_type._recent_track_uris == {
+        "library://track/anchor",
+        "library://track/music_timeline-0",
+    }
     pending_task.cancel.assert_called_once()
     cancel_timer = cast("MagicMock", plugin.mass.cancel_timer)
     cancel_timer.assert_any_call(plugin._reveal_timer_id)
