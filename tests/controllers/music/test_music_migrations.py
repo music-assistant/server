@@ -297,6 +297,10 @@ async def test_migration_repairs_null_smart_fades_centroids(
         3: ("other_domain", '{"spectral_centroid": [null], "bpm": 100}'),
         # a corrupt payload must not abort the migration
         4: ("smart_fades", '{"spectral_centroid": [null'),
+        # a non-array centroid value must not be touched
+        5: ("smart_fades", '{"spectral_centroid": null, "bpm": 90}'),
+        # "null" appearing only inside a string value must not trigger a rewrite
+        6: ("smart_fades", '{"spectral_centroid": [3.5], "key": "nullish"}'),
     }
     for row_id, (domain, analysis_data) in rows.items():
         await database.execute(
@@ -321,7 +325,7 @@ async def test_migration_repairs_null_smart_fades_centroids(
     }
     assert json.loads(repaired[1]) == {"spectral_centroid": [1.5, 0.0, 2.5, 0.0], "bpm": 120}
     # untouched rows must not be rewritten at all, hence the exact-string compare
-    for untouched_id in (2, 3, 4):
+    for untouched_id in (2, 3, 4, 5, 6):
         assert repaired[untouched_id] == rows[untouched_id][1]
 
 
