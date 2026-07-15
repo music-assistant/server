@@ -17,7 +17,9 @@ from music_assistant.models.music_provider import MusicProvider
 
 def _controller() -> MetaDataController:
     """Create a bare MetaDataController without running __init__."""
-    return MetaDataController.__new__(MetaDataController)
+    ctrl = MetaDataController.__new__(MetaDataController)
+    ctrl._corrupt_metadata_rows = {}
+    return ctrl
 
 
 def _provider() -> MusicProvider:

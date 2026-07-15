@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     )
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.models.metadata_provider import MetadataProvider
 
 
@@ -107,6 +108,8 @@ class MetaDataController(
         self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._image_id_persisted: dict[str, float] = {}
         self._image_id_lock = threading.Lock()
+        # corrupt metadata rows found by the last scan pass, per table, for diagnostics
+        self._corrupt_metadata_rows: dict[str, list[dict[str, str | int]]] = {}
 
     async def get_config_entries(
         self,
@@ -350,6 +353,12 @@ class MetaDataController(
                 return metadata.lyrics, metadata.lrc_lyrics
         return None, None
 
+    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        if not self._corrupt_metadata_rows:
+            return None
+        return {"corrupt_metadata_rows": cast("SerializableType", self._corrupt_metadata_rows)}
+
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
         # Spread across the full day so instances don't all hit the shared MusicBrainz mirror at once
@@ -487,6 +496,14 @@ class MetaDataController(
             f"WHERE {table}.metadata IS NOT NULL AND NOT json_valid({table}.metadata)",
             limit=25,
         )
+        # keep the findings for the diagnostics report, replacing the previous
+        # pass so repaired rows drop out again
+        if rows:
+            self._corrupt_metadata_rows[table] = [
+                {"item_id": row["item_id"], "name": row["name"]} for row in rows
+            ]
+        else:
+            self._corrupt_metadata_rows.pop(table, None)
         for row in rows:
             message = (
                 f"'{row['name']}' has corrupt metadata and was skipped. To repair, remove "
