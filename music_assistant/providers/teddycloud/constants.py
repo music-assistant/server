@@ -24,5 +24,6 @@ TAG_CACHE_TTL: Final[int] = 60
 
 # Derived total durations are persisted via mass.cache so they survive restarts. Tonie
 # content is immutable (the cache is keyed by audio_id), so keep it around for a long time.
-CACHE_CATEGORY_DURATION: Final[int] = 0
+# Use a dedicated category (not the controller's default 0) to avoid any future overlap.
+CACHE_CATEGORY_DURATION: Final[int] = 2
 DURATION_CACHE_TTL: Final[int] = 86400 * 365
