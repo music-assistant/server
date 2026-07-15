@@ -1,4 +1,4 @@
-"""Tests for the candidate selector: scoring, veto filtering, and tie-breaking."""
+"""Tests for the candidate selector: scoring, rejection filtering, and tie-breaking."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from tests.controllers.streams.smart_fades.conftest import build_test_candidate
 class _FixedPenaltyPolicy(Policy):
     """A stub policy that returns one fixed, deterministic verdict for every candidate."""
 
-    def __init__(self, penalty: float = 0.0, vetoed: bool = False, reason: str = "") -> None:
-        self._verdict = Verdict(penalty=penalty, vetoed=vetoed, reason=reason)
+    def __init__(self, penalty: float = 0.0, rejected: bool = False, reason: str = "") -> None:
+        self._verdict = Verdict(penalty=penalty, rejected=rejected, reason=reason)
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Return this instance's fixed verdict, regardless of the candidate."""
@@ -81,7 +81,7 @@ def _named(source: str) -> Candidate:
 
 
 class TestCandidateSelector:
-    """CandidateSelector.select: full scoring, veto filtering, tie-breaking."""
+    """CandidateSelector.select: full scoring, rejection filtering, tie-breaking."""
 
     def test_lowest_penalty_wins(self) -> None:
         """The survivor with the smallest total penalty is selected."""
@@ -112,10 +112,10 @@ class TestCandidateSelector:
         assert result is not None
         assert result.candidate is first
 
-    def test_all_vetoed_returns_none(self) -> None:
-        """When every candidate is vetoed by some policy, select returns None."""
+    def test_all_rejected_returns_none(self) -> None:
+        """When every candidate is rejected by some policy, select returns None."""
         selector = CandidateSelector(
-            policies=[_FixedPenaltyPolicy(vetoed=True, reason="always vetoed")],
+            policies=[_FixedPenaltyPolicy(rejected=True, reason="always rejected")],
             logger=logging.getLogger(__name__),
         )
 
@@ -123,24 +123,24 @@ class TestCandidateSelector:
 
         assert result is None
 
-    def test_vetoed_candidate_never_wins_even_with_lowest_penalty(self) -> None:
-        """A vetoed candidate is excluded from ranking even if its penalty sum is lowest."""
-        vetoed = _named("vetoed")
+    def test_rejected_candidate_never_wins_even_with_lowest_penalty(self) -> None:
+        """A rejected candidate is excluded from ranking even if its penalty sum is lowest."""
+        rejected = _named("rejected")
         survivor = _named("survivor")
-        penalty_policy = _BySourcePenaltyPolicy({"vetoed": 0.0, "survivor": 100.0})
+        penalty_policy = _BySourcePenaltyPolicy({"rejected": 0.0, "survivor": 100.0})
 
-        class _VetoOnlyVetoed(Policy):
+        class _RejectByName(Policy):
             def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
-                if candidate.spec.source == "vetoed":
-                    return Verdict.veto("vetoed by name")
+                if candidate.spec.source == "rejected":
+                    return Verdict.reject("rejected by name")
                 return Verdict.ok()
 
         selector = CandidateSelector(
-            policies=[penalty_policy, _VetoOnlyVetoed()],
+            policies=[penalty_policy, _RejectByName()],
             logger=logging.getLogger(__name__),
         )
 
-        result = selector.select([vetoed, survivor], _ctx())
+        result = selector.select([rejected, survivor], _ctx())
 
         assert result is not None
         assert result.candidate is survivor

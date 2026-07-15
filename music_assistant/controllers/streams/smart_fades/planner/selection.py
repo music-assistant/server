@@ -3,9 +3,9 @@ Smart Fades - candidate selection.
 
 A ``CandidateSelector`` scores every built candidate against the full policy
 set, folding each policy's ``Verdict`` into one ``ScoredCandidate`` scoreboard
-entry, then picks the lowest-penalty, non-vetoed survivor. Every policy runs
-on every candidate - no short-circuit on the first veto - so the debug log
-always shows the complete scoreboard, not just whichever rule happened first.
+entry, then picks the lowest-penalty, non-rejected survivor. Every policy runs
+on every candidate - no short-circuit on the first rejection - so the debug
+log always shows the complete scoreboard, not just whichever rule fired first.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ class ScoredCandidate:
     candidate: Candidate
     total_penalty: float
     verdicts: tuple[Verdict, ...]
-    vetoed: bool
+    rejected: bool
 
 
 class CandidateSelector:
@@ -41,7 +41,7 @@ class CandidateSelector:
         self, candidates: Sequence[Candidate], ctx: TransitionContext
     ) -> ScoredCandidate | None:
         """
-        Score every candidate; return the lowest-penalty survivor, or None when all are vetoed.
+        Score every candidate; return the lowest-penalty survivor, or None when all are rejected.
 
         Ties resolve to whichever candidate appears earlier in ``candidates``.
 
@@ -49,7 +49,7 @@ class CandidateSelector:
         :param ctx: The shared per-transition facts every policy judges against.
         """
         scored = [self._score(candidate, ctx) for candidate in candidates]
-        survivors = [entry for entry in scored if not entry.vetoed]
+        survivors = [entry for entry in scored if not entry.rejected]
         if not survivors:
             return None
         return min(survivors, key=lambda entry: entry.total_penalty)
@@ -58,20 +58,20 @@ class CandidateSelector:
         """Evaluate every policy on one candidate and log its full scoreboard entry."""
         verdicts = tuple(policy.evaluate(candidate, ctx) for policy in self._policies)
         total_penalty = sum(verdict.penalty for verdict in verdicts)
-        vetoed = any(verdict.vetoed for verdict in verdicts)
+        rejected = any(verdict.rejected for verdict in verdicts)
         reasons = [verdict.reason for verdict in verdicts if verdict.reason]
         self._logger.debug(
-            "candidate source=%s bars=%d anchor=%s total=%.2f vetoed=%s reasons=%s",
+            "candidate source=%s bars=%d anchor=%s total=%.2f rejected=%s reasons=%s",
             candidate.spec.source,
             candidate.spec.bars,
             candidate.spec.anchor_s,
             total_penalty,
-            vetoed,
+            rejected,
             reasons,
         )
         return ScoredCandidate(
             candidate=candidate,
             total_penalty=total_penalty,
             verdicts=verdicts,
-            vetoed=vetoed,
+            rejected=rejected,
         )

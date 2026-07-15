@@ -1,4 +1,4 @@
-"""Tests for the candidate scoring policies: vetoes and soft penalties."""
+"""Tests for the candidate scoring policies: rejections and soft penalties."""
 
 from __future__ import annotations
 
@@ -78,31 +78,31 @@ _MASK = VocalMask(windows=[(0.0, 1.0)])
 class TestVerdict:
     """The Verdict value object's two constructors."""
 
-    def test_veto_sets_vetoed_true(self) -> None:
-        """A vetoed verdict reports vetoed=True with its reason."""
-        verdict = Verdict.veto("some reason")
+    def test_reject_sets_rejected_true(self) -> None:
+        """A rejecting verdict reports rejected=True with its reason."""
+        verdict = Verdict.reject("some reason")
 
-        assert verdict.vetoed is True
+        assert verdict.rejected is True
         assert verdict.reason == "some reason"
 
-    def test_ok_defaults_to_no_penalty_not_vetoed(self) -> None:
-        """An accepted verdict defaults to zero penalty and vetoed=False."""
+    def test_ok_defaults_to_no_penalty_not_rejected(self) -> None:
+        """An accepted verdict defaults to zero penalty and rejected=False."""
         verdict = Verdict.ok()
 
-        assert verdict.vetoed is False
+        assert verdict.rejected is False
         assert verdict.penalty == 0.0
 
     def test_ok_carries_penalty(self) -> None:
         """An accepted verdict can still carry a soft penalty."""
         verdict = Verdict.ok(7.5, "reason")
 
-        assert verdict.vetoed is False
+        assert verdict.rejected is False
         assert verdict.penalty == 7.5
         assert verdict.reason == "reason"
 
 
 class TestVocalCollisionPolicy:
-    """Veto/penalize simultaneous outgoing/incoming vocal overlap."""
+    """Reject/penalize simultaneous outgoing/incoming vocal overlap."""
 
     policy = VocalCollisionPolicy()
 
@@ -113,7 +113,7 @@ class TestVocalCollisionPolicy:
 
         verdict = self.policy.evaluate(candidate, ctx)
 
-        assert verdict.vetoed is False
+        assert verdict.rejected is False
         assert verdict.penalty == 0.0
 
     def test_neutral_when_in_scoring_mask_missing(self) -> None:
@@ -123,39 +123,39 @@ class TestVocalCollisionPolicy:
 
         verdict = self.policy.evaluate(candidate, ctx)
 
-        assert verdict.vetoed is False
+        assert verdict.rejected is False
         assert verdict.penalty == 0.0
 
-    def test_vetoes_at_collision_seconds_limit(self) -> None:
-        """Raw collision seconds at the limit vetoes the candidate."""
+    def test_rejects_at_collision_seconds_limit(self) -> None:
+        """Raw collision seconds at the limit rejects the candidate."""
         candidate = _candidate(collision=COLLISION_SECONDS_LIMIT, weighted=0.0)
         ctx = _ctx(vocal_out_scoring=_MASK, vocal_in_scoring=_MASK)
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is True
+        assert self.policy.evaluate(candidate, ctx).rejected is True
 
-    def test_no_veto_just_below_collision_seconds_limit(self) -> None:
-        """Raw collision seconds just under the limit does not veto."""
+    def test_no_rejection_just_below_collision_seconds_limit(self) -> None:
+        """Raw collision seconds just under the limit does not reject."""
         candidate = _candidate(collision=COLLISION_SECONDS_LIMIT - 0.01, weighted=0.0)
         ctx = _ctx(vocal_out_scoring=_MASK, vocal_in_scoring=_MASK)
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is False
+        assert self.policy.evaluate(candidate, ctx).rejected is False
 
-    def test_vetoes_at_weighted_collision_limit(self) -> None:
-        """Weighted (gain-integrated) collision at the limit vetoes the candidate."""
+    def test_rejects_at_weighted_collision_limit(self) -> None:
+        """Weighted (gain-integrated) collision at the limit rejects the candidate."""
         candidate = _candidate(collision=0.0, weighted=WEIGHTED_COLLISION_LIMIT)
         ctx = _ctx(vocal_out_scoring=_MASK, vocal_in_scoring=_MASK)
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is True
+        assert self.policy.evaluate(candidate, ctx).rejected is True
 
-    def test_no_veto_just_below_weighted_collision_limit(self) -> None:
-        """Weighted collision just under the limit does not veto."""
+    def test_no_rejection_just_below_weighted_collision_limit(self) -> None:
+        """Weighted collision just under the limit does not reject."""
         candidate = _candidate(collision=0.0, weighted=WEIGHTED_COLLISION_LIMIT - 0.01)
         ctx = _ctx(vocal_out_scoring=_MASK, vocal_in_scoring=_MASK)
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is False
+        assert self.policy.evaluate(candidate, ctx).rejected is False
 
     def test_penalty_quadratic_in_weighted_collision(self) -> None:
-        """Sub-limit penalty is quadratic: near-inaudible residue is cheap, near-veto is steep."""
+        """Sub-limit penalty is quadratic: near-inaudible residue is cheap, near-rejection is steep."""
         ctx = _ctx(vocal_out_scoring=_MASK, vocal_in_scoring=_MASK)
         low = _candidate(weighted=0.1)
         high = _candidate(weighted=0.2)
@@ -166,8 +166,8 @@ class TestVocalCollisionPolicy:
         assert low_penalty == pytest.approx((0.1 / WEIGHTED_COLLISION_LIMIT) ** 2 * 20.0)
         assert high_penalty == pytest.approx(4 * low_penalty)
 
-    def test_penalty_approaches_scale_at_the_veto_boundary(self) -> None:
-        """Just under the veto the penalty approaches the full scale (steep boundary)."""
+    def test_penalty_approaches_scale_at_the_rejection_boundary(self) -> None:
+        """Just under the rejection boundary the penalty approaches the full scale."""
         ctx = _ctx(vocal_out_scoring=_MASK, vocal_in_scoring=_MASK)
         near = _candidate(weighted=WEIGHTED_COLLISION_LIMIT - 1e-6)
 
@@ -175,7 +175,7 @@ class TestVocalCollisionPolicy:
 
 
 class TestVocalTruncationPolicy:
-    """Veto a candidate that cuts off an audible outgoing vocal phrase."""
+    """Reject a candidate that cuts off an audible outgoing vocal phrase."""
 
     policy = VocalTruncationPolicy()
 
@@ -186,64 +186,64 @@ class TestVocalTruncationPolicy:
 
         verdict = self.policy.evaluate(candidate, ctx)
 
-        assert verdict.vetoed is False
+        assert verdict.rejected is False
         assert verdict.penalty == 0.0
 
-    def test_vetoes_when_audible_vocal_extends_past_the_anchor(self) -> None:
-        """A phrase cut off by the anchor trim (beyond 0.25s) vetoes the candidate."""
+    def test_rejects_when_audible_vocal_extends_past_the_anchor(self) -> None:
+        """A phrase cut off by the anchor trim (beyond 0.25s) rejects the candidate."""
         candidate = _candidate(duration=20.0)
         ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(18.0, 21.0)]))
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is True
+        assert self.policy.evaluate(candidate, ctx).rejected is True
 
-    def test_no_veto_at_exactly_the_truncation_threshold(self) -> None:
-        """Exactly 0.25s of cut vocal does not veto (strictly-greater test)."""
+    def test_no_rejection_at_exactly_the_truncation_threshold(self) -> None:
+        """Exactly 0.25s of cut vocal does not reject (strictly-greater test)."""
         candidate = _candidate(duration=20.0)
         ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(20.0, 20.25)]))
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is False
+        assert self.policy.evaluate(candidate, ctx).rejected is False
 
-    def test_no_veto_when_the_vocal_rides_the_fade_untruncated(self) -> None:
+    def test_no_rejection_when_the_vocal_rides_the_fade_untruncated(self) -> None:
         """A long phrase entirely inside the fade window is normal, never a truncation."""
         candidate = _candidate(duration=20.0)
         ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(5.0, 19.5)]))
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is False
+        assert self.policy.evaluate(candidate, ctx).rejected is False
 
     def test_inaudible_vocal_past_the_rms_boundary_never_counts(self) -> None:
         """Windows beyond audio_end are inaudible and cannot register as truncation."""
         candidate = _candidate(duration=20.0)
         ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(46.0, 50.0)]))
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is False
+        assert self.policy.evaluate(candidate, ctx).rejected is False
 
 
 class TestAudibleTrimPolicy:
-    """Veto (on a short fade) or penalize trimming audible outgoing material."""
+    """Reject (on a short fade) or penalize trimming audible outgoing material."""
 
     policy = AudibleTrimPolicy()
 
-    def test_vetoes_when_short_fade_trims_past_its_own_duration(self) -> None:
-        """A crossfade at the short-fade limit that trims more than it spans vetoes."""
+    def test_rejects_when_short_fade_trims_past_its_own_duration(self) -> None:
+        """A crossfade at the short-fade limit that trims more than it spans is rejected."""
         candidate = _candidate(duration=SHORT_FADE_SECONDS, trim=SHORT_FADE_SECONDS + 0.5)
         # the hard rule is vocal-protection-scoped: it needs a vocal timeline
         ctx = _ctx(vocal_out_scoring=VocalMask(windows=[]))
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is True
+        assert self.policy.evaluate(candidate, ctx).rejected is True
 
-    def test_no_veto_when_trim_equals_short_fade_duration(self) -> None:
-        """A short fade whose trim exactly equals its duration does not veto (strict >)."""
+    def test_no_rejection_when_trim_equals_short_fade_duration(self) -> None:
+        """A short fade whose trim exactly equals its duration does not reject (strict >)."""
         candidate = _candidate(duration=SHORT_FADE_SECONDS, trim=SHORT_FADE_SECONDS)
         ctx = _ctx(vocal_out_scoring=VocalMask(windows=[]))
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is False
+        assert self.policy.evaluate(candidate, ctx).rejected is False
 
-    def test_no_veto_when_fade_longer_than_short_fade_limit(self) -> None:
-        """A fade longer than the short-fade limit never vetoes on trim, however large."""
+    def test_no_rejection_when_fade_longer_than_short_fade_limit(self) -> None:
+        """A fade longer than the short-fade limit never rejects on trim, however large."""
         candidate = _candidate(duration=SHORT_FADE_SECONDS + 0.01, trim=SHORT_FADE_SECONDS + 5.0)
         ctx = _ctx()
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is False
+        assert self.policy.evaluate(candidate, ctx).rejected is False
 
     def test_penalty_proportional_to_trim(self) -> None:
         """Penalty scales linearly (1.0/s) with audible outgoing trim, doubling with it."""
@@ -312,14 +312,14 @@ class TestOverlapPreferencePolicy:
         assert outgoing_penalty == pytest.approx(12.0)
         assert outgoing_penalty > incoming_penalty
 
-    def test_never_vetoes(self) -> None:
+    def test_never_rejects(self) -> None:
         """This is a pure soft-scoring policy: it never disqualifies a candidate."""
         candidate = _candidate(
             bars=1, ideal=16, tier=TransitionTier.QUICK_FADE, one_sided="outgoing"
         )
         ctx = _ctx(tier=TransitionTier.FULL_BLEND)
 
-        assert self.policy.evaluate(candidate, ctx).vetoed is False
+        assert self.policy.evaluate(candidate, ctx).rejected is False
 
 
 class TestAnchorAlignmentPolicy:

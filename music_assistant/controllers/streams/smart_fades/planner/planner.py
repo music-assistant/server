@@ -4,8 +4,8 @@ Smart Fades - the candidate/policy transition planner.
 ``SmartCrossFadePlanner.plan()`` is a thin orchestration of the pipeline:
 build the immutable ``TransitionContext``, let the generators propose
 candidate specs, build each into a timed candidate, score them all with the
-veto/penalty policies, finalize the winner's EQ - or, when every candidate
-is vetoed, ship the click-free emergency handoff. Alternative transition
+rejection/penalty policies, finalize the winner's EQ - or, when every
+candidate is rejected, ship the click-free emergency handoff. Alternative
 strategies slot in as sibling ``TransitionPlanner`` subclasses.
 """
 
@@ -87,7 +87,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
             raise SmartFadeNotApplicable("no feasible transition candidate")
         winner = CandidateSelector(default_policies(), self.logger).select(candidates, ctx)
         if winner is None:
-            # every candidate breached a hard veto: ship the click-free handoff
+            # every candidate breached a hard rejection: ship the click-free handoff
             plan = EmergencyHandoffFactory(ctx, factory, self.logger).build()
         else:
             plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)

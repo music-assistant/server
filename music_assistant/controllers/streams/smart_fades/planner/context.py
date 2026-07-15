@@ -43,14 +43,7 @@ from music_assistant.controllers.streams.smart_fades.structure import (
     detect_mastered_fadeout,
 )
 from music_assistant.controllers.streams.smart_fades.vocal import (
-    MAX_VOCAL_GAP,
-    MIN_VOCAL_GAP,
-    MIN_VOCAL_RUN,
-    VOCAL_CLOSE_THRESHOLD,
-    VOCAL_LEFT_PADDING,
-    VOCAL_OPEN_THRESHOLD,
-    VOCAL_RIGHT_PADDING,
-    VocalHysteresisConfig,
+    DEFAULT_VOCAL_CONFIG,
     VocalMask,
     build_vocal_windows,
     mask_saturated,
@@ -63,7 +56,10 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.streams.smart_fades.models import BandProfile
     from music_assistant.controllers.streams.smart_fades.structure import CodaZone
-    from music_assistant.controllers.streams.smart_fades.vocal import VocalTimeline
+    from music_assistant.controllers.streams.smart_fades.vocal import (
+        VocalHysteresisConfig,
+        VocalTimeline,
+    )
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 # Only apply time stretching if BPM difference is < this %
@@ -99,17 +95,6 @@ coda_total_floor: float = 0.15
 coda_min_seconds: float = 4.0
 coda_min_bars: int = 2
 coda_level_hold: float = 0.5
-
-# FireRed hysteresis: a run opens at OPEN and only closes below CLOSE so a phrase's
-# quieter syllables don't fragment its window; padding absorbs the detector's
-# attack/release lag and the gap bridges a breath inside one phrase.
-vocal_open_threshold: float = VOCAL_OPEN_THRESHOLD
-vocal_close_threshold: float = VOCAL_CLOSE_THRESHOLD
-vocal_left_padding: float = VOCAL_LEFT_PADDING
-vocal_right_padding: float = VOCAL_RIGHT_PADDING
-vocal_min_run: float = MIN_VOCAL_RUN
-vocal_min_gap: float = MIN_VOCAL_GAP
-vocal_max_gap: float = MAX_VOCAL_GAP
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,15 +454,7 @@ def _build_vocal_masks(
     if out_timeline is None or in_timeline is None:
         return None, None, None, None
     duration = fade_out_analysis.duration or buffer_offset
-    config = VocalHysteresisConfig(
-        open_threshold=vocal_open_threshold,
-        close_threshold=vocal_close_threshold,
-        left_padding=vocal_left_padding,
-        right_padding=vocal_right_padding,
-        min_run=vocal_min_run,
-        min_gap=vocal_min_gap,
-        max_gap=vocal_max_gap,
-    )
+    config = DEFAULT_VOCAL_CONFIG
     # the scoring variant differs only in padding: padded edges are silence,
     # so they place cuts and anchors but never count as collision
     scoring_config = replace(config, left_padding=0.0, right_padding=0.0)

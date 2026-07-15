@@ -2,9 +2,9 @@
 Smart Fades - candidate scoring policies.
 
 Each ``Policy`` independently judges one built ``Candidate`` against the
-shared ``TransitionContext``, returning a ``Verdict``: either an outright veto
-(the candidate is disqualified) or a soft penalty folded into ranking against
-other surviving candidates. Keeping each rule its own class lets selection
+shared ``TransitionContext``, returning a ``Verdict``: either an outright
+rejection (the candidate is disqualified) or a soft penalty folded into
+ranking against other surviving candidates. Keeping each rule its own class lets selection
 compose/reorder/disable them without touching the scoring math itself.
 """
 
@@ -35,16 +35,16 @@ _TIER_ORDER: tuple[TransitionTier, ...] = (
 
 @dataclass(frozen=True, slots=True)
 class Verdict:
-    """One policy's judgment on a candidate: a veto, or an accept with an optional penalty."""
+    """One policy's judgment on a candidate: a rejection, or an accept with an optional penalty."""
 
     penalty: float = 0.0
-    vetoed: bool = False
+    rejected: bool = False
     reason: str = ""
 
     @classmethod
-    def veto(cls, reason: str) -> Verdict:
+    def reject(cls, reason: str) -> Verdict:
         """Disqualify a candidate outright, with a human-readable reason."""
-        return cls(vetoed=True, reason=reason)
+        return cls(rejected=True, reason=reason)
 
     @classmethod
     def ok(cls, penalty: float = 0.0, reason: str = "") -> Verdict:
@@ -61,7 +61,7 @@ class Policy(ABC):
 
 
 class VocalCollisionPolicy(Policy):
-    """Veto or penalize simultaneous outgoing/incoming vocal overlap inside the crossfade."""
+    """Reject or penalize simultaneous outgoing/incoming vocal overlap inside the crossfade."""
 
     collision_seconds_limit: float = COLLISION_SECONDS_LIMIT
     weighted_collision_limit: float = WEIGHTED_COLLISION_LIMIT
@@ -76,16 +76,16 @@ class VocalCollisionPolicy(Policy):
             metrics.collision_seconds >= self.collision_seconds_limit
             or metrics.weighted_collision_seconds >= self.weighted_collision_limit
         ):
-            return Verdict.veto("vocal collision exceeds the guard limit")
+            return Verdict.reject("vocal collision exceeds the guard limit")
         # quadratic in the normalized residue: overlap is a threshold percept,
         # so near-inaudible low-gain residue stays cheap while the cost climbs
-        # steeply toward the veto boundary (panel-recommended shape)
+        # steeply toward the rejection boundary (panel-recommended shape)
         normalized = metrics.weighted_collision_seconds / self.weighted_collision_limit
         return Verdict.ok(normalized**2 * self.weighted_penalty_scale)
 
 
 class VocalTruncationPolicy(Policy):
-    """Veto a candidate that cuts off an audible outgoing vocal phrase."""
+    """Reject a candidate that cuts off an audible outgoing vocal phrase."""
 
     # An audible outgoing phrase cut by more than this many seconds reads as a
     # truncation rather than an inaudible tail sliver
@@ -104,12 +104,12 @@ class VocalTruncationPolicy(Policy):
             if min(right, ctx.audio_end) > max(left, anchor)
         )
         if truncated > self.max_truncated_vocal:
-            return Verdict.veto("truncates an audible outgoing vocal phrase")
+            return Verdict.reject("truncates an audible outgoing vocal phrase")
         return Verdict.ok()
 
 
 class AudibleTrimPolicy(Policy):
-    """Veto a short fade that trims more audible outgoing material than it spans, else penalize it."""
+    """Reject a short fade that trims more audible outgoing material than it spans, else penalize."""
 
     short_fade_seconds: float = SHORT_FADE_SECONDS
     trim_penalty_per_second: float = 1.0
@@ -125,7 +125,7 @@ class AudibleTrimPolicy(Policy):
             and plan.crossfade_duration <= self.short_fade_seconds
             and trim > plan.crossfade_duration
         ):
-            return Verdict.veto("audible trim exceeds a short fade's own duration")
+            return Verdict.reject("audible trim exceeds a short fade's own duration")
         return Verdict.ok(trim * self.trim_penalty_per_second)
 
 
