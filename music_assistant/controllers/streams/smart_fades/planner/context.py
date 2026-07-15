@@ -25,7 +25,6 @@ from music_assistant.controllers.streams.smart_fades.bands import (
 )
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
-    MIX_OUT_ENERGY_FRACTION,
     SMART_CROSSFADE_DURATION,
     detect_effective_audio_end,
     detect_groove_entry,
@@ -64,37 +63,34 @@ if TYPE_CHECKING:
 
 # Only apply time stretching if BPM difference is < this %
 # (research: the tier-1 dance-cluster population triples at ±8 vs ±5)
-time_stretch_bpm_percentage_threshold: float = 8.0
-
-# Fraction of sustained energy below which the outro no longer carries the mix
-mix_out_energy_fraction: float = MIX_OUT_ENERGY_FRACTION
+TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD: float = 8.0
 
 # A track qualifies for kick-following anchors when its median active-bar
 # low-band power fraction reaches this share of its total power
-low_timing_eligibility: float = 0.10
+_LOW_TIMING_ELIGIBILITY: float = 0.10
 # Reference multiplier a bar's low power must reach to count as "kick present"
-low_anchor_bar_fraction: float = 0.5
+_LOW_ANCHOR_BAR_FRACTION: float = 0.5
 # Beyond this many outgoing bars of disagreement with the full-band anchor,
 # the low anchor is untrustworthy and the full-band anchor wins
-low_anchor_divergence_bars: int = 16
+_LOW_ANCHOR_DIVERGENCE_BARS: int = 16
 
 # D2 mastered-fadeout gates: engineered fades run 5-15s past -10dB with a
 # frozen spectrum (a post-mix gain ramp); musical decrescendos rarely
 # exceed ~6dB and re-orchestrate (band fractions move)
-fade_min_bars: int = 4
-fade_drop_db: float = 10.0
-fade_monotone_share: float = 0.8
-fade_jitter_db: float = 0.5
-fade_frac_drift: float = 0.15
-fade_audible_floor: float = 0.01
-fade_frac_floor: float = 0.10
+_FADE_MIN_BARS: int = 4
+_FADE_DROP_DB: float = 10.0
+_FADE_MONOTONE_SHARE: float = 0.8
+_FADE_JITTER_DB: float = 0.5
+_FADE_FRAC_DRIFT: float = 0.15
+_FADE_AUDIBLE_FLOOR: float = 0.01
+_FADE_FRAC_FLOOR: float = 0.10
 # D4 coda gates: the bed must still carry audible program under an
 # equal-power fade; one musical gesture minimum; designed outros sustain
 # while any fade halves across the zone
-coda_total_floor: float = 0.15
-coda_min_seconds: float = 4.0
-coda_min_bars: int = 2
-coda_level_hold: float = 0.5
+_CODA_TOTAL_FLOOR: float = 0.15
+_CODA_MIN_SECONDS: float = 4.0
+_CODA_MIN_BARS: int = 2
+_CODA_LEVEL_HOLD: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,13 +234,13 @@ def build_transition_context(
             outgoing_profile,
             buffer_offset,
             fade_out_analysis.duration or 0.0,
-            min_bars=fade_min_bars,
-            drop_db=fade_drop_db,
-            monotone_share=fade_monotone_share,
-            jitter_db=fade_jitter_db,
-            frac_drift=fade_frac_drift,
-            audible_floor=fade_audible_floor,
-            frac_floor=fade_frac_floor,
+            min_bars=_FADE_MIN_BARS,
+            drop_db=_FADE_DROP_DB,
+            monotone_share=_FADE_MONOTONE_SHARE,
+            jitter_db=_FADE_JITTER_DB,
+            frac_drift=_FADE_FRAC_DRIFT,
+            audible_floor=_FADE_AUDIBLE_FLOOR,
+            frac_floor=_FADE_FRAC_FLOOR,
         )
         if outgoing_profile is not None
         else None
@@ -325,7 +321,6 @@ def _cue_outgoing_tail(
         outgoing.analysis.duration,
         buffer_duration,
         outgoing.bpm,
-        fraction=mix_out_energy_fraction,
         beats_per_bar=outgoing.beats_per_bar,
     )
     kick_anchor = _apply_low_mix_out(outgoing, outgoing_profile, raw_mix_out, buffer_offset)
@@ -405,13 +400,13 @@ def _apply_low_mix_out(
     if not _is_low_timing_eligible(outgoing_profile):
         return None
     assert outgoing_profile is not None  # narrowed by the eligibility check
-    low_mix_out = detect_low_mix_out(outgoing_profile, low_anchor_bar_fraction)
+    low_mix_out = detect_low_mix_out(outgoing_profile, _LOW_ANCHOR_BAR_FRACTION)
     if low_mix_out is None:
         return None
     low_mix_out_local = low_mix_out - buffer_offset
     bar_seconds = outgoing.beats_per_bar * 60.0 / outgoing.bpm
     divergence_bars = abs(low_mix_out_local - full_band_mix_out) / bar_seconds
-    if divergence_bars > low_anchor_divergence_bars:
+    if divergence_bars > _LOW_ANCHOR_DIVERGENCE_BARS:
         return None
     if low_mix_out_local < MIN_EFFECTIVE_FADE_BUFFER:
         return None
@@ -425,14 +420,14 @@ def _is_low_timing_eligible(profile: BandProfile | None) -> bool:
     if profile is None:
         return False
     f_low = profile.bar_power["low"][profile.active] / profile.total_power[profile.active]
-    return float(np.median(f_low)) >= low_timing_eligibility
+    return float(np.median(f_low)) >= _LOW_TIMING_ELIGIBILITY
 
 
 def _detect_incoming_entry(incoming: Deck, incoming_profile: BandProfile | None) -> float:
     """Detect B's groove entry, preferring the kick when B is low-timing eligible."""
     if _is_low_timing_eligible(incoming_profile):
         assert incoming_profile is not None  # narrowed by the eligibility check
-        low_entry = detect_low_groove_entry(incoming_profile, low_anchor_bar_fraction)
+        low_entry = detect_low_groove_entry(incoming_profile, _LOW_ANCHOR_BAR_FRACTION)
         if low_entry is not None and low_entry < SMART_CROSSFADE_DURATION:
             return low_entry
     return detect_groove_entry(
@@ -539,7 +534,7 @@ def choose_tier(
     anchored_downbeats = outgoing.downbeats[outgoing.downbeats <= tier_anchor]
     if not _tail_is_blendable(anchored_downbeats):
         return cross_meter, TransitionTier.QUICK_FADE
-    if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > time_stretch_bpm_percentage_threshold:
+    if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
         return cross_meter, TransitionTier.QUICK_FADE
     out_a, in_a = outgoing.analysis, incoming.analysis
     # the 16-bar tier is earned by a verifiable energy anchor: without RMS data
@@ -594,10 +589,10 @@ def _detect_coda_zone(
         fade_onset_media,
         tail_start,
         duration,
-        total_floor=coda_total_floor,
-        min_seconds=coda_min_seconds,
-        min_bars=coda_min_bars,
-        level_hold=coda_level_hold,
+        total_floor=_CODA_TOTAL_FLOOR,
+        min_seconds=_CODA_MIN_SECONDS,
+        min_bars=_CODA_MIN_BARS,
+        level_hold=_CODA_LEVEL_HOLD,
     )
 
 
@@ -613,7 +608,7 @@ def _coda_earliest(
     kick_end: float | None = None
     if _is_low_timing_eligible(outgoing_profile):
         assert outgoing_profile is not None  # narrowed by the eligibility check
-        kick_end = detect_low_mix_out(outgoing_profile, low_anchor_bar_fraction)
+        kick_end = detect_low_mix_out(outgoing_profile, _LOW_ANCHOR_BAR_FRACTION)
         if kick_end is not None:
             # detect_low_mix_out returns the last kick bar's START; the coda
             # begins after that bar rings out

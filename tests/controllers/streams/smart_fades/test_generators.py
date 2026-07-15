@@ -10,13 +10,13 @@ import numpy as np
 from music_assistant.controllers.streams.smart_fades.bands import build_band_profile
 from music_assistant.controllers.streams.smart_fades.models import Deck, TransitionTier
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    _INSTRUMENTAL_BLEND_BARS,
     CodaAnchorGenerator,
     EnergyLadderGenerator,
     ProtectiveAnchorGenerator,
     VocalOnsetEntryGenerator,
     _entry_options,
     default_generators,
-    instrumental_blend_bars,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
@@ -168,11 +168,11 @@ class TestEnergyLadderGenerator:
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
 
         specs = list(EnergyLadderGenerator().generate(ctx))
-        sixteens = [s for s in specs if s.bars == instrumental_blend_bars]
+        sixteens = [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
 
         assert sixteens
         assert all(s.one_sided_vocal is None for s in sixteens)
-        assert all(s.ideal_bars == instrumental_blend_bars for s in sixteens)
+        assert all(s.ideal_bars == _INSTRUMENTAL_BLEND_BARS for s in sixteens)
 
     def test_one_sided_instrumental_confirmed_tags_extra_16_bar_rung(self) -> None:
         """A near-instrumental outgoing deck, cross-check confirmed, earns a tagged 16-bar rung."""
@@ -181,7 +181,7 @@ class TestEnergyLadderGenerator:
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
 
         specs = list(EnergyLadderGenerator().generate(ctx))
-        sixteens = [s for s in specs if s.bars == instrumental_blend_bars]
+        sixteens = [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
 
         assert sixteens
         assert all(s.one_sided_vocal == "incoming" for s in sixteens)
@@ -194,7 +194,7 @@ class TestEnergyLadderGenerator:
 
         specs = list(EnergyLadderGenerator().generate(ctx))
 
-        assert not [s for s in specs if s.bars == instrumental_blend_bars]
+        assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
 
     def test_one_sided_16_bars_denied_on_tempo_blend_tier(self) -> None:
         """A cross-check-confirmed pair on the TEMPO_BLEND tier earns no one-sided 16 bars."""
@@ -202,7 +202,7 @@ class TestEnergyLadderGenerator:
         specs = list(EnergyLadderGenerator().generate(ctx))
 
         assert not [s for s in specs if s.one_sided_vocal is not None]
-        assert not [s for s in specs if s.bars == instrumental_blend_bars]
+        assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
 
     def test_one_sided_16_bars_denied_on_quick_fade_tier(self) -> None:
         """A cross-check-confirmed pair on the QUICK_FADE tier earns no one-sided 16 bars."""
@@ -210,7 +210,7 @@ class TestEnergyLadderGenerator:
         specs = list(EnergyLadderGenerator().generate(ctx))
 
         assert not [s for s in specs if s.one_sided_vocal is not None]
-        assert not [s for s in specs if s.bars == instrumental_blend_bars]
+        assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
 
     def test_one_sided_16_bars_denied_on_cross_meter_pair(self) -> None:
         """A cross-meter (quick-fade) pair earns no one-sided 16 bars either."""
@@ -218,7 +218,7 @@ class TestEnergyLadderGenerator:
         specs = list(EnergyLadderGenerator().generate(ctx))
 
         assert not [s for s in specs if s.one_sided_vocal is not None]
-        assert not [s for s in specs if s.bars == instrumental_blend_bars]
+        assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
 
     def _confirmed_one_sided_ctx(self, **overrides: object) -> TransitionContext:
         """Build the cross-check-confirmed one-sided context, then force the given tier facts."""

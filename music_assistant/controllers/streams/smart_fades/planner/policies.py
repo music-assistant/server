@@ -140,23 +140,15 @@ class OverlapPreferencePolicy(Policy):
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
         spec = candidate.spec
-        penalty = self.rung_penalty_per_step * self._rung_gap(spec.bars, candidate.ideal_bars)
-        penalty += self.tier_penalty_per_step * self._tier_step(spec.tier, ctx.tier)
+        rung_gap = RUNG_LADDER.index(spec.bars) - RUNG_LADDER.index(candidate.ideal_bars)
+        tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
+        penalty = self.rung_penalty_per_step * rung_gap
+        penalty += self.tier_penalty_per_step * tier_steps
         if spec.one_sided_vocal == "incoming":
             penalty += self.one_sided_incoming_penalty
         elif spec.one_sided_vocal == "outgoing":
             penalty += self.one_sided_outgoing_penalty
         return Verdict.ok(penalty)
-
-    @staticmethod
-    def _rung_gap(bars: int, ideal_bars: int) -> int:
-        """Ladder-index distance of ``bars`` below ``ideal_bars`` in the (16,8,4,2,1) ladder."""
-        return RUNG_LADDER.index(bars) - RUNG_LADDER.index(ideal_bars)
-
-    @staticmethod
-    def _tier_step(spec_tier: TransitionTier, ctx_tier: TransitionTier) -> int:
-        """How many rungs ``spec_tier`` sits below ``ctx_tier`` on the ambition ladder, floored at 0."""
-        return max(0, _TIER_ORDER.index(spec_tier) - _TIER_ORDER.index(ctx_tier))
 
 
 class AnchorAlignmentPolicy(Policy):

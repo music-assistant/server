@@ -90,10 +90,10 @@ def _swap_notch(
     swap_at = assembler._choose_swap_point(plan.crossfade_duration, plan.fadein_trim_start)
     swap_len = min(
         max(
-            assembly.bass_swap_fraction * plan.crossfade_duration,
-            assembly.bass_swap_min_bars * bar_in,
+            assembly._BASS_SWAP_FRACTION * plan.crossfade_duration,
+            assembly._BASS_SWAP_MIN_BARS * bar_in,
         ),
-        assembly.bass_swap_max_bars * bar_in,
+        assembly._BASS_SWAP_MAX_BARS * bar_in,
         plan.crossfade_duration,
     )
     swap_at = min(swap_at, plan.crossfade_duration - swap_len / 2)
@@ -755,7 +755,7 @@ def _predicted_power_curve(
     ratio = plan.tempo_plan.steps[-1][1] if plan.tempo_plan else 1.0
     cf_start_input = plan.fade_out_window - duration * ratio
     assembler = PlanAssembler(ctx, LOGGER)
-    w_a_out, w_b_in = assembler._swap_windows(plan.fade_out_window, assembly.bass_swap_window_bars)
+    w_a_out, w_b_in = assembler._swap_windows(plan.fade_out_window, assembly._BASS_SWAP_WINDOW_BARS)
     assert ctx.outgoing_profile is not None
     assert ctx.incoming_profile is not None
     f_a = {
@@ -878,7 +878,7 @@ def _unguarded_plan(
     """Plan with the dip guard effectively disabled (budget set beyond any real dip)."""
     # scoped so a guarded plan built later in the same test sees the real budget
     with monkeypatch.context() as scoped:
-        scoped.setattr(assembly, "max_predicted_dip_db", 1000.0)
+        scoped.setattr(assembly, "_MAX_PREDICTED_DIP_DB", 1000.0)
         return SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
 
 
@@ -938,7 +938,7 @@ class TestPredictedDipGuard:
         curve = _predicted_power_curve(ctx, plan)
         notch = _swap_notch(ctx, PlanAssembler(ctx, LOGGER), plan)
         dip = _max_plateau_to_valley_drop_db(curve, exclude=notch)
-        assert dip <= assembly.max_predicted_dip_db + 0.2
+        assert dip <= assembly._MAX_PREDICTED_DIP_DB + 0.2
         # remediation shrank the mid depth (or bypassed it) vs the gate's value
         if eq.mid_out is not None:
             assert abs(eq.mid_out.steps[-1][1]) < abs(gate_depth)
@@ -954,10 +954,10 @@ class TestPredictedDipGuard:
         curve = _predicted_power_curve(ctx, plan)
         notch = _swap_notch(ctx, PlanAssembler(ctx, LOGGER), plan)
         # the notch itself dips well past the budget...
-        assert _max_plateau_to_valley_drop_db(curve) > assembly.max_predicted_dip_db
+        assert _max_plateau_to_valley_drop_db(curve) > assembly._MAX_PREDICTED_DIP_DB
         # ...but outside it the plan is within budget, so nothing is remediated:
         assert _max_plateau_to_valley_drop_db(curve, exclude=notch) <= (
-            assembly.max_predicted_dip_db
+            assembly._MAX_PREDICTED_DIP_DB
         )
         assert eq.low_out is not None
         assert eq.low_out.steps[-1][1] == pytest.approx(-26.0)
@@ -966,7 +966,7 @@ class TestPredictedDipGuard:
         # ramp span keeps the shipped proportional length (half the overlap),
         # clamped to the 8-bar ceiling — no steepening remediation happened
         bar_in = 4 * 60.0 / ctx.incoming.bpm
-        expected_span = min(plan.crossfade_duration / 2, assembly.bass_swap_max_bars * bar_in)
+        expected_span = min(plan.crossfade_duration / 2, assembly._BASS_SWAP_MAX_BARS * bar_in)
         ramp = eq.low_in.steps[1:]
         assert ramp[-1][0] - ramp[0][0] == pytest.approx(expected_span, rel=0.05)
 
@@ -979,7 +979,7 @@ class TestPredictedDipGuard:
         curve = _predicted_power_curve(ctx, plan)
         notch = _swap_notch(ctx, PlanAssembler(ctx, LOGGER), plan)
         assert _max_plateau_to_valley_drop_db(curve, exclude=notch) <= (
-            assembly.max_predicted_dip_db
+            assembly._MAX_PREDICTED_DIP_DB
         )
         assert eq.mid_out is None
         assert eq.mid_in is None
@@ -1017,7 +1017,7 @@ class TestPredictedDipGuard:
         bar_in = 4 * 60.0 / 120.0
         ramp = eq.low_in.steps[1:]
         span = ramp[-1][0] - ramp[0][0]
-        assert span == pytest.approx(assembly.bass_swap_min_bars * bar_in, rel=0.01)
+        assert span == pytest.approx(assembly._BASS_SWAP_MIN_BARS * bar_in, rel=0.01)
 
     def test_bass_light_pair_gets_no_notch_exemption(self) -> None:
         """No low swap engaged: the notch never exempts a sample (no handover to exempt)."""
@@ -1074,7 +1074,7 @@ class TestBandConservation:
         from unity across its whole ramp (that is the handover), so a fixed
         ≤1-bar notch as literally read in the plan would be violated by any
         shipped ramp longer than ~1 bar (this pair's ramps are 2-8 bars by
-        design, see ``bass_swap_min_bars``/``bass_swap_max_bars``). Outside
+        design, see ``_BASS_SWAP_MIN_BARS``/``_BASS_SWAP_MAX_BARS``). Outside
         the ramp, one side always sits at its 0dB/unengaged endpoint, so the
         invariant holds trivially there.
         """
@@ -1084,7 +1084,7 @@ class TestBandConservation:
         cf_start_input = plan.fade_out_window - duration * ratio
         assembler = PlanAssembler(ctx, LOGGER)
         w_a_out, w_b_in = assembler._swap_windows(
-            plan.fade_out_window, assembly.bass_swap_window_bars
+            plan.fade_out_window, assembly._BASS_SWAP_WINDOW_BARS
         )
         assert ctx.outgoing_profile is not None
         assert ctx.incoming_profile is not None
@@ -1115,19 +1115,19 @@ class TestBandConservation:
         out, inc = _bands_pair(0.4, 0.4)
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
         plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
-        assert self._conserves(ctx, plan, "low", assembly.low_gate_lo)
+        assert self._conserves(ctx, plan, "low", assembly._LOW_GATE_LO)
 
     def test_holds_for_mid_and_low_engaged_plan(self) -> None:
         """Representative engaged plan: both low and mid swaps engaged (_rich_pair)."""
         out, inc = _rich_pair()
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
         plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
-        assert self._conserves(ctx, plan, "low", assembly.low_gate_lo)
-        assert self._conserves(ctx, plan, "mid", assembly.mid_gate_lo)
+        assert self._conserves(ctx, plan, "low", assembly._LOW_GATE_LO)
+        assert self._conserves(ctx, plan, "mid", assembly._MID_GATE_LO)
 
     def test_holds_for_wash_mode_plan(self) -> None:
         """Representative engaged plan: cymbal-wash mode on the high band."""
         out, inc = _wash_pair()
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
         plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
-        assert self._conserves(ctx, plan, "high", assembly.high_gate_lo)
+        assert self._conserves(ctx, plan, "high", assembly._HIGH_GATE_LO)

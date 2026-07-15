@@ -45,7 +45,7 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     merge_windows,
 )
 
-from .context import choose_tier, time_stretch_bpm_percentage_threshold
+from .context import TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD, choose_tier
 
 if TYPE_CHECKING:
     import logging
@@ -62,21 +62,21 @@ if TYPE_CHECKING:
 # transitions cluster at 32 beats = 8 bars; the doubled 16-bar blend is
 # earned only when FireRed shows both decks near-instrumental, where the
 # long exposure carries no vocal-collision risk)
-full_blend_bars: int = 8
-instrumental_blend_bars: int = 16
+_FULL_BLEND_BARS: int = 8
+_INSTRUMENTAL_BLEND_BARS: int = 16
 # vocal duty (unpadded mask coverage) at or under this on BOTH decks
 # qualifies as near-instrumental
-instrumental_duty_max: float = 0.05
-tempo_blend_bars: int = 8
+_INSTRUMENTAL_DUTY_MAX: float = 0.05
+_TEMPO_BLEND_BARS: int = 8
 # QUICK_FADE bars by BPM incompatibility: (max diff %, bars); beyond -> 1 bar
-quick_fade_ladder: tuple[tuple[float, int], ...] = ((12.0, 4), (20.0, 2))
+_QUICK_FADE_LADDER: tuple[tuple[float, int], ...] = ((12.0, 4), (20.0, 2))
 # phrase-aligned rung set every ladder walks, largest first
 RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
 
 # Deep-trim guard: a bar is protected when its low band is silent but its
 # voice/melody bands are active (cutting there beheads a sung intro)
-trim_guard_low_floor: float = 0.25
-trim_guard_voice_floor: float = 0.4
+_TRIM_GUARD_LOW_FLOOR: float = 0.25
+_TRIM_GUARD_VOICE_FLOOR: float = 0.4
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +116,7 @@ def earns_instrumental_blend(ctx: TransitionContext) -> bool:
     if duties is None:
         return False
     out_duty, in_duty = duties
-    return out_duty <= instrumental_duty_max and in_duty <= instrumental_duty_max
+    return out_duty <= _INSTRUMENTAL_DUTY_MAX and in_duty <= _INSTRUMENTAL_DUTY_MAX
 
 
 def bars_ladder(ctx: TransitionContext, tier: TransitionTier) -> list[int]:
@@ -124,14 +124,14 @@ def bars_ladder(ctx: TransitionContext, tier: TransitionTier) -> list[int]:
     if tier is TransitionTier.QUICK_FADE:
         # a mismatched meter has no shared bar grid to blend across; cap short
         # regardless of how close the tempos happen to be
-        ladder = ((0.0, 2),) if ctx.cross_meter else quick_fade_ladder
+        ladder = ((0.0, 2),) if ctx.cross_meter else _QUICK_FADE_LADDER
         ideal = next((bars for limit, bars in ladder if ctx.bpm_diff_percent <= limit), 1)
     elif tier is TransitionTier.TEMPO_BLEND:
-        ideal = tempo_blend_bars
+        ideal = _TEMPO_BLEND_BARS
     elif earns_instrumental_blend(ctx):
-        ideal = instrumental_blend_bars
+        ideal = _INSTRUMENTAL_BLEND_BARS
     else:
-        ideal = full_blend_bars
+        ideal = _FULL_BLEND_BARS
     return [bars for bars in RUNG_LADDER if bars <= ideal]
 
 
@@ -185,16 +185,16 @@ class EnergyLadderGenerator(CandidateGenerator):
         if one_sided is None:
             return
         for anchor in anchors:
-            entries = [None] if anchor is None else _entry_options(ctx, instrumental_blend_bars)
+            entries = [None] if anchor is None else _entry_options(ctx, _INSTRUMENTAL_BLEND_BARS)
             for entry in entries:
                 yield CandidateSpec(
                     tier=ctx.tier,
-                    bars=instrumental_blend_bars,
+                    bars=_INSTRUMENTAL_BLEND_BARS,
                     anchor_s=anchor,
                     entry_s=entry,
                     source=self.name,
                     one_sided_vocal=one_sided,
-                    ideal_bars=instrumental_blend_bars,
+                    ideal_bars=_INSTRUMENTAL_BLEND_BARS,
                 )
 
 
@@ -353,7 +353,7 @@ class CandidateFactory:
             # the one-sided relaxation's ceiling is declared by its generator
             # (panel-reviewed 16-bar rung); the ladder alone only grants 16
             # to both-instrumental pairs
-            bars_cap = max(bars_cap, instrumental_blend_bars)
+            bars_cap = max(bars_cap, _INSTRUMENTAL_BLEND_BARS)
         bars = min(spec.bars, bars_cap)
 
         fadein_start_pos = (
@@ -511,7 +511,7 @@ class CandidateFactory:
         """Choose the gradual tempo ramp that beatmatches the outgoing track, if any."""
         if tier is TransitionTier.QUICK_FADE:
             return TempoPlan()
-        if not 0.1 < self._ctx.bpm_diff_percent <= time_stretch_bpm_percentage_threshold:
+        if not 0.1 < self._ctx.bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             return TempoPlan()
         return TempoPlan(steps=self._compute_tempo_steps(tail, crossfade_duration))
 
@@ -760,9 +760,9 @@ class CandidateFactory:
         low = profile.bar_power["low"]
         low_mid = profile.bar_power["low_mid"]
         mid = profile.bar_power["mid"]
-        low_silent = low < trim_guard_low_floor * profile.reference["low"]
-        voice_active = (low_mid >= trim_guard_voice_floor * profile.reference["low_mid"]) | (
-            mid >= trim_guard_voice_floor * profile.reference["mid"]
+        low_silent = low < _TRIM_GUARD_LOW_FLOOR * profile.reference["low"]
+        voice_active = (low_mid >= _TRIM_GUARD_VOICE_FLOOR * profile.reference["low_mid"]) | (
+            mid >= _TRIM_GUARD_VOICE_FLOOR * profile.reference["mid"]
         )
         return low_silent & voice_active
 
@@ -863,8 +863,8 @@ def _one_sided_instrumental_side(ctx: TransitionContext) -> str | None:
     if duties is None:
         return None
     out_duty, in_duty = duties
-    out_ok = out_duty <= instrumental_duty_max
-    in_ok = in_duty <= instrumental_duty_max
+    out_ok = out_duty <= _INSTRUMENTAL_DUTY_MAX
+    in_ok = in_duty <= _INSTRUMENTAL_DUTY_MAX
     if out_ok == in_ok:
         # both qualify (already the ladder's plain ideal) or neither does
         return None

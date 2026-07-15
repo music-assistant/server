@@ -50,60 +50,60 @@ if TYPE_CHECKING:
     from .context import TransitionContext
 
 # Bass-swap EQ: shelf corners/depths as on real club mixers
-low_shelf_freq: int = 100
-high_shelf_freq: int = 13000
-eq_kill_db: float = -26.0
-high_ease_db: float = -20.0
+_LOW_SHELF_FREQ: int = 100
+_HIGH_SHELF_FREQ: int = 13000
+_EQ_KILL_DB: float = -26.0
+_HIGH_EASE_DB: float = -20.0
 # bass handover spans half the overlap; <2 bars reads as an event, >8 bars is masked
-bass_swap_fraction: float = 0.5
-bass_swap_min_bars: int = 2
-bass_swap_max_bars: int = 8
+_BASS_SWAP_FRACTION: float = 0.5
+_BASS_SWAP_MIN_BARS: int = 2
+_BASS_SWAP_MAX_BARS: int = 8
 # decision window for the reciprocal swap depth gates, in A/B-bars
-bass_swap_window_bars: int = 8
+_BASS_SWAP_WINDOW_BARS: int = 8
 
 # Reciprocal bass-swap gate: smoothstep each side's low-band fraction (over the
-# OTHER deck's window) to scale its own kill depth; dropped below eq_bypass_below_db.
+# OTHER deck's window) to scale its own kill depth; dropped below _EQ_BYPASS_BELOW_DB.
 # Corridor sits deliberately below the published dance-master figures (~0.34-0.45
 # of power under 120Hz; pop ~0.14 — Elowsson & Friberg 2017, Pestana et al. 2013):
 # it reads an 8-bar transition window, not a whole-track LTAS, and putting lo under
 # the pop mean lets ordinary pop still earn a partial swap. Final values corpus-tuned.
-low_gate_lo: float = 0.10
-low_gate_hi: float = 0.25
-eq_bypass_below_db: float = -6.0
+_LOW_GATE_LO: float = 0.10
+_LOW_GATE_HI: float = 0.25
+_EQ_BYPASS_BELOW_DB: float = -6.0
 
 # Reciprocal high-ease gate, same shape on the high band. Mean-music LTAS is ~0.02 in
 # 4-11kHz (Elowsson & Friberg 2017): lo = an average track earns no duck, hi = clearly
 # brighter than average earns the full ease. A deck whose own-window high level is below
-# high_own_side_floor of its own reference gets no shelf at all.
-high_gate_lo: float = 0.02
-high_gate_hi: float = 0.06
-high_own_side_floor: float = 0.25
+# _HIGH_OWN_SIDE_FLOOR of its own reference gets no shelf at all.
+_HIGH_GATE_LO: float = 0.02
+_HIGH_GATE_HI: float = 0.06
+_HIGH_OWN_SIDE_FLOOR: float = 0.25
 # Cymbal-wash mode: when both own-windows read bright and comparably loud a plain
 # reciprocal ease would stack their highs, so duck A complementary with B's restore.
-wash_duty: float = 0.8
-wash_depth_db: float = -26.0
-wash_level_tolerance_db: float = 6.0
-wash_min_blend_bars: int = 8
+_WASH_DUTY: float = 0.8
+_WASH_DEPTH_DB: float = -26.0
+_WASH_LEVEL_TOLERANCE_DB: float = 6.0
+_WASH_MIN_BLEND_BARS: int = 8
 
 # Measured mid-band (vocal) swap: bass-swap gate shape on the mid band, gated also on
 # duty so one loud mid bar can't unlock a swap over otherwise instrumental material.
-mid_freq: int = 1200
-mid_width_oct: float = 2.5
+_MID_FREQ: int = 1200
+_MID_WIDTH_OCT: float = 2.5
 # Corridor sits in the gap between vocal-forward mixes (~0.25-0.45 mid fraction) and
 # instrumental dance (~0.10-0.15); absolute placement verified on our unweighted
 # pipeline (LTAS: Elowsson & Friberg 2017, Pestana et al. 2013).
-mid_gate_lo: float = 0.18
-mid_gate_hi: float = 0.30
-mid_duty_lo: float = 0.60
-mid_duty_hi: float = 0.85
+_MID_GATE_LO: float = 0.18
+_MID_GATE_HI: float = 0.30
+_MID_DUTY_LO: float = 0.60
+_MID_DUTY_HI: float = 0.85
 # the mid (vocal) swap is capped shallower on a tempo blend than a full blend
-mid_cap_full_db: float = -8.0
-mid_cap_tempo_db: float = -6.0
-mid_bypass_below_db: float = -1.0
+_MID_CAP_FULL_DB: float = -8.0
+_MID_CAP_TEMPO_DB: float = -6.0
+_MID_BYPASS_BELOW_DB: float = -1.0
 
 # Dip guard: combined qsin-weighted power of both decks may never sag more than this
 # below its plateau across the overlap (outside the intentional bass-handover notch).
-max_predicted_dip_db: float = 3.0
+_MAX_PREDICTED_DIP_DB: float = 3.0
 
 
 class PlanAssembler:
@@ -140,8 +140,8 @@ class PlanAssembler:
         bar_in = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
         swap_at = self._choose_swap_point(crossfade_duration, plan.fadein_trim_start)
         swap_len = min(
-            max(bass_swap_fraction * crossfade_duration, bass_swap_min_bars * bar_in),
-            bass_swap_max_bars * bar_in,
+            max(_BASS_SWAP_FRACTION * crossfade_duration, _BASS_SWAP_MIN_BARS * bar_in),
+            _BASS_SWAP_MAX_BARS * bar_in,
             crossfade_duration,
         )
         # pull a late swap point back so the centered window still fits the overlap
@@ -161,19 +161,19 @@ class PlanAssembler:
         low_out = (
             ShelfSchedule(
                 ShelfType.LOW,
-                low_shelf_freq,
+                _LOW_SHELF_FREQ,
                 [(0.0, 0.0), *db_ramp(start_out, swap_len_input, 0.0, depth_a)],
             )
-            if abs(depth_a) >= abs(eq_bypass_below_db)
+            if abs(depth_a) >= abs(_EQ_BYPASS_BELOW_DB)
             else None
         )
         low_in = (
             ShelfSchedule(
                 ShelfType.LOW,
-                low_shelf_freq,
+                _LOW_SHELF_FREQ,
                 [(0.0, depth_b), *db_ramp(start_in, swap_len, depth_b, 0.0)],
             )
-            if abs(depth_b) >= abs(eq_bypass_below_db)
+            if abs(depth_b) >= abs(_EQ_BYPASS_BELOW_DB)
             else None
         )
         high_out, high_in = self._choose_high_swap(
@@ -191,9 +191,9 @@ class PlanAssembler:
         mid_out = (
             ShelfSchedule(
                 ShelfType.PEAK,
-                mid_freq,
+                _MID_FREQ,
                 [(0.0, 0.0), *db_ramp(start_out, swap_len_input, 0.0, depth_mid_a)],
-                width_oct=mid_width_oct,
+                width_oct=_MID_WIDTH_OCT,
             )
             if depth_mid_a is not None
             else None
@@ -201,9 +201,9 @@ class PlanAssembler:
         mid_in = (
             ShelfSchedule(
                 ShelfType.PEAK,
-                mid_freq,
+                _MID_FREQ,
                 [(0.0, depth_mid_b), *db_ramp(start_in, swap_len, depth_mid_b, 0.0)],
-                width_oct=mid_width_oct,
+                width_oct=_MID_WIDTH_OCT,
             )
             if depth_mid_b is not None
             else None
@@ -273,12 +273,12 @@ class PlanAssembler:
         ctx = self._ctx
         # missing band data on either side keeps the shipped full-depth kill (bit-identical)
         if ctx.outgoing_profile is None or ctx.incoming_profile is None:
-            return eq_kill_db, eq_kill_db
-        w_a_out, w_b_in = self._swap_windows(effective_end, bass_swap_window_bars)
+            return _EQ_KILL_DB, _EQ_KILL_DB
+        w_a_out, w_b_in = self._swap_windows(effective_end, _BASS_SWAP_WINDOW_BARS)
         f_low_b_in = window_fraction(ctx.incoming_profile, "low", *w_b_in)
         f_low_a_out = window_fraction(ctx.outgoing_profile, "low", *w_a_out)
-        depth_a = eq_kill_db * smoothstep(f_low_b_in, low_gate_lo, low_gate_hi)
-        depth_b = eq_kill_db * smoothstep(f_low_a_out, low_gate_lo, low_gate_hi)
+        depth_a = _EQ_KILL_DB * smoothstep(f_low_b_in, _LOW_GATE_LO, _LOW_GATE_HI)
+        depth_b = _EQ_KILL_DB * smoothstep(f_low_a_out, _LOW_GATE_LO, _LOW_GATE_HI)
         return depth_a, depth_b
 
     def _choose_high_swap(
@@ -296,19 +296,19 @@ class PlanAssembler:
         ctx = self._ctx
         wash = False
         if ctx.outgoing_profile is None or ctx.incoming_profile is None:
-            depth_a = depth_b = high_ease_db
+            depth_a = depth_b = _HIGH_EASE_DB
         else:
-            w_a_out, w_b_in = self._swap_windows(effective_end, bass_swap_window_bars)
+            w_a_out, w_b_in = self._swap_windows(effective_end, _BASS_SWAP_WINDOW_BARS)
             f_high_b_in = window_fraction(ctx.incoming_profile, "high", *w_b_in)
             f_high_a_out = window_fraction(ctx.outgoing_profile, "high", *w_a_out)
-            depth_a = high_ease_db * smoothstep(f_high_b_in, high_gate_lo, high_gate_hi)
-            depth_b = high_ease_db * smoothstep(f_high_a_out, high_gate_lo, high_gate_hi)
+            depth_a = _HIGH_EASE_DB * smoothstep(f_high_b_in, _HIGH_GATE_LO, _HIGH_GATE_HI)
+            depth_b = _HIGH_EASE_DB * smoothstep(f_high_a_out, _HIGH_GATE_LO, _HIGH_GATE_HI)
 
             own_dark_a = window_level(ctx.outgoing_profile, "high", *w_a_out) < (
-                high_own_side_floor * ctx.outgoing_profile.reference["high"]
+                _HIGH_OWN_SIDE_FLOOR * ctx.outgoing_profile.reference["high"]
             )
             own_dark_b = window_level(ctx.incoming_profile, "high", *w_b_in) < (
-                high_own_side_floor * ctx.incoming_profile.reference["high"]
+                _HIGH_OWN_SIDE_FLOOR * ctx.incoming_profile.reference["high"]
             )
             if own_dark_a:
                 depth_a = 0.0
@@ -317,12 +317,12 @@ class PlanAssembler:
 
             wash = self._wash_mode_engages(w_a_out, w_b_in, crossfade_duration)
             if wash:
-                depth_a = wash_depth_db
+                depth_a = _WASH_DEPTH_DB
 
         high_out = (
             ShelfSchedule(
                 ShelfType.HIGH,
-                high_shelf_freq,
+                _HIGH_SHELF_FREQ,
                 self._high_out_steps(
                     depth_a,
                     start_out,
@@ -334,19 +334,19 @@ class PlanAssembler:
                     wash=wash,
                 ),
             )
-            if abs(depth_a) >= abs(eq_bypass_below_db)
+            if abs(depth_a) >= abs(_EQ_BYPASS_BELOW_DB)
             else None
         )
         high_in = (
             ShelfSchedule(
                 ShelfType.HIGH,
-                high_shelf_freq,
+                _HIGH_SHELF_FREQ,
                 [
                     (0.0, depth_b),
                     *db_ramp(max(0.0, start_in - ease), ease, depth_b, 0.0),
                 ],
             )
-            if abs(depth_b) >= abs(eq_bypass_below_db)
+            if abs(depth_b) >= abs(_EQ_BYPASS_BELOW_DB)
             else None
         )
         return high_out, high_in
@@ -385,17 +385,17 @@ class PlanAssembler:
         assert ctx.outgoing_profile is not None  # narrowed by the caller
         assert ctx.incoming_profile is not None
         bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
-        if crossfade_duration < wash_min_blend_bars * bar_out:
+        if crossfade_duration < _WASH_MIN_BLEND_BARS * bar_out:
             return False
         # absolute brightness floor: duty vs a track's OWN reference measures
         # consistency, not brightness — a dark steady track has duty 1.0
         f_high_a = window_fraction(ctx.outgoing_profile, "high", *w_a_out)
         f_high_b = window_fraction(ctx.incoming_profile, "high", *w_b_in)
-        if f_high_a < high_gate_hi or f_high_b < high_gate_hi:
+        if f_high_a < _HIGH_GATE_HI or f_high_b < _HIGH_GATE_HI:
             return False
         duty_a = window_duty(ctx.outgoing_profile, "high", *w_a_out, k=0.5)
         duty_b = window_duty(ctx.incoming_profile, "high", *w_b_in, k=0.5)
-        if duty_a < wash_duty or duty_b < wash_duty:
+        if duty_a < _WASH_DUTY or duty_b < _WASH_DUTY:
             return False
         level_a = loudness_referenced_level(ctx.outgoing_profile, "high", *w_a_out)
         level_b = loudness_referenced_level(ctx.incoming_profile, "high", *w_b_in)
@@ -405,32 +405,32 @@ class PlanAssembler:
         # normalized playback; that assumption is strictly more conservative than
         # a duty-only fallback, which would engage wash mode more often
         level_gap_db = abs(10.0 * float(np.log10(level_a / level_b)))
-        return level_gap_db <= wash_level_tolerance_db
+        return level_gap_db <= _WASH_LEVEL_TOLERANCE_DB
 
     def _choose_mid_swap_depths(
         self, effective_end: float, tier: TransitionTier
     ) -> tuple[float | None, float | None]:
         """Gate and scale the measured mid-band (vocal) swap depth; ``None`` means bypass."""
         ctx = self._ctx
-        cap = mid_cap_full_db if tier is TransitionTier.FULL_BLEND else mid_cap_tempo_db
+        cap = _MID_CAP_FULL_DB if tier is TransitionTier.FULL_BLEND else _MID_CAP_TEMPO_DB
         if tier is TransitionTier.QUICK_FADE:
             return None, None
         if ctx.outgoing_profile is None or ctx.incoming_profile is None:
             return None, None
-        w_a_out, w_b_in = self._swap_windows(effective_end, bass_swap_window_bars)
+        w_a_out, w_b_in = self._swap_windows(effective_end, _BASS_SWAP_WINDOW_BARS)
 
         def _score(profile: BandProfile, window: tuple[float, float]) -> float:
             f_mid = window_fraction(profile, "mid", *window)
             duty_mid = window_duty(profile, "mid", *window, k=0.5)
-            return smoothstep(f_mid, mid_gate_lo, mid_gate_hi) * smoothstep(
-                duty_mid, mid_duty_lo, mid_duty_hi
+            return smoothstep(f_mid, _MID_GATE_LO, _MID_GATE_HI) * smoothstep(
+                duty_mid, _MID_DUTY_LO, _MID_DUTY_HI
             )
 
         score_a = _score(ctx.outgoing_profile, w_a_out)
         score_b = _score(ctx.incoming_profile, w_b_in)
         # the weaker side rules: a swap only reads as a handover when both decks carry a mid element
         depth = cap * min(score_a, score_b)
-        if abs(depth) < abs(mid_bypass_below_db):
+        if abs(depth) < abs(_MID_BYPASS_BELOW_DB):
             return None, None
         return depth, depth
 
@@ -450,7 +450,7 @@ class PlanAssembler:
         ctx = self._ctx
         if ctx.outgoing_profile is None or ctx.incoming_profile is None:
             return eq_plan
-        w_a_out, w_b_in = self._swap_windows(effective_end, bass_swap_window_bars)
+        w_a_out, w_b_in = self._swap_windows(effective_end, _BASS_SWAP_WINDOW_BARS)
         f_a = {
             band: window_fraction(ctx.outgoing_profile, band, *w_a_out) for band in BAND_RMS_BANDS
         }
@@ -463,18 +463,18 @@ class PlanAssembler:
                 plan, crossfade_duration, cf_start_input, ratio, f_a, f_b, notch
             )
 
-        if dip_db(eq_plan) <= max_predicted_dip_db:
+        if dip_db(eq_plan) <= _MAX_PREDICTED_DIP_DB:
             return eq_plan
 
         # (1) reduce mid depth toward bypass, in steps, until the dip clears
         # or mid is fully bypassed
         shrink_steps = (0.75, 0.5, 0.25, 0.0)
         for shrink in shrink_steps:
-            candidate = eq_plan.with_mid_depth_scaled(shrink, bypass_below_db=mid_bypass_below_db)
-            if dip_db(candidate) <= max_predicted_dip_db or shrink == 0.0:
+            candidate = eq_plan.with_mid_depth_scaled(shrink, bypass_below_db=_MID_BYPASS_BELOW_DB)
+            if dip_db(candidate) <= _MAX_PREDICTED_DIP_DB or shrink == 0.0:
                 eq_plan = candidate
                 break
-        if dip_db(eq_plan) <= max_predicted_dip_db:
+        if dip_db(eq_plan) <= _MAX_PREDICTED_DIP_DB:
             return eq_plan
 
         # (2) steepen the low ramps to the 2-bar floor; endpoints untouched.
@@ -485,7 +485,7 @@ class PlanAssembler:
             # a bass-light pair has no low handover to tighten and no notch to
             # narrow; mid-scaling was the only lever
             return eq_plan
-        floor_len = bass_swap_min_bars * bar_in
+        floor_len = _BASS_SWAP_MIN_BARS * bar_in
         return eq_plan.with_low_ramps_steepened(swap_at, floor_len, ratio, cf_start_input)
 
     def _predicted_dip_db(
