@@ -114,7 +114,7 @@ class TagPlayerProvider(PluginProvider):
         )
         await controller.add_provider_mapping(library_id, mapping)
 
-        uri = f"{self.domain}://{media_type.value}/{tag_id}"
+        uri = f"{self.instance_id}://{media_type.value}/{tag_id}"
         self.logger.debug(
             "Linked tag '%s' to %s/%d (URI: %s)", tag_id, media_type.value, library_id, uri
         )
