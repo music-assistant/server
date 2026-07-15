@@ -150,7 +150,7 @@ class TagPlayerProvider(PluginProvider):
             raise MediaNotFoundError(f"Unknown tag: {tag_id}")
 
         media_type, library_item = result
-        uri = f"{self.domain}://{media_type.value}/{tag_id}"
+        uri = f"{self.instance_id}://{media_type.value}/{tag_id}"
         return {
             "tag_id": tag_id,
             "media_type": media_type.value,
@@ -176,7 +176,7 @@ class TagPlayerProvider(PluginProvider):
                                 "media_type": media_type.value,
                                 "item_id": int(item.item_id),
                                 "name": item.name,
-                                "uri": f"{self.domain}://{media_type.value}/{mapping.item_id}",
+                                "uri": f"{self.instance_id}://{media_type.value}/{mapping.item_id}",
                             }
                         )
         return tags
