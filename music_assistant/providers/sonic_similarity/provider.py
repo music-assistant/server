@@ -45,7 +45,6 @@ from music_assistant.providers.sonic_similarity.constants import (
     METADATA_BONUS_SCALE,
     PERIODIC_REFRESH_INTERVAL_HOURS,
     PERIODIC_REFRESH_TASK_ID,
-    PROVIDER_FALLBACK_CONCURRENCY,
     RECOMMEND_ITEM_LIMIT,
     RECOMMEND_PER_SEED_LIMIT,
     RECOMMEND_SEED_COUNT,
@@ -1132,16 +1131,18 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _resolve_candidate_track_map(
         self, candidates: list[Candidate]
-    ) -> dict[tuple[str, str], Track | None]:
+    ) -> dict[tuple[str, str], Track]:
         """
-        Bulk-resolve candidate tracks, keyed by (item_id, provider).
+        Bulk-resolve candidate library tracks, keyed by (item_id, provider).
 
         Scoring (filters + rerank) only reads genres, artist names and album
         year — never display — so this batches one library query per provider
         instead of a full tracks.get() per candidate (the old N+1 that stalled
-        the event loop). Candidates analyzed but no longer in the library fall
-        to a bounded provider lookup; an unresolved candidate maps to None
-        (no bonus / not filtered), matching the previous per-item miss.
+        the event loop). It stays library-only and never calls a provider:
+        candidates not in the library (e.g. streamed-but-not-added tracks the
+        analysis provider still indexed) are simply left out of the map, so
+        scoring can never burst a rate-limited provider API. Callers read a
+        missing key as no rerank bonus, and drop it when filtering.
         """
         # Dedupe (item_id, provider) and group item ids by provider for one query each.
         ids_by_provider: dict[str, list[str]] = {}
@@ -1153,7 +1154,7 @@ class SonicSimilarityPlugin(PluginProvider):
             seen.add(key)
             ids_by_provider.setdefault(cand.provider, []).append(cand.item_id)
 
-        resolved: dict[tuple[str, str], Track | None] = {}
+        resolved: dict[tuple[str, str], Track] = {}
         for provider, item_ids in ids_by_provider.items():
             library_tracks = await self.mass.music.tracks.get_library_items_by_prov_id(
                 provider_instance_id_or_domain=provider,
@@ -1165,38 +1166,12 @@ class SonicSimilarityPlugin(PluginProvider):
                     if provider in (mapping.provider_instance, mapping.provider_domain):
                         resolved[(mapping.item_id, provider)] = track
 
-        # Rare tail: analyzed tracks no longer in the library. Resolve via the
-        # provider under a small semaphore so their network latency, unlike the
-        # old unbounded fan-out, can't starve the loop.
-        misses = [key for key in seen if key not in resolved]
-        if misses:
-            semaphore = asyncio.Semaphore(PROVIDER_FALLBACK_CONCURRENCY)
-
-            async def _fallback(item_id: str, provider: str) -> None:
-                async with semaphore:
-                    try:
-                        track = await self.mass.music.tracks.get_provider_item(item_id, provider)
-                    except Exception as err:
-                        # A flaky provider fetch (get_provider_item only suppresses
-                        # MediaNotFoundError) must map this one tail candidate to a
-                        # miss, not abort the whole /similar via the gather below.
-                        self.logger.debug(
-                            "candidate provider fallback failed for %s/%s: %s",
-                            provider,
-                            item_id,
-                            err,
-                        )
-                        track = None
-                    resolved[(item_id, provider)] = track
-
-            await asyncio.gather(*(_fallback(iid, prov) for iid, prov in misses))
-
         return resolved
 
     async def _apply_metadata_filters(
         self,
         results: list[Candidate],
-        resolved: dict[tuple[str, str], Track | None],
+        resolved: dict[tuple[str, str], Track],
         filter_genres: list[str] | None = None,
         exclude_artists: list[str] | None = None,
     ) -> list[Candidate]:
@@ -1230,7 +1205,7 @@ class SonicSimilarityPlugin(PluginProvider):
         seed_item_ids: list[str],
         results: list[Candidate],
         weights: dict[str, float],
-        resolved: dict[tuple[str, str], Track | None],
+        resolved: dict[tuple[str, str], Track],
     ) -> list[Candidate]:
         """
         Apply genre and year bonuses to re-rank candidates.
@@ -1240,8 +1215,9 @@ class SonicSimilarityPlugin(PluginProvider):
             single-seed behavior; with N seeds the metadata bonus reflects
             the centroid of the seed set, matching how the audio-distance
             blend already works.
-        :param resolved: Bulk-resolved candidate tracks keyed by
-            (item_id, provider); a None value marks an unresolved candidate.
+        :param resolved: Bulk-resolved candidate library tracks keyed by
+            (item_id, provider); a missing key marks an unresolved candidate,
+            which receives no bonus.
         """
         seed_lookups = [self._resolve_seed_track(sid) for sid in seed_item_ids]
         seed_tracks = [t for t in await asyncio.gather(*seed_lookups) if t is not None]

@@ -10,7 +10,8 @@ loop. These tests lock in the bulk-resolution shape that replaces it:
   one ``tracks.get`` per candidate),
 * unique ``(item_id, provider)`` keys deduped before the query,
 * item-ids routed only to their own provider's query,
-* library misses handled by a *bounded* provider fallback,
+* library misses left unresolved — scoring stays library-only and never
+  calls a (rate-limited) provider,
 * filter + rerank sharing a single resolution,
 * and — most importantly — byte-identical rerank output (parity), proven
   on a mixed two-provider-plus-miss fixture that exercises exactly the
@@ -19,18 +20,13 @@ loop. These tests lock in the bulk-resolution shape that replaces it:
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
 import pytest
-from music_assistant_models.errors import MusicAssistantError
 
-from music_assistant.providers.sonic_similarity.constants import (
-    METADATA_BONUS_SCALE,
-    PROVIDER_FALLBACK_CONCURRENCY,
-)
+from music_assistant.providers.sonic_similarity.constants import METADATA_BONUS_SCALE
 from music_assistant.providers.sonic_similarity.similarity import Candidate
 from tests.providers.sonic_similarity.conftest import make_track
 
@@ -147,85 +143,23 @@ async def test_duplicate_keys_deduped_before_query(
 
 
 @pytest.mark.asyncio
-async def test_library_miss_uses_bounded_provider_fallback(
+async def test_library_miss_stays_unresolved_without_provider_call(
     make_plugin: Callable[..., Any], mock_mass: MagicMock
 ) -> None:
-    """Candidates absent from the library resolve via get_provider_item; failures map to None."""
+    """A candidate not in the library is left out of the map and never hits the provider API."""
     plugin = make_plugin()
     library = {(SP, "hit"): make_track("hit", provider=SP)}
     _wire_library(mock_mass, library)
-
-    miss_track = make_track("miss", provider=SP)
-
-    async def _provider_item(item_id: str, _provider: str) -> MagicMock:
-        if item_id == "boom":
-            raise MusicAssistantError("unreachable")
-        return miss_track
-
-    mock_mass.music.tracks.get_provider_item = AsyncMock(side_effect=_provider_item)
+    mock_mass.music.tracks.get_provider_item = AsyncMock()
 
     resolved = await plugin._resolve_candidate_track_map(
-        [_cand("hit", SP, 0.4), _cand("miss", SP, 0.5), _cand("boom", SP, 0.6)]
+        [_cand("hit", SP, 0.4), _cand("miss", SP, 0.5)]
     )
 
     assert resolved[("hit", SP)] is library[(SP, "hit")]
-    assert resolved[("miss", SP)] is miss_track  # fell back to provider
-    assert resolved[("boom", SP)] is None  # failed fallback → miss, not an exception
-    # The library hit must NOT touch the network fallback.
-    assert {c.args[0] for c in mock_mass.music.tracks.get_provider_item.call_args_list} == {
-        "miss",
-        "boom",
-    }
-
-
-@pytest.mark.asyncio
-async def test_fallback_isolates_unexpected_errors(
-    make_plugin: Callable[..., Any], mock_mass: MagicMock
-) -> None:
-    """A non-MusicAssistantError from the fallback maps to a miss, never aborts the batch."""
-    plugin = make_plugin()
-    _wire_library(mock_mass, {})  # everything misses -> provider fallback
-
-    async def _provider_item(item_id: str, _provider: str) -> MagicMock:
-        if item_id == "boom":
-            raise TimeoutError("provider hung")  # not a MusicAssistantError
-        return make_track(item_id, provider=SP)
-
-    mock_mass.music.tracks.get_provider_item = AsyncMock(side_effect=_provider_item)
-
-    resolved = await plugin._resolve_candidate_track_map(
-        [_cand("boom", SP, 0.5), _cand("ok", SP, 0.6)]
-    )
-
-    assert resolved[("boom", SP)] is None  # unexpected error -> miss, not a raise
-    assert resolved[("ok", SP)] is not None  # sibling still resolved: the batch survived
-
-
-@pytest.mark.asyncio
-async def test_provider_fallback_concurrency_is_bounded(
-    make_plugin: Callable[..., Any], mock_mass: MagicMock
-) -> None:
-    """The provider fallback never runs more than PROVIDER_FALLBACK_CONCURRENCY at once."""
-    plugin = make_plugin()
-    _wire_library(mock_mass, {})  # everything misses → all hit the fallback
-
-    in_flight = 0
-    peak = 0
-
-    async def _slow_provider_item(item_id: str, _provider: str) -> MagicMock:
-        nonlocal in_flight, peak
-        in_flight += 1
-        peak = max(peak, in_flight)
-        await asyncio.sleep(0)  # yield so overlap is observable
-        in_flight -= 1
-        return make_track(item_id, provider=SP)
-
-    mock_mass.music.tracks.get_provider_item = AsyncMock(side_effect=_slow_provider_item)
-
-    cands = [_cand(f"m{i}", SP, 0.1 * i) for i in range(PROVIDER_FALLBACK_CONCURRENCY * 3)]
-    await plugin._resolve_candidate_track_map(cands)
-
-    assert peak <= PROVIDER_FALLBACK_CONCURRENCY
+    assert ("miss", SP) not in resolved  # unresolved: absent, read as None by callers
+    # The whole point of the review change: scoring must not touch a rate-limited provider.
+    mock_mass.music.tracks.get_provider_item.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -235,9 +169,10 @@ async def test_rerank_parity_on_mixed_providers_and_miss(
     """
     Rerank output is byte-identical to the hand-computed reference.
 
-    The fixture spans two providers, one library miss resolved via the
-    provider fallback, and one unresolvable miss — the exact branches the
-    rewrite introduces — so parity here means parity everywhere.
+    The fixture spans two providers plus two candidates absent from the
+    library — the exact branches the rewrite introduces — so parity here
+    means parity everywhere. The two misses get no bonus and, critically,
+    never trigger a provider call.
     """
     plugin = make_plugin()
     seed = make_track("seed1", provider="library", genres=["rock", "pop"], album_year=2000)
@@ -250,22 +185,14 @@ async def test_rerank_parity_on_mixed_providers_and_miss(
         (SP, "t3"): make_track("t3", provider=SP, genres=["rock", "pop"], album_year=1990),
     }
     _wire_library(mock_mass, library)
-
-    t4 = make_track("t4", provider=SP, genres=["pop"], album_year=2000)
-
-    async def _provider_item(item_id: str, _provider: str) -> MagicMock:
-        if item_id == "t4":
-            return t4
-        raise MusicAssistantError("gone")  # t5 → unresolvable
-
-    mock_mass.music.tracks.get_provider_item = AsyncMock(side_effect=_provider_item)
+    mock_mass.music.tracks.get_provider_item = AsyncMock()
 
     cands = [
         _cand("t1", FS, 0.50),
         _cand("t2", FS, 0.40),
         _cand("t3", SP, 0.45),
-        _cand("t4", SP, 0.60),
-        _cand("t5", SP, 0.55),
+        _cand("t4", SP, 0.60),  # not in library
+        _cand("t5", SP, 0.55),  # not in library
     ]
 
     resolved = await plugin._resolve_candidate_track_map(cands)
@@ -277,16 +204,18 @@ async def test_rerank_parity_on_mixed_providers_and_miss(
         "t1": 0.50 - (g * 0.5 + e * 1.0),  # rock∩{rock,pop}=1/2 ; year 2000==2000
         "t2": 0.40 - (g * 0.0 + e * 0.5),  # jazz∩=0 ; |2010-2000|=10 → 1/2
         "t3": 0.45 - (g * 1.0 + e * 0.5),  # {rock,pop}=2/2 ; |1990-2000|=10 → 1/2
-        "t4": 0.60 - (g * 0.5 + e * 1.0),  # pop=1/2 ; year 2000==2000 (via fallback)
-        "t5": 0.55,  # unresolvable → no bonus
+        "t4": 0.60,  # not in library → no bonus
+        "t5": 0.55,  # not in library → no bonus
     }
     order = sorted(expected, key=lambda k: expected[k])
 
     assert [c.item_id for c in scored] == order
     for c in scored:
         assert c.distance == pytest.approx(expected[c.item_id])
-    # Candidates never used the per-item get() path; only the single seed did.
+    # Candidates never used the per-item get() path (only the single seed did),
+    # and non-library candidates never hit the provider API.
     assert mock_mass.music.tracks.get.call_count == 1
+    mock_mass.music.tracks.get_provider_item.assert_not_called()
 
 
 @pytest.mark.asyncio
