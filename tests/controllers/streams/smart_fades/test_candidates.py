@@ -9,6 +9,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import TransitionTier
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    Candidate,
     CandidateFactory,
     CandidateSpec,
     bars_ladder,
@@ -56,7 +57,7 @@ def _spec(
     return CandidateSpec(tier=ctx.tier, bars=bars, anchor_s=anchor_s, entry_s=entry_s)
 
 
-def _first_fitting(ctx: TransitionContext, factory: CandidateFactory) -> object:
+def _first_fitting(ctx: TransitionContext, factory: CandidateFactory) -> Candidate:
     """Emulate the energy ladder: largest rung that builds (the old _energy_candidate)."""
     for bars in bars_ladder(ctx, ctx.tier):
         candidate = factory.build(_spec(ctx, bars))
@@ -219,7 +220,7 @@ class TestOneSidedSixteenBarCap:
         mid = np.full(1800, 1.0, dtype=np.float32)
         mid[:360] = 0.05
         inc = _analysis_with_bands(1.0, 0.3, mid, 0.3, duration=240.0)
-        inc.extra_data["vocal_activity"] = [0.0] * 1800
+        inc.extra_data = {**(inc.extra_data or {}), "vocal_activity": [0.0] * 1800}
 
         ctx = _ctx(out, inc)
         specs = [

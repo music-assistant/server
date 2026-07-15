@@ -14,6 +14,7 @@ from music_assistant.controllers.streams.smart_fades.planner.assembly import (
     PlanAssembler,
 )
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
+    Candidate,
     CandidateFactory,
     CandidateSpec,
     bars_ladder,
@@ -51,7 +52,7 @@ def _ctx(
     return build_transition_context(out, inc, buffer_duration, LOGGER)
 
 
-def _first_fitting_candidate(ctx: TransitionContext, factory: CandidateFactory) -> object:
+def _first_fitting_candidate(ctx: TransitionContext, factory: CandidateFactory) -> Candidate:
     """Emulate the energy ladder: largest rung that builds (mirrors test_candidates.py)."""
     for bars in bars_ladder(ctx, ctx.tier):
         candidate = factory.build(

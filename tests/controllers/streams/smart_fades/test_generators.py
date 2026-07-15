@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from typing import Any
 
 import numpy as np
 
@@ -72,7 +73,7 @@ def _with_vocal_activity(
     return analysis
 
 
-def _base_ctx(**overrides: object) -> TransitionContext:
+def _base_ctx(**overrides: Any) -> TransitionContext:
     """Build a manually-controlled TransitionContext; only the fields under test vary."""
     deck = Deck(
         analysis=AudioAnalysisData(),
@@ -220,7 +221,7 @@ class TestEnergyLadderGenerator:
         assert not [s for s in specs if s.one_sided_vocal is not None]
         assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
 
-    def _confirmed_one_sided_ctx(self, **overrides: object) -> TransitionContext:
+    def _confirmed_one_sided_ctx(self, **overrides: Any) -> TransitionContext:
         """Build the cross-check-confirmed one-sided context, then force the given tier facts."""
         out = _out_analysis_with_quiet_tail(elevated_spike=False)
         inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(5.0, 25.0)])
@@ -293,7 +294,7 @@ class TestFadeOnsetPin:
 class TestCodaAnchorGenerator:
     """Anchors and rungs derived from the outgoing track's validated coda zone."""
 
-    def _profile_ctx(self, zone: CodaZone, **overrides: object) -> TransitionContext:
+    def _profile_ctx(self, zone: CodaZone, **overrides: Any) -> TransitionContext:
         """Build a context with a real outgoing band profile and the given coda zone."""
         profile = _analysis_with_bands(0.3, 0.3, 0.3, 0.3, duration=240.0)
         merged: dict[str, object] = {

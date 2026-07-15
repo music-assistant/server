@@ -84,9 +84,11 @@ def test_context_mix_out_anchor_is_downbeat_snapped() -> None:
 
     # anchored at the mix-out point (media 220 -> buffer-local 25), well before the
     # RMS-audible boundary, and snapped to a real downbeat
-    assert context.mix_out_anchor == pytest.approx(25.0, abs=0.3)
-    assert context.audio_end > (context.mix_out_anchor or 0.0) + 1.0
-    assert float(np.min(np.abs(context.outgoing.downbeats - context.mix_out_anchor))) < 0.05
+    anchor = context.mix_out_anchor
+    assert anchor is not None
+    assert anchor == pytest.approx(25.0, abs=0.3)
+    assert context.audio_end > anchor + 1.0
+    assert float(np.min(np.abs(context.outgoing.downbeats - anchor))) < 0.05
 
 
 def test_context_is_frozen() -> None:
