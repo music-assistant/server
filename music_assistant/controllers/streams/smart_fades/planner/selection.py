@@ -14,6 +14,8 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
+
 from .candidates import Candidate
 from .context import TransitionContext
 from .policies import Policy, Verdict
@@ -60,7 +62,8 @@ class CandidateSelector:
         total_penalty = sum(verdict.penalty for verdict in verdicts)
         rejected = any(verdict.rejected for verdict in verdicts)
         reasons = [verdict.reason for verdict in verdicts if verdict.reason]
-        self._logger.debug(
+        self._logger.log(
+            VERBOSE_LOG_LEVEL,
             "candidate source=%s bars=%d anchor=%s total=%.2f rejected=%s reasons=%s",
             candidate.spec.source,
             candidate.spec.bars,
