@@ -49,7 +49,7 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.222
+music-assistant-frontend==2.17.223
 music-assistant-models==1.1.161
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post2
