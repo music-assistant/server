@@ -64,7 +64,7 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, PlayerType, QueueOption
+from music_assistant_models.enums import ConfigEntryType, PlayerType, ProviderFeature, QueueOption
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -148,7 +148,6 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -206,7 +205,7 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
+    mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
@@ -219,12 +218,24 @@ async def get_config_entries(
     :param action: Optional action key called from config entries UI.
     :param values: The (intermediate) raw values for config entries sent with the action.
     """
+    ai_available = any(
+        isinstance(provider, PluginProvider)
+        for provider in mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
+    )
+    ai_setting = ConfigEntry(
+        key=CONF_USE_AI_DISTRACTORS,
+        type=ConfigEntryType.BOOLEAN,
+        required=False,
+        default_value=False,
+        read_only=not ai_available,
+    )
+    if ai_available:
+        return (ai_setting,)
     return (
+        ai_setting,
         ConfigEntry(
-            key=CONF_USE_AI_DISTRACTORS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=False,
+            key="ai_unavailable",
+            type=ConfigEntryType.ALERT,
         ),
     )
 
