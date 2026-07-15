@@ -334,6 +334,7 @@ async def _compare(
         }
         new_mappings = {(m.provider_instance, m.item_id) for m in item.provider_mappings}
         assert legacy_mappings == new_mappings
+    assert isinstance(new_items, list)
     return new_items
 
 
