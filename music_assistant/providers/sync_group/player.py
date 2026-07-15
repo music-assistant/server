@@ -215,19 +215,20 @@ class SyncGroupPlayer(Player):
         member_ids = self._attr_group_members if self._attr_group_members else []
         # current members bypass the allow-list filter (filter constrains joiners only)
         current_members = set(member_ids)
-        if member_ids:
-            can_group_with: set[str] = set()
-            for member_id in member_ids:
-                member_player = self.mass.players.get_player(member_id)
-                if member_player and member_player.state.available:
-                    can_group_with.add(member_player.player_id)
-                    can_group_with.update(member_player.state.can_group_with)
+        can_group_with: set[str] = set()
+        for member_id in member_ids:
+            member_player = self.mass.players.get_player(member_id)
+            if member_player and member_player.state.available:
+                can_group_with.add(member_player.player_id)
+                can_group_with.update(member_player.state.can_group_with)
+        if can_group_with:
             return {
                 pid
                 for pid in can_group_with
                 if pid in current_members or self._is_member_allowed(pid)
             }
-        # Empty dynamic groups can potentially group with any compatible players
+        # Without any available member to derive compatibility from (empty group or
+        # all members offline), offer any compatible player.
         # Actual compatibility is validated when adding members
         can_group_with = set()
         for player in self.mass.players.all_players(return_unavailable=False):
