@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
@@ -184,6 +185,7 @@ def _mass(providers: Sequence[object] | None = None) -> MagicMock:
     mass = MagicMock()
     mass.get_providers_supporting_feature.return_value = list(providers or [])
     mass.music.search = AsyncMock()
+    mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=0))
     return mass
 
 
@@ -836,6 +838,30 @@ async def test_prepare_round_randomly_selects_from_unused_tracks() -> None:
     assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
     assert _correct_source_uri(game_round.answer_state) == tracks[1].uri
     assert len(choose.call_args.args[0]) == 2
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_prefers_track_not_used_by_previous_game() -> None:
+    """Deprioritize a previous game's track when another grounded track is available."""
+    recent = _track("recent", "Teardrop", "Massive Attack")
+    fresh = _track("fresh", "Genesis", "Justice")
+    provider = _ai_provider(
+        _valid_response(
+            "Who performs the selected track Genesis?",
+            ["Daft Punk", "Air", "Phoenix"],
+        )
+    )
+    quiz, _ = _quiz([recent, fresh], providers=[provider])
+    assert recent.uri is not None
+    quiz.add_recent_track_uris([recent.uri])
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda candidates: candidates[0],
+    ):
+        game_round = await quiz.prepare_round(0, [])
+
+    assert game_round.track_uri == fresh.uri
 
 
 @pytest.mark.asyncio
