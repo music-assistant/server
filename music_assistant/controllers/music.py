@@ -3122,57 +3122,41 @@ class MusicController(CoreController):
             if audio_analysis_table_exists:
                 # SQLite does not guarantee WHERE-term evaluation order, so a bare
                 # json_valid() term cannot reliably shield json_each()/json_type()
-                # from raising on malformed rows - guard their input directly instead
+                # from raising on malformed rows - guard their input directly instead.
+                # The json() wrapper is required: the JSON subtype does not reliably
+                # survive the scalar-subquery boundary, so without it the rebuilt
+                # array would be stored as an escaped string on some SQLite versions.
                 result = await self.database.execute(
-                    f"""WITH RECURSIVE
-                    null_centroids AS (
-                        SELECT
-                            aa.id,
-                            '$.spectral_centroid[' || centroid.key || ']' AS path,
-                            row_number() OVER (
-                                PARTITION BY aa.id
-                                ORDER BY CAST(centroid.key AS INTEGER)
-                            ) AS sequence
-                        FROM {DB_TABLE_AUDIO_ANALYSIS} AS aa,
-                            json_each(
+                    f"""UPDATE {DB_TABLE_AUDIO_ANALYSIS} AS aa
+                    SET analysis_data = json_replace(
+                        aa.analysis_data,
+                        '$.spectral_centroid',
+                        json((
+                            SELECT json_group_array(
+                                CASE WHEN centroid.type = 'null'
+                                    THEN 0.0 ELSE centroid.value END
+                            )
+                            FROM json_each(
+                                aa.analysis_data, '$.spectral_centroid'
+                            ) AS centroid
+                        ))
+                    )
+                    WHERE aa.aa_provider_domain = :aa_provider_domain
+                        AND aa.analysis_data LIKE '%null%'
+                        AND json_type(
+                            CASE WHEN json_valid(aa.analysis_data)
+                                THEN aa.analysis_data END,
+                            '$.spectral_centroid'
+                        ) = 'array'
+                        AND EXISTS (
+                            SELECT 1
+                            FROM json_each(
                                 CASE WHEN json_valid(aa.analysis_data)
                                     THEN aa.analysis_data END,
                                 '$.spectral_centroid'
                             ) AS centroid
-                        WHERE aa.aa_provider_domain = :aa_provider_domain
-                            AND aa.analysis_data LIKE '%null%'
-                            AND json_type(
-                                CASE WHEN json_valid(aa.analysis_data)
-                                    THEN aa.analysis_data END,
-                                '$.spectral_centroid'
-                            ) = 'array'
-                            AND centroid.type = 'null'
-                    ),
-                    repaired(id, analysis_data, sequence) AS (
-                        SELECT aa.id, aa.analysis_data, 0
-                        FROM {DB_TABLE_AUDIO_ANALYSIS} AS aa
-                        WHERE aa.id IN (SELECT id FROM null_centroids)
-
-                        UNION ALL
-
-                        SELECT
-                            repaired.id,
-                            json_set(repaired.analysis_data, null_centroids.path, 0.0),
-                            null_centroids.sequence
-                        FROM repaired
-                        JOIN null_centroids
-                            ON null_centroids.id = repaired.id
-                            AND null_centroids.sequence = repaired.sequence + 1
-                    )
-                    UPDATE {DB_TABLE_AUDIO_ANALYSIS} AS aa
-                    SET analysis_data = (
-                        SELECT repaired.analysis_data
-                        FROM repaired
-                        WHERE repaired.id = aa.id
-                        ORDER BY repaired.sequence DESC
-                        LIMIT 1
-                    )
-                    WHERE aa.id IN (SELECT id FROM null_centroids)""",
+                            WHERE centroid.type = 'null'
+                        )""",
                     {"aa_provider_domain": "smart_fades"},
                 )
                 if result.rowcount:
