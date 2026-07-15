@@ -1133,17 +1133,18 @@ class SonicSimilarityPlugin(PluginProvider):
         self, candidates: list[Candidate]
     ) -> dict[tuple[str, str], Track]:
         """
-        Bulk-resolve candidate library tracks, keyed by (item_id, provider).
+        Resolve the library Track for each candidate, keyed by (item_id, provider).
 
-        Scoring (filters + rerank) only reads genres, artist names and album
-        year — never display — so this batches one library query per provider
-        instead of a full tracks.get() per candidate (the old N+1 that stalled
-        the event loop). It stays library-only and never calls a provider:
-        candidates not in the library (e.g. streamed-but-not-added tracks the
-        analysis provider still indexed) are simply left out of the map, so
-        scoring can never burst a rate-limited provider API. Callers read a
-        missing key as no rerank bonus, and drop it when filtering.
+        Candidates with no library match are omitted; a missing key means
+        unresolved (no rerank bonus, and dropped when filtering).
+
+        :param candidates: The ANN candidates to resolve for metadata scoring.
         """
+        # Scoring reads only genres/artists/year, so resolve library items in one
+        # query per provider rather than a tracks.get() per candidate. Stay
+        # library-only: sonic_analysis also indexes streamed-but-not-added tracks,
+        # and resolving those via the provider would burst a rate-limited API for a
+        # soft ranking bonus, so non-library candidates are left unresolved.
         # Dedupe (item_id, provider) and group item ids by provider for one query each.
         ids_by_provider: dict[str, list[str]] = {}
         seen: set[tuple[str, str]] = set()
