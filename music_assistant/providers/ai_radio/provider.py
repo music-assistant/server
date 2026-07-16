@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.models.plugin import PluginProvider
@@ -92,7 +93,9 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         )
         for command, handler in api_handlers:
             self._unregister_handles.append(
-                self.mass.register_api_command(command, handler, required_role="admin")
+                self.mass.register_api_command(
+                    command, handler, required_scope=Scope.CONFIG_PROVIDERS_WRITE
+                )
             )
         self.logger.info(
             "AI Radio API routes registered (%d handlers)",
