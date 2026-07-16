@@ -26,6 +26,7 @@ from .constants import (
     CONF_ENTRY_SGP_NOTE,
     EXTRA_FEATURES_FROM_MEMBERS,
     IDLE_GRACE_SECONDS,
+    PLAYBACK_CONFIRM_HOLD,
     PLAYBACK_START_TIMEOUT,
     PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
 )
@@ -698,13 +699,13 @@ class SyncGroupPlayer(Player):
     @asynccontextmanager
     async def _await_leader_playback(self) -> AsyncIterator[None]:
         """
-        Wait for the sync leader to confirm playback for the command run in the body.
+        Wait for the sync leader to confirm stable playback for the command run in the body.
 
         Wrap the play/resume call that targets the leader in this context manager.
         The group's playback lock (held by the caller) then stays acquired until the
-        leader actually reports playing, so a concurrent (un)group command cannot
-        race a start that has not yet taken effect at the device. A no-op when there
-        is no leader to wait on.
+        leader reports playing and holds that state for a short confirmation period,
+        so a concurrent (un)group command cannot race a start that has not yet
+        (fully) taken effect at the device. A no-op when there is no leader to wait on.
         """
         if (leader := self.sync_leader) is None:
             yield
@@ -714,6 +715,7 @@ class SyncGroupPlayer(Player):
             attribute_name="playback_state",
             attribute_value=PlaybackState.PLAYING,
             timeout=PLAYBACK_START_TIMEOUT,
+            stable_for=PLAYBACK_CONFIRM_HOLD,
         ):
             yield
 

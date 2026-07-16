@@ -1261,5 +1261,125 @@ class TestScheduleActiveOutputProtocolClear:
         player.set_active_output_protocol.assert_called_once_with(None)
 
 
+class TestWaitForPlayerUpdateStableFor:
+    """``stable_for`` must reject values that do not hold through the confirmation window."""
+
+    def _setup(self, mock_mass: MagicMock) -> tuple[PlayerController, MagicMock]:
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.player_id = "p1"
+        player.state.playback_state = PlaybackState.IDLE
+        controller.get_player = MagicMock(return_value=player)  # type: ignore[method-assign]
+        return controller, player
+
+    def _fire(self, controller: PlayerController, player: MagicMock, value: PlaybackState) -> None:
+        """Deliver a playback_state change to the wait's subscription."""
+        for callback in list(controller._state_update_subscribers):
+            callback(player, {"playback_state": (PlaybackState.IDLE, value)})
+
+    @pytest.mark.asyncio
+    async def test_transient_value_rearms_the_wait(self, mock_mass: MagicMock) -> None:
+        """
+        A transient PLAYING report must not complete the wait.
+
+        Replays the production failure: the leader of a device that does not support
+        dynamic leader switching briefly reports PLAYING while the group session starts,
+        falls back to idle, and only reaches real playback later.
+        """
+        controller, player = self._setup(mock_mass)
+
+        async def _device_script() -> None:
+            await asyncio.sleep(0.05)
+            # the false PLAYING report (lasted only milliseconds in the trace)
+            player.state.playback_state = PlaybackState.PLAYING
+            self._fire(controller, player, PlaybackState.PLAYING)
+            await asyncio.sleep(0.05)
+            player.state.playback_state = PlaybackState.IDLE
+            await asyncio.sleep(0.2)
+            # the real start, which then holds
+            player.state.playback_state = PlaybackState.PLAYING
+            self._fire(controller, player, PlaybackState.PLAYING)
+
+        start = time.monotonic()
+        script = asyncio.create_task(_device_script())
+        async with controller.wait_for_player_update(
+            "p1",
+            attribute_name="playback_state",
+            attribute_value=PlaybackState.PLAYING,
+            timeout=3.0,
+            stable_for=0.1,
+        ):
+            pass
+        elapsed = time.monotonic() - start
+        await script
+
+        # accepted only after the real start held through the confirmation window;
+        # accepting the transient would have completed at ~0.05s, a timeout at 3s.
+        assert 0.3 <= elapsed < 2.0
+        assert player.state.playback_state == PlaybackState.PLAYING
+
+    @pytest.mark.asyncio
+    async def test_already_satisfied_value_still_confirmed(self, mock_mass: MagicMock) -> None:
+        """A value that already matches at entry completes only after the hold."""
+        controller, player = self._setup(mock_mass)
+        player.state.playback_state = PlaybackState.PLAYING
+
+        start = time.monotonic()
+        async with controller.wait_for_player_update(
+            "p1",
+            attribute_name="playback_state",
+            attribute_value=PlaybackState.PLAYING,
+            timeout=3.0,
+            stable_for=0.1,
+        ):
+            pass
+        elapsed = time.monotonic() - start
+
+        assert 0.08 <= elapsed < 1.0
+
+    @pytest.mark.asyncio
+    async def test_no_hold_without_stable_for(self, mock_mass: MagicMock) -> None:
+        """Without stable_for the wait completes on the first matching report (as before)."""
+        controller, player = self._setup(mock_mass)
+
+        async def _device_script() -> None:
+            await asyncio.sleep(0.02)
+            player.state.playback_state = PlaybackState.PLAYING
+            self._fire(controller, player, PlaybackState.PLAYING)
+
+        start = time.monotonic()
+        script = asyncio.create_task(_device_script())
+        async with controller.wait_for_player_update(
+            "p1",
+            attribute_name="playback_state",
+            attribute_value=PlaybackState.PLAYING,
+            timeout=3.0,
+        ):
+            pass
+        elapsed = time.monotonic() - start
+        await script
+
+        assert elapsed < 0.5
+
+    @pytest.mark.asyncio
+    async def test_gives_up_at_timeout_when_never_stable(self, mock_mass: MagicMock) -> None:
+        """A value that never holds releases at the timeout, not never."""
+        controller, player = self._setup(mock_mass)
+
+        start = time.monotonic()
+        async with controller.wait_for_player_update(
+            "p1",
+            attribute_name="playback_state",
+            attribute_value=PlaybackState.PLAYING,
+            timeout=0.1,
+            stable_for=0.05,
+        ):
+            pass
+        elapsed = time.monotonic() - start
+
+        assert 0.08 <= elapsed < 1.0
+        assert player.state.playback_state == PlaybackState.IDLE
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
