@@ -85,14 +85,14 @@ class SmartCrossFadePlanner(TransitionPlanner):
         factory = CandidateFactory(ctx, self.logger)
         specs = [spec for generator in default_generators() for spec in generator.generate(ctx)]
         candidates = [candidate for spec in specs if (candidate := factory.build(spec)) is not None]
-        source_counts = Counter(spec.source for spec in specs)
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "generated %d specs (%s), %d built",
-            len(specs),
-            dict(source_counts),
-            len(candidates),
-        )
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "generated %d specs (%s), %d built",
+                len(specs),
+                dict(Counter(spec.source for spec in specs)),
+                len(candidates),
+            )
         if not candidates:
             raise SmartFadeNotApplicable("no feasible transition candidate")
         winner = CandidateSelector(default_policies(), self.logger).select(candidates, ctx)

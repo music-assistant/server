@@ -622,7 +622,7 @@ class EmergencyHandoffFactory:
             handoff.fade_out_window,
             metrics.collision_seconds,
             metrics.weighted_collision_seconds,
-            " (shrunk to MIN_HANDOFF_SECONDS: auditioned window still collided)"
+            " (onset-sized window collided; shrunk to the minimum duration)"
             if shrunk_to_min
             else "",
         )
