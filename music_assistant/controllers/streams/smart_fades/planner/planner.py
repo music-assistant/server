@@ -12,9 +12,11 @@ strategies slot in as sibling ``TransitionPlanner`` subclasses.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import SmartFadeNotApplicable
 
 from .assembly import EmergencyHandoffFactory, PlanAssembler
@@ -83,11 +85,20 @@ class SmartCrossFadePlanner(TransitionPlanner):
         factory = CandidateFactory(ctx, self.logger)
         specs = [spec for generator in default_generators() for spec in generator.generate(ctx)]
         candidates = [candidate for spec in specs if (candidate := factory.build(spec)) is not None]
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "generated %d specs (%s), %d built",
+                len(specs),
+                dict(Counter(spec.source for spec in specs)),
+                len(candidates),
+            )
         if not candidates:
             raise SmartFadeNotApplicable("no feasible transition candidate")
         winner = CandidateSelector(default_policies(), self.logger).select(candidates, ctx)
         if winner is None:
             # every candidate breached a hard rejection: ship the click-free handoff
+            self.logger.debug("shipping click-free emergency handoff")
             plan = EmergencyHandoffFactory(ctx, factory, self.logger).build()
         else:
             plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)

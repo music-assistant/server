@@ -257,12 +257,34 @@ def build_transition_context(
         fade_out_analysis.duration or 0.0,
     )
 
-    # Additional verbose logging to debug rare failures
+    if vocal_out_scoring is not None and vocal_in_scoring is not None:
+        vocal_coverage = "both"
+    elif vocal_out_scoring is not None:
+        vocal_coverage = "out"
+    elif vocal_in_scoring is not None:
+        vocal_coverage = "in"
+    else:
+        vocal_coverage = "none"
     logger.log(
         VERBOSE_LOG_LEVEL,
-        "SmartCrossFade context: fade_out: %s, fade_in: %s",
-        fade_out_analysis,
-        fade_in_analysis,
+        "transition context: tier=%s bpm=%.1f->%.1f (diff=%.1f%%) cross_meter=%s buffer=%.1fs "
+        "offset=%.1fs audio_end=%.1fs anchor=%.2f mix_out=%.2f kick=%s fade_onset=%s coda=%s "
+        "natural_entry=%.2f vocals=%s",
+        tier,
+        outgoing.bpm,
+        incoming.bpm,
+        bpm_diff_percent,
+        cross_meter,
+        buffer_duration,
+        buffer_offset,
+        audio_end,
+        tier_anchor,
+        mix_out_anchor,
+        kick_anchor,
+        fade_onset,
+        coda_zone,
+        natural_entry,
+        vocal_coverage,
     )
 
     return TransitionContext(

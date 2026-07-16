@@ -360,6 +360,14 @@ class CandidateFactory:
             spec.entry_s if spec.entry_s is not None else self._choose_fadein_entry(tail, bars)
         )
         if bars > 1 and fadein_start_pos is None:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "dropping spec source=%s tier=%s bars=%d anchor=%s: no beat-aligned incoming entry",
+                spec.source,
+                tier,
+                bars,
+                spec.anchor_s,
+            )
             return None
         crossfade_duration = self._calculate_crossfade_duration(tail, bars)
 
@@ -368,6 +376,15 @@ class CandidateFactory:
             tail, crossfade_duration, fadein_start_pos, tempo_plan
         )
         if bars > 1 and fadein_start_pos is not None and fadein_trim_start is None:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "dropping spec source=%s tier=%s bars=%d anchor=%s: "
+                "no legal timing lock for the pinned entry",
+                spec.source,
+                tier,
+                bars,
+                spec.anchor_s,
+            )
             return None
         # Rolling-intro alignment: on a full blend with no pinned entry, deepen B's
         # trim so its groove entry lands at the overlap END (B's intro runs under A,
@@ -379,6 +396,15 @@ class CandidateFactory:
             feasible, aligned = self._align_rolling_intro(crossfade_duration, fadein_trim_start)
             if not feasible:
                 if bars > 1:
+                    self._logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "dropping spec source=%s tier=%s bars=%d anchor=%s: "
+                        "rolling intro: no legal cut clears the sung run",
+                        spec.source,
+                        tier,
+                        bars,
+                        spec.anchor_s,
+                    )
                     return None
             else:
                 fadein_trim_start = aligned
