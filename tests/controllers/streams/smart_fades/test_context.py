@@ -54,8 +54,64 @@ def _context(
     return build_transition_context(fade_out, fade_in, buffer, LOGGER)
 
 
+def _vocal_probabilities(duration: float, active_windows: list[tuple[float, float]]) -> list[float]:
+    """Build a probability timeline that is quiet except inside ``active_windows``."""
+    n_frames = 1800
+    frame_duration = duration / n_frames
+    probabilities = [0.05] * n_frames
+    for start, end in active_windows:
+        start_index = max(0, int(start / frame_duration))
+        end_index = min(n_frames, int(end / frame_duration) + 1)
+        for i in range(start_index, end_index):
+            probabilities[i] = 0.9
+    return probabilities
+
+
+def _with_vocal_activity(
+    analysis: AudioAnalysisData, active_windows: list[tuple[float, float]]
+) -> AudioAnalysisData:
+    """Attach a valid vocal_activity list, active only inside ``active_windows``."""
+    assert analysis.duration is not None
+    analysis.extra_data = {
+        "vocal_activity": _vocal_probabilities(analysis.duration, active_windows)
+    }
+    return analysis
+
+
 def test_context_energy_only_when_vocal_data_missing() -> None:
     """Analyses without a stored vocal-activity timeline disable all vocal-aware masks."""
+    context = _context(_analysis(120.0), _analysis(120.0))
+
+    assert context.vocal_out_placement is None
+    assert context.vocal_in_placement is None
+    assert context.vocal_out_scoring is None
+    assert context.vocal_in_scoring is None
+
+
+def test_context_builds_outgoing_masks_when_only_outgoing_timeline_is_valid() -> None:
+    """A validated outgoing-only timeline builds the outgoing masks, leaving incoming ones None."""
+    out = _with_vocal_activity(_analysis(120.0), [(220.0, 226.0)])
+    context = _context(out, _analysis(120.0))
+
+    assert context.vocal_out_placement is not None
+    assert context.vocal_out_scoring is not None
+    assert context.vocal_in_placement is None
+    assert context.vocal_in_scoring is None
+
+
+def test_context_builds_incoming_masks_when_only_incoming_timeline_is_valid() -> None:
+    """A validated incoming-only timeline builds the incoming masks, leaving outgoing ones None."""
+    inc = _with_vocal_activity(_analysis(120.0), [(10.0, 16.0)])
+    context = _context(_analysis(120.0), inc)
+
+    assert context.vocal_in_placement is not None
+    assert context.vocal_in_scoring is not None
+    assert context.vocal_out_placement is None
+    assert context.vocal_out_scoring is None
+
+
+def test_context_all_masks_none_when_both_timelines_missing() -> None:
+    """Neither side carrying a timeline still yields all four masks as None (unchanged)."""
     context = _context(_analysis(120.0), _analysis(120.0))
 
     assert context.vocal_out_placement is None
@@ -128,4 +184,10 @@ def test_context_tier_folds_kick_anchor_like_the_old_planner() -> None:
     # ...but the tier keys on the kick-folded window: only 6 downbeats fit
     # before the kick anchor, so the tail is not blendable
     assert context.tier is TransitionTier.QUICK_FADE
-    assert context.tier is SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0).tier
+    # the early anchor's rungs overtrim the audible tail and get rejected; the
+    # rescue pass re-anchors near the audible end, re-deriving the tier there
+    plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+    assert plan.tier is TransitionTier.FULL_BLEND
+    assert plan.fade_out_window == pytest.approx(43.0, abs=1.0)
+    assert plan.metrics.audible_outgoing_trim <= plan.crossfade_duration
+    assert plan.metrics.anchor_on_downbeat

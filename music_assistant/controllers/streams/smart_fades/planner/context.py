@@ -465,45 +465,56 @@ def _build_vocal_masks(
     buffer_offset: float,
     audio_end: float,
 ) -> tuple[VocalMask | None, VocalMask | None, VocalMask | None, VocalMask | None]:
-    """Validate and build both decks' FireRed vocal-activity masks, if the contract holds."""
+    """
+    Build each deck's placement and scoring vocal masks, per deck.
+
+    :param fade_out_analysis: Analysis row for the outgoing track.
+    :param fade_in_analysis: Analysis row for the incoming track.
+    :param outgoing: The outgoing deck, for its BPM.
+    :param incoming: The incoming deck, for its BPM.
+    :param buffer_offset: Media time where the outgoing buffer starts.
+    :param audio_end: Buffer-local RMS-audible boundary.
+
+    Returns ``(out_placement, in_placement, out_scoring, in_scoring)``; a deck
+    without a validated FireRed timeline yields ``None`` for its two masks.
+    """
     out_timeline = parse_vocal_probabilities(fade_out_analysis)
     in_timeline = parse_vocal_probabilities(fade_in_analysis)
-    if out_timeline is None or in_timeline is None:
-        return None, None, None, None
     duration = fade_out_analysis.duration or buffer_offset
     config = DEFAULT_VOCAL_CONFIG
     # the scoring variant differs only in padding: padded edges are silence,
     # so they place cuts and anchors but never count as collision
     scoring_config = replace(config, left_padding=0.0, right_padding=0.0)
-    vocal_out_placement = _build_outgoing_mask(
-        out_timeline, duration, config, outgoing, buffer_offset, audio_end
+    return (
+        _build_outgoing_mask(out_timeline, duration, config, outgoing, buffer_offset, audio_end),
+        _build_incoming_mask(in_timeline, config, incoming),
+        _build_outgoing_mask(
+            out_timeline, duration, scoring_config, outgoing, buffer_offset, audio_end
+        ),
+        _build_incoming_mask(in_timeline, scoring_config, incoming),
     )
-    vocal_out_scoring = _build_outgoing_mask(
-        out_timeline, duration, scoring_config, outgoing, buffer_offset, audio_end
-    )
-    vocal_in_placement = _build_incoming_mask(in_timeline, config, incoming)
-    vocal_in_scoring = _build_incoming_mask(in_timeline, scoring_config, incoming)
-    return vocal_out_placement, vocal_in_placement, vocal_out_scoring, vocal_in_scoring
 
 
 def _build_outgoing_mask(
-    timeline: VocalTimeline,
+    timeline: VocalTimeline | None,
     duration: float,
     config: VocalHysteresisConfig,
     outgoing: Deck,
     buffer_offset: float,
     audio_end: float,
-) -> VocalMask:
+) -> VocalMask | None:
     """
     Build the outgoing deck's buffer-local vocal mask for one config.
 
-    :param timeline: The outgoing deck's validated FireRed timeline.
+    :param timeline: The outgoing deck's validated FireRed timeline, or ``None``.
     :param duration: The outgoing track's media duration in seconds.
     :param config: Hysteresis/padding thresholds for the mask.
     :param outgoing: The outgoing deck, for its BPM.
     :param buffer_offset: Media time where the buffer starts.
     :param audio_end: Buffer-local RMS-audible boundary.
     """
+    if timeline is None:
+        return None
     media_time_mask = build_vocal_windows(
         timeline.probabilities,
         timeline.frame_duration,
@@ -524,15 +535,17 @@ def _build_outgoing_mask(
 
 
 def _build_incoming_mask(
-    timeline: VocalTimeline, config: VocalHysteresisConfig, incoming: Deck
-) -> VocalMask:
+    timeline: VocalTimeline | None, config: VocalHysteresisConfig, incoming: Deck
+) -> VocalMask | None:
     """
     Build the incoming deck's head vocal mask for one config.
 
-    :param timeline: The incoming deck's validated FireRed timeline.
+    :param timeline: The incoming deck's validated FireRed timeline, or ``None``.
     :param config: Hysteresis/padding thresholds for the mask.
     :param incoming: The incoming deck, for its BPM.
     """
+    if timeline is None:
+        return None
     return build_vocal_windows(
         timeline.probabilities,
         timeline.frame_duration,
