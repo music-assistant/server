@@ -15,10 +15,8 @@ from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
 
-from .constants import StreamingProtocol
 from .helpers import get_final_output_format, ntp_to_unix_time, unix_time_to_ntp
-from .protocols.airplay2 import AirPlay2Stream
-from .protocols.raop import RaopStream
+from .stream import AirPlayStream
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -156,7 +154,7 @@ class AirPlayStreamSession:
            ``now + min_headroom`` and trim that many seconds from the buffer
            head so timing stays aligned with the rest of the group.
         3. Start ffmpeg+CLI, write the (possibly trimmed) buffer into ffmpeg
-           to prime the pipe while cliraop is still connecting, then add to
+           to prime the pipe while cliairplay is still connecting, then add to
            sync_clients so the audio streamer continues seamlessly.
         """
         async with self._lock:
@@ -175,9 +173,9 @@ class AirPlayStreamSession:
             first_byte_pos = self.seconds_streamed - buffer_seconds
             start_at = self.start_time + first_byte_pos
 
-            # The audio we hand to ffmpeg → cliraop must be bit-aligned with
+            # The audio we hand to ffmpeg → cliairplay must be bit-aligned with
             # ``start_at``: the first sample sent should be the one that should
-            # play at ``start_at``. cliraop buffers ``wait_start`` seconds of
+            # play at ``start_at``. cliairplay buffers ``wait_start`` seconds of
             # audio before starting playback, so we keep ``start_at`` at least
             # that far in the future (using the larger of the session's
             # existing wait_start and the late joiner's own).
@@ -225,7 +223,7 @@ class AirPlayStreamSession:
 
             # Start ffmpeg+CLI and immediately write the buffered PCM.
             # ffmpeg accepts data on stdin right away; it queues in the pipe
-            # while cliraop is still connecting to the device.
+            # while cliairplay is still connecting to the device.
             try:
                 await self._start_client(airplay_player, start_ntp)
                 if buffered_pcm:
@@ -401,10 +399,7 @@ class AirPlayStreamSession:
         airplay_player.sync_volume_level()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
-        if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-            airplay_player.stream = AirPlay2Stream(airplay_player)
-        else:
-            airplay_player.stream = RaopStream(airplay_player)
+        airplay_player.stream = AirPlayStream(airplay_player)
         airplay_player.stream.session = self
         sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)

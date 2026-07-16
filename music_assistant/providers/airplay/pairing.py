@@ -5,7 +5,7 @@ This module provides pairing support for:
 - AirPlay 2 (HAP - HomeKit Accessory Protocol) - for Apple TV 4+, HomePod, Mac
 - RAOP (AirPlay 1 legacy pairing) - for older devices
 
-Both implementations produce credentials compatible with cliap2/cliraop.
+Both implementations produce credentials compatible with cliairplay.
 """
 
 from __future__ import annotations
@@ -189,7 +189,7 @@ class AirPlayPairing:
         :param protocol: Streaming protocol (RAOP or AIRPLAY2).
         :param logger: Logger instance.
         :param port: Port number (default: 7000 for AirPlay 2, 5000 for RAOP).
-        :param device_id: Device identifier (DACP ID) - must match what cliap2 uses.
+        :param device_id: Device identifier (DACP ID) - must match what cliairplay uses.
         """
         self.address = address
         self.name = name
@@ -208,7 +208,7 @@ class AirPlayPairing:
         self._session_key: bytes | None = None
 
         # Client identifier (device_id) handling depends on protocol:
-        # - HAP (AirPlay 2): Uses DACP ID as string identifier (must match cliap2 pair-verify)
+        # - HAP (AirPlay 2): Uses DACP ID as string identifier (must match cliairplay pair-verify)
         # - RAOP: Uses 8 random bytes (not the DACP ID) - credentials are self-contained
         if protocol == StreamingProtocol.AIRPLAY2:
             # For HAP, use DACP ID as the identifier (must match pair-verify)
@@ -298,7 +298,7 @@ class AirPlayPairing:
         Complete pairing with the provided PIN or password.
 
         :param pin: 4-digit PIN from device screen or device password.
-        :return: Credentials string for cliap2/cliraop.
+        :return: Credentials string for cliairplay.
         :raises PlayerCommandFailed: If pairing fails.
         """
         if not self._session:
@@ -538,7 +538,7 @@ class AirPlayPairing:
 
     def _generate_hap_credentials(self) -> str:
         """
-        Generate HAP credentials for cliap2.
+        Generate HAP credentials for cliairplay.
 
         Format: client_private_key(128 hex) + server_public_key(64 hex) = 192 hex chars
 
@@ -799,5 +799,5 @@ class AirPlayPairing:
             if resp.status != 200:
                 raise PlayerCommandFailed(f"RAOP step 3 failed: HTTP {resp.status}")
 
-        # Return credentials in cliraop format: client_id:auth_secret
+        # Return credentials in raop credentials format: client_id:auth_secret
         return f"{self._client_id.hex()}:{auth_secret.hex()}"

@@ -40,10 +40,8 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
-from .constants import StreamingProtocol
 from .helpers import player_id_to_mac_address, unix_time_to_ntp
-from .protocols.airplay2 import AirPlay2Stream
-from .protocols.raop import RaopStream
+from .stream import AirPlayStream
 
 if TYPE_CHECKING:
     from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
@@ -53,7 +51,6 @@ if TYPE_CHECKING:
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .player import AirPlayPlayer
-    from .protocols._protocol import AirPlayProtocol
     from .provider import AirPlayProvider
 
 
@@ -105,7 +102,7 @@ class SendspinAirPlayBridge:
         self._sendspin_client: SendspinClient | None = None
         self._bridge_client_id: str | None = None
         self._bridge_role: BridgePlayerRole | None = None
-        self._airplay_stream: AirPlayProtocol | None = None
+        self._airplay_stream: AirPlayStream | None = None
         self._is_streaming = False
         self._next_expected_timestamp_us: int | None = None
         self._drop_until_us: int = 0
@@ -334,11 +331,7 @@ class SendspinAirPlayBridge:
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
             # for cleanup. If we assigned it earlier, the new stream would be missed
             # and leaked. Only publish once start() succeeds and this task is current.
-            new_stream: AirPlayProtocol
-            if self.airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-                new_stream = AirPlay2Stream(self.airplay_player)
-            else:
-                new_stream = RaopStream(self.airplay_player)
+            new_stream = AirPlayStream(self.airplay_player)
             try:
                 await new_stream.start(start_ntp)
             except BaseException:
@@ -423,7 +416,7 @@ class SendspinAirPlayBridge:
 
     async def _cleanup_old_stream(
         self,
-        stream: AirPlayProtocol | None,
+        stream: AirPlayStream | None,
         writer_task: asyncio.Task[None] | None,
         stream_start_task: asyncio.Task[None] | None,
         prev_cleanup: asyncio.Task[None] | None = None,

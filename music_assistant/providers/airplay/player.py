@@ -38,9 +38,7 @@ from .constants import (
     CONF_ACTION_START_PAIRING,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_AIRPLAY_PROTOCOL,
-    CONF_ALAC_ENCODE,
     CONF_AP2PASSWORD,
-    CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
@@ -71,10 +69,8 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from .pairing import AirPlayPairing
-    from .protocols._protocol import AirPlayProtocol
-    from .protocols.airplay2 import AirPlay2Stream
-    from .protocols.raop import RaopStream
     from .provider import AirPlayProvider
+    from .stream import AirPlayStream
 
 # Docker bridge subnet, sometimes wrongly advertised via mDNS by containerized devices.
 _DOCKER_SUBNET = ipaddress.ip_network("172.16.0.0/12")
@@ -100,7 +96,7 @@ class AirPlayPlayer(Player):
         self.airplay_discovery_info = airplay_discovery_info
         super().__init__(provider, player_id)
         self.address = address
-        self.stream: RaopStream | AirPlay2Stream | None = None
+        self.stream: AirPlayStream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
         self._active_pairing: AirPlayPairing | None = None
@@ -259,26 +255,6 @@ class AirPlayPlayer(Player):
                 default_value=0,
                 category="protocol_generic",
             ),
-            ConfigEntry(
-                key=CONF_ENCRYPTION,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                depends_on=CONF_AIRPLAY_PROTOCOL,
-                depends_on_value=StreamingProtocol.RAOP.value,
-                hidden=not is_raop,
-                category="protocol_generic",
-                advanced=True,
-            ),
-            ConfigEntry(
-                key=CONF_ALAC_ENCODE,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                depends_on=CONF_AIRPLAY_PROTOCOL,
-                depends_on_value=StreamingProtocol.RAOP.value,
-                hidden=not is_raop,
-                category="protocol_generic",
-                advanced=True,
-            ),
             CONF_ENTRY_SYNC_ADJUST,
             ConfigEntry(
                 key=CONF_PASSWORD,
@@ -328,21 +304,6 @@ class AirPlayPlayer(Player):
 
         if is_broken_airplay_model(self.device_info.manufacturer, self.device_info.model):
             base_entries.insert(-1, BROKEN_AIRPLAY_WARN)
-
-        if effective_protocol == StreamingProtocol.AIRPLAY2:
-            # Insert the warning right after the protocol choice entry
-            for i, entry in enumerate(base_entries):
-                if entry.key == CONF_AIRPLAY_PROTOCOL:
-                    base_entries.insert(
-                        i + 1,
-                        ConfigEntry(
-                            key="AIRPLAY2_SYNC_WARN",
-                            type=ConfigEntryType.ALERT,
-                            default_value=None,
-                            required=False,
-                        ),
-                    )
-                    break
 
         return base_entries
 
@@ -600,7 +561,7 @@ class AirPlayPlayer(Player):
         self,
         state: PlaybackState | None = None,
         elapsed_time: float | None = None,
-        stream: AirPlayProtocol | None = None,
+        stream: AirPlayStream | None = None,
     ) -> None:
         """
         Set the playback state from stream (RAOP or AirPlay2).
@@ -882,7 +843,7 @@ class AirPlayPlayer(Player):
         Handle pairing actions.
 
         Uses native pairing for both AirPlay 2 (HAP) and RAOP protocols.
-        Both produce credentials compatible with cliap2/cliraop respectively.
+        Both produce credentials compatible with cliairplay.
         """
         self.logger.debug(f"_handle_pairing_action with action: {action} and values: {values}")
         conf_protocol: int = 0
@@ -921,7 +882,7 @@ class AirPlayPlayer(Player):
         elif self.raop_discovery_info:
             # Fallback for devices without AirPlay service
             port = self.raop_discovery_info.port or 5000
-        # Get the DACP ID from the provider - must match what cliap2 uses
+        # Get the DACP ID from the provider - must match what cliairplay uses
         provider = cast("AirPlayProvider", self.provider)
         device_id = provider.dacp_id
 

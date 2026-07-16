@@ -32,10 +32,10 @@ from .constants import (
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
+    StreamingProtocol,
 )
 from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
-from .protocols.airplay2 import AirPlay2Stream
 from .sendspin_bridge import SendspinBridgeManager
 
 # TODO: AirPlay provider
@@ -141,7 +141,7 @@ class AirPlayProvider(PlayerProvider):
         for player in self.get_players():
             if not (player.stream and player.stream.running):
                 continue
-            stream_type = "airplay2" if isinstance(player.stream, AirPlay2Stream) else "raop"
+            stream_type = "airplay2" if player.protocol == StreamingProtocol.AIRPLAY2 else "raop"
             streams_by_type[stream_type] = streams_by_type.get(stream_type, 0) + 1
         return {
             "dacp_server_running": self._dacp_server.is_serving(),

@@ -18,8 +18,6 @@ from music_assistant.helpers.util import get_source_ip_for_target
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_2_DEFAULT_MODELS,
     BROKEN_AIRPLAY_MODELS,
-    CONF_ALAC_ENCODE,
-    StreamingProtocol,
 )
 
 if TYPE_CHECKING:
@@ -36,7 +34,7 @@ NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
 
 async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     """
-    Resolve best local interface IP for cliraop's -if argument.
+    Resolve best local interface IP for cliairplay's --if argument.
 
     :param mass: The MusicAssistant instance.
     :param target_ip: The IP address of the target AirPlay device.
@@ -164,62 +162,26 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     )
 
 
-async def get_cli_binary(protocol: StreamingProtocol) -> str:
+async def get_cli_binary() -> str:
     """
-    Find the correct raop/airplay binary belonging to the platform.
+    Find the cliairplay binary for the current platform.
 
-    Args:
-        protocol: The streaming protocol (RAOP or AIRPLAY2)
-
-    Returns:
-        Path to the CLI binary
-
-    Raises:
-        RuntimeError: If the binary cannot be found
+    :raises RuntimeError: If the binary cannot be found.
     """
-
-    async def check_binary(cli_path: str) -> str | None:
-        try:
-            if protocol == StreamingProtocol.RAOP:
-                args = [
-                    cli_path,
-                    "-check",
-                ]
-                passing_output = "cliraop check"
-            else:
-                args = [
-                    cli_path,
-                    "--testrun",
-                ]
-                passing_output = "cliap2 check"
-
-            returncode, output = await check_output(*args)
-            _LOGGER.debug("%s returned %d with output: %s", cli_path, int(returncode), str(output))
-            if returncode == 0 and output.strip().decode() == passing_output:
-                return cli_path
-        except OSError:
-            pass
-        return None
-
     base_path = os.path.join(os.path.dirname(__file__), "bin")
     system = platform.system().lower().replace("darwin", "macos")
     architecture = platform.machine().lower()
+    binary_path = os.path.join(base_path, f"cliairplay-{system}-{architecture}")
 
-    if protocol == StreamingProtocol.RAOP:
-        package = "cliraop"
-    elif protocol == StreamingProtocol.AIRPLAY2:
-        package = "cliap2"
-    else:
-        raise RuntimeError(f"Unsupported streaming protocol requested: {protocol}")
+    try:
+        returncode, output = await check_output(binary_path, "--check")
+        output_str = output.strip().decode()
+        if returncode == 0 and "cliairplay" in output_str and "check" in output_str:
+            return binary_path
+    except OSError:
+        pass
 
-    if bridge_binary := await check_binary(
-        os.path.join(base_path, f"{package}-{system}-{architecture}")
-    ):
-        return bridge_binary
-
-    msg = (
-        f"Unable to locate {protocol.name} CLI stream binary {package} for {system}/{architecture}"
-    )
+    msg = f"Unable to locate cliairplay binary for {system}/{architecture}"
     raise RuntimeError(msg)
 
 
@@ -357,20 +319,15 @@ def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
 
 def get_final_output_format(
     audio_format: AudioFormat,
-    airplay_player: AirPlayPlayer,
+    airplay_player: AirPlayPlayer,  # noqa: ARG001
 ) -> AudioFormat:
     """
-    Determine final output format based on stream and player capabilities.
+    Determine final output format for display purposes.
 
-    This is for the UI only, so it correctly displays ALAC/PCM support.
+    The cliairplay binary always uses ALAC encoding internally.
     """
-    content_type = audio_format.content_type
-    if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-        content_type = ContentType.ALAC
-    if airplay_player.config.get_value(CONF_ALAC_ENCODE, True):
-        content_type = ContentType.ALAC
     return AudioFormat(
-        content_type=content_type,
+        content_type=ContentType.ALAC,
         sample_rate=audio_format.sample_rate,
         bit_depth=audio_format.bit_depth,
         channels=audio_format.channels,
