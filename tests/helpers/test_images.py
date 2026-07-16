@@ -225,6 +225,107 @@ async def test_own_imageproxy_url_cached_under_resolved_key_only(
     assert len(fetch_calls) == 1
 
 
+async def test_expiring_remote_urls_share_a_persistent_source_cache(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """AWS-signed URLs for one object share source bytes after the signature expires."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    base_url = "https://store-033.blobstore.apple.com/path/to/artwork"
+    first_url = f"{base_url}?X-Amz-Date=20260611T193936Z&X-Amz-Signature=first"
+    second_url = f"{base_url}?X-Amz-Date=20260612T193936Z&X-Amz-Signature=second"
+
+    async def fake_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+        return b"signed-image-bytes"
+
+    monkeypatch.setattr(images, "_fetch_remote_image", fake_remote_fetch)
+    assert await get_image_data(mass_minimal, first_url, "apple_music--1") == b"signed-image-bytes"
+    images._source_memory_cache.clear()
+    assert await get_image_data(mass_minimal, second_url, "apple_music--1") == b"signed-image-bytes"
+    assert fetch_calls == [("apple_music--1", first_url)]
+    assert create_thumb_hash("apple_music--1", first_url) == create_thumb_hash(
+        "apple_music--1", second_url
+    )
+
+
+@pytest.mark.parametrize(
+    ("first_url", "second_url", "same_key"),
+    [
+        pytest.param(
+            "https://storage.googleapis.com/bucket/art.jpg?X-Goog-Date=1&X-Goog-Signature=a",
+            "https://storage.googleapis.com/bucket/art.jpg?X-Goog-Date=2&X-Goog-Signature=b",
+            True,
+            id="gcs-resigned",
+        ),
+        pytest.param(
+            "https://cdn.example.com/art.jpg?__token__=exp=1~hmac=aaa",
+            "https://cdn.example.com/art.jpg?__token__=exp=2~hmac=bbb",
+            True,
+            id="akamai-edgeauth-resigned",
+        ),
+        pytest.param(
+            "https://cdn.example.com/art.jpg?hdnts=exp=1~hmac=aaa",
+            "https://cdn.example.com/art.jpg?hdnts=exp=2~hmac=bbb",
+            True,
+            id="akamai-hdnts-resigned",
+        ),
+        pytest.param(
+            "https://imagedelivery.net/acct/img/public?exp=1&sig=aaa",
+            "https://imagedelivery.net/acct/img/public?exp=2&sig=bbb",
+            True,
+            id="cloudflare-images-resigned",
+        ),
+        pytest.param(
+            "https://cdn.example.com/art.jpg?sig=aaa",
+            "https://cdn.example.com/art.jpg?sig=bbb",
+            False,
+            id="lone-sig-is-not-a-signature",
+        ),
+        pytest.param(
+            "https://cdn.example.com/art.jpg?exp=classical",
+            "https://cdn.example.com/art.jpg?exp=jazz",
+            False,
+            id="lone-exp-is-not-a-signature",
+        ),
+        pytest.param(
+            "https://cdn.example.com/art.jpg?Sig=aaa&Exp=1",
+            "https://cdn.example.com/art.jpg?sig=bbb&exp=2",
+            True,
+            id="signature-params-match-case-insensitively",
+        ),
+        pytest.param(
+            "https://cdn.example.com/art.jpg?w=a%20b&X-Amz-Signature=aaa",
+            "https://cdn.example.com/art.jpg?w=a%20b",
+            True,
+            id="signed-and-unsigned-forms-share-a-key",
+        ),
+    ],
+)
+def test_expiring_url_detection_across_cdn_conventions(
+    first_url: str, second_url: str, same_key: bool
+) -> None:
+    """Re-signed URLs share a cache key across CDN signature conventions; lookalikes do not."""
+    assert (
+        create_thumb_hash("provider", first_url) == create_thumb_hash("provider", second_url)
+    ) is same_key
+
+
+def test_expiring_url_cache_keys_preserve_non_signature_params() -> None:
+    """Only signature params are volatile; other query params select distinct image variants."""
+    base_url = "https://store-033.blobstore.apple.com/path/to/artwork"
+    variant_a = f"{base_url}?w=100&X-Amz-Signature=first"
+    variant_a_resigned = f"{base_url}?w=100&X-Amz-Signature=second"
+    variant_b = f"{base_url}?w=1000&X-Amz-Signature=first"
+    assert create_thumb_hash("apple_music--1", variant_a) == create_thumb_hash(
+        "apple_music--1", variant_a_resigned
+    )
+    assert create_thumb_hash("apple_music--1", variant_a) != create_thumb_hash(
+        "apple_music--1", variant_b
+    )
+
+
 async def test_invalidate_cached_image_clears_all_tiers(
     mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
 ) -> None:

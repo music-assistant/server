@@ -8,7 +8,11 @@ from music_assistant_models.media_items import Album, ItemMapping
 
 from music_assistant.providers.apple_music.library import _TRACK_PAGE_SIZE, AppleMusicLibraryManager
 from music_assistant.providers.apple_music.media import AppleMusicMediaManager
-from music_assistant.providers.apple_music.parsers import parse_album, parse_track
+from music_assistant.providers.apple_music.parsers import (
+    is_remotely_accessible_artwork_url,
+    parse_album,
+    parse_track,
+)
 
 
 def _stream(items: list[dict[str, Any]]) -> MagicMock:
@@ -32,6 +36,18 @@ def _create_provider_mock() -> MagicMock:
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
     return provider
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://store-033.blobstore.apple.com/art?X-Amz-Signature=expired", False),
+        ("https://is1-ssl.mzstatic.com/image/thumb/art.jpg", True),
+    ],
+)
+def test_artwork_url_accessibility(url: str, expected: bool) -> None:
+    """Apple blobstore artwork requires proxying while mzstatic artwork does not."""
+    assert is_remotely_accessible_artwork_url(url) is expected
 
 
 def test_parse_album_keeps_album_without_catalog_url() -> None:

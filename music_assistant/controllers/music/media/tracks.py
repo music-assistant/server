@@ -718,7 +718,7 @@ class TracksController(MediaControllerBase[Track]):
         """Update Track record in the database, merging data."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        metadata = self._merge_update_metadata(cur_item.metadata, update.metadata, overwrite)
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
@@ -880,6 +880,7 @@ class TracksController(MediaControllerBase[Track]):
             favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
+            image_paths=self._parse_sync_details_image_paths(db_row),
             has_album=bool(db_row["has_album"]),
         )
 

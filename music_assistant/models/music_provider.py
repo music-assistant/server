@@ -20,6 +20,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItem,
     MediaItemType,
     Playlist,
     Podcast,
@@ -1515,7 +1516,25 @@ class MusicProvider(Provider):
             # provider mapping doesn't match the library item
             return True
         # the item's date_added changed on the provider
-        return bool(prov_item.date_added and library_item.date_added != prov_item.date_added)
+        if prov_item.date_added and library_item.date_added != prov_item.date_added:
+            return True
+        # the provider supplies artwork not (yet) present on the library item,
+        # e.g. providers with expiring image URLs such as Apple Music.
+        # NOTE: deliberately one-directional (subset, not equality): a provider
+        # dropping an image must not force a library update on every sync
+        provider_images = {
+            (image.provider, image.path) for image in (prov_item.metadata.images or [])
+        }
+        if not provider_images:
+            return False
+        library_images: set[tuple[str, str]]
+        if isinstance(library_item, MediaItem):
+            library_images = {
+                (image.provider, image.path) for image in (library_item.metadata.images or [])
+            }
+        else:
+            library_images = library_item.image_paths
+        return not provider_images.issubset(library_images)
 
     def _check_provider_mappings(
         self,

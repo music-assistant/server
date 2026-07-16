@@ -17,6 +17,7 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.track_filter import filter_tracks
 
+from .constants import ARTWORK_CACHE_CHECKSUM, ARTWORK_CACHE_EXPIRATION
 from .helpers.utils import is_catalog_id, is_library_id
 from .parsers import (
     parse_album,
@@ -41,7 +42,7 @@ class AppleMusicMediaManager:
         self.api = provider.api_client
         self.logger = provider.logger
 
-    @use_cache()
+    @use_cache(ARTWORK_CACHE_EXPIRATION, cache_checksum=ARTWORK_CACHE_CHECKSUM)
     async def search(
         self,
         search_query: str,
@@ -104,14 +105,14 @@ class AppleMusicMediaManager:
             ]
         return searchresult
 
-    @use_cache()
+    @use_cache(ARTWORK_CACHE_EXPIRATION, cache_checksum=ARTWORK_CACHE_CHECKSUM)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}"
         response = await self.api.get_data(endpoint, extend="editorialNotes")
         return cast("Artist", parse_artist(self.provider, response["data"][0]))
 
-    @use_cache()
+    @use_cache(ARTWORK_CACHE_EXPIRATION, cache_checksum=ARTWORK_CACHE_CHECKSUM)
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if is_library_id(prov_album_id):
@@ -124,7 +125,7 @@ class AppleMusicMediaManager:
         is_favourite = rating_response.get(prov_album_id)
         return cast("Album", parse_album(self.provider, response["data"][0], is_favourite))
 
-    @use_cache()
+    @use_cache(ARTWORK_CACHE_EXPIRATION, cache_checksum=ARTWORK_CACHE_CHECKSUM)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
@@ -148,7 +149,7 @@ class AppleMusicMediaManager:
             library_id_override=library_id_override,
         )
 
-    @use_cache()
+    @use_cache(ARTWORK_CACHE_EXPIRATION, cache_checksum=ARTWORK_CACHE_CHECKSUM)
     async def _get_regular_playlist(
         self,
         prov_playlist_id: str,
@@ -170,7 +171,9 @@ class AppleMusicMediaManager:
             library_id_override=library_id_override,
         )
 
-    @use_cache(allow_expired_cache=True)
+    @use_cache(
+        ARTWORK_CACHE_EXPIRATION, cache_checksum=ARTWORK_CACHE_CHECKSUM, allow_expired_cache=True
+    )
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         if is_library_id(prov_album_id):
@@ -262,7 +265,9 @@ class AppleMusicMediaManager:
             if t and t.get("id")
         ]
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    @use_cache(
+        ARTWORK_CACHE_EXPIRATION, cache_checksum=ARTWORK_CACHE_CHECKSUM, allow_expired_cache=True
+    )
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/albums"
@@ -282,7 +287,9 @@ class AppleMusicMediaManager:
                 albums.append(cast("Album", parsed))
         return albums
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    @use_cache(
+        ARTWORK_CACHE_EXPIRATION, cache_checksum=ARTWORK_CACHE_CHECKSUM, allow_expired_cache=True
+    )
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/view/top-songs"

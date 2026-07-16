@@ -104,9 +104,56 @@ def detect_image_content_format(data: bytes) -> str | None:
     return None
 
 
+# signed-url query conventions of the major storage/CDN services:
+# AWS S3 and S3-compatibles incl. Cloudflare R2 (X-Amz-*), Google Cloud
+# Storage (X-Goog-*), Akamai Edge Auth (__token__/hdnts) and Cloudflare
+# Images and similar HMAC schemes (a sig + exp pair)
+_SIGNATURE_PARAM_PREFIXES = ("x-amz-", "x-goog-")
+_SIGNATURE_PARAM_NAMES = frozenset({"__token__", "hdnts"})
+_SIGNATURE_PARAM_PAIR = frozenset({"sig", "exp"})
+
+
+def _volatile_signature_params(query: str) -> set[str]:
+    """Return the (lowercased) query param names that form an expiring URL signature."""
+    keys = {key.lower() for key, _ in urllib.parse.parse_qsl(query, keep_blank_values=True)}
+    volatile = {
+        key
+        for key in keys
+        if key.startswith(_SIGNATURE_PARAM_PREFIXES) or key in _SIGNATURE_PARAM_NAMES
+    }
+    if keys >= _SIGNATURE_PARAM_PAIR:
+        volatile |= _SIGNATURE_PARAM_PAIR
+    return volatile
+
+
+def _is_expiring_remote_url(path_or_url: str) -> bool:
+    """Return whether a remote URL carries a time-limited (expiring) signature."""
+    if not path_or_url.startswith(("http://", "https://")):
+        return False
+    return bool(_volatile_signature_params(urllib.parse.urlparse(path_or_url).query))
+
+
+def _normalize_image_cache_path(path_or_url: str) -> str:
+    """Remove the volatile signature parameters before deriving an image cache key."""
+    if not path_or_url.startswith(("http://", "https://")):
+        return path_or_url
+    parsed_url = urllib.parse.urlparse(path_or_url)
+    if not (volatile := _volatile_signature_params(parsed_url.query)):
+        return path_or_url
+    # only drop the signature parameters; other query parameters may select a
+    # distinct image variant and are kept verbatim (no re-encoding), so signed
+    # and unsigned forms of the same url derive the same cache key
+    stable_params = [
+        param
+        for param in parsed_url.query.split("&")
+        if param and param.split("=", 1)[0].lower() not in volatile
+    ]
+    return parsed_url._replace(query="&".join(stable_params), fragment="").geturl()
+
+
 def create_thumb_hash(provider: str, path_or_url: str) -> str:
     """Create a safe filesystem hash from provider and image path."""
-    raw = f"{provider}/{path_or_url}"
+    raw = f"{provider}/{_normalize_image_cache_path(path_or_url)}"
     return hashlib.sha256(raw.encode(), usedforsecurity=False).hexdigest()
 
 
@@ -342,12 +389,15 @@ async def _fetch_and_cache_source_image(
 
     def _read_disk_entry() -> bytes | None:
         # remote urls only count as fresh within the TTL (a CDN can serve new
-        # content behind a stable url); local files rely on invalidation instead
+        # content behind a stable url); local files rely on invalidation instead.
+        # signed (expiring) urls are exempt from the TTL: the signature churns
+        # but the bytes behind the stable blob path are immutable
         try:
             if not os.path.isfile(filepath):
                 return None
             if (
                 path_or_url.startswith("http")
+                and not _is_expiring_remote_url(path_or_url)
                 and time.time() - Path(filepath).stat().st_mtime > _SOURCE_CACHE_TTL
             ):
                 return None

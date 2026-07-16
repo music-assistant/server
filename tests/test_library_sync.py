@@ -5,17 +5,26 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import EventType, MediaType, ProviderType
+from music_assistant_models.enums import EventType, ImageType, MediaType, ProviderType
 from music_assistant_models.errors import InsufficientPermissions
-from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
+from music_assistant_models.media_items import (
+    Album,
+    AudioFormat,
+    MediaItemImage,
+    MediaItemMetadata,
+    ProviderMapping,
+    UniqueList,
+)
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_BACK
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.base import (
     SUPPRESS_MEDIA_ITEM_UPDATES,
+    LibraryItemSyncDetails,
     MediaControllerBase,
 )
 from music_assistant.models.music_provider import (
@@ -1183,3 +1192,158 @@ async def test_provider_sync_suppresses_per_item_events() -> None:
     assert SUPPRESS_MEDIA_ITEM_UPDATES.get() is False
     await ctrl.add_item_to_library(create_mock_album(provider="spotify"))
     assert events == [EventType.MUSIC_SYNC_COMPLETED, EventType.MEDIA_ITEM_ADDED]
+
+
+# --- Group 9: Refreshing provider artwork during sync ---
+
+
+def create_image(
+    provider: str, path: str, image_type: ImageType = ImageType.THUMB
+) -> MediaItemImage:
+    """
+    Create a MediaItemImage with sensible defaults.
+
+    :param provider: The provider instance ID that supplied the image.
+    :param path: The image path/url.
+    :param image_type: The type of the image.
+    """
+    return MediaItemImage(
+        type=image_type,
+        path=path,
+        provider=provider,
+        remotely_accessible=True,
+    )
+
+
+def _create_sync_details(image_paths: set[tuple[str, str]]) -> LibraryItemSyncDetails:
+    return LibraryItemSyncDetails(
+        item_id=1,
+        favorite=False,
+        date_added=datetime.fromtimestamp(0, tz=UTC),
+        provider_mappings=set(),
+        image_paths=image_paths,
+    )
+
+
+def test_parse_sync_details_image_paths_handles_missing_images() -> None:
+    """Null, missing or malformed stored images must not break sync-details parsing."""
+    parse = MediaControllerBase._parse_sync_details_image_paths
+    assert parse(Mock(), {"images": None}) == set()
+    assert parse(Mock(), {"images": "[]"}) == set()
+    assert parse(Mock(), {"images": '"bogus"'}) == set()
+    assert parse(Mock(), {"images": '[{"provider": "apple_1"}, 42]'}) == set()
+    assert parse(Mock(), {"images": '[{"provider": "apple_1", "path": "https://blob/a"}]'}) == {
+        ("apple_1", "https://blob/a")
+    }
+
+
+def test_library_item_needs_update_on_changed_image_path() -> None:
+    """A provider item with a new image path (e.g. re-signed url) triggers a library update."""
+    provider = MusicProvider.__new__(MusicProvider)
+    prov_item = create_mock_album(provider="apple_music")
+    prov_item.date_added = None
+    prov_item.metadata = Mock(images=[create_image("apple_1", "https://blob/new?token=b")])
+
+    with patch.object(provider, "_check_provider_mappings", return_value=True):
+        stale = _create_sync_details({("apple_1", "https://blob/old?token=a")})
+        assert provider._library_item_needs_update(stale, prov_item) is True
+        # unchanged artwork does not trigger an update
+        fresh = _create_sync_details({("apple_1", "https://blob/new?token=b")})
+        assert provider._library_item_needs_update(fresh, prov_item) is False
+        # a provider item without images does not trigger an update either
+        prov_item.metadata = Mock(images=None)
+        assert provider._library_item_needs_update(stale, prov_item) is False
+
+
+def test_library_item_needs_update_with_multiple_provider_instances() -> None:
+    """The artwork comparison only considers the updating provider's own images."""
+    provider = MusicProvider.__new__(MusicProvider)
+    prov_item = create_mock_album(provider="apple_music")
+    prov_item.date_added = None
+    prov_item.metadata = Mock(images=[create_image("apple_1", "https://blob/a?token=x")])
+
+    with patch.object(provider, "_check_provider_mappings", return_value=True):
+        # another instance's artwork on the library item does not mask a missing entry
+        other_instance_only = _create_sync_details({("apple_2", "https://blob/a?token=x")})
+        assert provider._library_item_needs_update(other_instance_only, prov_item) is True
+        # the provider's own image being present is enough, regardless of other entries
+        both_instances = _create_sync_details(
+            {("apple_1", "https://blob/a?token=x"), ("apple_2", "https://blob/b?token=y")}
+        )
+        assert provider._library_item_needs_update(both_instances, prov_item) is False
+
+
+def test_library_item_needs_update_image_check_on_full_media_item() -> None:
+    """The artwork comparison also works when a full library MediaItem is passed."""
+    provider = MusicProvider.__new__(MusicProvider)
+    prov_item = create_mock_album(provider="apple_music")
+    prov_item.date_added = None
+    prov_item.metadata = Mock(images=[create_image("apple_1", "https://blob/new?token=b")])
+
+    library_item = Album(
+        item_id="1",
+        provider="library",
+        name="Test Album",
+        provider_mappings={create_provider_mapping()},
+        metadata=MediaItemMetadata(
+            images=UniqueList([create_image("apple_1", "https://blob/old?token=a")])
+        ),
+    )
+    with patch.object(provider, "_check_provider_mappings", return_value=True):
+        assert provider._library_item_needs_update(library_item, prov_item) is True
+        library_item.metadata.images = UniqueList(
+            [create_image("apple_1", "https://blob/new?token=b")]
+        )
+        assert provider._library_item_needs_update(library_item, prov_item) is False
+
+
+def test_merge_update_metadata_replaces_stale_provider_entries() -> None:
+    """An update replaces the provider's stale images in place, keeping other providers'."""
+    current = MediaItemMetadata(
+        images=UniqueList(
+            [
+                create_image("apple_1", "https://blob/old?token=a"),
+                create_image("theaudiodb", "https://tadb/fanart.jpg"),
+            ]
+        )
+    )
+    update = MediaItemMetadata(
+        images=UniqueList([create_image("apple_1", "https://blob/new?token=b")])
+    )
+    merged = MediaControllerBase._merge_update_metadata(Mock(), current, update, False)
+    # replaced at the original position, so the preferred (first) image stays first
+    assert [(image.provider, image.path) for image in merged.images or []] == [
+        ("apple_1", "https://blob/new?token=b"),
+        ("theaudiodb", "https://tadb/fanart.jpg"),
+    ]
+    # an update without images leaves the current images untouched
+    merged = MediaControllerBase._merge_update_metadata(Mock(), merged, MediaItemMetadata(), False)
+    assert [image.path for image in merged.images or []] == [
+        "https://blob/new?token=b",
+        "https://tadb/fanart.jpg",
+    ]
+    # overwrite returns the update metadata as-is
+    assert MediaControllerBase._merge_update_metadata(Mock(), current, update, True) is update
+    # an item without any stored images simply adopts the update's images
+    merged = MediaControllerBase._merge_update_metadata(Mock(), MediaItemMetadata(), update, False)
+    assert [image.path for image in merged.images or []] == ["https://blob/new?token=b"]
+
+
+def test_merge_update_metadata_only_replaces_matching_image_types() -> None:
+    """A partial update (single image type) keeps the provider's other image types."""
+    current = MediaItemMetadata(
+        images=UniqueList(
+            [
+                create_image("apple_1", "https://blob/thumb-old"),
+                create_image("apple_1", "https://blob/fanart", ImageType.FANART),
+            ]
+        )
+    )
+    update = MediaItemMetadata(
+        images=UniqueList([create_image("apple_1", "https://blob/thumb-new")])
+    )
+    merged = MediaControllerBase._merge_update_metadata(Mock(), current, update, False)
+    assert [(image.type, image.path) for image in merged.images or []] == [
+        (ImageType.THUMB, "https://blob/thumb-new"),
+        (ImageType.FANART, "https://blob/fanart"),
+    ]

@@ -1323,7 +1323,7 @@ class GenreController(MediaControllerBase[Genre]):
         """Update existing genre record in the database."""
         db_id = int(item_id)
         cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        metadata = self._merge_update_metadata(cur_item.metadata, update.metadata, overwrite)
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name

@@ -651,6 +651,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
+            image_paths=self._parse_sync_details_image_paths(db_row),
             author_is_str=not db_row["has_author_artists"]
             and db_row["first_author_type"] == "text",
             narrator_is_str=not db_row["has_narrator_artists"]

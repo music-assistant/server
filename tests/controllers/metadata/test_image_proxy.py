@@ -8,8 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
-from music_assistant_models.enums import ImageType
+from music_assistant_models.enums import ImageType, MediaType
 from music_assistant_models.media_items import (
+    ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
     ProviderMapping,
@@ -85,6 +86,32 @@ async def test_compute_image_id_is_deterministic(metadata_controller: MetaDataCo
     assert image_id_a == image_id_b
     expected = hashlib.sha256(b"filesystem//local/cover.jpg").hexdigest()
     assert image_id_a == expected
+
+
+async def test_non_remote_item_mapping_artwork_uses_imageproxy(
+    metadata_controller: MetaDataController,
+) -> None:
+    """Non-remote artwork on a lightweight mapping must not leak its origin URL."""
+    metadata_controller.mass.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    signed_url = "https://store-033.blobstore.apple.com/art?X-Amz-Signature=expired"
+    mapping = ItemMapping(
+        media_type=MediaType.ALBUM,
+        item_id="album-1",
+        provider="apple_music--1",
+        name="Album",
+        image=MediaItemImage(
+            type=ImageType.THUMB,
+            path=signed_url,
+            provider="apple_music--1",
+            remotely_accessible=False,
+        ),
+    )
+
+    image_url = await metadata_controller.get_image_url_for_item(mapping)
+
+    assert image_url is not None
+    assert image_url.startswith("http://127.0.0.1:8095/imageproxy/")
+    assert signed_url not in image_url
 
 
 async def test_image_id_matches_thumb_and_palette_cache_key(
@@ -291,6 +318,37 @@ async def test_persist_skipped_when_row_already_fresh(
     # the pre-stored row keeps the id resolvable, also without the in-memory layer
     metadata_controller._image_id_lru.clear()
     assert await metadata_controller.resolve_image_id(image_id) == (provider, path)
+
+
+async def test_persist_updates_changed_path_even_when_row_is_recent(
+    metadata_controller: MetaDataController,
+) -> None:
+    """A shared image id must point at the newest signed URL after a refresh."""
+    provider = "apple_music--1"
+    old_path = "https://store-033.blobstore.apple.com/art?X-Amz-Signature=old"
+    new_path = "https://store-033.blobstore.apple.com/art?X-Amz-Signature=new"
+    image_id = create_thumb_hash(provider, old_path)
+    assert image_id == create_thumb_hash(provider, new_path)
+    await metadata_controller.cache.set(
+        key=image_id,
+        data={"provider": provider, "path": old_path},
+        category=CACHE_CATEGORY_IMAGE_IDS,
+        provider=metadata_controller.domain,
+        expiration=_IMAGE_ID_CACHE_TTL,
+        persistent=True,
+    )
+
+    metadata_controller.compute_image_id(provider, new_path)
+
+    # the rewrite happens in a fire-and-forget task; poll instead of a fixed
+    # sleep so the assertion cannot race a slow CI runner
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while asyncio.get_running_loop().time() < deadline:
+        metadata_controller._image_id_lru.clear()
+        if await metadata_controller.resolve_image_id(image_id) == (provider, new_path):
+            break
+        await asyncio.sleep(0.01)
+    assert await metadata_controller.resolve_image_id(image_id) == (provider, new_path)
 
 
 async def test_persist_refreshes_stale_row(metadata_controller: MetaDataController) -> None:

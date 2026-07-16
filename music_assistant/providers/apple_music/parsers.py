@@ -338,7 +338,7 @@ def parse_playlist(
                 provider=provider.instance_id,
                 type=ImageType.THUMB,
                 path=url,
-                remotely_accessible=True,
+                remotely_accessible=is_remotely_accessible_artwork_url(url),
             )
         )
     if description := attributes.get("description"):
@@ -380,7 +380,7 @@ def parse_station_as_playlist(
                 provider=provider.instance_id,
                 type=ImageType.THUMB,
                 path=url,
-                remotely_accessible=True,
+                remotely_accessible=is_remotely_accessible_artwork_url(url),
             )
         )
     return playlist

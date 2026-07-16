@@ -205,7 +205,7 @@ class RadioController(MediaControllerBase[Radio]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        metadata = self._merge_update_metadata(cur_item.metadata, update.metadata, overwrite)
         cur_item.external_ids.update(update.external_ids)
         match = {"item_id": db_id}
         name = update.name if overwrite else cur_item.name

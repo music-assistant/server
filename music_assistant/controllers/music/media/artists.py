@@ -1024,7 +1024,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             update = self.artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
-            metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+            metadata = self._merge_update_metadata(cur_item.metadata, update.metadata, overwrite)
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid

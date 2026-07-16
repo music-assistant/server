@@ -130,6 +130,7 @@ class LibraryItemSyncDetails:
     favorite: bool
     date_added: datetime
     provider_mappings: set[ProviderMapping]
+    image_paths: set[tuple[str, str]]
 
 
 @dataclass(slots=True)
@@ -608,7 +609,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'in_library', pm.in_library,
                         'is_unique', pm.is_unique
                     )) FROM provider_mappings pm WHERE pm.item_id = {self.db_table}.item_id
-                        AND pm.media_type = '{self.media_type.value}') AS provider_mappings
+                        AND pm.media_type = '{self.media_type.value}') AS provider_mappings,
+                json_extract({self.db_table}.metadata, '$.images') AS images
                 {extra_columns}
             FROM {self.db_table}
             {extra_joins}
@@ -1657,6 +1659,42 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         return True
 
+    def _merge_update_metadata(
+        self, current: MediaItemMetadata, update: MediaItemMetadata, overwrite: bool
+    ) -> MediaItemMetadata:
+        """
+        Return the metadata for a library item update, merged with the current metadata.
+
+        Unless overwrite is set, images from the updating provider replace that provider's
+        existing entries of the same image type at their original (preference) position,
+        so refreshed image paths (e.g. re-signed expiring URLs) do not accumulate.
+
+        :param current: The metadata currently stored on the library item.
+        :param update: The metadata supplied by the update.
+        :param overwrite: When set, return the update metadata as-is instead of merging.
+        """
+        if overwrite:
+            return update
+        metadata = current.update(update)
+        if not update.images:
+            return metadata
+        update_keys = {(image.provider, image.type) for image in update.images}
+        merged: list[MediaItemImage] = []
+        inserted = False
+        for image in metadata.images or []:
+            if (image.provider, image.type) in update_keys:
+                # replace this provider's images (both the stale entries and the
+                # ones just merged in at the tail) at the first matching position
+                if not inserted:
+                    merged.extend(update.images)
+                    inserted = True
+                continue
+            merged.append(image)
+        if not inserted:
+            merged.extend(update.images)
+        metadata.images = UniqueList(merged)
+        return metadata
+
     def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
         """
         Return extra (columns, joins, params) for this media type's sync-details query.
@@ -1673,7 +1711,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
+            image_paths=self._parse_sync_details_image_paths(db_row),
         )
+
+    @final
+    def _parse_sync_details_image_paths(self, db_row: Mapping[str, Any]) -> set[tuple[str, str]]:
+        """Parse the stored (provider, path) image pairs of a sync-details db row."""
+        raw_images = json_loads(db_row["images"] or "[]")
+        if not isinstance(raw_images, list):
+            return set()
+        return {
+            (image["provider"], image["path"])
+            for image in raw_images
+            if isinstance(image, dict) and image.get("provider") and image.get("path")
+        }
 
     @final
     def _parse_sync_details_mappings(self, db_row: Mapping[str, Any]) -> set[ProviderMapping]:

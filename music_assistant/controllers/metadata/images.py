@@ -202,7 +202,7 @@ class ImageProxyMixin:
                 if media_item.image.remotely_accessible and resolve:
                     return self.get_image_url(media_item.image)
                 if not media_item.image.remotely_accessible:
-                    return media_item.image.path
+                    return self.get_image_url(media_item.image, prefer_proxy=True)
 
             # Only retrieve full item if we don't have the image we need
             if not media_item.uri:
@@ -478,14 +478,28 @@ class ImageProxyMixin:
         try:
             # the mapping is usually already stored by a previous process run;
             # probing the expiration first turns the write storm while browsing
-            # after a restart into (much cheaper) reads. Only rewrite when the
-            # stored row is absent or has burned through half its TTL.
+            # after a restart into (much cheaper) reads. Only skip the rewrite when
+            # a recently-written row (less than half its TTL spent) already points
+            # at this exact provider/path; a changed path (e.g. a re-signed
+            # expiring URL) always forces a rewrite so the mapping never keeps
+            # serving an outdated signed URL.
             expires = await self.cache.get_expiration(
                 key=image_id,
                 category=CACHE_CATEGORY_IMAGE_IDS,
                 provider=self.domain,
             )
-            if expires is not None and expires - time.time() > _IMAGE_ID_CACHE_TTL / 2:
+            cached = await self.cache.get(
+                key=image_id,
+                category=CACHE_CATEGORY_IMAGE_IDS,
+                provider=self.domain,
+            )
+            if (
+                expires is not None
+                and expires - time.time() > _IMAGE_ID_CACHE_TTL / 2
+                and isinstance(cached, dict)
+                and cached.get("provider") == provider
+                and cached.get("path") == path
+            ):
                 return
             await self.cache.set(
                 key=image_id,
