@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.providers.ai_radio.constants import MAX_FINISHED_SESSIONS
 from music_assistant.providers.ai_radio.models import SessionState
 from music_assistant.providers.ai_radio.provider import AIRadioProvider
 
@@ -200,6 +201,43 @@ async def test_stop_run_accepts_running_session_by_id() -> None:
     result = await provider.stop_run(session_id="s_run")
 
     assert result["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_start_run_prunes_oldest_finished_sessions() -> None:
+    """Drop the oldest finished sessions beyond the retention limit on run start."""
+    provider = _make_provider()
+    provider.logger = cast("Any", SimpleNamespace(info=lambda *_a, **_kw: None))
+    provider._stations = {
+        "station_a": {
+            "id": "station_a",
+            "name": "Station A",
+            "source_playlist_id": "1",
+            "source_playlist_provider": "library",
+        }
+    }
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(create_task=lambda coro, **_kw: coro.close()),
+    )
+    for index in range(MAX_FINISHED_SESSIONS + 5):
+        session_id = f"s_{index}"
+        provider._sessions[session_id] = SessionState(
+            session_id=session_id,
+            station_id="station_a",
+            mode="playlist",
+            status="completed",
+            created_at=f"2026-01-01T10:{index:02d}:00+00:00",
+        )
+
+    await provider.start_run(station_id="station_a", mode="playlist")
+
+    finished = [s for s in provider._sessions.values() if s.status != "running"]
+    assert len(finished) == MAX_FINISHED_SESSIONS
+    # the five oldest sessions are gone, the newest finished ones remain
+    for index in range(5):
+        assert f"s_{index}" not in provider._sessions
+    assert f"s_{MAX_FINISHED_SESSIONS + 4}" in provider._sessions
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import (
     CONF_UI_AUTO_REFRESH_SECONDS,
     DEFAULT_MAX_CONCURRENT_RUNS,
+    MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
 )
 from .helpers import coerce_int, utc_now_iso
@@ -287,6 +288,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             mode=selected_mode,
         )
         self._sessions[session_id] = session
+        self._prune_finished_sessions()
         session.task = self.mass.create_task(
             self._run_session(session_id, station),
             task_id=f"ai_radio_session_{session_id}",
@@ -333,6 +335,16 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         value = self.config.get_value(CONF_UI_AUTO_REFRESH_SECONDS)
         interval_seconds = max(1, coerce_int(value, 2))
         return {"auto_refresh_seconds": interval_seconds}
+
+    def _prune_finished_sessions(self) -> None:
+        """Drop the oldest finished sessions beyond the retention limit."""
+        finished = sorted(
+            (session for session in self._sessions.values() if session.status != "running"),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+        for session in finished[MAX_FINISHED_SESSIONS:]:
+            self._sessions.pop(session.session_id, None)
 
     def _resolve_session_for_stop(
         self,
