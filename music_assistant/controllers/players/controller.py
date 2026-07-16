@@ -2222,8 +2222,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param attribute_value: Optional value the watched attribute must reach.
             Only meaningful in combination with ``attribute_name``.
         :param timeout: Maximum time to wait in seconds.
-        :param stable_for: If > 0, the reached value must also hold this many seconds
-            before the wait completes (the total wait may exceed ``timeout`` by one hold).
+        :param stable_for: If > 0, wait this many seconds before confirming the reached
+            value still matches. The total wait may exceed ``timeout`` by one hold.
         """
         update_event = asyncio.Event()
 
@@ -2253,34 +2253,44 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if attribute_name is None or attribute_value is _SENTINEL:
             stable_for = 0.0
 
+        def _matches_expected_value() -> bool:
+            if attribute_name is None:
+                return False
+            player = self.get_player(player_id)
+            return (
+                player is not None
+                and getattr(player.state, attribute_name, _SENTINEL) == attribute_value
+            )
+
+        async def _wait_for_value(deadline: float) -> bool:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                async with asyncio.timeout(remaining):
+                    await update_event.wait()
+            except TimeoutError:
+                return False
+            return True
+
         unsub = self.subscribe_player_state_update(_on_state_update)
         try:
             yield
+
             deadline = time.monotonic() + timeout
-            matched = already_satisfied
-            while True:
-                if not matched:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    try:
-                        async with asyncio.timeout(remaining):
-                            await update_event.wait()
-                    except TimeoutError:
-                        break
+            expected_value_seen = already_satisfied or await _wait_for_value(deadline)
+
+            while expected_value_seen:
                 if stable_for <= 0:
                     return
-                # a match only counts once the value also survived the stability hold
-                assert attribute_name is not None  # implied by stable_for > 0
+
                 update_event.clear()
                 await asyncio.sleep(stable_for)
-                player = self.get_player(player_id)
-                if (
-                    player is not None
-                    and getattr(player.state, attribute_name, _SENTINEL) == attribute_value
-                ):
+                if _matches_expected_value():
                     return
-                matched = False
+
+                expected_value_seen = await _wait_for_value(deadline)
+
             self.logger.debug(
                 "Timed out waiting for player update on %s (attr=%s value=%s)",
                 player_id,
