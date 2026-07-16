@@ -153,6 +153,33 @@ async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlaye
     assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
 
 
+@pytest.mark.parametrize(
+    ("manufacturer", "model", "expected"),
+    [
+        # AirPlay 2 preferred models get AirPlay 2, even when RAOP is advertised
+        ("AirPlay", "JBL BAR 1300", StreamingProtocol.AIRPLAY2),
+        ("AirPlay", "JBL Charge 5 Wi-Fi", StreamingProtocol.AIRPLAY2),
+        # other devices advertising both protocols default to RAOP
+        ("Test Manufacturer", "Test Model", StreamingProtocol.RAOP),
+    ],
+)
+def test_auto_protocol_selection(
+    manufacturer: str, model: str, expected: StreamingProtocol
+) -> None:
+    """Automatic protocol selection prefers AirPlay 2 for known AP2-preferred models."""
+    player = AirPlayPlayer(
+        provider=MagicMock(),
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer=manufacturer,
+        model=model,
+        raop_discovery_info=MagicMock(),
+        airplay_discovery_info=MagicMock(),
+    )
+    assert player._get_protocol_for_config_value(0) == expected
+
+
 # --- Volume and Mute tests ---
 
 
