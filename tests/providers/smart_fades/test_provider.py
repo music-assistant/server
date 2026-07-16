@@ -18,7 +18,6 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.providers.smart_fades.provider import SmartFadesProvider
-from music_assistant.providers.smart_fades.vocal_activity import infer_firered_chunk
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 # Synthetic 120 BPM drum pattern (kick-hat-snare-hat): 44100 Hz, stereo, float32, ~15.7s
@@ -496,12 +495,12 @@ async def test_vocal_inference_starts_before_beat_finishes(
             await asyncio.wait_for(vocal_started.wait(), timeout=1)
             beat_finished = True
             return np.array([0.0, 0.5]), np.array([0.0]), 4
-        if func is infer_firered_chunk:
+        if func is SmartFadesProvider._timed_infer_firered_chunk:
             assert beat_started.is_set()
             vocal_started.set()
             features = args[1]
             assert isinstance(features, np.ndarray)
-            return np.zeros((len(features), 3), dtype=np.float32)
+            return np.zeros((len(features), 3), dtype=np.float32), 0.0
         if func.__name__ == "_infer_musical_key":
             assert beat_finished
             return "C", "major"
@@ -530,7 +529,7 @@ async def test_final_inference_cancellation_stops_long_vocal_loop(
 
     async def run_offloaded(func: Callable[..., object], *_args: object) -> object:
         nonlocal vocal_calls
-        if func is infer_firered_chunk:
+        if func is SmartFadesProvider._timed_infer_firered_chunk:
             vocal_calls += 1
             vocal_started.set()
         await never_finish.wait()
@@ -566,7 +565,7 @@ async def test_beat_failure_cancels_vocal_inference(
             # Fail only once the vocal branch is in flight, so cancellation is observable.
             await asyncio.wait_for(vocal_started.wait(), timeout=1)
             return np.array([0.0]), np.array([]), 0
-        if func is infer_firered_chunk:
+        if func is SmartFadesProvider._timed_infer_firered_chunk:
             vocal_started.set()
             try:
                 await never_finish.wait()
