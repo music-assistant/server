@@ -21,9 +21,7 @@ IDLE_GRACE_SECONDS: Final[float] = 10.0
 # device — which would otherwise strand a player playing outside the group.
 PLAYBACK_START_TIMEOUT: Final[float] = 5.0
 
-# Seconds the leader's PLAYING report must hold before a playback start is accepted; filters
-# the transient PLAYING that devices without dynamic leader switching support report while a
-# group session starts.
+# Required hold time for filtering transient PLAYING reports during group startup.
 PLAYBACK_CONFIRM_HOLD: Final[float] = 2.0
 
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
