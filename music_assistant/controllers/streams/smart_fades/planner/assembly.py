@@ -584,6 +584,20 @@ class EmergencyHandoffFactory:
                 target = max(target, ctx.audio_end - plan0.crossfade_duration)
             target = min(target, ctx.audio_end)
             anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=vocal_would_be_cut)
+            reasons = [
+                reason
+                for reason, fired in (
+                    ("vocal_would_be_cut", vocal_would_be_cut),
+                    ("overtrims_short_fade", overtrims_short_fade),
+                )
+                if fired
+            ]
+            self._logger.debug(
+                "extending emergency handoff anchor (%s): old_anchor=%.2f new_anchor=%.2f",
+                ",".join(reasons),
+                plan0.fade_out_window,
+                anchor,
+            )
             spec = replace(base_spec, anchor_s=anchor)
             rebuilt = self._factory.build(spec)
             assert rebuilt is not None  # the 1-bar rung always yields a candidate
@@ -594,12 +608,24 @@ class EmergencyHandoffFactory:
         duration = max(MIN_HANDOFF_SECONDS, min(MAX_HANDOFF_SECONDS, incoming_onset - 0.1))
         handoff = self._as_handoff(candidate.plan, duration)
         metrics = self._factory.score(spec, handoff)
+        shrunk_to_min = False
         if (
             metrics.collision_seconds >= COLLISION_SECONDS_LIMIT
             or metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
         ) and duration > MIN_HANDOFF_SECONDS:
             handoff = self._as_handoff(candidate.plan, MIN_HANDOFF_SECONDS)
             metrics = self._factory.score(spec, handoff)
+            shrunk_to_min = True
+        self._logger.debug(
+            "emergency handoff: duration=%.2f anchor=%.2f collision=%.2f weighted_collision=%.2f%s",
+            handoff.crossfade_duration,
+            handoff.fade_out_window,
+            metrics.collision_seconds,
+            metrics.weighted_collision_seconds,
+            " (shrunk to MIN_HANDOFF_SECONDS: auditioned window still collided)"
+            if shrunk_to_min
+            else "",
+        )
         return replace(handoff, metrics=metrics)
 
     @staticmethod
