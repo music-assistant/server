@@ -1,15 +1,18 @@
 """Parsers for the local filesystem provider."""
+
+from typing import TYPE_CHECKING, Any
+
 from music_assistant_models.enums import ExternalID
-from music_assistant_models.media_items import Album
 
 from music_assistant.helpers.tags import split_items
 from music_assistant.helpers.util import parse_title_and_version
 
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import Album
 
-def parse_album_nfo(album: Album, nfo_album: dict | None) -> None:
+
+def parse_album_nfo(album: Album, nfo_album: dict[Any, Any]) -> None:
     """Enrich album metadata from NFO file."""
-    if nfo_album is None:
-        return
     if title := nfo_album.get("title") or nfo_album.get("name"):
         album.name, album.version = parse_title_and_version(title)
     if sort_name := nfo_album.get("sortname"):

@@ -1,14 +1,15 @@
 """Tests for the filesystem provider parsers."""
+
 import uuid
 
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.media_items import Album, Artist
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.providers.filesystem_local import parse_album_nfo
+from music_assistant.providers.filesystem_local.parsers import parse_album_nfo
 
 
-def test_parse_album_nfo():
+def test_parse_album_nfo() -> None:
     """Test parsing of an album NFO file."""
     album = Album(
         item_id="test",
@@ -24,7 +25,7 @@ def test_parse_album_nfo():
     mb_album = str(uuid.uuid4())
     mb_artist = str(uuid.uuid4())
 
-    def _asserts(res: Album):
+    def _asserts(res: Album) -> None:
         assert res.name == "Test Album"
         assert res.version == "Test Version"
         assert res.sort_name == "Test Sortname"
@@ -37,23 +38,29 @@ def test_parse_album_nfo():
         assert res.year == 1967
         assert res.metadata.genres == {"Test Genre"}
 
-    parse_album_nfo(album, {
-        "title": "Test Album (Test Version)",
-        "sortname": "Test Sortname",
-        "musicbrainzreleasegroupid": mb_releasegroup,
-        "musicbrainzalbumid": mb_album,
-        "musicbrainzalbumartistid": mb_artist,
-        "review": "Test Description",
-        "year": "1967",
-        "genre": "Test Genre",
-    })
+    parse_album_nfo(
+        album,
+        {
+            "title": "Test Album (Test Version)",
+            "sortname": "Test Sortname",
+            "musicbrainzreleasegroupid": mb_releasegroup,
+            "musicbrainzalbumid": mb_album,
+            "musicbrainzalbumartistid": mb_artist,
+            "review": "Test Description",
+            "year": "1967",
+            "genre": "Test Genre",
+        },
+    )
     _asserts(album)
 
-    parse_album_nfo(album, {}) # empty dict or missing keys should not change anything
+    parse_album_nfo(album, {})  # empty dict or missing keys should not change anything
     _asserts(album)
 
-    parse_album_nfo(album, { # None and empty string should not erase existing values
-        "title": None,
-        "sortname": "",
-    })
+    parse_album_nfo(
+        album,
+        {  # None and empty string should not erase existing values
+            "title": None,
+            "sortname": "",
+        },
+    )
     _asserts(album)
