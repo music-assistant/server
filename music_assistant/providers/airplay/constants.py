@@ -94,8 +94,14 @@ BROKEN_AIRPLAY_MODELS = (
 AIRPLAY_2_DEFAULT_MODELS = (
     # Models that are known to work better with AirPlay 2 protocol instead of RAOP
     # These use the translated/friendly model names from get_model_info()
+    # Both fields support fnmatch-style wildcards and match case-insensitively.
     ("Ubiquiti Inc.", "*"),
     ("LG Electronics", "*"),
+    # JBL models that advertise RAOP but reject the RAOP session.
+    # The model name comes from the am mDNS property on these devices.
+    ("*", "JBL BAR 1300"),
+    ("*", "JBL BAR 300"),
+    ("*", "JBL CHARGE 5*"),
 )
 
 BROKEN_AIRPLAY_WARN = ConfigEntry(

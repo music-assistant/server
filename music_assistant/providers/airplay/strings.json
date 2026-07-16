@@ -5,7 +5,7 @@
     },
     "airplay_protocol": {
       "label": "AirPlay protocol version to use for streaming",
-      "description": "AirPlay version 1 protocol uses RAOP.\nAirPlay version 2 is an extension of RAOP.\nSome newer devices do not fully support RAOP and will only work with AirPlay version 2, while older devices may only support RAOP.\n\nIn most cases the default automatic selection will work fine.\n\nNOTE: AirPlay 2 currently does not support audio synchronization. Grouping/syncing with other players is only available when using AirPlay 1 (RAOP).",
+      "description": "AirPlay version 1 protocol uses RAOP.\nAirPlay version 2 is an extension of RAOP.\nSome newer devices do not fully support RAOP and will only work with AirPlay version 2, while older devices may only support RAOP.\n\nIn most cases the default automatic selection will work fine.",
       "options": {
         "0": "Automatically select",
         "1": "Prefer AirPlay 1 (RAOP)",

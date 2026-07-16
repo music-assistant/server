@@ -81,7 +81,11 @@ class TestBandRmsFrames:
 def test_extra_data_roundtrips_through_dict() -> None:
     """Band envelopes survive to_dict/from_dict (plain lists, no ndarrays)."""
     analysis = AudioAnalysisData(
-        duration=10.0, extra_data={"band_rms": {"low": [0.1, 0.2], "mid": [0.3, 0.4]}}
+        duration=10.0,
+        extra_data={
+            "band_rms": {"low": [0.1, 0.2], "mid": [0.3, 0.4]},
+            "vocal_activity": [0.2, 0.8],
+        },
     )
     restored = AudioAnalysisData.from_dict(analysis.to_dict())
     assert restored.extra_data == analysis.extra_data

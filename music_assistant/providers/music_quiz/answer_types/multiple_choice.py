@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -42,7 +42,7 @@ class MultipleChoiceAnswerType(QuizAnswerType):
 
     answer_type = MusicQuizAnswerType.MULTIPLE_CHOICE
 
-    def parse_submission(self, payload: dict[str, object]) -> QuizAnswerSubmission:
+    def parse_submission(self, payload: Mapping[str, object]) -> QuizAnswerSubmission:
         """
         Parse a multiple-choice submission.
 
@@ -116,6 +116,16 @@ class MultipleChoiceAnswerType(QuizAnswerType):
             is_correct=suggestion.is_correct,
         )
 
+    def remove_player(self, state: QuizRoundAnswerState, player_id: str) -> None:
+        """
+        Remove a player's multiple-choice answer.
+
+        :param state: Round answer state to mutate.
+        :param player_id: Player whose answer should be removed.
+        """
+        multiple_choice_state = self._get_state(state)
+        multiple_choice_state.answers.pop(player_id, None)
+
     def is_player_complete(self, state: QuizRoundAnswerState, player_id: str) -> bool:
         """
         Return whether a player locked a selection.
@@ -166,6 +176,14 @@ class MultipleChoiceAnswerType(QuizAnswerType):
             (answer.answered_at for answer in multiple_choice_state.answers.values()),
             default=None,
         )
+
+    def serialize_game_config(self, game: MusicQuizGame) -> dict[str, SerializableType]:
+        """
+        Serialize multiple-choice game configuration.
+
+        :param game: Game whose configuration should be serialized.
+        """
+        return {"suggestion_count": game.config.suggestion_count}
 
     def serialize_host_round(self, state: QuizRoundAnswerState) -> dict[str, SerializableType]:
         """

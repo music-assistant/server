@@ -239,6 +239,30 @@ async def test_overlay_stream_mixes_loops_and_preserves_length(overlay_file: Pat
     assert any(output[2 * _BYTES_PER_SECOND :])
 
 
+async def test_overlay_stream_does_not_mutate_pcm_format(overlay_file: Path) -> None:
+    """Mixing an overlay leaves the caller's PCM format unchanged."""
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        sample_rate=48000,
+        bit_depth=32,
+        channels=2,
+    )
+    original_format = pcm_format.to_dict()
+
+    async def silence() -> AsyncGenerator[bytes]:
+        yield b"\x00" * pcm_format.pcm_sample_size
+
+    await _collect_chunks(
+        get_ffmpeg_overlay_stream(
+            audio_input=silence(),
+            overlay_input=str(overlay_file),
+            pcm_format=pcm_format,
+        )
+    )
+
+    assert pcm_format.to_dict() == original_format
+
+
 async def test_overlay_stream_applies_volume(overlay_file: Path) -> None:
     """Overlay volume 0% silences the overlay entirely (gain is applied)."""
     output = b"".join(

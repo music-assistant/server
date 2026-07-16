@@ -256,6 +256,17 @@ def test_all_active_players_complete_tracks_current_round() -> None:
     assert all_active_players_complete(game, ANSWER_TYPE) is True
 
 
+def test_all_active_players_complete_when_only_future_players_remain() -> None:
+    """Allow a round to reveal when participants remain but none can answer it."""
+    game = _game()
+    add_player(game, _player("late", "Late", active_from_round=1))
+
+    assert all_active_players_complete(game, ANSWER_TYPE) is True
+
+    game.players.clear()
+    assert all_active_players_complete(game, ANSWER_TYPE) is False
+
+
 def test_reveal_round_applies_scores_to_correct_answers_in_order() -> None:
     """Apply linear scores when a round is revealed."""
     game = _game()
@@ -320,10 +331,12 @@ def test_reset_game_keeps_players_and_config_for_new_game() -> None:
     game.players["p1"].ready = True
     game.players["p2"].score = 500
     game.players["p2"].ready = True
+    game.auto_start_at = 30
 
     reset_game(game)
 
     assert game.phase == MusicQuizPhase.LOBBY
+    assert game.to_dict()["auto_start_at"] is None
     assert game.quiz_type == "guess_the_song"
     assert game.answer_type == MusicQuizAnswerType.MULTIPLE_CHOICE
     assert game.current_round_index is None

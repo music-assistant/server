@@ -56,6 +56,20 @@ SOFTWARE.
 
 ===============================================================================
 
+FireRedVAD - Audio Event Detection Model
+https://github.com/FireRedTeam/FireRedVAD
+Model: https://huggingface.co/FireRedTeam/FireRedVAD
+
+Apache License 2.0
+
+Copyright 2026 Xiaohongshu. (Authors: Kaituo Xu, Wenpeng Li, Kai Huang, Kun Liu)
+
+The FireRed AED architecture, fixed CMVN statistics, and model weights are
+adapted and redistributed under the Apache License, Version 2.0. A copy of
+that license is included in this distribution as LICENSE.
+
+===============================================================================
+
 Microsoft CLAP - Contrastive Language-Audio Pretraining
 https://github.com/microsoft/CLAP
 

@@ -21,6 +21,9 @@
     "use_ai_distractors": {
       "label": "Enhance the Experience with AI",
       "description": "When enabled, the quiz uses a configured AI provider (such as Home Assistant, which provides LLM access) to enhance the experience — for example, generating more convincing fake answers for each round. Falls back to the built-in behavior when no AI provider is available."
+    },
+    "ai_unavailable": {
+      "label": "AI enhancements are currently unavailable because no compatible AI provider is configured."
     }
   },
   "errors": {
@@ -43,9 +46,16 @@
     "music_quiz_sources_unavailable": "None of the configured sources could be loaded.",
     "music_quiz_source_count_max": "Music Quiz supports at most {0} sources.",
     "music_quiz_invalid_difficulty": "The selected difficulty is not valid.",
+    "music_quiz_invalid_language": "The selected Trivia language is not valid.",
+    "music_quiz_invalid_bonus_mode": "The selected timeline bonus mode is not valid.",
+    "music_quiz_invalid_playback_mode": "The selected playback mode is not valid.",
     "music_quiz_no_unused_source_tracks": "No unused source tracks are available.",
+    "music_quiz_no_dated_tracks": "None of the selected tracks have a usable release year.",
+    "music_quiz_not_enough_dated_tracks": "At least {0} unique tracks with release years are required for this game.",
+    "music_quiz_trivia_ai_provider_required": "Trivia requires a configured AI provider.",
+    "music_quiz_trivia_insufficient_metadata": "At least {0} unique selected tracks with usable music metadata are required for Trivia.",
+    "music_quiz_trivia_generation_failed": "Music Assistant could not generate a valid Trivia question. Please try again.",
     "music_quiz_not_enough_distractors": "Not enough distinct tracks are available to build answer options.",
-    "music_quiz_guest_only": "This action is only available to Music Quiz guests.",
     "music_quiz_unknown_quiz_type": "This quiz type is not available.",
     "music_quiz_unknown_player": "This Music Quiz player is not in the game.",
     "music_quiz_unknown_suggestion": "This answer option is not available.",

@@ -36,7 +36,6 @@ class FileSystemItem:
     - filename: Name (not path) of the file (or directory).
     - relative_path: Relative path to the item on this filesystem provider.
     - absolute_path: Absolute path to this item.
-    - parent_path: Absolute path to the parent directory.
     - is_dir: Boolean if item is directory (not file).
     - checksum: Checksum for this path (usually last modified time) None for dir.
     - file_size : File size in number of bytes or None if unknown (or not a file).
@@ -66,14 +65,11 @@ class FileSystemItem:
         return self.filename.rsplit(".", 1)[0]
 
     @property
-    def parent_path(self) -> str:
-        """Return parent path of this item."""
-        return os.path.dirname(self.absolute_path)
-
-    @property
     def parent_name(self) -> str:
-        """Return parent name of this item."""
-        return Path(self.parent_path).name
+        """Return the name of this item's parent directory."""
+        # derived from the relative path: the absolute path may be a URL on
+        # network/cloud providers (webdav, cloud filesystems)
+        return Path(self.relative_parent_path).name
 
     @property
     def relative_parent_path(self) -> str:

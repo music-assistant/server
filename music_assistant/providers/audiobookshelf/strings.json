@@ -37,7 +37,10 @@
       "narrators": { "name": "Narrators" },
       "series_plural": { "name": "Series" },
       "series_singular": { "name": "Series" },
-      "collections": { "name": "Collections" }
+      "series_entry": { "name": "{} (Series)" },
+      "collections": { "name": "Collections" },
+      "audiobooks_library": { "name": "{} (Audiobooks library)" },
+      "podcasts_library": { "name": "{} (Podcasts library)" }
     },
     "recommendations": {
       "listen_again": { "name": "Listen again" },

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import random
 from collections import Counter
+from itertools import groupby
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
@@ -183,6 +185,23 @@ def test_multiplicity_increases_share() -> None:
     assert counts["a"] == 2
 
 
+def test_weighted_sources_are_spread_across_batch() -> None:
+    """A higher-weight source is mixed through the batch instead of emitted as one block."""
+    sources = [
+        _source([f"a{i}" for i in range(20)]),
+        _source([f"b{i}" for i in range(20)], multiplicity=2),
+        _source([f"c{i}" for i in range(20)]),
+        _source([f"d{i}" for i in range(20)]),
+    ]
+    random.seed(0)
+    result = allocate_refill(
+        sources, slots=25, pool_keys=set(), snapshot=_snapshot(), windows=RecencyWindows()
+    )
+    source_ids = [track.item_id[0] for track in result]
+    longest_run = max(sum(1 for _ in run) for _, run in groupby(source_ids))
+    assert longest_run <= 2
+
+
 def test_size_multiplicity_weights_by_catalogue_size() -> None:
     """Under SIZE_MULTIPLICITY, the larger-catalogue source dominates the pool."""
     sources = [
@@ -327,21 +346,28 @@ def test_all_gated_falls_back_ungated() -> None:
     assert _ids(result) == ["c", "b"]
 
 
-def test_deterministic() -> None:
-    """Same inputs yield an identical allocation (the allocator uses no randomness)."""
+def test_randomized_order_is_reproducible_under_seed() -> None:
+    """A fixed seed reproduces the interleave while a different seed varies it."""
     sources = [
         _source([f"a{i}" for i in range(10)], multiplicity=2),
         _source([f"b{i}" for i in range(10)]),
     ]
     snapshot = _snapshot({"a3": NOW - 10, "b1": NOW - 20})
     windows = RecencyWindows(song_seconds=WEEK, duplicate_gap_seconds=GAP)
+    random.seed(123)
     first = _ids(
         allocate_refill(sources, slots=6, pool_keys=set(), snapshot=snapshot, windows=windows)
     )
+    random.seed(123)
     second = _ids(
         allocate_refill(sources, slots=6, pool_keys=set(), snapshot=snapshot, windows=windows)
     )
+    random.seed(124)
+    third = _ids(
+        allocate_refill(sources, slots=6, pool_keys=set(), snapshot=snapshot, windows=windows)
+    )
     assert first == second
+    assert first != third
 
 
 def test_gate_tracks_drops_recent() -> None:

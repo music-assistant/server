@@ -40,6 +40,25 @@ def add_player(
     game.players[player.player_id] = player
 
 
+def remove_player(
+    game: MusicQuizGame,
+    player_id: str,
+    answer_type: QuizAnswerType,
+) -> None:
+    """
+    Remove a player and their answer-specific round state.
+
+    :param game: Game to mutate.
+    :param player_id: Player to remove.
+    :param answer_type: Answer strategy for the game.
+    """
+    if player_id not in game.players:
+        raise MusicQuizUnknownPlayerError("Unknown player")
+    for game_round in game.rounds:
+        answer_type.remove_player(game_round.answer_state, player_id)
+    del game.players[player_id]
+
+
 def submit_answer(
     game: MusicQuizGame,
     player_id: str,
@@ -157,7 +176,9 @@ def all_active_players_complete(game: MusicQuizGame, answer_type: QuizAnswerType
         return False
     current_round = get_current_round(game)
     players = active_players_for_round(game, current_round.round_index)
-    return answer_type.is_round_complete(current_round.answer_state, players)
+    return bool(game.players) and (
+        not players or answer_type.is_round_complete(current_round.answer_state, players)
+    )
 
 
 def finish_game(game: MusicQuizGame) -> None:
@@ -178,6 +199,7 @@ def reset_game(game: MusicQuizGame) -> None:
     :param game: Game to mutate.
     """
     game.phase = MusicQuizPhase.LOBBY
+    game.auto_start_at = None
     game.rounds.clear()
     game.current_round_index = None
     for player in game.players.values():

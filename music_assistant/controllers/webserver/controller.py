@@ -1010,11 +1010,13 @@ class WebserverController(CoreController):
             async with aiofiles.open(oauth_callback_html_path) as f:
                 success_html = await f.read()
 
-            # Replace template placeholders
-            success_html = success_html.replace("{TOKEN}", token)
-            success_html = success_html.replace("{REDIRECT_URL}", final_redirect_url)
+            # Replace the redirect last so its untrusted contents cannot match another placeholder.
             success_html = success_html.replace(
                 "{REQUIRES_CONSENT}", "true" if requires_consent else "false"
+            )
+            success_html = success_html.replace("{TOKEN}", _serialize_script_value(token))
+            success_html = success_html.replace(
+                "{REDIRECT_URL}", _serialize_script_value(final_redirect_url)
             )
 
             return web.Response(text=success_html, content_type="text/html")
@@ -1127,3 +1129,15 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
+
+
+def _serialize_script_value(value: str) -> str:
+    """Serialize a string for use inside an HTML script element."""
+    return (
+        json_dumps(value)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )

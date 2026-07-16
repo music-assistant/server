@@ -802,6 +802,59 @@ async def migrate_database(  # noqa: PLR0915
             )
             await database.execute(f"ALTER TABLE {table} DROP COLUMN external_ids")
 
+    if prev_version <= 52:
+        audio_analysis_table_exists = await database.get_rows_from_query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+            {"table_name": DB_TABLE_AUDIO_ANALYSIS},
+            limit=1,
+        )
+        if audio_analysis_table_exists:
+            # SQLite does not guarantee WHERE-term evaluation order, so a bare
+            # json_valid() term cannot reliably shield json_each()/json_type()
+            # from raising on malformed rows - guard their input directly instead.
+            # The json() wrapper is required: the JSON subtype does not reliably
+            # survive the scalar-subquery boundary, so without it the rebuilt
+            # array would be stored as an escaped string on some SQLite versions.
+            result = await database.execute(
+                f"""UPDATE {DB_TABLE_AUDIO_ANALYSIS} AS aa
+                SET analysis_data = json_replace(
+                    aa.analysis_data,
+                    '$.spectral_centroid',
+                    json((
+                        SELECT json_group_array(
+                            CASE WHEN centroid.type = 'null'
+                                THEN 0.0 ELSE centroid.value END
+                        )
+                        FROM json_each(
+                            aa.analysis_data, '$.spectral_centroid'
+                        ) AS centroid
+                    ))
+                )
+                WHERE aa.aa_provider_domain = :aa_provider_domain
+                    AND aa.analysis_data LIKE '%null%'
+                    AND json_type(
+                        CASE WHEN json_valid(aa.analysis_data)
+                            THEN aa.analysis_data END,
+                        '$.spectral_centroid'
+                    ) = 'array'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM json_each(
+                            CASE WHEN json_valid(aa.analysis_data)
+                                THEN aa.analysis_data END,
+                            '$.spectral_centroid'
+                        ) AS centroid
+                        WHERE centroid.type = 'null'
+                    )""",
+                {"aa_provider_domain": "smart_fades"},
+            )
+            if result.rowcount:
+                logger.info(
+                    "Repaired null spectral centroid values in %d Smart Fades "
+                    "audio analysis row(s)",
+                    result.rowcount,
+                )
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:

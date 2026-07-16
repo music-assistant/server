@@ -3,7 +3,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 Brotli>=1.0.9
-aioaudiobookshelf==0.1.22
+aioaudiobookshelf==0.1.24
 aiodns>=4.0.4
 aiofiles==24.1.0
 aiohttp==3.14.1
@@ -31,11 +31,11 @@ certifi==2025.11.12
 chardet>=5.2.0
 colorlog==6.10.1
 cryptography==49.0.0
-deezer-python-gql==0.17.0
+deezer-python-gql==0.17.1
 defusedxml==0.7.1
 deno==2.7.12
 duration-parser==1.0.1
-fastmcp==3.3.1
+fastmcp==3.4.4
 getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.2.3
@@ -43,22 +43,24 @@ hue-entertainment==0.1.2
 huggingface-hub==1.22.0
 ibroadcastaio==0.8.0
 ifaddr==0.2.0
+kaldi-native-fbank==1.22.3
 liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.215
-music-assistant-models==1.1.159
+music-assistant-frontend==2.17.224
+music-assistant-models==1.1.163
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3
 numpy==2.3.5
+onedrive-personal-sdk==0.1.7
 orjson==3.11.6
-pillow==12.2.0
+pillow==12.3.0
 pkce==1.0.3
-plexapi==4.18.1
+plexapi==4.18.2
 podcastparser==0.6.11
 propcache>=0.2.1
 psutil==7.2.2
@@ -72,6 +74,7 @@ pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
 pylast==7.0.2
 python-fullykiosk==0.0.15
+python-google-drive-api==0.1.0
 python-mpd2>=3.1.1
 python-slugify==8.0.4
 pytz==2026.2
@@ -89,8 +92,8 @@ sounddevice==0.5.5
 srptools>=1.0.1
 sxm==0.2.8
 threadpoolctl==3.6.0
-torch==2.12.1+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
-torch==2.12.1; sys_platform != 'linux' or platform_machine != 'x86_64'
+torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
+torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchlibrosa==0.1.0
@@ -101,7 +104,7 @@ uv>=0.8.0
 websocket-client==1.9.0
 wiim==0.1.5
 xmltodict==1.0.4
-ya-passport-auth==1.4.1
+ya-passport-auth[ma]==1.7.0
 yandex-music==3.0.0
 yappi==1.7.6
 ytmusicapi==1.12.1
