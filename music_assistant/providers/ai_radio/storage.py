@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -54,7 +55,11 @@ class AIRadioStorageMixin:
             return
         async with aiofiles.open(self._sections_file) as file_handle:
             content = await file_handle.read()
-        payload = await async_json_loads(content)
+        try:
+            payload = await async_json_loads(content)
+        except ValueError as err:
+            self.logger.error("Sections file is corrupt, restoring defaults: %s", err)
+            payload = {}
         items = payload.get("sections", []) if isinstance(payload, dict) else []
         parsed: dict[str, dict[str, Any]] = {}
         if isinstance(items, list):
@@ -81,9 +86,7 @@ class AIRadioStorageMixin:
             "version": 1,
             "sections": sorted(self._sections.values(), key=lambda item: item["id"].lower()),
         }
-        content = await async_json_dumps(payload, indent=True)
-        async with aiofiles.open(self._sections_file, "w") as file_handle:
-            await file_handle.write(content)
+        await self._write_json_file(self._sections_file, payload)
 
     async def _load_stations(self) -> None:
         """Load station profiles from disk."""
@@ -93,7 +96,13 @@ class AIRadioStorageMixin:
             return
         async with aiofiles.open(self._stations_file) as file_handle:
             content = await file_handle.read()
-        payload = await async_json_loads(content)
+        try:
+            payload = await async_json_loads(content)
+        except ValueError as err:
+            # keep the corrupt file on disk for inspection; it is only
+            # overwritten again once the user saves a station
+            self.logger.error("Stations file is corrupt, starting without stations: %s", err)
+            payload = {}
         stations = payload.get("stations", []) if isinstance(payload, dict) else []
         parsed: dict[str, dict[str, Any]] = {}
         sections_changed = False
@@ -119,9 +128,15 @@ class AIRadioStorageMixin:
             "version": 2,
             "stations": sorted(self._stations.values(), key=lambda item: item["name"]),
         }
+        await self._write_json_file(self._stations_file, payload)
+
+    async def _write_json_file(self, target: Path, payload: dict[str, Any]) -> None:
+        """Write a JSON payload to disk without corrupting the target on failure."""
         content = await async_json_dumps(payload, indent=True)
-        async with aiofiles.open(self._stations_file, "w") as file_handle:
+        tmp_file = target.with_name(f"{target.name}.tmp")
+        async with aiofiles.open(tmp_file, "w") as file_handle:
             await file_handle.write(content)
+        await asyncio.to_thread(os.replace, tmp_file, target)
 
     def _materialize_sections(
         self,

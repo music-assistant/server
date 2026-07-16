@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.providers.ai_radio import storage as storage_module
 from music_assistant.providers.ai_radio.constants import DEFAULT_LLM_INSTRUCTIONS
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
@@ -247,6 +248,78 @@ def test_load_sections_persists_defaults_when_file_corrupt(tmp_path: Any) -> Non
 
     parsed = json.loads(sections_file.read_text())
     assert len(parsed["sections"]) > 0
+
+
+def test_load_sections_recovers_from_invalid_json(tmp_path: Any) -> None:
+    """Fall back to default sections when the sections file is not valid JSON."""
+    sections_file = tmp_path / "sections.json"
+    sections_file.write_text("{not valid json")
+
+    storage = DummyStorage()
+    storage._sections_file = sections_file
+
+    asyncio.run(storage._load_sections())
+
+    assert len(storage._sections) > 0
+
+
+def test_load_stations_recovers_from_invalid_json(tmp_path: Any) -> None:
+    """Continue with no stations when the stations file is not valid JSON."""
+    stations_file = tmp_path / "stations.json"
+    stations_file.write_text("{not valid json")
+
+    storage = DummyStorage()
+    storage._stations_file = stations_file
+    storage._sections_file = tmp_path / "sections.json"
+
+    asyncio.run(storage._load_stations())
+
+    assert storage._stations == {}
+
+
+def test_write_sections_keeps_existing_file_when_write_fails(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preserve the previous sections file when writing the new content fails."""
+    sections_file = tmp_path / "sections.json"
+    original_content = json.dumps({"version": 1, "sections": []})
+    sections_file.write_text(original_content)
+
+    storage = DummyStorage()
+    storage._sections_file = sections_file
+    storage._sections = {"s1": {"id": "s1", "name": "S1", "type": "ai_text", "prompt": "P"}}
+
+    real_open = storage_module.aiofiles.open
+
+    class FailingWriteFile:
+        """Async file wrapper whose write always fails (simulated disk error)."""
+
+        def __init__(self, inner: Any) -> None:
+            """Wrap the real aiofiles context manager."""
+            self._inner = inner
+
+        async def __aenter__(self) -> Any:
+            await self._inner.__aenter__()
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> Any:
+            return await self._inner.__aexit__(*exc_info)
+
+        async def write(self, content: str) -> None:
+            """Raise to simulate a failed disk write."""
+            raise OSError("disk full")
+
+    def failing_open(path: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if "w" in mode:
+            return FailingWriteFile(real_open(path, mode, *args, **kwargs))
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(storage_module.aiofiles, "open", failing_open)
+
+    with pytest.raises(OSError, match="disk full"):
+        asyncio.run(storage._write_sections())
+
+    assert sections_file.read_text() == original_content
 
 
 def test_normalize_section_handles_non_numeric_max_chars_cleanly() -> None:
