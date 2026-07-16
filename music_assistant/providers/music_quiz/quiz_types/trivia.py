@@ -206,6 +206,14 @@ class TriviaQuizType(QuizType):
             "play_reveal_audio": game.config.play_reveal_audio,
         }
 
+    def get_recent_track_uris(self, rounds: list[MusicQuizRound]) -> set[str]:
+        """
+        Return the grounded source tracks represented by earlier Trivia rounds.
+
+        :param rounds: Trivia rounds from an earlier game.
+        """
+        return self._used_source_uris(rounds)
+
     async def initialize(self) -> None:
         """Validate AI availability and enough grounded content for the complete game."""
         self._require_ai_providers()
@@ -217,6 +225,7 @@ class TriviaQuizType(QuizType):
                 translation_owner=TRANSLATION_OWNER,
                 translation_args=[self.config.round_count],
             )
+        await super().initialize()
 
     async def prepare_round(
         self, round_index: int, previous_rounds: list[MusicQuizRound]
@@ -236,8 +245,11 @@ class TriviaQuizType(QuizType):
 
         used_source_uris = self._used_source_uris(previous_rounds)
         facts_by_uri = await self._get_eligible_tracks()
+        source_pool = await self._get_source_track_pool()
         available_tracks = [
-            facts for uri, facts in sorted(facts_by_uri.items()) if uri not in used_source_uris
+            facts
+            for uri, facts in sorted(facts_by_uri.items())
+            if uri not in used_source_uris and uri in source_pool
         ]
         if not available_tracks:
             raise InvalidDataError(
@@ -247,7 +259,13 @@ class TriviaQuizType(QuizType):
                 translation_args=[self.config.round_count],
             )
 
-        track_facts = SYSTEM_RANDOM.choice(available_tracks)
+        preferred_tracks = self._recency_candidates(
+            [source_pool[facts.source_uri] for facts in available_tracks]
+        )
+        preferred_uris = {track.uri for track in preferred_tracks if track.uri}
+        track_facts = SYSTEM_RANDOM.choice(
+            [facts for facts in available_tracks if facts.source_uri in preferred_uris]
+        )
         fact = self._select_fact(track_facts, round_index)
         generation = await self._generate_question(fact)
         correct = SuggestionCandidate(

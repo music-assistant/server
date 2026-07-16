@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.bands import (
     build_band_profile,
+    instrumental_claim_confirmed,
     loudness_referenced_level,
     smoothstep,
     window_duty,
     window_fraction,
 )
+from music_assistant.controllers.streams.smart_fades.models import BandProfile
+from music_assistant.controllers.streams.smart_fades.vocal import VocalMask
 from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
 
 
@@ -112,3 +116,39 @@ class TestLoudnessReferencedLevel:
         quiet = loudness_referenced_level(p, "low", 0.0, 120.0)
         loud = loudness_referenced_level(p, "low", 120.0, 240.0)
         assert loud > quiet
+
+
+class TestInstrumentalClaimConfirmed:
+    """The MIR cross-check: no VAD-silent bar in the claimed region carries elevated mid power."""
+
+    def _profile(self, *, elevated_spike: bool) -> BandProfile:
+        """Build a profile whose mid band is loud before 120s, quiet from 120s (the region)."""
+        t = np.linspace(0.0, 240.0, 1800)
+        mid = np.where(t < 120.0, 0.5, 0.02).astype(np.float32)
+        if elevated_spike:
+            mid[(t >= 140.0) & (t < 142.0)] = 0.5
+        low = np.full(1800, 0.05, dtype=np.float32)
+        profile = build_band_profile(_analysis_with_bands(low, low, mid, low, duration=240.0))
+        assert profile is not None
+        return profile
+
+    def test_quiet_vad_silent_region_confirms(self) -> None:
+        """A genuinely quiet mid band across the region confirms the instrumental claim."""
+        profile = self._profile(elevated_spike=False)
+        assert instrumental_claim_confirmed(profile, VocalMask(windows=[]), 120.0, 240.0)
+
+    def test_elevated_bar_inside_vad_silent_region_denies(self) -> None:
+        """One elevated mid bar inside the VAD-silent region denies the instrumental claim."""
+        profile = self._profile(elevated_spike=True)
+        assert not instrumental_claim_confirmed(profile, VocalMask(windows=[]), 120.0, 240.0)
+
+    def test_elevated_bar_inside_a_vocal_window_is_exempt(self) -> None:
+        """An elevated bar that IS vocal-active carries no evidence against the claim."""
+        profile = self._profile(elevated_spike=True)
+        mask = VocalMask(windows=[(140.0, 142.0)])
+        assert instrumental_claim_confirmed(profile, mask, 120.0, 240.0)
+
+    def test_empty_range_confirms(self) -> None:
+        """A region with no bars at all vacuously confirms the claim."""
+        profile = self._profile(elevated_spike=False)
+        assert instrumental_claim_confirmed(profile, VocalMask(windows=[]), 500.0, 600.0)

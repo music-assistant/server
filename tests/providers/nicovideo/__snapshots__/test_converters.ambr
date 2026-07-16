@@ -2010,6 +2010,7 @@
       'output_format_str': 'mp4',
       'sample_rate': 48000,
     }),
+    'audio_processing': None,
     'dsp': None,
     'duration': 2,
     'item_id': 'sm45285955',
