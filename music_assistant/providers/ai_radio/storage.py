@@ -124,13 +124,16 @@ class AIRadioStorageMixin:
             await file_handle.write(content)
 
     def _materialize_sections(
-        self, section_ids: list[str]
+        self,
+        section_ids: list[str],
+        sections_map: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Resolve section ids to shared section objects."""
+        source = self._sections if sections_map is None else sections_map
         sections: list[dict[str, Any]] = []
         missing: list[str] = []
         for section_id in section_ids:
-            section = self._sections.get(section_id)
+            section = source.get(section_id)
             if section is None:
                 missing.append(section_id)
                 continue
@@ -221,8 +224,13 @@ class AIRadioStorageMixin:
             "weather_timeout_seconds": _int("weather_timeout_seconds"),
         }
 
-    def _upsert_embedded_sections_from_station(self, station: dict[str, Any]) -> bool:
+    def _upsert_embedded_sections_from_station(
+        self,
+        station: dict[str, Any],
+        sections_map: dict[str, dict[str, Any]] | None = None,
+    ) -> bool:
         """Upsert embedded station sections and return whether shared sections changed."""
+        target = self._sections if sections_map is None else sections_map
         changed = False
         raw_sections = station.get("sections")
         if not isinstance(raw_sections, list):
@@ -234,9 +242,9 @@ class AIRadioStorageMixin:
                 continue
             normalized = self._normalize_section(item)
             ids_from_embedded.append(normalized["id"])
-            existing = self._sections.get(normalized["id"])
+            existing = target.get(normalized["id"])
             if existing != normalized:
-                self._sections[normalized["id"]] = normalized
+                target[normalized["id"]] = normalized
                 changed = True
 
         raw_ids = station.get("section_ids")
@@ -244,8 +252,13 @@ class AIRadioStorageMixin:
             station["section_ids"] = ids_from_embedded
         return changed
 
-    def _normalize_station(self, station: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_station(
+        self,
+        station: dict[str, Any],
+        sections_map: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Validate and normalize a station profile."""
+        known_sections = self._sections if sections_map is None else sections_map
         station_id = str(station.get("id", "")).strip() or uuid4().hex[:8]
         station_id = _slugify(station_id)
         name = str(station.get("name", "")).strip()
@@ -266,7 +279,7 @@ class AIRadioStorageMixin:
         if not section_ids:
             raise InvalidDataError("Station requires at least one section id")
 
-        sections, missing = self._materialize_sections(section_ids)
+        sections, missing = self._materialize_sections(section_ids, known_sections)
         if missing:
             raise InvalidDataError(
                 f"Station references unknown sections: {', '.join(sorted(set(missing)))}"
@@ -279,7 +292,7 @@ class AIRadioStorageMixin:
         if merge_section_id:
             if merge_section_id not in section_ids:
                 raise InvalidDataError("merge_section_id must be selected in station section_ids")
-            merge_section = self._sections.get(merge_section_id)
+            merge_section = known_sections.get(merge_section_id)
             if not merge_section or str(merge_section.get("type", "")).strip().lower() != "ai_meta":
                 raise InvalidDataError("merge_section_id must reference an ai_meta section")
 
