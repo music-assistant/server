@@ -1,0 +1,38 @@
+{
+  "config_entries": {
+    "client_id": {
+      "label": "Yandex OAuth Client ID",
+      "description": "Register an application at https://oauth.yandex.ru/ with the 'cloud_api:disk.read' permission and paste its ID here."
+    },
+    "client_secret": {
+      "label": "Yandex OAuth Client Secret"
+    },
+    "auth_code": {
+      "label": "Confirmation code",
+      "description": "Open the link, allow access, then paste the confirmation code Yandex shows and press Authorize."
+    },
+    "auth": {
+      "label": "Authorize with the pasted code",
+      "action_label": "Authorize"
+    },
+    "refresh_token": {
+      "label": "Refresh token"
+    },
+    "root_path": {
+      "label": "Root folder to scan",
+      "description": "Path on your Yandex Disk to scan for music, e.g. 'disk:/Music'. Leave as 'disk:/' to scan the whole disk."
+    },
+    "content_type": {
+      "label": "[%key:common::config_entries::content_type::label%]",
+      "description": "[%key:common::config_entries::content_type::description%]",
+      "options": {
+        "music": "[%key:common::config_entries::content_type::options::music%]",
+        "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream music, audiobooks and podcasts stored on Yandex Disk"
+  }
+}

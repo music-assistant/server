@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Yandex Disk">
+  <defs>
+    <linearGradient id="yd" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4C8BF5"/>
+      <stop offset="1" stop-color="#2A6EE0"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#yd)" d="M24 4c-4.6 0-8.6 2.9-10.2 7.1-4.9.5-8.8 4.7-8.8 9.9 0 5.5 4.4 9.9 9.9 9.9h20.2c4.9 0 8.9-4 8.9-8.9 0-4.6-3.5-8.4-8-8.8C34.9 8.5 30 4 24 4z"/>
+  <path fill="#fff" d="M24 16.5l6 10.5H18l6-10.5zM17 29h14v3H17z"/>
+</svg>
