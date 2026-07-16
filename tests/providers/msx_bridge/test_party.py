@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock
 
+import segno
+
+from music_assistant.providers.msx_bridge.http_server import _render_qr
+
 if TYPE_CHECKING:
+    import pytest
     from aiohttp.test_utils import TestClient
 
 JOIN_URL = "http://ma.local:8095/?join=ABC123"
@@ -160,6 +166,43 @@ async def test_party_qr_png_404_inactive(http_client: TestClient[Any, Any]) -> N
     """GET /api/party/qr.png should 404 when no party is active."""
     resp = await http_client.get("/api/party/qr.png")
     assert resp.status == 404
+
+
+def test_render_qr_is_memoized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repeated QR renders for the same join URL and kind reuse the cached bytes."""
+    calls: list[int] = []
+    real_make = segno.make
+
+    def _tracking_make(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return real_make(*args, **kwargs)
+
+    monkeypatch.setattr(segno, "make", _tracking_make)
+    _render_qr.cache_clear()
+    first = _render_qr(JOIN_URL, "png")
+    second = _render_qr(JOIN_URL, "png")
+    assert first == second
+    assert len(calls) == 1
+
+
+async def test_party_qr_render_runs_off_event_loop(
+    http_client: TestClient[Any, Any], mass_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QR generation must run in a worker thread, never on the event loop."""
+    mass_mock.get_provider = Mock(return_value=_party_mock())
+    loop_thread = threading.get_ident()
+    make_threads: list[int] = []
+    real_make = segno.make
+
+    def _tracking_make(*args: Any, **kwargs: Any) -> Any:
+        make_threads.append(threading.get_ident())
+        return real_make(*args, **kwargs)
+
+    monkeypatch.setattr(segno, "make", _tracking_make)
+    resp = await http_client.get("/api/party/qr.png")
+    assert resp.status == 200
+    assert make_threads
+    assert loop_thread not in make_threads
 
 
 # --- /msx/party.json native MSX page ---
