@@ -2,7 +2,7 @@
   "config_entries": {
     "instance_name": {
       "label": "Instance Name",
-      "description": "Name of this MA instance as it will appear in Yandex Smart Home. Alice will use this name for voice commands, e.g. \"Алиса, включи музыку на [имя]\"."
+      "description": "Display name for this MA instance in Yandex Smart Home. Alice will use this name for voice commands like \"Алиса, поставь паузу на [имя]\"."
     },
     "label_connection_type_notice": {
       "label": "💡 After changing Connection Type below, click Save and reopen this settings page to see the fields for the new mode."
@@ -19,23 +19,56 @@
     "label_cloud_conflict_warning": {
       "label": "⚠️ If this Yandex account already uses the Yaha Cloud skill via Home Assistant or another Music Assistant install, pick 'Cloud Plus' above instead — the public skill can only be linked to one instance per account."
     },
+    "label_cloud_plus_help": {
+      "label": "Cloud Plus uses a private skill in your Yandex developer account. Steps: 1) Click 'Register with cloud' below to provision a yaha-cloud relay slot. 2) Click 'Create Smart Home skill' to provision the skill automatically (Device Flow login, then automated skill creation), OR create one manually at https://dialogs.yandex.ru/developer and paste the skill ID + OAuth token below. 3) Click 'Get OTP code' and enter it in the Yandex app to finish linking."
+    },
+    "label_direct_help": {
+      "label": "Direct mode points Yandex straight at this MA instance. Steps: 1) Set the External Base URL below to a public HTTPS URL (Yandex requires HTTPS). 2) Click 'Create Smart Home skill' to provision the skill automatically (Device Flow login, then automated skill creation), OR create one manually at https://dialogs.yandex.ru/developer with the Backend URL shown after first save. 3) Paste the OAuth token from the dev console below."
+    },
     "otp_code": {
+      "label": "OTP Code",
+      "description": "Copy this code and enter it in the Yandex app."
+    },
+    "otp_code_cp": {
       "label": "OTP Code",
       "description": "Copy this code and enter it in the Yandex app."
     },
     "register_cloud": {
       "label": "Register cloud instance",
-      "description": "Registers a new instance on yaha-cloud.ru relay.",
+      "description": "Register a new instance on the yaha-cloud.ru relay service.",
       "action_label": "Register with cloud"
     },
     "get_otp": {
       "label": "Get OTP code",
-      "description": "Get a fresh one-time password to link with Yandex.",
+      "description": "Get a fresh one-time password to link with the Yandex Smart Home app.",
       "action_label": "Get OTP code"
+    },
+    "auto_create_skill": {
+      "label": "Auto-create Smart Home skill",
+      "description": "Sign in via Yandex Passport (Device Flow) and provision the skill at dialogs.yandex.ru programmatically. The skill_id field below populates on success. After creation you still need to paste the skill OAuth token from the dev console (see https://yandex.ru/dev/dialogs/smart-home/doc/en/concepts/oauth)."
+    },
+    "skill_id": {
+      "label": "Skill ID",
+      "description": "UUID from the dev console URL (https://dialogs.yandex.ru/developer/skills/<this>). Populated automatically after 'Create Smart Home skill' succeeds; set manually if you created the skill yourself."
+    },
+    "skill_token": {
+      "label": "Skill OAuth token",
+      "description": "Click the link icon next to this field to open the Yandex OAuth page; approve access for 'Yandex.Dialogs', then copy the access_token value from the resulting URL fragment (after #access_token=) and paste it here. The token is used to push state callbacks back to Yandex when MA players change state."
+    },
+    "external_base_url": {
+      "label": "External Base URL (HTTPS, optional override)"
     },
     "exposed_players": {
       "label": "Exposed Players",
       "description": "Select which MA players to expose to Yandex Smart Home. Leave empty to expose all players."
+    },
+    "exposed_playlists": {
+      "label": "Exposed Playlists (max 10)",
+      "description": "Pick up to 10 playlists from your MA library — they fill the input_source mode slots after each player's native sources. Alice triggers slots by ordinal only (\"switch source to five\"); remember the order you picked. If the list is empty, save the form and reopen it once your music providers have finished loading their library."
+    },
+    "ym_instance": {
+      "label": "Yandex account source",
+      "description": "Borrow the Yandex account of a configured Yandex Music provider for skill auto-create (single sign-in, no Device Flow popup) or use this provider's own sign-in. When borrowing, nothing is stored or rotated by this provider."
     },
     "cloud_instance_id": {
       "label": "Cloud Instance ID"
@@ -49,8 +82,8 @@
     "direct_access_token": {
       "label": "Direct Access Token"
     },
-    "auto_create_skill": {
-      "description": "Runs the Yandex Device Flow login, then creates and publishes the private Smart Home skill."
+    "direct_client_secret": {
+      "label": "Direct client secret (internal)"
     },
     "auto_create_artifacts": {
       "label": "Auto-create artifacts (internal)"
@@ -58,58 +91,8 @@
     "auto_create_session_id": {
       "label": "Auto-create session id (internal)"
     },
-    "manual_dialogs_url": {
-      "label": "Yandex.Dialogs Console"
-    },
-    "manual_backend_url": {
-      "label": "Backend URL (→ Basic info)",
-      "description": "Copy to 'Basic info' → 'Backend URL' in your skill."
-    },
-    "manual_client_id": {
-      "label": "Client ID (→ Account linking)",
-      "description": "Copy to 'Account linking' → 'Client identifier' field."
-    },
-    "manual_auth_url": {
-      "label": "Authorization URL (→ Account linking)"
-    },
-    "manual_token_url": {
-      "label": "Token URL (→ Account linking, both fields)",
-      "description": "Paste into BOTH 'Token endpoint' and 'Refresh token URL'."
-    },
-    "auto_create_user_code": {
-      "label": "Device code for ya.ru/device",
-      "description": "Open the URL below, log in to your Yandex account, and enter this code."
-    },
-    "current_ma_base_url": {
-      "label": "Current MA Base URL (read-only)",
-      "description": "For reference. Change it in Settings → Core → Webserver → Base URL; provider doesn't own this setting."
-    },
-    "oauth_url": {
-      "label": "OAuth URL (open to get token)",
-      "description": "Open this URL in your browser, approve, and copy the access_token from the resulting URL into the field below."
-    },
-    "skill_token": {
-      "label": "Skill OAuth Token",
-      "description": "Paste the OAuth token obtained from the URL above."
-    },
-    "skill_id": {
-      "label": "Skill ID",
-      "description": "UUID of your private Smart Home skill. Set automatically when auto-create succeeds; you can paste it manually if you created the skill by hand."
-    },
-    "skill_dialogs_link": {
-      "label": "Open skill in Yandex.Dialogs",
-      "description": "Click the link to open the skill's page."
-    },
-    "direct_client_secret": {
-      "label": "Client Secret (→ Account linking)",
-      "description": "Copy to 'Account linking' → 'Client secret' field."
-    },
-    "manual_client_secret": {
-      "label": "Client Secret value (for reference)",
-      "description": "Copy this string into 'Account linking' → 'Client secret'."
-    },
-    "label_direct_https_warning": {
-      "label": "⚠️ MA's Base URL is {0}. Direct mode requires a **publicly reachable HTTPS URL** — Yandex refuses to talk to a non-HTTPS backend. Set a reverse proxy with a real certificate and update Settings → Core → Webserver → Base URL, then reopen these settings."
+    "auth_x_token": {
+      "label": "Yandex Passport x_token (cached)"
     }
   },
   "manifest": {
