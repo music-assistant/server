@@ -45,9 +45,9 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
         ┌─────────────────────┼─────────────────────┐
         │                     │                     │
 ┌───────▼──────┐     ┌────────▼────────┐    ┌──────▼──────┐
-│  RaopStream  │     │ AirPlay2Stream  │    │ RaopStream  │
+│AirPlayStream │     │  AirPlayStream  │    │AirPlayStream│
 │ ┌──────────┐ │     │ ┌────────────┐  │    │┌──────────┐ │
-│ │ cliraop  │ │     │ │  cliap2    │  │    ││ cliraop  │ │
+│ │cliairplay│ │     │ │ cliairplay │  │    ││cliairplay│ │
 │ └────▲─────┘ │     │ └─────▲──────┘  │    │└────▲─────┘ │
 │      │       │     │       │         │    │     │       │
 │ ┌────┴─────┐ │     │ ┌─────┴──────┐  │    │┌────┴─────┐ │
@@ -66,13 +66,9 @@ airplay/
 ├── pairing.py           # HAP and RAOP pairing implementations
 ├── helpers.py           # Utility functions (NTP conversion, model detection, etc.)
 ├── constants.py         # Constants and enums
-├── protocols/
-│   ├── _protocol.py     # Base protocol class with shared logic
-│   ├── raop.py          # RAOP (AirPlay 1) streaming implementation
-│   └── airplay2.py      # AirPlay 2 streaming implementation
+├── stream.py            # Unified AirPlayStream (RAOP + AirPlay 2) driving cliairplay
 └── bin/                 # Platform-specific CLI binaries
-    ├── cliraop-*        # RAOP streaming binaries
-    └── cliap2-*         # AirPlay 2 streaming binaries
+    └── cliairplay-*     # Unified RAOP + AirPlay 2 streaming binary
 ```
 
 ## Protocol Selection: RAOP vs AirPlay 2
@@ -81,11 +77,10 @@ airplay/
 
 - **Used for**: Older AirPlay devices, some third-party implementations
 - **Features**:
-  - Encryption support (can be disabled for problematic devices)
-  - ALAC compression option to save network bandwidth
+  - Encrypted, ALAC-compressed audio (handled automatically by the binary)
   - Password protection support
   - Device-reported volume feedback via DACP
-- **Binary**: `cliraop` (based on [libraop](https://github.com/music-assistant/libraop))
+- **Binary**: `cliairplay --protocol raop` (based on [libraop](https://github.com/music-assistant/libraop))
 
 ### AirPlay 2
 
@@ -94,7 +89,8 @@ airplay/
   - Better compatibility with newer devices
   - More robust protocol
   - Required for some devices that don't support RAOP
-- **Binary**: `cliap2` (based on [OwnTone](https://github.com/music-assistant/cliairplay))
+  - 24-bit audio support (native AirPlay 2 flow)
+- **Binary**: `cliairplay --protocol airplay2` (native implementation, no OwnTone dependency)
 
 ### Automatic Selection
 
@@ -189,7 +185,7 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 └───────┬──────┘    └────────┬────────┘   └──────┬──────┘
         │ PCM 44.1kHz 16-bit │                    │
 ┌───────▼──────┐    ┌────────▼────────┐   ┌──────▼──────┐
-│  cliraop     │    │    cliap2       │   │  cliraop    │
+│  cliairplay  │    │   cliairplay    │   │  cliairplay │
 │  (RAOP       │    │  (AirPlay 2     │   │  (RAOP      │
 │   protocol)  │    │   protocol)     │   │   protocol) │
 └───────┬──────┘    └────────┬────────┘   └──────┬──────┘
@@ -211,7 +207,7 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
    - Converts start time to NTP timestamp for precise synchronization
 
 2. **Client Setup** (per player, `_start_client()` method)
-   - Creates protocol instance (`RaopStream` or `AirPlay2Stream`)
+   - Creates an `AirPlayStream` instance (protocol selected via `--protocol`)
    - Starts CLI process with NTP start timestamp
    - Configures FFmpeg for audio format conversion and optional DSP filters
    - Pipes FFmpeg output to CLI process stdin
@@ -340,12 +336,13 @@ Therefore, the provider uses C-based CLI binaries for the actual streaming.
 
 ### Binary Selection
 
-The provider automatically selects the correct binary based on:
+A single `cliairplay-<platform>-<arch>` binary handles both protocols; the
+provider selects it based on:
 - **Platform**: Linux, macOS
 - **Architecture**: x86_64, arm64, aarch64
-- **Protocol**: RAOP (`cliraop-*`) or AirPlay 2 (`cliap2-*`)
 
-Binaries are located in [bin/](bin/) directory and validated on first use.
+The protocol (RAOP or AirPlay 2) is chosen at runtime via the `--protocol`
+flag. Binaries are located in the [bin/](bin/) directory and validated on first use.
 
 ### Binary Communication
 
@@ -363,7 +360,7 @@ Binaries are located in [bin/](bin/) directory and validated on first use.
 - Elapsed time updates
 - Error messages
 
-The provider monitors stderr in a separate task (`_stderr_reader()` in [raop.py](protocols/raop.py) and [airplay2.py](protocols/airplay2.py)) to:
+The provider monitors stderr in a separate task (`_stderr_reader()` in [stream.py](stream.py)) to:
 - Update player state
 - Detect connection completion
 - Handle errors and packet loss
@@ -455,15 +452,14 @@ Some devices have known broken AirPlay implementations (see `BROKEN_AIRPLAY_MODE
 
 ### Testing CLI Binaries
 
-Each binary can be validated with a test command:
-- **cliraop**: `cliraop -check` (should output "cliraop check")
-- **cliap2**: `cliap2 --testrun` (should output "cliap2 check")
+The binary can be validated with a test command:
+- **cliairplay**: `cliairplay --check` (should output "cliairplay check")
 
 ### Adding New CLI Commands
 
-To add a new command to the CLI binaries:
-1. Update the CLI binary source code (external repositories)
-2. Update `send_cli_command()` method in [_protocol.py](protocols/_protocol.py)
+To add a new command to the CLI binary:
+1. Update the cliairplay binary source code (external repository)
+2. Handle the command in `send_cli_command()` in [stream.py](stream.py)
 3. Send command via named pipe: `await stream.send_cli_command("YOUR_COMMAND=value")`
 
 ### Debugging Streaming Issues
@@ -477,9 +473,9 @@ Enable verbose logging in Music Assistant to see:
 
 ## Credits
 
-- **libraop**: RAOP streaming implementation - https://github.com/music-assistant/libraop
-- **OwnTone**: AirPlay 2 implementation - https://github.com/OwnTone
-- **pyatv**: Reference for HAP pairing protocol - https://github.com/postlund/pyatv
+- **libraop**: foundation for the cliairplay binary (RAOP + AirPlay 2) - https://github.com/music-assistant/libraop
+- **OwnTone**: reference for the AirPlay 2 / HAP implementation - https://github.com/OwnTone
+- **pyatv**: reference for the HAP pairing protocol - https://github.com/postlund/pyatv
 
 ## Sendspin Bridge
 
