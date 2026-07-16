@@ -17,6 +17,7 @@ from aiohttp import ClientTimeout
 from music_assistant_models.enums import (
     ImageType,
     MediaType,
+    PlaybackState,
     ProviderFeature,
     ProviderType,
     QueueOption,
@@ -452,17 +453,31 @@ class AIRadioRuntimeMixin:
             stall_timeout = DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS
             inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
             last_seen_index = -1
+            last_elapsed_time: float | None = None
             while True:
                 queue = self.mass.player_queues.get_active_queue(player_id)
                 if not queue:
                     queue = self.mass.player_queues.get(queue_id)
                 current_index = queue.current_index if queue else None
+                playback_alive = False
                 if current_index is not None:
                     if current_index >= wait_trigger_global_index:
                         break
                     if current_index > last_seen_index:
                         last_seen_index = current_index
-                        inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
+                        playback_alive = True
+                # a long track or a deliberate pause is not a stall: the raw
+                # elapsed_time only moves when the player reports real progress,
+                # while PAUSED means the user intentionally halted playback
+                queue_state = getattr(queue, "state", None)
+                elapsed_time = getattr(queue, "elapsed_time", None)
+                if queue_state == PlaybackState.PAUSED:
+                    playback_alive = True
+                elif elapsed_time is not None and elapsed_time != last_elapsed_time:
+                    last_elapsed_time = elapsed_time
+                    playback_alive = True
+                if playback_alive:
+                    inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
                 if asyncio.get_running_loop().time() >= inactivity_deadline:
                     raise MusicAssistantError(
                         f"Queue {queue_id} stopped advancing for {stall_timeout}s "

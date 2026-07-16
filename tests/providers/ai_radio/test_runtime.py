@@ -9,7 +9,13 @@ from typing import Any, cast
 
 import pytest
 from music_assistant_models.background_task import BackgroundTask
-from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType, TaskStatus
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    ProviderFeature,
+    ProviderType,
+    TaskStatus,
+)
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
@@ -689,3 +695,173 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
 
     with pytest.raises(MusicAssistantError, match=r"stall|stopped advancing|watchdog|inactive"):
         await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=3.0)
+
+
+def _make_watchdog_runtime_classes() -> tuple[type, type]:
+    """Build the reusable dynamic-mode runtime and player-queues test harness."""
+
+    class WatchdogRuntime(AIRadioRuntimeMixin):
+        def __init__(self) -> None:
+            self.logger = logging.getLogger("tests.ai_radio.runtime.watchdog")
+            self._sessions: dict[str, SessionState] = {}
+
+        async def _fetch_source_tracks(
+            self, station: dict[str, Any]
+        ) -> tuple[list[dict[str, Any]], str]:
+            tracks = []
+            for index in (1, 2, 3):
+                tracks.append(
+                    {
+                        "uri": f"library://track/{index}",
+                        "duration": 400,
+                        "name": f"T{index}",
+                        "artist": "A",
+                        "songinfo": f"A - T{index}",
+                        "index": index - 1,
+                        "playlist_item": None,
+                        "item_id": str(index),
+                    }
+                )
+            return tracks, "Source"
+
+        def _apply_track_duration_limit(
+            self, tracks: list[dict[str, Any]], station: dict[str, Any]
+        ) -> list[dict[str, Any]]:
+            return tracks
+
+        def _plan_sections(self, *args: Any, **kwargs: Any) -> tuple[list[Any], dict[str, Any]]:
+            return [], {}
+
+        async def _generate_sections(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+        async def _synthesize_sections(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+        async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
+            return {}
+
+    class SteppingPlayerQueues:
+        """Player queues stub whose queue reports a scripted playback state."""
+
+        def __init__(self, queue: Any) -> None:
+            self.queue = queue
+
+        def clear(self, queue_id: str) -> None:
+            return None
+
+        async def play_media(self, **kwargs: Any) -> None:
+            return None
+
+        def get_active_queue(self, player_id: str) -> Any:
+            return None
+
+        def get(self, queue_id: str) -> Any:
+            self.queue.polls += 1
+            return self.queue
+
+    return WatchdogRuntime, SteppingPlayerQueues
+
+
+def _watchdog_station() -> dict[str, Any]:
+    """Return a dynamic-mode station config for watchdog tests."""
+    return {
+        "id": "st",
+        "name": "Watchdog Station",
+        "default_player_id": "living_room",
+        "dynamic_batch_size": 2,
+        "dynamic_poll_seconds": 1,
+        "dynamic_prefetch_remaining_tracks": 1,
+        "clear_queue_on_start": False,
+        "general": {"timezone": "UTC"},
+        "sections": [],
+        "section_order": [],
+    }
+
+
+async def test_dynamic_watchdog_tolerates_long_track_while_playing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep waiting while a long track plays and elapsed time keeps advancing."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+    watchdog_runtime_cls, stepping_queues_cls = _make_watchdog_runtime_classes()
+
+    class PlayingQueue:
+        """Queue stuck on index 0 (long track) but with advancing elapsed time."""
+
+        polls = 0
+        state = PlaybackState.PLAYING
+
+        @property
+        def current_index(self) -> int:
+            return 0 if self.polls < 4 else 1
+
+        @property
+        def elapsed_time(self) -> float:
+            return float(self.polls * 10)
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    class DummyMass:
+        players = DummyPlayers()
+        player_queues = stepping_queues_cls(PlayingQueue())
+
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    result = await asyncio.wait_for(
+        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
+    )
+
+    assert result["queued_tracks"] == 3
+
+
+async def test_dynamic_watchdog_tolerates_paused_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep waiting while the queue is deliberately paused by the user."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+    watchdog_runtime_cls, stepping_queues_cls = _make_watchdog_runtime_classes()
+
+    class PausedQueue:
+        """Queue paused on index 0 with frozen elapsed time, resuming later."""
+
+        polls = 0
+        elapsed_time = 42.0
+
+        @property
+        def state(self) -> PlaybackState:
+            return PlaybackState.PAUSED if self.polls < 4 else PlaybackState.PLAYING
+
+        @property
+        def current_index(self) -> int:
+            return 0 if self.polls < 4 else 1
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    class DummyMass:
+        players = DummyPlayers()
+        player_queues = stepping_queues_cls(PausedQueue())
+
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    result = await asyncio.wait_for(
+        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
+    )
+
+    assert result["queued_tracks"] == 3
