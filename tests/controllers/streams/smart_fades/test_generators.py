@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 import numpy as np
+import pytest
 
 from music_assistant.controllers.streams.smart_fades.bands import build_band_profile
 from music_assistant.controllers.streams.smart_fades.models import Deck, TransitionTier
@@ -15,6 +16,7 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CodaAnchorGenerator,
     EnergyLadderGenerator,
     ProtectiveAnchorGenerator,
+    RescueAnchorGenerator,
     VocalOnsetEntryGenerator,
     _entry_options,
     default_generators,
@@ -468,6 +470,53 @@ class TestVocalOnsetEntryGenerator:
         """An onset-aligned entry landing inside a vocal window is not a legal cut."""
         ctx = _base_ctx(vocal_in_placement=VocalMask(windows=[(20.0, 25.0), (2.0, 5.0)]))
         assert list(VocalOnsetEntryGenerator().generate(ctx)) == []
+
+
+class TestRescueAnchorGenerator:
+    """The last-resort rescue rung: a modest (<=2-bar) late-anchored candidate."""
+
+    def test_emits_only_rungs_of_two_bars_or_fewer(self) -> None:
+        """The rescue ladder never proposes more than a 2-bar overlap."""
+        ctx = _base_ctx(
+            protective_downbeats=(20.0, 30.0, 39.0, 41.0),
+            audio_end=45.0,
+            vocal_out_placement=VocalMask(windows=[(0.0, 10.0)]),
+        )
+        specs = list(RescueAnchorGenerator().generate(ctx))
+
+        assert {s.bars for s in specs} == {2, 1}
+        assert all(s.source == "rescue-anchor" for s in specs)
+
+    def test_anchor_lands_near_audio_end_minus_bars_times_bar_seconds(self) -> None:
+        """Each rung's anchor snaps to the protective downbeat nearest its own late target."""
+        ctx = _base_ctx(
+            protective_downbeats=(20.0, 30.0, 39.0, 41.0),
+            audio_end=45.0,
+            vocal_out_placement=VocalMask(windows=[(0.0, 10.0)]),
+        )
+        specs = list(RescueAnchorGenerator().generate(ctx))
+
+        bar_seconds = 2.0
+        anchors_by_bars = {s.bars: s.anchor_s for s in specs}
+        assert anchors_by_bars[2] == pytest.approx(45.0 - 2 * bar_seconds)
+        assert anchors_by_bars[1] == pytest.approx(45.0 - 1 * bar_seconds)
+
+    def test_anchor_never_falls_below_the_outgoing_vocal_end(self) -> None:
+        """A late outgoing vocal floors every rung's target, so it is never truncated."""
+        ctx = _base_ctx(
+            protective_downbeats=(20.0, 30.0, 39.0, 41.0, 44.0),
+            audio_end=45.0,
+            vocal_out_placement=VocalMask(windows=[(0.0, 43.5)]),
+        )
+        specs = list(RescueAnchorGenerator().generate(ctx))
+
+        for spec in specs:
+            assert spec.anchor_s is not None
+            assert spec.anchor_s >= 43.5 - 1e-9
+
+    def test_not_part_of_default_generators(self) -> None:
+        """The rescue generator is a planner-only fallback, never part of the default set."""
+        assert RescueAnchorGenerator not in [type(g) for g in default_generators()]
 
 
 class TestDefaultGenerators:

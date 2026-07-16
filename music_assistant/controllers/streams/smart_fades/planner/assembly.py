@@ -39,7 +39,7 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
     WEIGHTED_COLLISION_LIMIT,
 )
 
-from .candidates import CandidateSpec, _nearest_protective_anchor
+from .candidates import CandidateSpec, _nearest_protective_anchor, _outgoing_vocal_end
 
 if TYPE_CHECKING:
     import logging
@@ -570,8 +570,7 @@ class EmergencyHandoffFactory:
         # RMS-audible boundary) far enough to cover any outgoing vocal the
         # handoff would cut short, AND to keep a short fade's audible trim
         # within its own overlap length
-        out_mask = ctx.vocal_out_placement
-        last_vocal_end = min(out_mask.last_end(), ctx.audio_end) if out_mask is not None else 0.0
+        last_vocal_end = _outgoing_vocal_end(ctx)
         plan0 = candidate.plan
         vocal_would_be_cut = last_vocal_end > plan0.fade_out_window + 1e-9
         overtrims_short_fade = (

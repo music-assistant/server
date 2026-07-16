@@ -231,6 +231,13 @@ class TestAudibleTrimPolicy:
 
         assert self.policy.evaluate(candidate, ctx).rejected is True
 
+    def test_rejects_even_when_vocal_data_is_missing(self) -> None:
+        """Missing vocal data must never disable the guard: a stale pre-vocal row still rejects."""
+        candidate = _candidate(duration=SHORT_FADE_SECONDS, trim=SHORT_FADE_SECONDS + 0.5)
+        ctx = _ctx(vocal_out_scoring=None)
+
+        assert self.policy.evaluate(candidate, ctx).rejected is True
+
     def test_no_rejection_when_trim_equals_short_fade_duration(self) -> None:
         """A short fade whose trim exactly equals its duration does not reject (strict >)."""
         candidate = _candidate(duration=SHORT_FADE_SECONDS, trim=SHORT_FADE_SECONDS)

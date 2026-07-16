@@ -516,9 +516,28 @@ class TestMissingOrInvalidVocalDataFallsBackToEnergyOnly:
         plan = _plan(out, _analysis(120.0, duration=240.0))
         assert plan == baseline
 
-    def test_one_sided_valid_data_still_falls_back_to_energy_only(self) -> None:
-        """Valid data on only one side is not enough; both sides must validate."""
+    def test_one_sided_valid_data_engages_that_sides_protection(self) -> None:
+        """Valid data on one side engages that side's protections independently."""
         baseline = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
         out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(238.0, 239.0)])
         plan = _plan(out, _analysis(120.0, duration=240.0))
-        assert plan == baseline
+        # this vocal rides the fade rather than forcing a re-anchor, so the
+        # geometry matches the energy-only baseline while the outgoing vocal
+        # is now measured; cross-deck collision needs both sides and stays 0
+        assert plan.fade_out_window == baseline.fade_out_window
+        assert plan.crossfade_duration == baseline.crossfade_duration
+        assert plan.metrics.outgoing_vocal_fade_seconds > 0.0
+        assert plan.metrics.collision_seconds == 0.0
+
+
+def test_outgoing_vocal_metrics_survive_a_missing_incoming_timeline() -> None:
+    """Outgoing-only vocal data still yields outgoing vocal metrics; collision stays neutral."""
+    out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(228.0, 230.05)])
+    inc = _analysis(120.0, duration=240.0)
+    ctx = build_transition_context(out, inc, 45.0, LOGGER)
+    candidate = CandidateFactory(ctx, LOGGER).build(
+        CandidateSpec(tier=ctx.tier, bars=8, anchor_s=None, entry_s=None)
+    )
+    assert candidate is not None
+    assert candidate.metrics.outgoing_vocal_fade_seconds > 0.0
+    assert candidate.metrics.collision_seconds == 0.0
