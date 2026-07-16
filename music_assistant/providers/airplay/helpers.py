@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import logging
 import os
 import platform
@@ -170,7 +171,9 @@ def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
 def is_airplay2_preferred_model(manufacturer: str, model: str) -> bool:
     """Check if a model is known to work better with AirPlay 2 protocol."""
     for ap2_manufacturer, ap2_model in AIRPLAY_2_DEFAULT_MODELS:
-        if ap2_manufacturer in (manufacturer, "*") and ap2_model in (model, "*"):
+        if fnmatch.fnmatchcase(manufacturer.lower(), ap2_manufacturer.lower()) and (
+            fnmatch.fnmatchcase(model.lower(), ap2_model.lower())
+        ):
             return True
     return False
 
