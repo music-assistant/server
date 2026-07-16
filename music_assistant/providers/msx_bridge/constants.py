@@ -17,13 +17,13 @@ DEFAULT_OUTPUT_FORMAT = "mp3"
 DEFAULT_PLAYER_IDLE_TIMEOUT = 30  # minutes
 DEFAULT_SHOW_STOP_NOTIFICATION = False
 DEFAULT_ENABLE_GROUPING = False
-DEFAULT_ENABLE_SENDSPIN_BRIDGE = False
+DEFAULT_ENABLE_SENDSPIN_BRIDGE = True
 
 # Group stream modes
-GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Each player gets its own stream (default)
+GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Each player gets its own stream
 GROUP_STREAM_MODE_SHARED = "shared"  # Shared buffer: one ffmpeg, multiple readers
-GROUP_STREAM_MODE_REDIRECT = "redirect"  # Redirect TVs to the MA Streamserver directly
-DEFAULT_GROUP_STREAM_MODE = GROUP_STREAM_MODE_INDEPENDENT
+GROUP_STREAM_MODE_REDIRECT = "redirect"  # Redirect TVs to the MA Streamserver directly (default)
+DEFAULT_GROUP_STREAM_MODE = GROUP_STREAM_MODE_REDIRECT
 
 # Player ID prefix for dynamically registered players
 MSX_PLAYER_ID_PREFIX = "msx_"
