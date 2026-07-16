@@ -294,7 +294,12 @@ class AIRadioRuntimeMixin:
             prefetch_remaining_tracks,
         )
         clear_queue = bool(station.get("clear_queue_on_start", True))
+        # a grouped player plays from the group leader's queue, so resolve the
+        # active queue up front and target that one for queueing and polling
         queue_id = player_id
+        active_queue = self.mass.player_queues.get_active_queue(player_id)
+        if active_queue is not None:
+            queue_id = str(active_queue.queue_id)
         self._set_session_progress(
             session,
             "initializing_queue",
@@ -469,9 +474,7 @@ class AIRadioRuntimeMixin:
             last_seen_index = -1
             last_elapsed_time: float | None = None
             while True:
-                queue = self.mass.player_queues.get_active_queue(player_id)
-                if not queue:
-                    queue = self.mass.player_queues.get(queue_id)
+                queue = self.mass.player_queues.get(queue_id)
                 current_index = queue.current_index if queue else None
                 playback_alive = False
                 if current_index is not None:

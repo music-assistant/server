@@ -963,6 +963,80 @@ async def test_dynamic_mode_starts_playback_on_idle_queue_when_clear_disabled(
     assert player_queues.play_index_calls == [("living_room", 3)]
 
 
+async def test_dynamic_mode_targets_active_group_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Queue all batches on the active (group) queue when the player is a group member."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+
+    class GroupQueue:
+        """Group queue owned by the sync-group leader, not the target player."""
+
+        queue_id = "group_1"
+        polls = 0
+        items = 0
+        state = PlaybackState.PLAYING
+        started = False
+        current_index = 4
+        elapsed_time = 10.0
+
+    class GroupPlayerQueues:
+        """Player queues stub where the player's active queue is a group queue."""
+
+        def __init__(self, queue: Any) -> None:
+            """Initialize recorder around the fake group queue."""
+            self.queue = queue
+            self.clear_calls: list[str] = []
+            self.play_media_queue_ids: list[str] = []
+
+        def clear(self, queue_id: str) -> None:
+            """Record a queue clear call."""
+            self.clear_calls.append(queue_id)
+
+        async def play_media(self, **kwargs: Any) -> None:
+            """Record the queue targeted by a play_media call."""
+            self.play_media_queue_ids.append(kwargs.get("queue_id", ""))
+
+        async def play_index(self, queue_id: str, index: int) -> None:
+            """Start playback on the fake queue."""
+            self.queue.started = True
+
+        def get_active_queue(self, player_id: str) -> Any:
+            """Return the group queue as the player's active queue."""
+            return self.queue
+
+        def get(self, queue_id: str) -> Any:
+            """Return the fake group queue."""
+            self.queue.polls += 1
+            return self.queue
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    player_queues = GroupPlayerQueues(GroupQueue())
+
+    class DummyMass:
+        players = DummyPlayers()
+
+    DummyMass.player_queues = player_queues
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+    station = {**_watchdog_station(), "clear_queue_on_start": True}
+
+    result = await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=10.0)
+
+    assert result["queue_id"] == "group_1"
+    assert player_queues.clear_calls == ["group_1"]
+    assert player_queues.play_media_queue_ids == ["group_1", "group_1"]
+
+
 async def test_dynamic_watchdog_tolerates_paused_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
