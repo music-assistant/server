@@ -1,6 +1,6 @@
 # Smart Fades Provider
 
-Audio analysis provider that detects **beats**, **downbeats**, **musical key**, **RMS energy**, and **spectral centroid** in real time using the [Beat This!](https://github.com/CPJKU/beat_this) neural network (CPJKU, ISMIR 2024) and the S-KEY key detection model. The detected timing and tonal information drives smart crossfade positioning in Music Assistant's playback queue.
+Audio analysis provider that detects **beats**, **downbeats**, **musical key**, **RMS energy**, **spectral centroid**, and **vocal activity** in real time using the [Beat This!](https://github.com/CPJKU/beat_this) neural network (CPJKU, ISMIR 2024), the S-KEY key detection model, and [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD). The detected timing, tonal, and vocal information drives smart crossfade positioning in Music Assistant's playback queue.
 
 ## How it works
 
@@ -69,3 +69,9 @@ Key detection runs in parallel with beat tracking. Each 1-second PCM chunk is in
 #### 6. RMS energy and spectral centroid
 
 Per-block RMS energy (100ms windows) and spectral centroid (per-hop-frame via torchaudio) are computed in parallel with mel spectrogram extraction. At finalization, both are interpolated to 1800 fixed bins spanning the track duration. RMS energy is peak-normalized, and spectral centroid is zeroed where energy is negligible to suppress noise-dominated regions.
+
+#### 7. FireRed vocal activity
+
+A dedicated stateful soxr stream resamples source PCM to 16kHz for FireRed AED. Online Kaldi fbank extraction uses the reference 80-bin, 25ms frame, 10ms shift configuration with fixed CMVN. The bundled model has 588,931 parameters and is about 2.3MB. FireRed inference runs concurrently with the sequential beat-then-key branch through the shared analysis worker limits. Long inputs are processed in bounded chunks with model context.
+
+FireRed's `max(speech, singing)` probabilities are averaged at 100ms resolution, then resampled to 1800 fixed bins spanning the track duration for `extra_data["vocal_activity"]`. FireRedVAD source and AED model weights are Apache-2.0 licensed; attribution is recorded in the project `NOTICE`.
