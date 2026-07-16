@@ -44,9 +44,9 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.uri import create_uri
+from music_assistant.providers.builtin import CACHE_CATEGORY_MEDIA_INFO
 
 from .constants import (
-    BUILTIN_MEDIA_INFO_CACHE_CATEGORY,
     DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS,
     DEFAULT_LLM_INSTRUCTIONS,
     DEFAULT_WEATHER_PROVIDER,
@@ -1606,7 +1606,7 @@ class AIRadioRuntimeMixin:
             url,
             tags.raw,
             provider=str(getattr(builtin_provider, "instance_id", "") or "builtin"),
-            category=BUILTIN_MEDIA_INFO_CACHE_CATEGORY,
+            category=CACHE_CATEGORY_MEDIA_INFO,
         )
         return int(tags.duration or 0)
 
