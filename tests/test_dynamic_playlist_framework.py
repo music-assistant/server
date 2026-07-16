@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ProviderMapping, Track, UniqueList
 
@@ -87,7 +89,6 @@ async def test_refresh_playlist_metadata_batch_query_excludes_dynamic_playlists(
     ctrl = _controller()
     mass = Mock()
     mass.music.playlists.get_library_items_by_query = AsyncMock(return_value=[])
-    mass.music.database.get_rows_from_query = AsyncMock(return_value=[])
     ctrl.mass = mass
 
     await ctrl._refresh_playlist_metadata_batch()
@@ -96,6 +97,57 @@ async def test_refresh_playlist_metadata_batch_query_excludes_dynamic_playlists(
     query_parts = kwargs["extra_query_parts"]
     # Batch query should still filter dynamic playlists (automated refresh)
     assert any(f"{DB_TABLE_PLAYLISTS}.is_dynamic = 0" in part for part in query_parts)
+
+
+async def test_refresh_playlist_metadata_batch_reports_corrupt_row_reactively() -> None:
+    """A malformed-JSON row aborts the scan, gets reported, and the scan retries guarded."""
+    ctrl = _controller()
+    ctrl.logger = Mock()
+    mass = Mock()
+    # first (guard-free) query aborts on the corrupt row; guarded retry succeeds
+    mass.music.playlists.get_library_items_by_query = AsyncMock(
+        side_effect=[sqlite3.OperationalError("malformed JSON"), []]
+    )
+    mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[{"item_id": 7, "name": "Broken"}]
+    )
+    ctrl.mass = mass
+
+    await ctrl._refresh_playlist_metadata_batch()
+
+    assert mass.music.playlists.get_library_items_by_query.await_count == 2
+    retry_parts = mass.music.playlists.get_library_items_by_query.call_args_list[1].kwargs[
+        "extra_query_parts"
+    ]
+    # only the retry carries the json_valid guard
+    assert any("json_valid" in part for part in retry_parts)
+    assert ctrl._corrupt_metadata_rows[DB_TABLE_PLAYLISTS] == [{"item_id": 7, "name": "Broken"}]
+
+
+async def test_refresh_playlist_metadata_batch_clears_stale_corrupt_rows() -> None:
+    """A clean scan clears corrupt rows recorded on a previous pass."""
+    ctrl = _controller()
+    ctrl._corrupt_metadata_rows = {DB_TABLE_PLAYLISTS: [{"item_id": 7, "name": "Broken"}]}
+    mass = Mock()
+    mass.music.playlists.get_library_items_by_query = AsyncMock(return_value=[])
+    ctrl.mass = mass
+
+    await ctrl._refresh_playlist_metadata_batch()
+
+    assert DB_TABLE_PLAYLISTS not in ctrl._corrupt_metadata_rows
+
+
+async def test_refresh_playlist_metadata_batch_reraises_unrelated_db_error() -> None:
+    """A non-malformed OperationalError is not swallowed by the corrupt-row handling."""
+    ctrl = _controller()
+    mass = Mock()
+    mass.music.playlists.get_library_items_by_query = AsyncMock(
+        side_effect=sqlite3.OperationalError("database is locked")
+    )
+    ctrl.mass = mass
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        await ctrl._refresh_playlist_metadata_batch()
 
 
 # --------------------------------------------------------------------------- #

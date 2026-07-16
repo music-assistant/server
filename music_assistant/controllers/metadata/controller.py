@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import random
+import sqlite3
 import threading
 from collections import OrderedDict
 from time import time
@@ -69,6 +70,7 @@ if TYPE_CHECKING:
     )
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.music.media.base import MediaControllerBase
     from music_assistant.helpers.json import SerializableType
     from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -403,22 +405,14 @@ class MetaDataController(
     async def _scan_missing_artist_metadata(self) -> None:
         """Scan for artists with missing metadata."""
         update_current_task_progress_text("Searching for artists with missing metadata")
-        await self._report_corrupt_metadata_rows(DB_TABLE_ARTISTS)
         missing_images = (
             f"(json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
         )
         missing_description = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.description') ISNULL"
         never_refreshed = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL"
-        query = (
-            f"{_valid_metadata_guard(DB_TABLE_ARTISTS)} AND "
-            f"({missing_images} OR {missing_description}) AND {never_refreshed}"
-        )
-        artists = await self.mass.music.artists.get_library_items_by_query(
-            limit=METADATA_SCAN_BATCH_SIZE,
-            order_by="random",
-            extra_query_parts=[query],
-        )
+        query = f"({missing_images} OR {missing_description}) AND {never_refreshed}"
+        artists = await self._get_scan_batch(self.mass.music.artists, DB_TABLE_ARTISTS, query)
         if not artists:
             update_current_task_progress_text("No artists with missing metadata found")
             return
@@ -443,19 +437,13 @@ class MetaDataController(
     async def _refresh_playlist_metadata_batch(self) -> None:
         """Refresh metadata for a small batch of library playlists."""
         update_current_task_progress_text("Searching for playlists needing metadata refresh")
-        await self._report_corrupt_metadata_rows(DB_TABLE_PLAYLISTS)
         refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
-            f"{_valid_metadata_guard(DB_TABLE_PLAYLISTS)} AND "
             f"{DB_TABLE_PLAYLISTS}.is_dynamic = 0 AND ("
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before})"
         )
-        playlists = await self.mass.music.playlists.get_library_items_by_query(
-            limit=METADATA_SCAN_BATCH_SIZE,
-            order_by="random",
-            extra_query_parts=[query],
-        )
+        playlists = await self._get_scan_batch(self.mass.music.playlists, DB_TABLE_PLAYLISTS, query)
         if not playlists:
             update_current_task_progress_text("No playlists require metadata refresh")
             return
@@ -488,6 +476,42 @@ class MetaDataController(
         removed = await cleanup_thumb_cache(self.mass.cache_path, max_size_mb * 1024 * 1024)
         if removed:
             self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)
+
+    async def _get_scan_batch[ItemCls: MediaItemType](
+        self,
+        media_controller: MediaControllerBase[ItemCls],
+        table: str,
+        query: str,
+    ) -> list[ItemCls]:
+        """
+        Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON.
+
+        Runs guard-free on the happy path. If a row with malformed metadata JSON
+        aborts the query, records it for the diagnostics report and retries with a
+        json_valid guard so the remaining good rows are still scanned this pass.
+
+        :param media_controller: Media controller to query (e.g. artists or playlists).
+        :param table: Library table being scanned, used for corrupt-row reporting.
+        :param query: Scan filter applied as an extra query part.
+        """
+        try:
+            items = await media_controller.get_library_items_by_query(
+                limit=METADATA_SCAN_BATCH_SIZE,
+                order_by="random",
+                extra_query_parts=[query],
+            )
+        except sqlite3.OperationalError as err:
+            if "malformed JSON" not in str(err):
+                raise
+            await self._report_corrupt_metadata_rows(table)
+            return await media_controller.get_library_items_by_query(
+                limit=METADATA_SCAN_BATCH_SIZE,
+                order_by="random",
+                extra_query_parts=[f"{_valid_metadata_guard(table)} AND {query}"],
+            )
+        # a clean scan proves the table currently holds no corrupt rows
+        self._corrupt_metadata_rows.pop(table, None)
+        return items
 
     async def _report_corrupt_metadata_rows(self, table: str) -> None:
         """Report library rows whose metadata column holds invalid JSON."""
