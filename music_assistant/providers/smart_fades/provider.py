@@ -528,8 +528,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
             compute_seconds = 0.0
             chunks = []
             for chunk, core_offset, core_length in split_firered_features(features):
-                chunk_probabilities, elapsed = await self._run_offloaded(
-                    self._timed_infer_firered_chunk,
+                chunk_probabilities, elapsed = await self._run_offloaded_timed(
+                    infer_firered_chunk,
                     model,
                     chunk,
                     self._device,
@@ -632,15 +632,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
         )
 
         return beats, downbeats, beats_per_bar
-
-    @staticmethod
-    def _timed_infer_firered_chunk(
-        model: Any, chunk: np.ndarray, device: str
-    ) -> tuple[np.ndarray, float]:
-        """Run one FireRed chunk inference, returning its probabilities and its own compute time."""
-        start = time.perf_counter()
-        probabilities = infer_firered_chunk(model, chunk, device)
-        return probabilities, time.perf_counter() - start
 
     def _clear_session_data(self, data: SmartFadesData) -> None:
         """Release all state retained for an analysis session."""
