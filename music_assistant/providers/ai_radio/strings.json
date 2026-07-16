@@ -1,0 +1,11 @@
+{
+  "config_entries": {
+    "web_ui_url": {
+      "label": "Click (?) to open AI Radio User Interface"
+    },
+    "ui_auto_refresh_seconds": {
+      "label": "Web UI Auto Refresh Interval (seconds)",
+      "description": "How often the AI Radio web UI refreshes session/player status automatically."
+    }
+  }
+}

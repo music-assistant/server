@@ -995,7 +995,8 @@ class AIRadioRuntimeMixin:
         )
 
     def _section_to_queue_track(self, section: AudioSection) -> Track | str:
-        """Build a rich Track for queueing (dynamic mode).
+        """
+        Build a rich Track for queueing (dynamic mode).
 
         Falls back to the raw URI when the URI cannot be split into a builtin
         provider reference (e.g. unexpected scheme).
@@ -1549,7 +1550,8 @@ class AIRadioRuntimeMixin:
     async def _warm_builtin_duration_cache(
         self, builtin_provider: Any, url: str, section_name: str
     ) -> int:
-        """Force-decode duration, set a friendly title, prefill builtin's cache.
+        """
+        Force-decode duration, set a friendly title, prefill builtin's cache.
 
         Returns the resolved duration in seconds, or 0 if unknown. Without this,
         ffprobe of HA tts_proxy URLs returns no duration and the builtin provider

@@ -26,7 +26,6 @@ async def get_config_entries(
         ConfigEntry(
             key="web_ui_url",
             type=ConfigEntryType.LABEL,
-            label="Click (?) to open AI Radio User Interface",
             description=web_ui_url,
         ),
         ConfigEntry(
@@ -34,10 +33,6 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             default_value=2,
             range=(1, 30),
-            label="Web UI Auto Refresh Interval (seconds)",
-            description=(
-                "How often the AI Radio web UI refreshes session/player status automatically."
-            ),
             category="advanced",
         ),
     )

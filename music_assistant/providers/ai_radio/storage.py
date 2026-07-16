@@ -207,7 +207,7 @@ class AIRadioStorageMixin:
             value = source_general.get(key, defaults[key])
             try:
                 return int(value)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return int(defaults[key])
 
         return {
