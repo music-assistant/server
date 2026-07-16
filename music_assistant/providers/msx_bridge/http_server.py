@@ -14,7 +14,7 @@ from html import escape as html_escape
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import aiohttp
 from aiohttp import WSMsgType, web
@@ -174,8 +174,10 @@ class MSXHTTPServer:
 
     async def stop(self) -> None:
         """Stop the HTTP server."""
-        for clients in self._ws_clients.values():
-            for ws in clients:
+        # iterate over copies: closing a WS wakes its handler, whose cleanup
+        # discards the WS from these collections mid-iteration
+        for clients in list(self._ws_clients.values()):
+            for ws in list(clients):
                 if not ws.closed:
                     await ws.close()
         self._ws_clients.clear()
@@ -1506,6 +1508,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if self.provider.is_redirect_stream_mode():
             redirect_url = await self.provider.get_ma_stream_url(player_id, media)
             if redirect_url:
+                redirect_url = self._rewrite_stream_host(request, redirect_url)
                 logger.info(
                     "[StreamMode:redirect] Player %s -> MA Streamserver: %s",
                     player_id,
@@ -2377,6 +2380,25 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             self._qr_cover_cache.clear()
         self._qr_cover_cache[cache_key] = rendered
         return rendered
+
+    @staticmethod
+    def _rewrite_stream_host(request: web.Request, url: str) -> str:
+        """
+        Point a stream URL at the host the client already uses to reach us.
+
+        The MA streamserver advertises its own IP, which is unreachable for
+        the TV when MA runs behind Docker/NAT. The host the TV used for this
+        request is known-good, so only the URL's host is replaced — scheme,
+        port, path and query are preserved.
+        """
+        client_host = request.url.host
+        if not client_host:
+            return url
+        parts = urlsplit(url)
+        if ":" in client_host:  # IPv6 literals need brackets in a netloc
+            client_host = f"[{client_host}]"
+        netloc = f"{client_host}:{parts.port}" if parts.port else client_host
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
     @staticmethod
     def _url_origin(url: str) -> tuple[str, str | None, int | None]:

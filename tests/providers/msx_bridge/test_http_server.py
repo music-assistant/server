@@ -8,6 +8,7 @@ import subprocess
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from urllib.parse import urlsplit
 
 import pytest
 from aiohttp.test_utils import TestClient as AiohttpTestClient
@@ -1099,11 +1100,34 @@ async def test_removed_kiosk_and_sendspin_routes_404(
         assert resp.status == 404, f"Expected 404 for {path}, got {resp.status}"
 
 
+# --- Server shutdown ---
+
+
+async def test_server_stop_survives_ws_self_deregistration(
+    provider: MSXBridgeProvider,
+) -> None:
+    """Closing a WS during stop() triggers its cleanup discard; stop() must survive it."""
+    server = MSXHTTPServer(provider, 0)
+
+    class _SelfRemovingWS:
+        closed = False
+
+        async def close(self) -> None:
+            server._ws_clients["msx_test"].discard(self)
+
+    fake_clients: set[Any] = {_SelfRemovingWS(), _SelfRemovingWS()}
+    server._ws_clients["msx_test"] = fake_clients
+
+    await server.stop()
+
+    assert server._ws_clients == {}
+
+
 # --- Redirect stream mode (MA streamserver) ---
 
 
 async def test_msx_audio_redirect_mode(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
-    """In redirect mode /msx/audio must 302-redirect to the MA streamserver URL."""
+    """In redirect mode /msx/audio must 302-redirect to the MA streamserver stream."""
     provider.group_stream_mode = "redirect"
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
@@ -1117,7 +1141,41 @@ async def test_msx_audio_redirect_mode(provider: MSXBridgeProvider, mass_mock: M
 
         resp = await client.get("/msx/audio/msx_test?uri=library://track/1", allow_redirects=False)
         assert resp.status == 302
-        assert resp.headers["Location"] == stream_url
+        # the URL host is rewritten to the client-reachable one (see the
+        # dedicated rewrite test); the streamserver path must be intact
+        assert resp.headers["Location"].endswith(":8097/single/s1/q1/i1/msx_test.mp3")
+    finally:
+        await client.close()
+
+
+async def test_msx_audio_redirect_rewrites_host_for_client(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """
+    The redirect must target the host the TV already uses to reach the provider.
+
+    Behind Docker/NAT the MA streamserver advertises its container IP, which
+    the TV cannot reach; only the host of the URL is rewritten — port, path
+    and query of the streamserver URL must survive.
+    """
+    provider.group_stream_mode = "redirect"
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        _make_audio_player(mass_mock)
+
+        stream_url = "http://172.18.0.2:8097/single/s1/q1/i1/msx_test.mp3?flow=1"
+        mass_mock.streams = Mock()
+        mass_mock.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+
+        resp = await client.get("/msx/audio/msx_test?uri=library://track/1", allow_redirects=False)
+        assert resp.status == 302
+        location = urlsplit(resp.headers["Location"])
+        assert location.hostname == "127.0.0.1"  # host the TestClient connects to
+        assert location.port == 8097
+        assert location.path == "/single/s1/q1/i1/msx_test.mp3"
+        assert location.query == "flow=1"
     finally:
         await client.close()
 
