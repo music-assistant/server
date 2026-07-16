@@ -339,7 +339,8 @@ class AlbumsController(MediaControllerBase[Album]):
         result: list[Track] = list(db_items)
         if in_library_only:
             # return in-library items only
-            return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
+            # disc_number 0 means unknown (e.g. YT Music), treat it as disc 1
+            return sorted(db_items, key=lambda x: (x.disc_number or 1, x.track_number))
 
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
@@ -399,7 +400,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 result.append(provider_track)
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
+        # disc_number 0 means unknown (e.g. YT Music), treat it as disc 1
+        return sorted(result, key=lambda x: (x.disc_number or 1, x.track_number))
 
     async def versions(
         self,
