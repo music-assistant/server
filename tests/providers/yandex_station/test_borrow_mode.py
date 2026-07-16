@@ -22,7 +22,7 @@ from music_assistant.providers.yandex_station.constants import (
     CONF_X_TOKEN,
     CONF_YM_INSTANCE,
 )
-from tests.test_provider_cascade import _make_provider, _updates
+from .test_provider_cascade import _make_provider, _updates
 
 _MOD = "music_assistant.providers.yandex_station.provider"
 
