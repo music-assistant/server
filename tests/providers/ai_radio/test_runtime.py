@@ -14,6 +14,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     ProviderFeature,
     ProviderType,
+    QueueOption,
     TaskStatus,
 )
 from music_assistant_models.errors import MusicAssistantError
@@ -666,6 +667,9 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
         async def play_media(self, **kwargs: Any) -> None:
             return None
 
+        async def play_index(self, queue_id: str, index: int) -> None:
+            return None
+
         def get_active_queue(self, player_id: str) -> Any:
             return None
 
@@ -821,6 +825,142 @@ async def test_dynamic_watchdog_tolerates_long_track_while_playing(
     )
 
     assert result["queued_tracks"] == 3
+
+
+class RecordingPlayerQueues:
+    """Player queues stub that records queue mutations for assertions."""
+
+    def __init__(self, queue: Any) -> None:
+        """Initialize recorder around one fake queue object."""
+        self.queue = queue
+        self.clear_calls: list[str] = []
+        self.play_media_calls: list[tuple[Any, int]] = []
+        self.play_index_calls: list[tuple[str, int]] = []
+
+    def clear(self, queue_id: str) -> None:
+        """Record a queue clear call."""
+        self.clear_calls.append(queue_id)
+
+    async def play_media(self, **kwargs: Any) -> None:
+        """Record a play_media call with the poll count at call time."""
+        self.play_media_calls.append((kwargs.get("option"), self.queue.polls))
+
+    async def play_index(self, queue_id: str, index: int) -> None:
+        """Record a play_index call and mark the queue as started."""
+        self.play_index_calls.append((queue_id, index))
+        self.queue.started = True
+
+    def get_active_queue(self, player_id: str) -> Any:
+        """Return no active queue to force the direct queue lookup."""
+        return None
+
+    def get(self, queue_id: str) -> Any:
+        """Return the fake queue and count the poll."""
+        self.queue.polls += 1
+        return self.queue
+
+
+async def test_dynamic_mode_appends_to_playing_queue_when_clear_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Append batches after the existing items when clear_queue_on_start is off."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+
+    class BusyQueue:
+        """Queue already playing 3 pre-existing items."""
+
+        polls = 0
+        items = 3
+        state = PlaybackState.PLAYING
+        started = False
+
+        @property
+        def current_index(self) -> int:
+            # trigger for the first radio batch sits at global index 4
+            # (3 existing items + 1); stay on the old items for a few polls
+            return 2 if self.polls < 4 else 4
+
+        @property
+        def elapsed_time(self) -> float:
+            return float(self.polls * 10)
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    player_queues = RecordingPlayerQueues(BusyQueue())
+
+    class DummyMass:
+        players = DummyPlayers()
+
+    DummyMass.player_queues = player_queues
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    result = await asyncio.wait_for(
+        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
+    )
+
+    assert result["queued_tracks"] == 3
+    assert player_queues.clear_calls == []
+    options = [option for option, _ in player_queues.play_media_calls]
+    assert options == [QueueOption.ADD, QueueOption.ADD]
+    # second batch must wait for the trigger beyond the pre-existing items
+    assert player_queues.play_media_calls[1][1] >= 4
+    # queue was already playing: no forced playback start
+    assert player_queues.play_index_calls == []
+
+
+async def test_dynamic_mode_starts_playback_on_idle_queue_when_clear_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Start playback at the first appended entry when the target queue is idle."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+
+    class IdleQueue:
+        """Idle queue with 3 leftover items and playback starting on demand."""
+
+        polls = 0
+        items = 3
+        state = PlaybackState.IDLE
+        elapsed_time = 0.0
+        started = False
+
+        @property
+        def current_index(self) -> int | None:
+            return 4 if self.started else None
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    player_queues = RecordingPlayerQueues(IdleQueue())
+
+    class DummyMass:
+        players = DummyPlayers()
+
+    DummyMass.player_queues = player_queues
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    result = await asyncio.wait_for(
+        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
+    )
+
+    assert result["queued_tracks"] == 3
+    assert player_queues.play_index_calls == [("living_room", 3)]
 
 
 async def test_dynamic_watchdog_tolerates_paused_queue(

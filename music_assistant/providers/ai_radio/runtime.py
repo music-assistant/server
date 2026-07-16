@@ -303,8 +303,19 @@ class AIRadioRuntimeMixin:
             prefetch_remaining_tracks=prefetch_remaining_tracks,
             queue_id=queue_id,
         )
+        # without clearing, batches are appended after the existing queue items,
+        # so all trigger index math below must be offset by the current queue size
+        base_offset = 0
+        queue_was_active = False
         if clear_queue:
             self.mass.player_queues.clear(queue_id)
+        else:
+            existing_queue = self.mass.player_queues.get(queue_id)
+            base_offset = int(getattr(existing_queue, "items", 0) or 0)
+            queue_was_active = getattr(existing_queue, "state", None) in (
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
+            )
 
         cumulative_minutes = [0.0]
         for track in tracks:
@@ -407,14 +418,17 @@ class AIRadioRuntimeMixin:
                 else entry
                 for entry in entries
             ]
-            option = QueueOption.REPLACE if is_first else QueueOption.ADD
+            option = QueueOption.REPLACE if is_first and clear_queue else QueueOption.ADD
             await self.mass.player_queues.play_media(
                 queue_id=queue_id,
                 media=media_entries,
                 option=option,
             )
+            if is_first and not clear_queue and not queue_was_active:
+                # ADD does not start playback on an idle queue
+                await self.mass.player_queues.play_index(queue_id, base_offset)
 
-            batch_start_global = total_entries_queued
+            batch_start_global = base_offset + total_entries_queued
             total_entries_queued += len(entries)
             if source_positions:
                 trigger_position = max(0, len(source_positions) - prefetch_remaining_tracks)
