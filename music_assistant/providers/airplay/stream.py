@@ -295,12 +295,20 @@ class AirPlayStream:
         logger.debug("cliairplay stderr reader ended")
         if not self._stopped:
             self._stopped = True
-            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             if not expected_eof:
                 logger.warning(
                     "cliairplay process stopped unexpectedly for %s", player.display_name
                 )
+                # Hand off to the player controller so it drops just this member, or
+                # transfers leadership to a healthy member, instead of dissolving the
+                # whole group over a single dead transport. A sync leader is left in
+                # its current state here on purpose: the controller only transfers
+                # leadership while the queue still looks active, and transfer_queue or
+                # dissolve sets the final state.
                 self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
+                if player.group_members:
+                    return
+            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
 
     def _update_elapsed(self, elapsed_time: float) -> None:
         """Update elapsed time with session offset compensation."""
