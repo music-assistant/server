@@ -8,6 +8,7 @@ from pychromecast.controllers.media import MediaController
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 
+from .constants import CONF_ENTRY_DASHBOARD_APP_ID
 from .provider import ChromecastProvider
 
 if TYPE_CHECKING:
@@ -60,4 +61,4 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
+    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS, CONF_ENTRY_DASHBOARD_APP_ID)
