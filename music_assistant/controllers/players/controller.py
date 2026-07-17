@@ -2205,7 +2205,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         the action that triggers the expected update), then waits for a
         matching update on exit. If ``attribute_name`` and ``attribute_value``
         are both provided and the current value already matches at entry, the
-        wait is skipped.
+        wait for an update is skipped (a ``stable_for`` confirmation still applies).
 
         Example::
 

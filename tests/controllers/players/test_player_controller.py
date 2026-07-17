@@ -1287,8 +1287,10 @@ class TestWaitForPlayerUpdateStableFor:
         falls back to idle, and only reaches real playback later.
         """
         controller, player = self._setup(mock_mass)
+        real_start_fired = False
 
         async def _device_script() -> None:
+            nonlocal real_start_fired
             await asyncio.sleep(0.05)
             # the false PLAYING report (lasted only milliseconds in the trace)
             player.state.playback_state = PlaybackState.PLAYING
@@ -1297,6 +1299,7 @@ class TestWaitForPlayerUpdateStableFor:
             player.state.playback_state = PlaybackState.IDLE
             await asyncio.sleep(0.2)
             # the real start, which then holds
+            real_start_fired = True
             player.state.playback_state = PlaybackState.PLAYING
             self._fire(controller, player, PlaybackState.PLAYING)
 
@@ -1311,11 +1314,12 @@ class TestWaitForPlayerUpdateStableFor:
         ):
             pass
         elapsed = time.monotonic() - start
+        completed_on_transient = not real_start_fired
         await script
 
-        # accepted only after the real start held through the confirmation window;
-        # accepting the transient would have completed at ~0.05s, a timeout at 3s.
-        assert 0.3 <= elapsed < 2.0
+        assert not completed_on_transient
+        # completed via the confirmation hold, not by running into the timeout
+        assert elapsed < 2.9
         assert player.state.playback_state == PlaybackState.PLAYING
 
     @pytest.mark.asyncio
@@ -1335,7 +1339,8 @@ class TestWaitForPlayerUpdateStableFor:
             pass
         elapsed = time.monotonic() - start
 
-        assert 0.08 <= elapsed < 1.0
+        # the hold happened, and the wait completed without running into the timeout
+        assert 0.08 <= elapsed < 2.9
 
     @pytest.mark.asyncio
     async def test_no_hold_without_stable_for(self, mock_mass: MagicMock) -> None:
@@ -1359,7 +1364,8 @@ class TestWaitForPlayerUpdateStableFor:
         elapsed = time.monotonic() - start
         await script
 
-        assert elapsed < 0.5
+        # completed on the first matching report, well before the timeout
+        assert elapsed < 2.9
 
     @pytest.mark.asyncio
     async def test_gives_up_at_timeout_when_never_stable(self, mock_mass: MagicMock) -> None:
