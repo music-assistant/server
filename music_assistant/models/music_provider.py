@@ -1190,14 +1190,6 @@ class MusicProvider(Provider):
                             prov_item
                         )
                     elif (
-                        self._library_item_needs_update(library_item, prov_item)
-                        # or the supported mediatypes changed
-                        or prov_item.supported_mediatypes != library_item.supported_mediatypes
-                    ):
-                        library_item = await self.mass.music.playlists.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
-                    elif (
                         prov_item.is_dynamic
                         and not library_item.is_editable
                         and (
@@ -1211,8 +1203,18 @@ class MusicProvider(Provider):
                         # here since there's no local customization on these to lose. Restricted
                         # to is_dynamic so static non-editable playlists (e.g. provider
                         # "favorites") keep their locally-enriched metadata/images.
+                        # checked before the generic update so a changed image (also detected
+                        # by _library_item_needs_update) results in the intended full overwrite
                         library_item = await self.mass.music.playlists.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
+                        )
+                    elif (
+                        self._library_item_needs_update(library_item, prov_item)
+                        # or the supported mediatypes changed
+                        or prov_item.supported_mediatypes != library_item.supported_mediatypes
+                    ):
+                        library_item = await self.mass.music.playlists.update_item_in_library(
+                            library_item.item_id, prov_item
                         )
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be

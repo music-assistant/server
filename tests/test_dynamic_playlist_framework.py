@@ -6,8 +6,14 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ProviderMapping, Track, UniqueList
+from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.media_items import (
+    MediaItemImage,
+    Playlist,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.controllers.metadata import MetaDataController
@@ -29,6 +35,16 @@ def _provider() -> MusicProvider:
 async def _noop_deferred_commit() -> AsyncGenerator[None]:
     """Stand-in for DatabaseConnection.deferred_commit on mocked databases."""
     yield
+
+
+def _image(path: str) -> MediaItemImage:
+    """Build a MediaItemImage for the given path, as the pandora instance would supply it."""
+    return MediaItemImage(
+        type=ImageType.THUMB,
+        path=path,
+        provider="pandora_1",
+        remotely_accessible=True,
+    )
 
 
 def _provider_mapping(item_id: str = "station_1") -> ProviderMapping:
@@ -112,11 +128,11 @@ def _build_sync_fixture(
     """Build a MusicProvider + mocked playlists controller wired for one sync pass."""
     mapping = _provider_mapping()
 
-    library_item = Mock()
+    library_item = Mock(spec=Playlist)
     library_item.item_id = "1"
     library_item.is_editable = library_is_editable
     library_item.name = library_name
-    library_item.metadata = Mock(images=library_images)
+    library_item.metadata = Mock(images=UniqueList([_image(path) for path in library_images]))
     library_item.date_added = None
     library_item.supported_mediatypes = [MediaType.TRACK]
     library_item.favorite = True
@@ -125,7 +141,7 @@ def _build_sync_fixture(
     prov_item = Mock()
     prov_item.item_id = "station_1"
     prov_item.name = prov_name
-    prov_item.metadata = Mock(images=prov_images)
+    prov_item.metadata = Mock(images=UniqueList([_image(path) for path in prov_images]))
     prov_item.date_added = None
     prov_item.supported_mediatypes = [MediaType.TRACK]
     prov_item.favorite = True
