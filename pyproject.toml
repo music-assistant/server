@@ -26,7 +26,7 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-models @ git+https://github.com/chrisuthe/models.git@01c933a450d60f51243005735c017610d44108c3",
+  "music-assistant-models==1.1.164",
   "music-assistant-frontend==2.17.226",
   "mutagen==1.47.0",
   "orjson==3.11.6",
