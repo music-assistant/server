@@ -7,6 +7,7 @@ import logging
 import os
 import pathlib
 import random
+import sqlite3
 import threading
 from base64 import b64encode
 from collections import OrderedDict
@@ -91,6 +92,7 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.media.base import MediaControllerBase
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
 
@@ -229,6 +231,8 @@ class MetaDataController(CoreController):
         # thread during outbound websocket serialization.
         self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._image_id_lock = threading.Lock()
+        # corrupt metadata rows found by the last scan pass, per table, for diagnostics
+        self._corrupt_metadata_rows: dict[str, list[dict[str, str | int]]] = {}
 
     async def get_config_entries(
         self,
@@ -321,6 +325,12 @@ class MetaDataController(CoreController):
         """Handle logic on server stop."""
         self.mass.streams.unregister_dynamic_route("/imageproxy/*")
         self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
+
+    async def get_diagnostics(self) -> dict[str, Any] | None:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        if not self._corrupt_metadata_rows:
+            return None
+        return {"corrupt_metadata_rows": self._corrupt_metadata_rows}
 
     @property
     def providers(self) -> list[MetadataProvider]:
@@ -1921,11 +1931,7 @@ class MetaDataController(CoreController):
         missing_description = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.description') ISNULL"
         never_refreshed = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL"
         query = f"({missing_images} OR {missing_description}) AND {never_refreshed}"
-        artists = await self.mass.music.artists.get_library_items_by_query(
-            limit=METADATA_SCAN_BATCH_SIZE,
-            order_by="random",
-            extra_query_parts=[query],
-        )
+        artists = await self._get_scan_batch(self.mass.music.artists, DB_TABLE_ARTISTS, query)
         if not artists:
             update_current_task_progress_text("No artists with missing metadata found")
             return
@@ -1955,11 +1961,7 @@ class MetaDataController(CoreController):
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before}"
         )
-        playlists = await self.mass.music.playlists.get_library_items_by_query(
-            limit=METADATA_SCAN_BATCH_SIZE,
-            order_by="random",
-            extra_query_parts=[query],
-        )
+        playlists = await self._get_scan_batch(self.mass.music.playlists, DB_TABLE_PLAYLISTS, query)
         if not playlists:
             update_current_task_progress_text("No playlists require metadata refresh")
             return
@@ -1993,6 +1995,56 @@ class MetaDataController(CoreController):
         if removed:
             self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)
 
+    async def _get_scan_batch[ItemCls: MediaItemType](
+        self,
+        media_controller: MediaControllerBase[ItemCls],
+        table: str,
+        query: str,
+    ) -> list[ItemCls]:
+        """Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON."""
+        try:
+            items = await media_controller.get_library_items_by_query(
+                limit=METADATA_SCAN_BATCH_SIZE,
+                order_by="random",
+                extra_query_parts=[query],
+            )
+        except sqlite3.OperationalError as err:
+            if "malformed JSON" not in str(err):
+                raise
+            await self._report_corrupt_metadata_rows(table)
+            return await media_controller.get_library_items_by_query(
+                limit=METADATA_SCAN_BATCH_SIZE,
+                order_by="random",
+                extra_query_parts=[f"{_valid_metadata_guard(table)} AND ({query})"],
+            )
+        # a clean scan proves the table currently holds no corrupt rows
+        self._corrupt_metadata_rows.pop(table, None)
+        return items
+
+    async def _report_corrupt_metadata_rows(self, table: str) -> None:
+        """Report library rows whose metadata column holds invalid JSON."""
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, name FROM {table} "
+            f"WHERE {table}.metadata IS NOT NULL AND NOT json_valid({table}.metadata)",
+            limit=25,
+        )
+        # keep the findings for the diagnostics report, replacing the previous
+        # pass so repaired rows drop out again
+        if rows:
+            self._corrupt_metadata_rows[table] = [
+                {"item_id": row["item_id"], "name": row["name"]} for row in rows
+            ]
+        else:
+            self._corrupt_metadata_rows.pop(table, None)
+        for row in rows:
+            message = (
+                f"'{row['name']}' has corrupt metadata and was skipped. To repair, remove "
+                f"'{row['name']}' from the library; it will be re-added with fresh metadata "
+                f"on the next library sync ({table} id {row['item_id']})."
+            )
+            report_current_task_failure(message)
+            self.logger.warning(message)
+
     async def _persist_image_id(self, image_id: str, provider: str, path: str) -> None:
         """Store an image-id mapping so a later imageproxy request can resolve it."""
         await self.cache.set(
@@ -2003,3 +2055,10 @@ class MetaDataController(CoreController):
             expiration=_IMAGE_ID_CACHE_TTL,
             persistent=True,
         )
+
+
+def _valid_metadata_guard(table: str) -> str:
+    """Return a query part that excludes rows with invalid JSON in the metadata column."""
+    # sqlite's json functions raise a fatal 'malformed JSON' error on invalid input,
+    # which would fail the entire scan query because of a single corrupt row
+    return f"({table}.metadata IS NULL OR json_valid({table}.metadata))"
