@@ -17,8 +17,10 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.track_filter import filter_tracks
 
+from .constants import ARTWORK_CACHE_EXPIRATION, PARSED_ITEM_CACHE_CHECKSUM
 from .helpers.utils import is_catalog_id, is_library_id
 from .parsers import (
+    format_artwork_url,
     parse_album,
     parse_artist,
     parse_playlist,
@@ -41,7 +43,7 @@ class AppleMusicMediaManager:
         self.api = provider.api_client
         self.logger = provider.logger
 
-    @use_cache()
+    @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def search(
         self,
         search_query: str,
@@ -104,14 +106,14 @@ class AppleMusicMediaManager:
             ]
         return searchresult
 
-    @use_cache()
+    @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}"
         response = await self.api.get_data(endpoint, extend="editorialNotes")
         return cast("Artist", parse_artist(self.provider, response["data"][0]))
 
-    @use_cache()
+    @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if is_library_id(prov_album_id):
@@ -124,7 +126,7 @@ class AppleMusicMediaManager:
         is_favourite = rating_response.get(prov_album_id)
         return cast("Album", parse_album(self.provider, response["data"][0], is_favourite))
 
-    @use_cache()
+    @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
@@ -148,7 +150,45 @@ class AppleMusicMediaManager:
             library_id_override=library_id_override,
         )
 
-    @use_cache()
+    @use_cache(ARTWORK_CACHE_EXPIRATION, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
+    async def get_artwork_url(self, media_type: str, prov_item_id: str) -> str | None:
+        """
+        Return the current artwork URL for the given item, if any.
+
+        Blobstore artwork URLs are presigned with a limited lifetime, so they are
+        resolved on demand (and cached well below the signature lifetime) instead
+        of being persisted anywhere.
+
+        :param media_type: The media type value of the artwork token (album/track/...).
+        :param prov_item_id: The provider item id of the item the artwork belongs to.
+        """
+        if media_type == MediaType.ARTIST.value:
+            endpoint = f"catalog/{self.provider._storefront}/artists/{prov_item_id}"
+        elif media_type == MediaType.ALBUM.value:
+            if is_library_id(prov_item_id):
+                endpoint = f"me/library/albums/{prov_item_id}"
+            else:
+                endpoint = f"catalog/{self.provider._storefront}/albums/{prov_item_id}"
+        elif media_type == MediaType.TRACK.value:
+            endpoint = f"catalog/{self.provider._storefront}/songs/{prov_item_id}"
+        elif media_type == MediaType.PLAYLIST.value:
+            if not is_catalog_id(prov_item_id):
+                endpoint = f"me/library/playlists/{prov_item_id}"
+            else:
+                endpoint = f"catalog/{self.provider._storefront}/playlists/{prov_item_id}"
+        else:
+            return None
+        response = await self.api.get_data(endpoint, include="catalog")
+        item_obj = response["data"][0]
+        attributes = item_obj.get("attributes") or {}
+        if not attributes.get("artwork"):
+            # library items may only carry artwork on their catalog counterpart
+            catalog_data = item_obj.get("relationships", {}).get("catalog", {}).get("data") or []
+            if catalog_data:
+                attributes = catalog_data[0].get("attributes") or {}
+        return format_artwork_url(attributes)
+
+    @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def _get_regular_playlist(
         self,
         prov_playlist_id: str,
@@ -170,7 +210,7 @@ class AppleMusicMediaManager:
             library_id_override=library_id_override,
         )
 
-    @use_cache(allow_expired_cache=True)
+    @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         if is_library_id(prov_album_id):
@@ -199,7 +239,7 @@ class AppleMusicMediaManager:
             return await self._get_station_tracks(prov_playlist_id)
         return await self._get_playlist_tracks_cached(prov_playlist_id, page)
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def _get_playlist_tracks_cached(
         self, prov_playlist_id: str, page: int = 0
     ) -> list[Track]:
@@ -262,7 +302,7 @@ class AppleMusicMediaManager:
             if t and t.get("id")
         ]
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/albums"
@@ -282,7 +322,7 @@ class AppleMusicMediaManager:
                 albums.append(cast("Album", parsed))
         return albums
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/view/top-songs"
