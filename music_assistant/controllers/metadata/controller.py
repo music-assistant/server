@@ -33,6 +33,7 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.images import cleanup_thumb_cache
+from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.core_controller import CoreController
@@ -318,6 +319,21 @@ class MetaDataController(
 
         Returns a tuple of (lyrics, lrc_lyrics) if found.
         """
+        lyrics, lrc_lyrics = await self._get_track_lyrics(track)
+        # on-demand lookups are not stored in the library db, so normalize on the way out
+        return lyrics, normalize_lrc_lyrics(lrc_lyrics)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        if not self._corrupt_metadata_rows:
+            return None
+        return {"corrupt_metadata_rows": cast("SerializableType", self._corrupt_metadata_rows)}
+
+    async def _get_track_lyrics(
+        self,
+        track: Track,
+    ) -> tuple[str | None, str | None]:
+        """Look up (lyrics, lrc_lyrics) for the given track."""
         if track.metadata and track.metadata.lyrics:
             return track.metadata.lyrics, track.metadata.lrc_lyrics
 
@@ -354,12 +370,6 @@ class MetaDataController(
             if metadata and (metadata.lyrics or metadata.lrc_lyrics):
                 return metadata.lyrics, metadata.lrc_lyrics
         return None, None
-
-    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
-        """Return diagnostics info for this controller to include in diagnostics reports."""
-        if not self._corrupt_metadata_rows:
-            return None
-        return {"corrupt_metadata_rows": cast("SerializableType", self._corrupt_metadata_rows)}
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
