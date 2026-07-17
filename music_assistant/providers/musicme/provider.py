@@ -8,7 +8,7 @@ import json
 import re
 import time
 import urllib.parse
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -291,21 +291,51 @@ class MusicMeProvider(MusicProvider):
     # ---- recommendations ----
 
     @use_cache(3600 * 3)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get MusicMe recommendations for the Discover page."""
-        home_data, news_data, tops_data, radio_data = await asyncio.gather(
-            self._api_get("/home"),
-            self._api_get(
-                "/news/0?filters={style:0}&resources=albums{maxResults:10},focus-albums,styles"
-            ),
-            self._api_get(
-                "/tops?filters={style:0}"
-                "&resources=styles,artists{maxResults:10},videos{maxResults:0}"
-            ),
-            self._api_get(
-                "/radios?filters={theme:0}&resources=themes,theme-airplays{maxResults:10},home"
-            ),
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+        """
+        Get MusicMe recommendations for the Discover page.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        """
+
+        def want(suffix: str) -> bool:
+            return wanted is None or f"{self.instance_id}_{suffix}" in wanted
+
+        want_home, want_news, want_tops, want_radios = (
+            want("home"),
+            want("news"),
+            want("tops"),
+            want("radios"),
         )
+
+        calls: list[Coroutine[Any, Any, dict[str, Any] | None]] = []
+        if want_home:
+            calls.append(self._api_get("/home"))
+        if want_news:
+            calls.append(
+                self._api_get(
+                    "/news/0?filters={style:0}&resources=albums{maxResults:10},focus-albums,styles"
+                )
+            )
+        if want_tops:
+            calls.append(
+                self._api_get(
+                    "/tops?filters={style:0}"
+                    "&resources=styles,artists{maxResults:10},videos{maxResults:0}"
+                )
+            )
+        if want_radios:
+            calls.append(
+                self._api_get(
+                    "/radios?filters={theme:0}&resources=themes,theme-airplays{maxResults:10},home"
+                )
+            )
+
+        fetched = iter(await asyncio.gather(*calls))
+        home_data = next(fetched) if want_home else None
+        news_data = next(fetched) if want_news else None
+        tops_data = next(fetched) if want_tops else None
+        radio_data = next(fetched) if want_radios else None
 
         result: list[RecommendationFolder] = []
 

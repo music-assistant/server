@@ -32,6 +32,7 @@ class RecommendationSource(ABC):
         translation_key: str,
         icon: str,
         provider: str = "library",
+        enabled_by_default: bool = True,
     ) -> None:
         """Initialize the source."""
         self.mass = mass
@@ -40,6 +41,7 @@ class RecommendationSource(ABC):
         self.translation_key = translation_key
         self.icon = icon
         self.provider = provider
+        self.enabled_by_default = enabled_by_default
 
     @abstractmethod
     async def get_items(self) -> RecommendationItems:
@@ -55,6 +57,7 @@ class RecommendationSource(ABC):
             translation_key=self.translation_key,
             icon=self.icon,
             items=cast("UniqueList[MediaItemType | ItemMapping | BrowseFolder]", list(items)),
+            enabled_by_default=self.enabled_by_default,
         )
 
 
@@ -71,6 +74,7 @@ class CallableRecommendationSource(RecommendationSource):
         icon: str,
         items_factory: Callable[[], Awaitable[RecommendationItems]],
         provider: str = "library",
+        enabled_by_default: bool = True,
     ) -> None:
         """Initialize the callable source."""
         super().__init__(
@@ -80,6 +84,7 @@ class CallableRecommendationSource(RecommendationSource):
             translation_key=translation_key,
             icon=icon,
             provider=provider,
+            enabled_by_default=enabled_by_default,
         )
         self._items_factory = items_factory
 

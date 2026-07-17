@@ -70,6 +70,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             items_factory=lambda: mass.music.artists.library_items(
                 limit=10, order_by="random_play_count", summary=False
             ),
+            enabled_by_default=False,
         ),
         CallableRecommendationSource(
             mass,
@@ -80,6 +81,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             items_factory=lambda: mass.music.albums.library_items(
                 limit=10, order_by="random_play_count", summary=False
             ),
+            enabled_by_default=False,
         ),
         CallableRecommendationSource(
             mass,
@@ -120,6 +122,7 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             items_factory=lambda: mass.music.recently_played(
                 limit=10, media_types=[MediaType.ARTIST], user_initiated_only=False
             ),
+            enabled_by_default=False,
         ),
         CallableRecommendationSource(
             mass,
@@ -130,5 +133,6 @@ def build_default_sources(mass: MusicAssistant) -> list[RecommendationSource]:
             items_factory=lambda: mass.music.recently_played(
                 limit=10, media_types=[MediaType.TRACK], user_initiated_only=False
             ),
+            enabled_by_default=False,
         ),
     ]

@@ -876,13 +876,19 @@ class OpenSonicProvider(MusicProvider):
         return recent
 
     @use_cache(3600 * 3, cache_checksum="v2")  # cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
         """
         Provide recommendations.
 
         These can provide favorited items, recently added albums, newest podcast episodes,
         and most played albums.  What is included is configured with the provider.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
         """
+
+        def want(item_id: str) -> bool:
+            return wanted is None or item_id in wanted
+
         recos: list[RecommendationFolder] = []
 
         podcasts = None
@@ -890,13 +896,13 @@ class OpenSonicProvider(MusicProvider):
         new_stuff = None
         played = None
         async with TaskGroup() as grp:
-            if self._enable_podcasts:
+            if self._enable_podcasts and want("subsonic_newest_podcasts"):
                 podcasts = grp.create_task(self._podcast_recommendations())
-            if self._show_faves:
+            if self._show_faves and want("subsonic_starred_albums"):
                 faves = grp.create_task(self._favorites_recommendation())
-            if self._show_new:
+            if self._show_new and want("subsonic_new_albums"):
                 new_stuff = grp.create_task(self._new_recommendations())
-            if self._show_played:
+            if self._show_played and want("subsonic_most_played"):
                 played = grp.create_task(self._played_recommendations())
 
         if podcasts:

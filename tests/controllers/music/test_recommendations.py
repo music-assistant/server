@@ -228,3 +228,25 @@ async def test_register_adds_a_custom_source(mass: MusicAssistant) -> None:
     folder = await _recommendations_folder(mass, "custom_test_row")
     assert folder.item_id == "custom_test_row"
     assert folder.name == "Custom Test Row"
+
+
+async def test_failing_source_is_dropped_not_fatal(mass: MusicAssistant) -> None:
+    """A source whose factory raises is logged and dropped; the healthy rows still return."""
+
+    async def _boom() -> list[ItemMapping]:
+        raise RuntimeError("source boom")
+
+    mass.music.recommendations.register(
+        CallableRecommendationSource(
+            mass,
+            item_id="boom_row",
+            name="Boom Row",
+            translation_key="boom_key",
+            icon="mdi-boom",
+            items_factory=_boom,
+        )
+    )
+    folders = await mass.music.recommendations.get_recommendations()
+    item_ids = {f.item_id for f in folders}
+    assert "boom_row" not in item_ids  # the failing row is isolated and dropped
+    assert "recently_played" in item_ids  # healthy default rows are unaffected
