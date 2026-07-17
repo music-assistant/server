@@ -1,0 +1,11 @@
+{
+  "domain": "filesystem_onedrive",
+  "name": "OneDrive",
+  "description": "Stream music, audiobooks and podcasts stored in OneDrive",
+  "documentation": "https://music-assistant.io/music-providers/filesystem/",
+  "type": "music",
+  "requirements": ["onedrive-personal-sdk==0.1.7"],
+  "codeowners": ["@ozgav"],
+  "multi_instance": true,
+  "stage": "beta"
+}

@@ -57,7 +57,7 @@ class GuessTheSongQuizType(QuizType):
     """Quiz type where players guess the currently playing track."""
 
     answer_type = MusicQuizAnswerType.MULTIPLE_CHOICE
-    warm_up_lyrics = True
+    prefetch_lyrics = True
 
     @classmethod
     def normalize_config(cls, config: MusicQuizConfig) -> MusicQuizConfig:
@@ -166,7 +166,7 @@ class GuessTheSongQuizType(QuizType):
                 translation_key="music_quiz_no_unused_source_tracks",
                 translation_owner=TRANSLATION_OWNER,
             )
-        return secrets.choice(available)
+        return secrets.choice(self._recency_candidates(available))
 
     async def _get_correct_candidate(self, track: Track) -> SuggestionCandidate:
         """Return the correct candidate with artist metadata when it can be resolved."""

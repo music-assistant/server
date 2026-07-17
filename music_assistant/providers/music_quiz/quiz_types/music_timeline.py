@@ -134,6 +134,7 @@ class MusicTimelineQuizType(QuizType):
                 translation_owner=TRANSLATION_OWNER,
                 translation_args=[required_track_count],
             )
+        await super().initialize()
 
     async def prepare_round(
         self, round_index: int, previous_rounds: list[MusicQuizRound]
@@ -155,7 +156,11 @@ class MusicTimelineQuizType(QuizType):
             )
 
         if round_index == 0:
-            anchor_track = self._select_unused_track(eligible_tracks, set())
+            anchor_track = self._select_unused_track(
+                eligible_tracks,
+                set(),
+                prefer_recent=True,
+            )
             placement_snapshot = [await self._create_entry(anchor_track, is_anchor=True)]
         else:
             placement_snapshot = self._timeline_from_previous_rounds(previous_rounds)
@@ -179,6 +184,14 @@ class MusicTimelineQuizType(QuizType):
             image_url=candidate.entry.image_url,
             duration=current_track.duration,
         )
+
+    def get_recent_track_uris(self, rounds: list[MusicQuizRound]) -> set[str]:
+        """
+        Return every track shown on an earlier game's timeline.
+
+        :param rounds: Music Timeline rounds from an earlier game.
+        """
+        return {entry.track_uri for entry in self._timeline_from_previous_rounds(rounds)}
 
     def reject_track(self, track_uri: str) -> None:
         """
@@ -772,10 +785,12 @@ class MusicTimelineQuizType(QuizType):
             else self.config.title_bonus_mode
         )
 
-    @staticmethod
     def _select_unused_track(
+        self,
         tracks: list[Track],
         used_track_uris: set[str],
+        *,
+        prefer_recent: bool = False,
     ) -> Track:
         """Return one random track that is absent from persisted round history."""
         available_tracks = [
@@ -787,7 +802,9 @@ class MusicTimelineQuizType(QuizType):
                 translation_key="music_quiz_no_unused_source_tracks",
                 translation_owner=TRANSLATION_OWNER,
             )
-        return secrets.choice(available_tracks)
+        return secrets.choice(
+            self._recency_candidates(available_tracks, prefer_recent=prefer_recent)
+        )
 
     @staticmethod
     def _artist_answers(track: Track) -> list[str]:
