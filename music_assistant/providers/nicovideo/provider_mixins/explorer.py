@@ -52,74 +52,84 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
 
     @override
     @use_cache(1800)  # Cache for 30 minutes
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
         """
         Get this provider's recommendations.
 
         Returns an actual (and often personalised) list of recommendations
         from this provider for the user/account.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
         """
+
+        def want(item_id: str) -> bool:
+            return wanted is None or item_id in wanted
+
         recommendation_folders = []
 
         # Main recommendations (default: 25 tracks)
-        main_recommendation_tracks = await self.service_manager.user.get_recommendations(
-            "video_recommendation_recommend", limit=25
-        )
-        if main_recommendation_tracks:
-            recommendation_folders.append(
-                RecommendationFolder(
-                    item_id="nicovideo_recommendations",
-                    name="Recommended tracks",
-                    translation_key="recommended_tracks",
-                    provider=self.instance_id,
-                    icon="mdi-star-circle-outline",
-                    items=UniqueList(main_recommendation_tracks),
-                )
+        if want("nicovideo_recommendations"):
+            main_recommendation_tracks = await self.service_manager.user.get_recommendations(
+                "video_recommendation_recommend", limit=25
             )
+            if main_recommendation_tracks:
+                recommendation_folders.append(
+                    RecommendationFolder(
+                        item_id="nicovideo_recommendations",
+                        name="Recommended tracks",
+                        translation_key="recommended_tracks",
+                        provider=self.instance_id,
+                        icon="mdi-star-circle-outline",
+                        items=UniqueList(main_recommendation_tracks),
+                    )
+                )
 
         # History Tracks (default: 50 tracks)
-        history_tracks = await self.service_manager.user.get_user_history(limit=50)
-        if history_tracks:
-            recommendation_folders.append(
-                RecommendationFolder(
-                    item_id="nicovideo_history",
-                    name="Recently played",
-                    translation_key="recently_played",
-                    provider=self.instance_id,
-                    icon="mdi-history",
-                    items=UniqueList(history_tracks),
+        if want("nicovideo_history"):
+            history_tracks = await self.service_manager.user.get_user_history(limit=50)
+            if history_tracks:
+                recommendation_folders.append(
+                    RecommendationFolder(
+                        item_id="nicovideo_history",
+                        name="Recently played",
+                        translation_key="recently_played",
+                        provider=self.instance_id,
+                        icon="mdi-history",
+                        items=UniqueList(history_tracks),
+                    )
                 )
-            )
 
         # Following activities recommendations (default: 30 tracks)
-        following_activities_tracks = await self.service_manager.user.get_following_activities(
-            limit=30
-        )
-        if following_activities_tracks:
-            recommendation_folders.append(
-                RecommendationFolder(
-                    item_id="nicovideo_following_activities",
-                    name="New Tracks from Followed Users",
-                    translation_key="nicovideo_following_activities",
-                    provider=self.instance_id,
-                    icon="mdi-account-plus-outline",
-                    items=UniqueList(following_activities_tracks),
-                )
+        if want("nicovideo_following_activities"):
+            following_activities_tracks = await self.service_manager.user.get_following_activities(
+                limit=30
             )
+            if following_activities_tracks:
+                recommendation_folders.append(
+                    RecommendationFolder(
+                        item_id="nicovideo_following_activities",
+                        name="New Tracks from Followed Users",
+                        translation_key="nicovideo_following_activities",
+                        provider=self.instance_id,
+                        icon="mdi-account-plus-outline",
+                        items=UniqueList(following_activities_tracks),
+                    )
+                )
 
         # Like History recommendations (default: 50 tracks)
-        like_history_tracks = await self.service_manager.user.get_like_history(limit=50)
-        if like_history_tracks:
-            recommendation_folders.append(
-                RecommendationFolder(
-                    item_id="nicovideo_like_history",
-                    name="Recently favorited tracks",
-                    translation_key="recent_favorite_tracks",
-                    provider=self.instance_id,
-                    icon="mdi-heart-outline",
-                    items=UniqueList(like_history_tracks),
+        if want("nicovideo_like_history"):
+            like_history_tracks = await self.service_manager.user.get_like_history(limit=50)
+            if like_history_tracks:
+                recommendation_folders.append(
+                    RecommendationFolder(
+                        item_id="nicovideo_like_history",
+                        name="Recently favorited tracks",
+                        translation_key="recent_favorite_tracks",
+                        provider=self.instance_id,
+                        icon="mdi-heart-outline",
+                        items=UniqueList(like_history_tracks),
+                    )
                 )
-            )
 
         return recommendation_folders
 

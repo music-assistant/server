@@ -494,12 +494,20 @@ class BandcampProvider(MusicProvider):
 
         return tracks[: self.top_tracks_limit]
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Surface Bandcamp's personalised feed and wishlist as recommendations."""
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+        """
+        Surface Bandcamp's personalised feed and wishlist as recommendations.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        """
         if not self._client.identity:
             return []
+
+        def want(item_id: str) -> bool:
+            return wanted is None or item_id in wanted
+
         folders: list[RecommendationFolder] = []
-        if feed_tracks := await self._get_feed_tracks():
+        if want("feed") and (feed_tracks := await self._get_feed_tracks()):
             folders.append(
                 RecommendationFolder(
                     item_id="feed",
@@ -511,7 +519,9 @@ class BandcampProvider(MusicProvider):
                     items=UniqueList(feed_tracks),
                 )
             )
-        if wishlist := await self._browse_person_content(None, CollectionType.WISHLIST):
+        if want("wishlist") and (
+            wishlist := await self._browse_person_content(None, CollectionType.WISHLIST)
+        ):
             folders.append(
                 RecommendationFolder(
                     item_id="wishlist",

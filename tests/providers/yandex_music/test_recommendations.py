@@ -888,6 +888,70 @@ async def test_recommendations_returns_empty_list_when_all_none(provider_mock: M
     assert result == []
 
 
+def _install_row_helper_mocks(provider_mock: Mock) -> dict[str, AsyncMock]:
+    """Stub each row-building helper to return a folder stamped with its item_id."""
+    helpers = {
+        MY_WAVE_PLAYLIST_ID: "_get_my_wave_recommendations",
+        "feed": "_get_feed_recommendations",
+        "chart": "_get_chart_recommendations",
+        "new_releases": "_get_new_releases_recommendations",
+        "new_playlists": "_get_new_playlists_recommendations",
+        "top_picks": "_get_top_picks_recommendations",
+        "mood_mix": "_get_mood_mix_recommendations",
+        "activity_mix": "_get_activity_mix_recommendations",
+        "seasonal_mix": "_get_seasonal_mix_recommendations",
+    }
+    mocks: dict[str, AsyncMock] = {}
+    for item_id, attr in helpers.items():
+        folder = Mock(spec=RecommendationFolder)
+        folder.item_id = item_id
+        mock = AsyncMock(return_value=folder)
+        setattr(provider_mock, attr, mock)
+        mocks[item_id] = mock
+    provider_mock._pick_random_tag_for_category = AsyncMock(return_value="test_tag")
+    return mocks
+
+
+@pytest.mark.asyncio
+async def test_recommendations_wanted_none_builds_all_rows(provider_mock: Mock) -> None:
+    """wanted=None (default) fetches every row's backend data — unchanged behavior."""
+    row_mocks = _install_row_helper_mocks(provider_mock)
+
+    result = await YandexMusicProvider.recommendations(provider_mock)
+
+    for mock in row_mocks.values():
+        mock.assert_awaited_once()
+    # Both mood and activity tag picks are still issued when nothing is filtered.
+    assert provider_mock._pick_random_tag_for_category.await_count == 2
+    assert [f.item_id for f in result] == [
+        MY_WAVE_PLAYLIST_ID,
+        "feed",
+        "chart",
+        "new_releases",
+        "new_playlists",
+        "top_picks",
+        "mood_mix",
+        "activity_mix",
+        "seasonal_mix",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recommendations_wanted_chart_only_fetches_chart(provider_mock: Mock) -> None:
+    """wanted={"chart"} only issues the chart fetch and returns only that row."""
+    row_mocks = _install_row_helper_mocks(provider_mock)
+
+    result = await YandexMusicProvider.recommendations(provider_mock, wanted={"chart"})
+
+    row_mocks["chart"].assert_awaited_once()
+    for item_id, mock in row_mocks.items():
+        if item_id != "chart":
+            mock.assert_not_awaited()
+    # Unwanted mood/activity rows must not even pick a tag (uncached call).
+    provider_mock._pick_random_tag_for_category.assert_not_awaited()
+    assert [f.item_id for f in result] == ["chart"]
+
+
 @pytest.mark.asyncio
 async def test_get_similar_artists_returns_parsed(provider_mock: Mock) -> None:
     """get_similar_artists parses each artist from the underlying client."""

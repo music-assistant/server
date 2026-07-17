@@ -662,6 +662,9 @@ class BBCSoundsProvider(MusicProvider):
     @use_cache(expiration=_Constants.SHORT_EXPIRATION)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
+        # NOTE: one experience-menu call returns every row, so opting in to the controller's
+        # `wanted` row filter would not save any backend I/O today. Worth revisiting if the
+        # menu can be fetched per row.
         folders = []
 
         if self.logged_in:

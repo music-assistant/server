@@ -684,68 +684,83 @@ class YoutubeMusicProvider(MusicProvider):
         return stream_details
 
     @use_cache(3600)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get available recommendations."""
-        recommendations = await get_home(self._headers, self.language, user=self._yt_user)
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+        """
+        Get available recommendations.
 
-        def _parse_sections() -> list[RecommendationFolder]:
-            # building model objects from the raw payload is CPU-bound; run off the event loop
-            folders: list[RecommendationFolder] = []
-            for section in recommendations:
-                folder = RecommendationFolder(
-                    name=section["title"],
-                    item_id=f"{self.instance_id}_{section['title']}",
-                    provider=self.instance_id,
-                    icon=determine_recommendation_icon(section["title"]),
-                )
-                for recommended_item in section.get("contents", []):
-                    if not recommended_item:
-                        continue  # yeah this seems to happen sometimes ?!
-                    if recommended_item.get("videoId"):
-                        # Probably a track
-                        try:
-                            track = self._parse_track(recommended_item)
-                            folder.items.append(track)
-                        except InvalidDataError:
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        """
+        mixed_for_you_id = f"{self.instance_id}_mixed_for_you"
+        # All section rows come from the single get_home call below and their item_ids are
+        # server-derived, so per-section skipping is impossible; only skip the fetch entirely
+        # when nothing besides the mixed_for_you row is wanted.
+        want_home = wanted is None or any(item_id != mixed_for_you_id for item_id in wanted)
+        folders: list[RecommendationFolder] = []
+        if want_home:
+            recommendations = await get_home(self._headers, self.language, user=self._yt_user)
+
+            def _parse_sections() -> list[RecommendationFolder]:
+                # building model objects from the raw payload is CPU-bound; run off the event loop
+                folders: list[RecommendationFolder] = []
+                for section in recommendations:
+                    folder = RecommendationFolder(
+                        name=section["title"],
+                        item_id=f"{self.instance_id}_{section['title']}",
+                        provider=self.instance_id,
+                        icon=determine_recommendation_icon(section["title"]),
+                    )
+                    for recommended_item in section.get("contents", []):
+                        if not recommended_item:
+                            continue  # yeah this seems to happen sometimes ?!
+                        if recommended_item.get("videoId"):
+                            # Probably a track
+                            try:
+                                track = self._parse_track(recommended_item)
+                                folder.items.append(track)
+                            except InvalidDataError:
+                                self.logger.debug(
+                                    "Invalid track in recommendations: %s", recommended_item
+                                )
+                                continue
+                        elif recommended_item.get("playlistId"):
+                            # Probably a playlist
+                            recommended_item["id"] = recommended_item["playlistId"]
+                            del recommended_item["playlistId"]
+                            folder.items.append(self._parse_playlist(recommended_item))
+                        elif recommended_item.get("browseId"):
+                            if podcast := self._parse_browse_podcast(recommended_item):
+                                folder.items.append(podcast)
+                            else:
+                                # Probably an album
+                                folder.items.append(self._parse_album(recommended_item))
+                        elif recommended_item.get("subscribers"):
+                            # Probably artist
+                            folder.items.append(self._parse_album(recommended_item))
+                        elif (
+                            recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE"
+                        ):
+                            # Podcast episodes show up here without a videoId/browseId,
+                            # so there is no playable item to build from them
                             self.logger.debug(
-                                "Invalid track in recommendations: %s", recommended_item
+                                "Skipping podcast episode in recommendation folder: %s",
+                                recommended_item.get("title"),
                             )
                             continue
-                    elif recommended_item.get("playlistId"):
-                        # Probably a playlist
-                        recommended_item["id"] = recommended_item["playlistId"]
-                        del recommended_item["playlistId"]
-                        folder.items.append(self._parse_playlist(recommended_item))
-                    elif recommended_item.get("browseId"):
-                        if podcast := self._parse_browse_podcast(recommended_item):
-                            folder.items.append(podcast)
                         else:
-                            # Probably an album
-                            folder.items.append(self._parse_album(recommended_item))
-                    elif recommended_item.get("subscribers"):
-                        # Probably artist
-                        folder.items.append(self._parse_album(recommended_item))
-                    elif recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
-                        # Podcast episodes show up here without a videoId/browseId,
-                        # so there is no playable item to build from them
-                        self.logger.debug(
-                            "Skipping podcast episode in recommendation folder: %s",
-                            recommended_item.get("title"),
-                        )
-                        continue
-                    else:
-                        self.logger.warning(
-                            "Unknown item type in recommendation folder: %s", recommended_item
-                        )
-                        continue
-                folders.append(folder)
-            return folders
+                            self.logger.warning(
+                                "Unknown item type in recommendation folder: %s",
+                                recommended_item,
+                            )
+                            continue
+                    folders.append(folder)
+                return folders
 
-        folders = await asyncio.to_thread(_parse_sections)
-        # Also add personalized mixes if available
-        mixed_for_you_folder = await self._get_mixed_for_you_folder()
-        if mixed_for_you_folder.items:
-            folders.append(mixed_for_you_folder)
+            folders = await asyncio.to_thread(_parse_sections)
+        if wanted is None or mixed_for_you_id in wanted:
+            # Also add personalized mixes if available
+            mixed_for_you_folder = await self._get_mixed_for_you_folder()
+            if mixed_for_you_folder.items:
+                folders.append(mixed_for_you_folder)
 
         return folders
 

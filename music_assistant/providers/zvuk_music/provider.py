@@ -457,18 +457,24 @@ class ZvukMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing editorial playlist: %s", err)
         return result
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
         """
         Return personalized and editorial playlist recommendations.
 
         Returns two folders:
         - "Made for you": Zvuk's AI-generated personalized playlists.
         - "Collections": Editorial genre-themed curated playlists.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
         """
+
+        def want(item_id: str) -> bool:
+            return wanted is None or item_id in wanted
+
         folders: list[RecommendationFolder] = []
 
         # Folder 1: Personalized synthesis playlists ("Made for you")
-        for_you_items = await self._get_for_you_playlists()
+        for_you_items = await self._get_for_you_playlists() if want("for_you") else []
         if for_you_items:
             folders.append(
                 RecommendationFolder(
@@ -482,7 +488,7 @@ class ZvukMusicProvider(MusicProvider):
             )
 
         # Folder 2: Editorial curated playlists ("Collections")
-        editorial_items = await self._get_editorial_playlists()
+        editorial_items = await self._get_editorial_playlists() if want("editorial") else []
         if editorial_items:
             folders.append(
                 RecommendationFolder(

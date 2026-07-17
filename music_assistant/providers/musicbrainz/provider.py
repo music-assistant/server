@@ -99,6 +99,9 @@ class MusicbrainzProvider(MetadataProvider):
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """Return birthday/memorial recommendation folders."""
+        # NOTE: all folders are derived from a single cached scan result, so opting in to
+        # the controller's `wanted` row filter would not save any backend I/O today. Worth
+        # revisiting if the read path is ever broken down per row.
         return await self._recommendations.get_recommendations()
 
     async def search(

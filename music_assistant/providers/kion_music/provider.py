@@ -1880,59 +1880,73 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing similar artist: %s", err)
         return artists
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
         """
         Get recommendations with multiple discovery folders.
 
         Returns My Mix, Feed (Made for You), Chart, New Releases, and
         New Playlists sections.
 
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
         :return: List of recommendation folders.
         """
+
+        def want(item_id: str) -> bool:
+            return wanted is None or item_id in wanted
+
         folders: list[RecommendationFolder] = []
 
-        folder = await self._get_my_wave_recommendations()
-        if folder:
-            folders.append(folder)
+        if want(MY_WAVE_PLAYLIST_ID):
+            folder = await self._get_my_wave_recommendations()
+            if folder:
+                folders.append(folder)
 
-        folder = await self._get_feed_recommendations()
-        if folder:
-            folders.append(folder)
+        if want("feed"):
+            folder = await self._get_feed_recommendations()
+            if folder:
+                folders.append(folder)
 
-        folder = await self._get_chart_recommendations()
-        if folder:
-            folders.append(folder)
+        if want("chart"):
+            folder = await self._get_chart_recommendations()
+            if folder:
+                folders.append(folder)
 
-        folder = await self._get_new_releases_recommendations()
-        if folder:
-            folders.append(folder)
+        if want("new_releases"):
+            folder = await self._get_new_releases_recommendations()
+            if folder:
+                folders.append(folder)
 
-        folder = await self._get_new_playlists_recommendations()
-        if folder:
-            folders.append(folder)
+        if want("new_playlists"):
+            folder = await self._get_new_playlists_recommendations()
+            if folder:
+                folders.append(folder)
 
         # Picks & Mixes recommendations
-        folder = await self._get_top_picks_recommendations()
-        if folder:
-            folders.append(folder)
+        if want("top_picks"):
+            folder = await self._get_top_picks_recommendations()
+            if folder:
+                folders.append(folder)
 
         # Mood mix: select tag outside cache so rotation actually works
-        mood_tag = await self._pick_random_tag_for_category("mood")
-        if mood_tag:
-            folder = await self._get_mood_mix_recommendations(mood_tag)
-            if folder:
-                folders.append(folder)
+        if want("mood_mix"):
+            mood_tag = await self._pick_random_tag_for_category("mood")
+            if mood_tag:
+                folder = await self._get_mood_mix_recommendations(mood_tag)
+                if folder:
+                    folders.append(folder)
 
         # Activity mix: select tag outside cache so rotation actually works
-        activity_tag = await self._pick_random_tag_for_category("activity")
-        if activity_tag:
-            folder = await self._get_activity_mix_recommendations(activity_tag)
+        if want("activity_mix"):
+            activity_tag = await self._pick_random_tag_for_category("activity")
+            if activity_tag:
+                folder = await self._get_activity_mix_recommendations(activity_tag)
+                if folder:
+                    folders.append(folder)
+
+        if want("seasonal_mix"):
+            folder = await self._get_seasonal_mix_recommendations()
             if folder:
                 folders.append(folder)
-
-        folder = await self._get_seasonal_mix_recommendations()
-        if folder:
-            folders.append(folder)
 
         return folders
 

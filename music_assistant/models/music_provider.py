@@ -739,6 +739,10 @@ class MusicProvider(Provider):
 
         Returns an actual (and often personalised) list of recommendations
         from this provider for the user/account.
+
+        Overrides may accept an optional ``wanted: set[str] | None = None`` parameter
+        to build only the requested rows: the set holds the row item_ids to build;
+        None means build all rows.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError

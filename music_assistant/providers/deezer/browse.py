@@ -606,33 +606,56 @@ class DeezerBrowseManager:
     # -- Recommendations --
 
     @use_cache(3600)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get Deezer's recommendations including Flow and personalized content."""
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+        """
+        Get Deezer's recommendations including Flow and personalized content.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        """
+
+        def want(item_id: str) -> bool:
+            return wanted is None or item_id in wanted
+
         result: list[RecommendationFolder] = []
-        recs = await self.provider.gql_client.get_recommendations(
-            playlists_first=50,
-            artist_playlists_first=50,
-            new_releases_first=10,
-            artists_first=0,
-            hot_tracks_limit=50,
-        )
-        await self._add_made_for_you(result, recs)
+        # NOTE: one get_recommendations call feeds the four rows below; they cannot be
+        # skipped individually unless this shared fetch is broken down per row.
+        recs: GetRecommendationsMe | None = None
+        if any(
+            want(item_id)
+            for item_id in (
+                "recommended_playlists",
+                "recommended_artist_playlists",
+                "recommended_tracks",
+                "new_releases",
+            )
+        ):
+            recs = await self.provider.gql_client.get_recommendations(
+                playlists_first=50,
+                artist_playlists_first=50,
+                new_releases_first=10,
+                artists_first=0,
+                hot_tracks_limit=50,
+            )
+        if want("made_for_you"):
+            await self._add_made_for_you(result, recs)
         self._add_recommended_playlists(result, recs)
         self._add_recommended_artist_playlists(result, recs)
         self._add_recommended_tracks(result, recs)
         self._add_new_releases(result, recs)
-        await self._add_flow_configs(result)
-        recently_played = await self._get_recently_played_items()
-        if recently_played:
-            result.append(
-                RecommendationFolder(
-                    item_id="recently_played",
-                    provider=self.instance_id,
-                    name=BROWSE_RECENTLY_PLAYED,
-                    translation_key="recently_played",
-                    items=UniqueList(recently_played),
+        if want("mood_flows") or want("genre_flows"):
+            await self._add_flow_configs(result)
+        if want("recently_played"):
+            recently_played = await self._get_recently_played_items()
+            if recently_played:
+                result.append(
+                    RecommendationFolder(
+                        item_id="recently_played",
+                        provider=self.instance_id,
+                        name=BROWSE_RECENTLY_PLAYED,
+                        translation_key="recently_played",
+                        items=UniqueList(recently_played),
+                    )
                 )
-            )
         return result
 
     async def _add_made_for_you(

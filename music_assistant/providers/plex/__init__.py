@@ -1222,6 +1222,9 @@ class PlexProvider(MusicProvider):
     @use_cache(3600 * 3, cache_checksum="v2")  # Cache for 3 hours
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations from Plex hubs."""
+        # NOTE: one hubs fetch returns every row (hub), so opting in to the controller's
+        # `wanted` row filter would not save any backend I/O today. Worth revisiting if
+        # hubs can be fetched individually.
         try:
             # Get the configured limit for items per hub
             limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)

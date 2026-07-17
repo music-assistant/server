@@ -253,9 +253,13 @@ class DeezerProvider(MusicProvider):
         """Browse Deezer content."""
         return await self.browse_manager.browse(path, super().browse)
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get Deezer's recommendations including Flow and personalized content."""
-        return await self.browse_manager.recommendations()
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+        """
+        Get Deezer's recommendations including Flow and personalized content.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        """
+        return await self.browse_manager.recommendations(wanted=wanted)
 
     # -- Streaming --
 

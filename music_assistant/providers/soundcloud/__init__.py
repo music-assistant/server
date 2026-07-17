@@ -228,47 +228,57 @@ class SoundcloudMusicProvider(MusicProvider):
         )
 
     @use_cache(3600 * 3)  # Cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get available recommendations."""
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+        """
+        Get available recommendations.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        """
+        folders: list[RecommendationFolder] = []
         # Part 1, the mixed selections
-        recommendations = await self._soundcloud.get_mixed_selection(40)
-        folders = []
-        for collection in recommendations.get("collection", []):
-            folder = RecommendationFolder(
-                name=collection["title"],
-                item_id=f"{self.instance_id}_{collection['id']}",
-                provider=self.instance_id,
-                icon="mdi-playlist-music",
-            )
-            for playlist in collection.get("items").get("collection", []):
-                # Each items can be a track, playlist, album or artist but seems playlists only
-                if playlist.get("kind") == "system-playlist":
-                    folder.items.append(await self._parse_playlist(playlist))
-                else:
-                    self.logger.debug(
-                        "Unknown item type in collection for SoundCloud: %s", playlist.get("kind")
-                    )
-                    continue
-            folders.append(folder)
+        # one call feeds all mixed selection folders, so per-collection skipping is not possible
+        if wanted is None or any(
+            item_id != f"{self.instance_id}_sc_subscribed_feed" for item_id in wanted
+        ):
+            recommendations = await self._soundcloud.get_mixed_selection(40)
+            for collection in recommendations.get("collection", []):
+                folder = RecommendationFolder(
+                    name=collection["title"],
+                    item_id=f"{self.instance_id}_{collection['id']}",
+                    provider=self.instance_id,
+                    icon="mdi-playlist-music",
+                )
+                for playlist in collection.get("items").get("collection", []):
+                    # Each items can be a track, playlist, album or artist but seems playlists only
+                    if playlist.get("kind") == "system-playlist":
+                        folder.items.append(await self._parse_playlist(playlist))
+                    else:
+                        self.logger.debug(
+                            "Unknown item type in collection for SoundCloud: %s",
+                            playlist.get("kind"),
+                        )
+                        continue
+                folders.append(folder)
         # Part 2, the subscribed feed
-        feed = await self._soundcloud.get_subscribe_feed(40)
-        if feed and "collection" in feed:
-            folder = RecommendationFolder(
-                name="SoundCloud Feed",
-                translation_key="soundcloud_feed",
-                item_id=f"{self.instance_id}_sc_subscribed_feed",
-                provider=self.instance_id,
-                icon="mdi-rss",
-            )
-            for item in feed["collection"]:
-                if item.get("type") == "track" or item.get("type") == "track-repost":
-                    folder.items.append(await self._parse_track(item.get("track")))
-                else:
-                    self.logger.debug(
-                        "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
-                    )
-                    continue
-            folders.append(folder)
+        if wanted is None or f"{self.instance_id}_sc_subscribed_feed" in wanted:
+            feed = await self._soundcloud.get_subscribe_feed(40)
+            if feed and "collection" in feed:
+                folder = RecommendationFolder(
+                    name="SoundCloud Feed",
+                    translation_key="soundcloud_feed",
+                    item_id=f"{self.instance_id}_sc_subscribed_feed",
+                    provider=self.instance_id,
+                    icon="mdi-rss",
+                )
+                for item in feed["collection"]:
+                    if item.get("type") == "track" or item.get("type") == "track-repost":
+                        folder.items.append(await self._parse_track(item.get("track")))
+                    else:
+                        self.logger.debug(
+                            "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
+                        )
+                        continue
+                folders.append(folder)
         return folders
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days

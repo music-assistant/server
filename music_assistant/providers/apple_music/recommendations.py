@@ -110,6 +110,9 @@ class AppleMusicRecommendationManager:
     @use_cache(3600)
     async def get_personal_recommendations(self) -> list[RecommendationFolder]:
         """Fetch personal recommendations grouped into folders by section title."""
+        # NOTE: one me/recommendations call returns every row (section), so opting in to the
+        # controller's `wanted` row filter would not save any backend I/O today. Worth
+        # revisiting if sections can be fetched individually.
         response = await self.api.get_data(
             "me/recommendations?include[personal-recommendation]=contents"
         )

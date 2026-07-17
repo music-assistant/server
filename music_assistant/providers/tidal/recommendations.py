@@ -38,6 +38,9 @@ class TidalRecommendationManager:
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's recommendations organized into folders."""
+        # NOTE: rows are merged from a fixed batch of page fetches that is always fetched
+        # whole, so opting in to the controller's `wanted` row filter would not save any
+        # backend I/O today. Worth revisiting if rows can be mapped to individual pages.
         results: list[RecommendationFolder] = []
         pages = [
             "pages/home",

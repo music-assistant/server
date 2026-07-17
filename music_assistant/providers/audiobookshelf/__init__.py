@@ -1093,8 +1093,12 @@ for more details.
 
     @use_cache(3600, base_class=RecommendationFolder, allow_expired_cache=True)
     @handle_refresh_token
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations."""
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+        """
+        Get recommendations.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        """
         # We have to avoid "flooding" the home page, which becomes especially troublesome if users
         # have multiple libraries. Instead we collect per ShelfId, and make sure, that we always get
         # roughly the same amount of items per row, no matter the amount of libraries
@@ -1112,11 +1116,14 @@ for more details.
         limit_items_per_lib = max_items_per_row // num_libraries
         limit_items_per_lib = 1 if limit_items_per_lib == 0 else limit_items_per_lib
 
-        for library_id in all_libraries:
-            shelves = await self._client.get_library_personalized_view(
-                library_id=library_id, limit=limit_items_per_lib
-            )
-            await self._recommendations_iter_shelves(shelves, library_id, items_by_shelf_id)
+        # One personalized view call per library feeds all shelf rows, so individual
+        # shelves cannot be skipped; fetch if any non-browse row is wanted.
+        if wanted is None or any(item_id != "browse" for item_id in wanted):
+            for library_id in all_libraries:
+                shelves = await self._client.get_library_personalized_view(
+                    library_id=library_id, limit=limit_items_per_lib
+                )
+                await self._recommendations_iter_shelves(shelves, library_id, items_by_shelf_id)
 
         folders: list[RecommendationFolder] = []
         for shelf_id, item_lists in items_by_shelf_id.items():
@@ -1149,35 +1156,36 @@ for more details.
         # If there is only a single audiobook library, we add the folders
         # from _browse_lib_audiobooks, i.e. Authors, Narrators etc.
         # Podcast libs do not have filter folders, so always the root folders.
-        browse_items: list[MediaItemType | BrowseFolder] = []
-        translation_key = "libraries"
-        if len(self.libraries.audiobooks) <= 1:
-            if len(self.libraries.podcasts) == 0:
-                translation_key = "library"
+        if wanted is None or "browse" in wanted:
+            browse_items: list[MediaItemType | BrowseFolder] = []
+            translation_key = "libraries"
+            if len(self.libraries.audiobooks) <= 1:
+                if len(self.libraries.podcasts) == 0:
+                    translation_key = "library"
 
-            # audiobooklibs are first, and we have at max 1 audiobook lib
-            _browse_root = self._browse_root(append_mediatype_suffix=False)
-            if len(self.libraries.audiobooks) == 0:
-                browse_items.extend(_browse_root)
+                # audiobooklibs are first, and we have at max 1 audiobook lib
+                _browse_root = self._browse_root(append_mediatype_suffix=False)
+                if len(self.libraries.audiobooks) == 0:
+                    browse_items.extend(_browse_root)
+                else:
+                    assert isinstance(_browse_root[0], BrowseFolder)
+                    _path = _browse_root[0].path
+                    browse_items.extend(self._browse_lib_audiobooks(current_path=_path))
+                    # add podcast roots
+                    browse_items.extend(_browse_root[1:])
             else:
-                assert isinstance(_browse_root[0], BrowseFolder)
-                _path = _browse_root[0].path
-                browse_items.extend(self._browse_lib_audiobooks(current_path=_path))
-                # add podcast roots
-                browse_items.extend(_browse_root[1:])
-        else:
-            browse_items = list(self._browse_root())
+                browse_items = list(self._browse_root())
 
-        folders.append(
-            RecommendationFolder(
-                item_id="browse",
-                name="Libraries",
-                icon="mdi-bookshelf",
-                translation_key=translation_key,
-                items=UniqueList(browse_items),
-                provider=self.instance_id,
+            folders.append(
+                RecommendationFolder(
+                    item_id="browse",
+                    name="Libraries",
+                    icon="mdi-bookshelf",
+                    translation_key=translation_key,
+                    items=UniqueList(browse_items),
+                    provider=self.instance_id,
+                )
             )
-        )
 
         return folders
 

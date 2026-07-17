@@ -237,11 +237,18 @@ class NugsProvider(MusicProvider):
         )
 
     @use_cache(3600 * 4)  # Cache for 4 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's recommendations."""
+    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+        """
+        Get this provider's recommendations.
+
+        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        """
         popular = "releases/popular"
         recom_shows = "me/releases/recommendations"
         recent = "releases/recent"
+
+        def want(item_id: str) -> bool:
+            return wanted is None or item_id in wanted
 
         popular_folder = RecommendationFolder(
             name="Most Popular",
@@ -261,23 +268,26 @@ class NugsProvider(MusicProvider):
             item_id="nugs_recent_shows",
             provider=self.instance_id,
         )
-        popular_data = await self._get_data("catalog", popular, limit=20)
-        for item in popular_data["items"]:
-            endpoint = f"shows/{item['id']}"
-            response = await self._get_data("catalog", endpoint)
-            popular_folder.items.append(self._parse_album(response["Response"]))
-        recommended_data = await self._get_data("catalog", recom_shows)
-        for item in recommended_data["items"]:
-            recommended_folder.items.append(self._parse_album(item))
-        recent_data = await self._get_data("catalog", recent, limit=50)
-        for item in recent_data["items"]:
-            recent_folder.items.append(self._parse_album(item))
+        result: list[RecommendationFolder] = []
+        if want("nugs_popular_shows"):
+            popular_data = await self._get_data("catalog", popular, limit=20)
+            for item in popular_data["items"]:
+                endpoint = f"shows/{item['id']}"
+                response = await self._get_data("catalog", endpoint)
+                popular_folder.items.append(self._parse_album(response["Response"]))
+            result.append(popular_folder)
+        if want("nugs_recommended_shows"):
+            recommended_data = await self._get_data("catalog", recom_shows)
+            for item in recommended_data["items"]:
+                recommended_folder.items.append(self._parse_album(item))
+            result.append(recommended_folder)
+        if want("nugs_recent_shows"):
+            recent_data = await self._get_data("catalog", recent, limit=50)
+            for item in recent_data["items"]:
+                recent_folder.items.append(self._parse_album(item))
+            result.append(recent_folder)
 
-        return [
-            popular_folder,
-            recommended_folder,
-            recent_folder,
-        ]
+        return result
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse nugs artist object to generic layout."""

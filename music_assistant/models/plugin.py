@@ -276,6 +276,10 @@ class PluginProvider(Provider):
         Retrieve a list of recommendation folders from this plugin.
 
         Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+
+        Overrides may accept an optional ``wanted: set[str] | None = None`` parameter
+        to build only the requested rows: the set holds the row item_ids to build;
+        None means build all rows.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError

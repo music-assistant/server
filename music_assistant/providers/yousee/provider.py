@@ -211,4 +211,7 @@ class YouSeeMusikProvider(MusicProvider):
         Returns an actual (and often personalised) list of recommendations
         from this provider for the user/account.
         """
+        # NOTE: one GraphQL call returns every recommendation section, so opting in to the
+        # controller's `wanted` row filter would not save any backend I/O today. Worth
+        # revisiting if the query can be broken down per row.
         return await self.recommendations_manager.get_recommendations()
