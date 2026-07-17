@@ -323,6 +323,12 @@ class MetaDataController(
         # on-demand lookups are not stored in the library db, so normalize on the way out
         return lyrics, normalize_lrc_lyrics(lrc_lyrics)
 
+    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        if not self._corrupt_metadata_rows:
+            return None
+        return {"corrupt_metadata_rows": cast("SerializableType", self._corrupt_metadata_rows)}
+
     async def _get_track_lyrics(
         self,
         track: Track,
@@ -364,12 +370,6 @@ class MetaDataController(
             if metadata and (metadata.lyrics or metadata.lrc_lyrics):
                 return metadata.lyrics, metadata.lrc_lyrics
         return None, None
-
-    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
-        """Return diagnostics info for this controller to include in diagnostics reports."""
-        if not self._corrupt_metadata_rows:
-            return None
-        return {"corrupt_metadata_rows": cast("SerializableType", self._corrupt_metadata_rows)}
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
