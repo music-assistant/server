@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -128,6 +129,36 @@ def test_audio_processing_manager_attaches_grouped_chain() -> None:
         quality=AudioQuality.LOW,
         bit_perfect=False,
     )
+
+
+def test_preset_identity_update_republishes_current_chain() -> None:
+    """Preset updates follow a changed config owner even when output details match."""
+    manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
+    output_plan.dsp_config_id = "old-config-player"
+    output_plan.output_details.dsp.preset_id = "night"
+    manager.update_output(
+        "player-1",
+        output_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    replacement = deepcopy(output_plan)
+    replacement.dsp_config_id = "configured-player"
+    assert manager.update_output(
+        "player-1",
+        replacement,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    mass.player_queues.signal_update.reset_mock()
+
+    manager.update_player_dsp_preset("configured-player", None)
+
+    assert streamdetails.audio_processing is not None
+    assert streamdetails.audio_processing.outputs[0].dsp.preset_id is None
+    mass.player_queues.signal_update.assert_called_once_with("queue-1")
 
 
 def test_prefetched_output_does_not_replace_current_chain() -> None:
@@ -324,6 +355,7 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
         input_gain=-1.0,
         filters=[ToneControlFilter(enabled=True, bass_level=2.0)],
         output_gain=-0.5,
+        preset_id="night",
     )
     mass.config.get_raw_player_config_value.return_value = "left"
     audio = StreamsAudio(cast("Any", mass))
@@ -348,7 +380,9 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
         filters=[ToneControlFilter(enabled=True, bass_level=2.0)],
         output_gain=-0.5,
         output_limiter=True,
+        preset_id="night",
     )
+    assert plan.dsp_config_id == "player-1"
     assert plan.output_details.source_channel == AudioChannel.FL
     assert plan.output_details.output_format == output_format
     mass.streams.audio_processing.update_output.assert_called_once()
@@ -366,7 +400,11 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
         False if isinstance(default, bool) else "right"
     )
     audio = StreamsAudio(cast("Any", mass))
-    monkeypatch.setattr(audio, "_resolve_player_dsp_config", lambda _player: DSPConfig())
+    monkeypatch.setattr(
+        audio,
+        "_resolve_player_dsp_config",
+        lambda _player: DSPConfig(preset_id="parent-preset"),
+    )
     pcm_format = _format(ContentType.PCM_S16LE, 44100, 16)
 
     plan = audio.get_player_output_plan(
@@ -378,11 +416,67 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
     )
 
     assert plan.output_details.player_ids == ["player-1"]
+    assert plan.output_details.dsp.preset_id == "parent-preset"
+    assert plan.dsp_config_id == "player-1"
     assert plan.output_details.source_channel == AudioChannel.FR
     assert not plan.output_details.dsp.output_limiter
     assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
         "player-1"
     }
+
+
+def test_single_member_group_uses_child_dsp_preset() -> None:
+    """A single-member player group reports the child's effective preset."""
+    mass = MagicMock()
+    player = MagicMock(player_id="group-1", protocol_parent_id=None)
+    player.provider.domain = "player_group"
+    player.state.active_group = None
+    player.state.synced_to = None
+    player.state.group_members = ["child-1"]
+    player.state.supported_features = set()
+    child = MagicMock(player_id="child-1")
+    mass.players.get_player.side_effect = lambda player_id: (
+        player if player_id == "group-1" else child
+    )
+    mass.config.get_player_dsp_config.side_effect = lambda player_id: (
+        DSPConfig(enabled=True, preset_id="child-preset")
+        if player_id == "child-1"
+        else DSPConfig(enabled=False)
+    )
+    mass.config.get_raw_player_config_value.return_value = "stereo"
+    audio = StreamsAudio(cast("Any", mass))
+    pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan("group-1", pcm_format, pcm_format)
+
+    assert plan.dsp_config_id == "child-1"
+    assert plan.output_details.dsp.state == DSPState.ENABLED
+    assert plan.output_details.dsp.preset_id == "child-preset"
+
+
+def test_unsupported_group_preserves_configured_preset() -> None:
+    """Runtime DSP suppression retains the selected preset identity."""
+    mass = MagicMock()
+    player = MagicMock(player_id="leader-1", protocol_parent_id=None)
+    player.provider.domain = "test"
+    player.state.active_group = None
+    player.state.synced_to = None
+    player.state.group_members = ["child-1"]
+    player.state.supported_features = set()
+    mass.players.get_player.return_value = player
+    mass.config.get_player_dsp_config.side_effect = lambda _player_id: DSPConfig(
+        enabled=True,
+        preset_id="group-preset",
+    )
+    mass.config.get_raw_player_config_value.return_value = "stereo"
+    audio = StreamsAudio(cast("Any", mass))
+    pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan("leader-1", pcm_format, pcm_format)
+
+    assert plan.dsp_config_id == "leader-1"
+    assert plan.output_details.dsp.state == DSPState.DISABLED_BY_UNSUPPORTED_GROUP
+    assert plan.output_details.dsp.preset_id == "group-preset"
 
 
 @pytest.mark.asyncio

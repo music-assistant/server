@@ -1281,16 +1281,16 @@ class StreamsAudio:
             player.protocol_parent_id if player and player.protocol_parent_id else player_id
         )
         if player:
+            dsp_config_id = self._resolve_player_dsp_config_id(player)
             dsp = self._resolve_player_dsp_config(player)
             limiter_enabled = self.is_output_limiter_enabled(player)
-            configured_dsp = self.mass.config.get_player_dsp_config(
-                player.protocol_parent_id or player.player_id
-            )
+            configured_dsp = self.mass.config.get_player_dsp_config(dsp_config_id)
             if configured_dsp.enabled and not dsp.enabled and is_grouping_preventing_dsp(player):
                 dsp_state = DSPState.DISABLED_BY_UNSUPPORTED_GROUP
             else:
                 dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
         else:
+            dsp_config_id = player_id
             dsp = self.mass.config.get_player_dsp_config(player_id)
             limiter_enabled = True
             dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
@@ -1326,6 +1326,7 @@ class StreamsAudio:
                 filters=enabled_filters if dsp.enabled else [],
                 output_gain=dsp.output_gain if dsp.enabled else 0.0,
                 output_limiter=limiter_enabled,
+                preset_id=dsp.preset_id,
             ),
             source_channel=source_channel,
             output_format=output_format,
@@ -1335,6 +1336,7 @@ class StreamsAudio:
             output_details=output_details,
             input_format=input_format,
             handoff_format=handoff_format,
+            dsp_config_id=dsp_config_id,
         )
         if queue_id is not None and session_id is not None:
             self.mass.streams.audio_processing.update_output(
@@ -3134,20 +3136,34 @@ class StreamsAudio:
 
         :param player: The player to resolve DSP config for.
         """
-        dsp_player_id = player.protocol_parent_id or player.player_id
+        dsp_player_id = self._resolve_player_dsp_config_id(player)
         dsp = self.mass.config.get_player_dsp_config(dsp_player_id)
         if is_grouping_preventing_dsp(player):
             dsp.enabled = False
         elif player.provider.domain == "player_group" and (
             PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
         ):
-            if player.state.group_members:
-                child_player = self.mass.players.get_player(player.state.group_members[0])
-                assert child_player is not None
-                dsp = self.mass.config.get_player_dsp_config(child_player.player_id)
-            else:
+            if not player.state.group_members:
                 dsp.enabled = False
         return dsp
+
+    def _resolve_player_dsp_config_id(self, player: Player) -> str:
+        """
+        Return the player identifier that supplies the effective DSP config.
+
+        :param player: Player whose DSP config source should be resolved.
+        """
+        dsp_player_id = player.protocol_parent_id or player.player_id
+        if (
+            not is_grouping_preventing_dsp(player)
+            and player.provider.domain == "player_group"
+            and PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
+            and player.state.group_members
+        ):
+            child_player = self.mass.players.get_player(player.state.group_members[0])
+            assert child_player is not None
+            dsp_player_id = child_player.player_id
+        return dsp_player_id
 
     def _pick_pcm_bit_depth(
         self,

@@ -45,6 +45,7 @@ class AudioOutputPlan:
     output_details: AudioOutputDetails
     input_format: AudioFormat
     handoff_format: AudioFormat | None = None
+    dsp_config_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -63,6 +64,7 @@ class _AudioOutputEntry:
     details: AudioOutputDetails
     input_format: AudioFormat
     handoff_format: AudioFormat | None = None
+    dsp_config_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -210,6 +212,7 @@ class AudioProcessingManager:
             details=deepcopy(output_plan.output_details),
             input_format=deepcopy(output_plan.input_format),
             handoff_format=deepcopy(output_plan.handoff_format),
+            dsp_config_id=output_plan.dsp_config_id,
         )
         entry.details.player_ids = [player_id]
         item_outputs = session.outputs.setdefault(queue_item_id, {})
@@ -276,6 +279,26 @@ class AudioProcessingManager:
                 if output := outputs.get(player_id):
                     return deepcopy(output.details)
         return None
+
+    def update_player_dsp_preset(self, player_id: str, preset_id: str | None) -> None:
+        """
+        Update preset identity where the effective DSP config remains unchanged.
+
+        :param player_id: Player whose persisted DSP config changed.
+        :param preset_id: Selected preset identifier, or None when cleared.
+        """
+        for queue_id, session in tuple(self._sessions.items()):
+            changed = False
+            for outputs in session.outputs.values():
+                for entry in outputs.values():
+                    if (
+                        entry.dsp_config_id == player_id
+                        and entry.details.dsp.preset_id != preset_id
+                    ):
+                        entry.details.dsp.preset_id = preset_id
+                        changed = True
+            if changed and self._publish_all(queue_id, session):
+                self.mass.player_queues.signal_update(queue_id)
 
     def clear(self, queue_id: str, session_id: str | None = None) -> None:
         """
@@ -608,6 +631,7 @@ def _output_entries_equal(left: _AudioOutputEntry, right: _AudioOutputEntry) -> 
         left.details.to_dict() == right.details.to_dict()
         and left.input_format.to_dict() == right.input_format.to_dict()
         and _audio_formats_equal(left.handoff_format, right.handoff_format)
+        and left.dsp_config_id == right.dsp_config_id
     )
 
 
