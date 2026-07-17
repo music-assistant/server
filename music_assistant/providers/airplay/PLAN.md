@@ -165,18 +165,21 @@ dev (branch `airplay-unified-binary`), and the C project is pushed to
 - **24-bit audio** — encoder fix in place but **untested end-to-end**; native AP2 only;
   may depend on PTP and/or buffered streaming.
 
-### Trim dev's latency machinery (old-binary band-aid)
-Dev added a session-establishment-latency system to compensate for the **old cliap2
-(owntone) AP2 binary's slow session start** — the very problem the new binary solves.
-Candidates to trim/re-tune once the new binary's real latency is measured on-device:
-- `CONF_SESSION_ESTABLISHMENT_LATENCY` config + `AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_*`
-  constants + `session_establishment_latency_ms` property (AP2 leg).
-- The AP2 branch of `wait_start` (`session_establishment_latency + AIRPLAY_DEFAULT_SESSION_DELAY_MS`
-  ≈ 1400 ms lead) — likely reducible.
-- **Keep** the RAOP read-ahead buffer (`RAOP_OUTPUT_BUFFER_*` / `output_buffer_duration_ms`):
-  that is libraop/RAOP behaviour, unchanged by the unified binary.
+### Latency trim (done — value pending on-device tuning)
+Dev's session-establishment-latency system compensated for the **old cliap2 (owntone)
+AP2 binary's slow, variable session start** — the very problem the new binary solves.
+Removed:
+- The user-configurable `CONF_SESSION_ESTABLISHMENT_LATENCY` setting + its 150–4000 ms
+  range + the `session_establishment_latency_ms` property (Apple's own UI has no such knob).
+- The AP2 lead is now a single fixed internal `AIRPLAY2_CONNECT_TIME_MS` (1000 ms, down
+  from ~1400 ms) — not user-configurable; the binary controls the whole chain.
+- RAOP timing is **unchanged** (`RAOP_CONNECT_TIME_MS + output_buffer_duration_ms`).
+- Also dropped the orphaned `encryption` / `alac_encode` / `AIRPLAY2_SYNC_WARN` config
+  strings left over from the binary unification.
 
-Best done **during device validation** so the values are measured, not guessed.
+Still open: **measure the new binary's real AP2 establishment time on-device** and tune
+`AIRPLAY2_CONNECT_TIME_MS`. The robust end-state is to start the playback clock off the
+binary's `[STATUS] connected` event rather than a fixed pre-roll guess.
 
 ### Validation
 - Confirm audible **native AP2** playback on Apple TV (session establishes; sound unconfirmed).

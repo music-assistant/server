@@ -23,14 +23,11 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, i
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
-    AIRPLAY_DEFAULT_SESSION_DELAY_MS,
+    AIRPLAY2_CONNECT_TIME_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
     AIRPLAY_PCM_FORMAT,
-    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
-    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
-    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
     BASE_PLAYER_FEATURES,
     BROKEN_AIRPLAY_WARN,
     CONF_ACTION_FINISH_PAIRING,
@@ -45,7 +42,6 @@ from .constants import (
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
     CONF_RAOP_LATENCY,
-    CONF_SESSION_ESTABLISHMENT_LATENCY,
     CONF_STORED_VOLUME,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
@@ -189,24 +185,11 @@ class AirPlayPlayer(Player):
         return AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS
 
     @property
-    def session_establishment_latency_ms(self) -> int:
-        """Get the configured session establishment latency in milliseconds."""
-        if self.protocol == StreamingProtocol.AIRPLAY2:
-            return cast(
-                "int",
-                self.config.get_value(
-                    CONF_SESSION_ESTABLISHMENT_LATENCY,
-                    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
-                ),
-            )
-        return RAOP_CONNECT_TIME_MS
-
-    @property
     def wait_start(self) -> int:
-        """Get the time in ms to allow device to connect before starting stream."""
+        """Get the time in ms to allow the device to connect before starting the stream."""
         if self.protocol == StreamingProtocol.AIRPLAY2:
-            return int(self.session_establishment_latency_ms + AIRPLAY_DEFAULT_SESSION_DELAY_MS)
-        return int(self.session_establishment_latency_ms + self.output_buffer_duration_ms)
+            return AIRPLAY2_CONNECT_TIME_MS
+        return RAOP_CONNECT_TIME_MS + self.output_buffer_duration_ms
 
     async def get_config_entries(
         self,
@@ -285,18 +268,6 @@ class AirPlayPlayer(Player):
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=not is_raop,
-                category="protocol_generic",
-                advanced=True,
-            ),
-            ConfigEntry(
-                key=CONF_SESSION_ESTABLISHMENT_LATENCY,
-                type=ConfigEntryType.INTEGER,
-                default_value=AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
-                range=(
-                    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
-                    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
-                ),
-                hidden=is_raop,
                 category="protocol_generic",
                 advanced=True,
             ),

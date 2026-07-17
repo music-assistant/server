@@ -16,14 +16,6 @@
         "2": "This device does not advertise AirPlay 2 support."
       }
     },
-    "encryption": {
-      "label": "Enable encryption",
-      "description": "Enable encrypted communication with the player, some (3rd party) players require this to be disabled."
-    },
-    "alac_encode": {
-      "label": "Enable compression",
-      "description": "Save some network bandwidth by sending the audio as (lossless) ALAC at the cost of a bit of CPU."
-    },
     "password": {
       "label": "Device password",
       "description": "Some devices require a password to connect/play."
@@ -35,13 +27,6 @@
     "airplay_latency": {
       "label": "Milliseconds of data to buffer",
       "description": "The number of milliseconds of data to buffer\nNOTE: This adds to the latency experienced for commencement of playback. \nTry increasing value if playback is unreliable."
-    },
-    "session_establishment_latency": {
-      "label": "Expected milliseconds to establish streaming session with the AirPlay device.",
-      "description": "Adjust this value only if playback is out of sync or does not work.\nThe log will contain a WARNING entry showing a recommendation."
-    },
-    "AIRPLAY2_SYNC_WARN": {
-      "label": "Music Assistant support for the AirPlay2 protocol does support audio synchronisation, but it is fragile. If playback or synchronisation does not work, try adjusting the session establishment latency. This is an interim advanced configuration setting. It will be removed when a robust synchronisation method is implemented."
     },
     "pairing_pin": {
       "label": "Enter the 4-digit PIN shown on the device"

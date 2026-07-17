@@ -22,7 +22,6 @@ class StreamingProtocol(IntEnum):
 
 
 CONF_VOLUME_START: Final[str] = "volume_start"
-CONF_SESSION_ESTABLISHMENT_LATENCY: Final[str] = "session_establishment_latency"
 CONF_PASSWORD: Final[str] = "password"
 CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
@@ -33,22 +32,16 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-# Time allowance for MA processing and OS spawning of the binary. Helps reduce initial audio loss.
-AIRPLAY_DEFAULT_SESSION_DELAY_MS: Final[int] = 900
-# Read ahead buffer. Default output buffer duration.
+# Read ahead buffer. Default output buffer (--latency) duration.
 AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1500
 # RAOP buffer settings
 RAOP_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 250
 RAOP_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
-# Default session establishment latency i.e. expected duration to pair with AirPlay device and negotiate session
-AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS: Final[int] = 500
-AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS: Final[int] = (
-    150  # Minimum session establishment latency permitted
-)
-AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS: Final[int] = (
-    4000  # Maximum session establishment latency permitted
-)
-RAOP_CONNECT_TIME_MS: Final[int] = 1500  # Time in ms to allow RAOP device to connect
+# Fixed lead time (ms) to let the binary spawn, connect and establish the session before
+# scheduled playback. Not user-configurable: the cliairplay binary controls the whole chain.
+# Tune here if on-device validation shows a device needs more headroom.
+RAOP_CONNECT_TIME_MS: Final[int] = 1500
+AIRPLAY2_CONNECT_TIME_MS: Final[int] = 1000
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
