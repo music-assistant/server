@@ -422,23 +422,6 @@ class SendspinProvider(PlayerProvider):
         """
         self._unloading = True
         player_ids = [player.player_id for player in self.players]
-        # Disconnect all clients before stopping the server
-        clients = list(self.server_api.clients)
-        connected_clients = []
-        disconnect_tasks = []
-        for client in clients:
-            if client.connection is None:
-                continue
-            connected_clients.append(client)
-            disconnect_tasks.append(client.connection.disconnect(retry_connection=False))
-        if disconnect_tasks:
-            results = await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-            for client, result in zip(connected_clients, results, strict=True):
-                if isinstance(result, Exception):
-                    self.logger.warning(
-                        "Error disconnecting client %s: %s", client.client_id, result
-                    )
-
         # Stop the Sendspin server
         await self.server_api.close()
 
