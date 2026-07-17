@@ -74,6 +74,7 @@ PLAYER_DEVICE_TYPES = {
     "receiver",
     "controller",
     "boom",
+    "squeezeplay",
 }
 
 
@@ -424,6 +425,7 @@ class SqueezelitePlayer(Player):
             self._attr_supported_features.discard(PlayerFeature.POWER)
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
+        self._attr_powered = self.client.powered
         old_state = self._attr_playback_state
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
