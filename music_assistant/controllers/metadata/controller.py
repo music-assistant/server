@@ -483,17 +483,7 @@ class MetaDataController(
         table: str,
         query: str,
     ) -> list[ItemCls]:
-        """
-        Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON.
-
-        Runs guard-free on the happy path. If a row with malformed metadata JSON
-        aborts the query, records it for the diagnostics report and retries with a
-        json_valid guard so the remaining good rows are still scanned this pass.
-
-        :param media_controller: Media controller to query (e.g. artists or playlists).
-        :param table: Library table being scanned, used for corrupt-row reporting.
-        :param query: Scan filter applied as an extra query part.
-        """
+        """Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON."""
         try:
             items = await media_controller.get_library_items_by_query(
                 limit=METADATA_SCAN_BATCH_SIZE,
