@@ -20,6 +20,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.ai_distractors import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.models import (
@@ -141,6 +142,7 @@ def _mass() -> MagicMock:
     mass.music.artists.top_tracks = AsyncMock(return_value=[])
     mass.music.artists.tracks = AsyncMock(return_value=[])
     mass.music.search = AsyncMock(return_value=SimpleNamespace(tracks=[]))
+    mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=0))
     mass.get_providers_supporting_feature = MagicMock(return_value=[])
     return mass
 
@@ -553,6 +555,29 @@ async def test_prepare_round_seeds_anchor_and_prefetches_guaranteed_future_snaps
         )
         == 3
     )
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_reserves_fresh_track_for_scored_timeline_round() -> None:
+    """Use a recent track as the anchor so a fresh track remains for players to place."""
+    recent_anchor = _track("recent-anchor", "Teardrop", "Massive Attack", album_year=1998)
+    recent_other = _track("recent-other", "Genesis", "Justice", album_year=2007)
+    fresh = _track("fresh", "Lisztomania", "Phoenix", album_year=2009)
+    quiz, _ = _quiz([recent_anchor, recent_other, fresh])
+    quiz._eligible_tracks = [recent_anchor, recent_other, fresh]
+    assert recent_anchor.uri is not None
+    assert recent_other.uri is not None
+    quiz.add_recent_track_uris([recent_anchor.uri, recent_other.uri])
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.music_timeline.secrets.choice",
+        side_effect=lambda candidates: candidates[0],
+    ):
+        game_round = await quiz.prepare_round(0, [])
+
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.placement_snapshot[0].track_uri == recent_anchor.uri
+    assert game_round.track_uri == fresh.uri
 
 
 @pytest.mark.asyncio

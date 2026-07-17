@@ -861,6 +861,50 @@ class TestPresetMembersInDynamicGroup:
         # an unrelated player is rejected
         assert sgp._is_member_allowed("outsider") is False
 
+    @pytest.mark.asyncio
+    async def test_can_group_with_falls_back_when_all_members_offline(self) -> None:
+        """
+        An offline preset member must not block adding other players.
+
+        Regression: with only offline members in the list, can_group_with
+        returned an empty set instead of offering compatible players, so
+        nothing could be added to the group until the member came back.
+        """
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, ["offline_member"])
+        await sgp.on_config_updated()
+
+        offline_member = _make_mock_player("offline_member", available=False)
+        candidate = _make_mock_player("candidate")
+        candidate.type = PlayerType.PLAYER
+        candidate.state.can_group_with = {"other"}
+        candidate.state.active_group = None
+        mass.players.get_player = _player_lookup(
+            {"offline_member": offline_member, "candidate": candidate}
+        )
+        mass.players.all_players = MagicMock(return_value=[candidate])
+
+        assert "candidate" in sgp.can_group_with
+
+    @pytest.mark.asyncio
+    async def test_can_group_with_aggregates_from_available_members(self) -> None:
+        """With at least one available member, candidates come from the members only."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, ["offline_member", "online_member"])
+        await sgp.on_config_updated()
+
+        offline_member = _make_mock_player("offline_member", available=False)
+        online_member = _make_mock_player("online_member")
+        online_member.state.can_group_with = {"online_member", "friend"}
+        mass.players.get_player = _player_lookup(
+            {"offline_member": offline_member, "online_member": online_member}
+        )
+
+        result = sgp.can_group_with
+
+        assert {"online_member", "friend"} <= result
+        mass.players.all_players.assert_not_called()
+
 
 class TestGetConfigEntriesMemberPicker:
     """Test the member options offered in the group settings dropdown."""

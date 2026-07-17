@@ -23,6 +23,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     ShelfSchedule,
     TempoPlan,
     TransitionPlan,
+    TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.renderer import TransitionRenderer
 
@@ -46,6 +47,7 @@ def _eq_plan() -> EqPlan:
 
 def _plan(**overrides: object) -> TransitionPlan:
     defaults: dict[str, object] = {
+        "tier": TransitionTier.FULL_BLEND,
         "fade_out_window": 40.0,
         "crossfade_duration": 10.0,
         "eq_plan": _eq_plan(),
