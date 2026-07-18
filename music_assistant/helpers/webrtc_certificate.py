@@ -123,6 +123,12 @@ def _load_certificate(
             LOGGER.warning("WebRTC private key is not an EC key, will regenerate")
             return None
 
+        # cert and key are written as two separate files; a crash between the writes
+        # leaves a mismatched pair that would otherwise fail every DTLS handshake
+        if private_key.public_key() != cert.public_key():
+            LOGGER.warning("WebRTC private key does not match certificate, will regenerate")
+            return None
+
         return private_key, cert
     except Exception as err:
         LOGGER.warning("Failed to load WebRTC certificate: %s", err)
