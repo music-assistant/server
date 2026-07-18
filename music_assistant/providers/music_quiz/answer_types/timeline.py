@@ -293,24 +293,23 @@ class TimelineAnswerType(QuizAnswerType):
                 points=placement_scores.get(player_id, 0),
             )
             bonus_results: list[TimelineBonusResult] = []
-            if placement_correctness[player_id]:
-                for bonus_answer in self._bonus_answers_by_type(timeline_state, player_id).values():
-                    timestamps.append(bonus_answer.submitted_at)
-                    definition = definitions.get(bonus_answer.bonus_type)
-                    if definition is None:
-                        raise InvalidDataError("Timeline bonus answer has no matching definition")
-                    is_correct = self._is_bonus_correct(
-                        timeline_state.candidate,
-                        definition,
-                        bonus_answer,
+            for bonus_answer in self._bonus_answers_by_type(timeline_state, player_id).values():
+                timestamps.append(bonus_answer.submitted_at)
+                definition = definitions.get(bonus_answer.bonus_type)
+                if definition is None:
+                    raise InvalidDataError("Timeline bonus answer has no matching definition")
+                is_correct = self._is_bonus_correct(
+                    timeline_state.candidate,
+                    definition,
+                    bonus_answer,
+                )
+                bonus_results.append(
+                    TimelineBonusResult(
+                        bonus_type=bonus_answer.bonus_type,
+                        is_correct=is_correct,
+                        points=BONUS_POINTS if is_correct else 0,
                     )
-                    bonus_results.append(
-                        TimelineBonusResult(
-                            bonus_type=bonus_answer.bonus_type,
-                            is_correct=is_correct,
-                            points=BONUS_POINTS if is_correct else 0,
-                        )
-                    )
+                )
             pending_results[player_id] = TimelineAnswerResult(
                 placement=placement_result,
                 bonuses=sorted(bonus_results, key=lambda item: item.bonus_type.value),
@@ -563,14 +562,7 @@ class TimelineAnswerType(QuizAnswerType):
             next_entry_id=submission.next_entry_id,
             answered_at=submitted_at,
         )
-        if (
-            not self._is_correct_placement(
-                state.placement_snapshot,
-                state.candidate.entry.release_year,
-                state.placements[player_id],
-            )
-            or not state.bonus_definitions
-        ):
+        if not state.bonus_definitions:
             state.finished_at[player_id] = submitted_at
 
     def _submit_bonus_text(
@@ -637,14 +629,8 @@ class TimelineAnswerType(QuizAnswerType):
         player_id: str,
         bonus_type: TimelineBonusType,
     ) -> None:
-        """Require a correct placement and the next configured bonus."""
-        placement = self._require_placement(state, player_id)
-        if not self._is_correct_placement(
-            state.placement_snapshot,
-            state.candidate.entry.release_year,
-            placement,
-        ):
-            raise MusicQuizInvalidAnswerError("Timeline bonuses require a correct placement")
+        """Require a locked placement and the next configured bonus."""
+        self._require_placement(state, player_id)
         answered_types = self._bonus_answers_by_type(state, player_id)
         if bonus_type in answered_types:
             raise MusicQuizInvalidAnswerError(

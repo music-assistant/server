@@ -739,13 +739,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_instance: str | None = None,
         provider_instance_id_or_domain: str | None = None,
         provider_item_id: str | None = None,
+        provider_item_ids: list[str] | None = None,
         limit: int = 500,
         offset: int = 0,
     ) -> list[ItemCls]:
-        """Fetch all records from library for given provider."""
+        """
+        Fetch all records from library for given provider.
+
+        :param provider_item_ids: When given, batch-match this list of provider
+            item ids in a single query (the plural form of provider_item_id);
+            takes precedence over provider_item_id when both are passed. An
+            empty list matches nothing (distinct from None, which applies no
+            item-id filter).
+        """
         assert provider_instance_id_or_domain != "library"
         assert provider_domain != "library"
         assert provider_instance != "library"
+        if provider_item_ids is not None and not provider_item_ids:
+            return []
         subquery_parts: list[str] = []
         query_params: dict[str, Any] = {}
         if provider_instance:
@@ -760,7 +771,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "(provider_mappings.provider_instance = :prov_id "
                 "OR provider_mappings.provider_domain = :prov_id)"
             )
-        if provider_item_id:
+        if provider_item_ids:
+            placeholders = ", ".join(f":item_id_{i}" for i in range(len(provider_item_ids)))
+            subquery_parts.append(f"provider_mappings.provider_item_id IN ({placeholders})")
+            for i, item_id in enumerate(provider_item_ids):
+                query_params[f"item_id_{i}"] = item_id
+        elif provider_item_id:
             subquery_parts.append("provider_mappings.provider_item_id = :item_id")
             query_params["item_id"] = provider_item_id
         subquery = f"SELECT item_id FROM provider_mappings WHERE {' AND '.join(subquery_parts)}"

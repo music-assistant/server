@@ -516,6 +516,7 @@ VERSION_PARTS = (
     "stereo",
     "album",
     "bonus",
+    "release",
 )
 IGNORE_TITLE_PARTS = (
     # strings that may be stripped off a title part
