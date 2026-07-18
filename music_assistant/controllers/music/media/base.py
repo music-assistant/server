@@ -176,6 +176,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.mass.register_api_command(
             f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
         )
+        self.mass.register_api_command(
+            f"music/{api_base}/get_collection",
+            self.get_collection,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
+        )
         # Backward compatibility alias - prefer the generic "get" endpoint
         self.mass.register_api_command(
             f"music/{api_base}/get_{self.media_type}",
@@ -585,6 +591,37 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return cast("list[ItemCls]", searchresult.radio)
             case _:
                 return []
+
+    async def get_collection(self, name: str) -> MediaCollection[ItemCls]:
+        """Get a single collection."""
+        query_params: dict[str, Any] = {}
+        sql_query, base_query_params = self._build_final_query([], [], None, summary=False)
+        for key, value in base_query_params.items():
+            query_params.setdefault(key, value)
+        sql_query = await self._adapt_query_for_collections(
+            sql_query, query_params, summary=False, order_by=None, collection_name=name
+        )
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            sql_query, query_params, limit=1, offset=0
+        )
+        if len(db_rows) != 1:
+            raise MediaNotFoundError(f"Collection {name} not found.")
+
+        return cast(
+            "MediaCollection[ItemCls]",
+            MediaCollection(
+                item_id=db_rows[0]["name"],
+                name=db_rows[0]["name"],
+                provider="library",
+                provider_mappings=set(),
+                items=UniqueList(
+                    [
+                        self.item_cls.from_dict(self._parse_db_row(json_loads(x)))
+                        for x in json_loads(db_rows[0]["media_data"])
+                    ]
+                ),
+            ),
+        )
 
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get single library item by id."""
@@ -1306,7 +1343,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         if collapse_collections:
             sql_query = await self._adapt_query_for_collections(
-                sql_query, query_params, summary=summary
+                sql_query,
+                query_params,
+                summary=summary,
+                order_by=order_by,
             )
 
         db_rows = await self.mass.music.database.get_rows_from_query(
@@ -1936,20 +1976,33 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
 
     async def _adapt_query_for_collections(
-        self, sql_query: str, query_params: dict[str, Any], summary: bool
+        self,
+        sql_query: str,
+        query_params: dict[str, Any],
+        summary: bool,
+        order_by: str | None,
+        collection_name: str | None = None,
     ) -> str:
         # get column names of base query
         db_rows = await self.mass.music.database.get_rows_from_query(
             sql_query, query_params, limit=1, offset=0
         )
         # create a sql json_object which queries all these columns
-        json_object = "json_object(" + ",".join([f"'{x}',{x}" for x in db_rows[0].keys()]) + ")"  # noqa: SIM118
+        if len(db_rows) > 0:
+            json_object = "json_object(" + ",".join([f"'{x}',{x}" for x in db_rows[0].keys()]) + ")"  # noqa: SIM118
+        else:
+            json_object = "json_object()"
 
         collections_column = (
             "collections" if summary else 'json_extract("metadata", "$.collections")'
         )
 
-        return f"""
+        adapted_sql_query = ""
+        if collection_name:
+            # filter for a single collection
+            adapted_sql_query += "SELECT * FROM ("
+
+        adapted_sql_query += f"""
         WITH
             joined_table as ({sql_query}),
             collection_extract as (
@@ -1965,6 +2018,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         SELECT
             'collection' as type,
             collection_title as name,
+            lower(collection_title) as search_name,
+            (collection_title) as search_sort_name,
             json_group_array(media_data) as media_data
         FROM (
             SELECT * FROM collection_extract
@@ -2002,7 +2057,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         UNION ALL
 
-        SELECT 'single', name, {json_object} FROM joined_table
+        SELECT 'single', name, search_name, search_sort_name, {json_object} FROM joined_table
             WHERE {collections_column} IS NULL
                 OR {collections_column} = "[]"
         """
+
+        if collection_name:
+            adapted_sql_query += f") WHERE name = '{collection_name}'"
+            return adapted_sql_query
+
+        supported_order_keys = ("name", "sort_name")
+        if order_by and order_by in supported_order_keys:
+            if sort_key := SORT_KEYS.get(order_by):
+                adapted_sql_query += f" ORDER BY {sort_key}"
+
+        return adapted_sql_query
