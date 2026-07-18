@@ -14,10 +14,11 @@ from music_assistant_models.errors import (
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 
-from .constants import BASE_URL, BASE_URL_V2
+from .constants import BASE_URL, BASE_URL_V2, JSONAPI_CONTENT_TYPE, OPEN_API_URL
+from .jsonapi import JsonApiDocument
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Sequence
 
     from aiohttp import ClientResponse
 
@@ -45,6 +46,24 @@ class TidalAPIClient:
     async def get_with_etag(self, endpoint: str, **kwargs: Any) -> tuple[dict[str, Any], str]:
         """Get data from Tidal API, returning the response ETag as well."""
         return await self._request("GET", endpoint, **kwargs)
+
+    async def get_jsonapi(
+        self,
+        endpoint: str,
+        include: Sequence[str] | None = None,
+        params: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> JsonApiDocument:
+        """Get a JSON:API document from the official Tidal API."""
+        query = dict(params or {})
+        if include:
+            query["include"] = ",".join(include)
+        headers = kwargs.pop("headers", {})
+        headers["Accept"] = JSONAPI_CONTENT_TYPE
+        data = await self.get(
+            endpoint, base_url=OPEN_API_URL, params=query, headers=headers, **kwargs
+        )
+        return JsonApiDocument(data)
 
     async def post(
         self,
@@ -114,7 +133,8 @@ class TidalAPIClient:
 
         # Prepare Params
         params = kwargs.pop("params", {}) or {}
-        if self.auth.session_id:
+        # sessionId is an unofficial-API concept; don't send it to the official API.
+        if self.auth.session_id and base_url != OPEN_API_URL:
             params["sessionId"] = self.auth.session_id
         if self.auth.country_code:
             params["countryCode"] = self.auth.country_code

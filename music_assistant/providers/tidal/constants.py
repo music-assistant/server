@@ -12,6 +12,9 @@ RESOURCES_URL = "https://resources.tidal.com/images"
 WEB_BASE_URL = "https://tidal.com/v1"
 SESSIONS_URL = f"{BASE_URL}/sessions"
 
+# Official API (JSON:API)
+JSONAPI_CONTENT_TYPE = "application/vnd.api+json"
+
 # Authentication
 TOKEN_TYPE = "Bearer"
 AUTH_URL = "https://auth.tidal.com/v1/oauth2"
