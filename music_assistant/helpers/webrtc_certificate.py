@@ -91,10 +91,10 @@ def _save_certificate(
     )
     fd = os.open(key_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
+        # O_TRUNC keeps a pre-existing file's mode, so tighten permissions on the
+        # fd before any key byte is written (owner read/write only)
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
         f.write(key_pem)
-
-    # Set restrictive permissions on private key (owner read/write only)
-    key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
 def _load_certificate(
@@ -129,9 +129,12 @@ def _load_certificate(
             LOGGER.warning("WebRTC private key does not match certificate, will regenerate")
             return None
 
-        # key files written by older versions may be world-readable; the save path
-        # only runs on regeneration, so tighten permissions on load as well
-        key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        # older versions wrote the key with umask permissions before chmoding it;
+        # a crash in that window left it world-readable, and a valid pair is never
+        # rewritten, so repair permissions on load (owner read/write only)
+        mode = stat.S_IRUSR | stat.S_IWUSR
+        if stat.S_IMODE(key_path.stat().st_mode) != mode:
+            key_path.chmod(mode)
 
         return private_key, cert
     except Exception as err:
