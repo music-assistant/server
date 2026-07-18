@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     SoundEffect,
     Track,
+    UniqueList,
 )
 
 from music_assistant.constants import (
@@ -747,6 +748,35 @@ class MusicProvider(Provider):
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
         return []
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's available recommendation rows, without items.
+
+        Must be fast: return static or cached row descriptors only, without
+        live backend calls. The items for a row are fetched separately
+        through get_recommendation_items.
+
+        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        Live backend fetches belong here. Will only be called if
+        ProviderFeature.RECOMMENDATIONS is declared.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return UniqueList()
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""

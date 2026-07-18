@@ -38,6 +38,10 @@ SEARCH_CACHE_EXPIRATION_COMBINED: Final[int] = 600
 # so one slow provider can never block the whole discover page
 RECOMMENDATIONS_PROVIDER_TIMEOUT: Final[int] = 30
 
+# max time to wait for a single provider's recommendation rows; rows are
+# contractually fast (no live backend calls) so a short timeout suffices
+RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
+
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
 PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"

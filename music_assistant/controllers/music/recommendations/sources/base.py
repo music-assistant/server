@@ -47,6 +47,17 @@ class RecommendationSource(ABC):
     async def get_items(self) -> RecommendationItems:
         """Return the items for this recommendation row."""
 
+    def descriptor(self) -> RecommendationFolder:
+        """Return this source's row descriptor: a RecommendationFolder without items."""
+        return RecommendationFolder(
+            item_id=self.item_id,
+            provider=self.provider,
+            name=self.name,
+            translation_key=self.translation_key,
+            icon=self.icon,
+            enabled_by_default=self.enabled_by_default,
+        )
+
     async def build(self) -> RecommendationFolder | None:
         """Build this source's RecommendationFolder; subclasses may return None to suppress the row."""
         items = await self.get_items()

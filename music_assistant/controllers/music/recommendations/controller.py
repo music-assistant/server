@@ -3,22 +3,29 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from itertools import zip_longest
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.helpers import create_uri
+from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.media_items import UniqueList
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.controllers.music.constants import RECOMMENDATIONS_PROVIDER_TIMEOUT
+from music_assistant.controllers.music.constants import (
+    RECOMMENDATIONS_PROVIDER_TIMEOUT,
+    RECOMMENDATIONS_ROWS_TIMEOUT,
+)
 
 from .sources.defaults import build_default_sources
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import RecommendationFolder
+    from music_assistant_models.media_items import (
+        BrowseFolder,
+        ItemMapping,
+        MediaItemType,
+        RecommendationFolder,
+    )
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
@@ -29,16 +36,21 @@ if TYPE_CHECKING:
 
 
 class RecommendationsController:
-    """Owns the registry of recommendation sources and builds the recommendations response."""
+    """Owns the registry of recommendation sources and serves the recommendations API."""
 
     def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize the controller and register its api command."""
+        """Initialize the controller and register its api commands."""
         self.mass = mass
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.recommendations")
         self._sources: list[RecommendationSource] = build_default_sources(mass)
         self.mass.register_api_command(
             "music/recommendations",
             self.get_recommendations,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
+            "music/recommendations/items",
+            self.get_recommendation_items,
             required_scope=Scope.LIBRARY_READ,
         )
 
@@ -51,96 +63,82 @@ class RecommendationsController:
         """Register an additional recommendation source."""
         self._sources.append(source)
 
-    async def get_recommendations(
-        self, wanted: list[str] | None = None
-    ) -> list[RecommendationFolder]:
-        """
-        Get all recommendations (default library rows + provider rows, interleaved).
-
-        :param wanted: optional list of row URIs to build; when omitted, all rows are built.
-            When given, providers with no wanted rows are not called at all, and only the
-            requested rows are returned.
-        """
-        wanted_set = set(wanted) if wanted is not None else None
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get all available recommendation rows (library + providers, interleaved), without items."""
         providers = self.mass.music._apply_user_provider_filter(
             self.mass.get_providers_supporting_feature(ProviderFeature.RECOMMENDATIONS)
         )
-        if wanted_set is not None:
-            wanted_provider_ids = {uri.split("://", 1)[0] for uri in wanted_set}
-            providers = [p for p in providers if p.instance_id in wanted_provider_ids]
-        results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
-            self._default_recommendations(wanted_set),
-            *[
-                self._provider_recommendations(
-                    cast("MusicProvider | MetadataProvider | PluginProvider", provider),
-                    wanted_set,
-                )
-                for provider in providers
-            ],
-        )
+        rows_per_source: list[list[RecommendationFolder]] = [
+            [source.descriptor() for source in self._sources],
+            *await asyncio.gather(
+                *[
+                    self._provider_rows(
+                        cast("MusicProvider | MetadataProvider | PluginProvider", provider)
+                    )
+                    for provider in providers
+                ]
+            ),
+        ]
         # interleave: one folder per source per pass, preserving each source's ordering
-        return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
+        return [item for sublist in zip_longest(*rows_per_source) for item in sublist if item]
 
-    async def _default_recommendations(
-        self, wanted_set: set[str] | None = None
-    ) -> list[RecommendationFolder]:
-        """Build the default library recommendation rows from the source registry."""
-        sources = self._sources
-        if wanted_set is not None:
-            sources = [
-                s
-                for s in self._sources
-                if create_uri(MediaType.FOLDER, s.provider, s.item_id) in wanted_set
-            ]
-        folders = await asyncio.gather(
-            *[source.build() for source in sources],
-            return_exceptions=True,
-        )
-        result: list[RecommendationFolder] = []
-        for source, outcome in zip(sources, folders, strict=True):
-            if isinstance(outcome, Exception):
-                self.logger.warning(
-                    "Error building recommendation source '%s': %s",
-                    source.item_id,
-                    str(outcome),
-                    exc_info=outcome if self.logger.isEnabledFor(logging.DEBUG) else None,
-                )
-            elif isinstance(outcome, BaseException):
-                raise outcome
-            elif outcome is not None:
-                result.append(outcome)
-        return result
+    async def get_recommendation_items(
+        self, provider: str, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
 
-    async def _provider_recommendations(
-        self,
-        provider: MusicProvider | MetadataProvider | PluginProvider,
-        wanted_set: set[str] | None = None,
-    ) -> list[RecommendationFolder]:
-        """Return a provider's recommendations, or an empty list if it times out or raises."""
-        wanted_ids: set[str] | None = None
-        if wanted_set is not None:
-            prefix = f"{provider.instance_id}://folder/"
-            wanted_ids = {uri[len(prefix) :] for uri in wanted_set if uri.startswith(prefix)}
+        :param provider: The provider instance id owning the row, or "library" for builtin rows.
+        :param item_id: The item_id of the row, as returned by the recommendations listing.
+        """
         try:
+            if provider == "library":
+                source = next((s for s in self._sources if s.item_id == item_id), None)
+                if source is None:
+                    return UniqueList()
+                return UniqueList(await source.get_items())
+            prov = self.mass.get_provider(provider)
+            # re-apply the user provider filter the rows listing applies, so a user
+            # can not fetch items from a music provider an admin has restricted them from
+            if prov is None or not self.mass.music._apply_user_provider_filter([prov]):
+                return UniqueList()
             async with asyncio.timeout(RECOMMENDATIONS_PROVIDER_TIMEOUT):
-                # Providers may opt in to building only the wanted rows (Layer 2) by
-                # declaring a `wanted` parameter; others are called unchanged and filtered here.
-                call_kwargs: dict[str, set[str] | None] = {}
-                if "wanted" in inspect.signature(provider.recommendations).parameters:
-                    call_kwargs["wanted"] = wanted_ids
-                folders = await provider.recommendations(**call_kwargs)
-            if wanted_set is not None:
-                folders = [f for f in folders if f.uri in wanted_set]
-            return folders
+                return await cast(
+                    "MusicProvider | MetadataProvider | PluginProvider", prov
+                ).get_recommendation_items(item_id)
         except TimeoutError:
             self.logger.warning(
-                "Timeout while fetching recommendations from %s; skipping for this request",
+                "Timeout while fetching recommendation items for %s/%s; skipping",
+                provider,
+                item_id,
+            )
+            return UniqueList()
+        except Exception as err:
+            self.logger.warning(
+                "Error while fetching recommendation items for %s/%s: %s",
+                provider,
+                item_id,
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
+            return UniqueList()
+
+    async def _provider_rows(
+        self, provider: MusicProvider | MetadataProvider | PluginProvider
+    ) -> list[RecommendationFolder]:
+        """Return a provider's recommendation rows, or an empty list if it times out or raises."""
+        try:
+            async with asyncio.timeout(RECOMMENDATIONS_ROWS_TIMEOUT):
+                return await provider.get_recommendations()
+        except TimeoutError:
+            self.logger.warning(
+                "Timeout while fetching recommendation rows from %s; skipping for this request",
                 provider.name,
             )
             return []
         except Exception as err:
             self.logger.warning(
-                "Error while fetching recommendations from %s: %s",
+                "Error while fetching recommendation rows from %s: %s",
                 provider.name,
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
