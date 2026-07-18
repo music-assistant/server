@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 from music_assistant_models.audio_processing import (
     AudioFidelity,
@@ -216,11 +216,11 @@ class AudioProcessingManager:
         )
         entry.details.player_ids = [player_id]
         item_outputs = session.outputs.setdefault(queue_item_id, {})
-        if (current := item_outputs.get(player_id)) and _output_entries_equal(current, entry):
+        if item_outputs.get(player_id) == entry:
             return False
         item_outputs[player_id] = entry
+        self._sync_legacy_streamdetails(queue_id, session)
         current_changed = self._publish_all(queue_id, session)
-        self._sync_legacy_streamdetails(queue_id)
         queue = self.mass.player_queues.get(queue_id)
         if current_changed or (
             queue
@@ -240,20 +240,7 @@ class AudioProcessingManager:
         session = self._sessions.get(queue_id)
         if session is None:
             return
-        changed = False
-        for queue_item_id, outputs in list(session.outputs.items()):
-            retained = {
-                player_id: output
-                for player_id, output in outputs.items()
-                if player_id in player_ids
-            }
-            if retained != outputs:
-                changed = True
-                if retained:
-                    session.outputs[queue_item_id] = retained
-                else:
-                    del session.outputs[queue_item_id]
-        if changed:
+        if self._retain_outputs(session, player_ids):
             self._publish_all(queue_id, session)
 
     def get_player_output(
@@ -372,7 +359,7 @@ class AudioProcessingManager:
                 ),
             )
         previous = queue_item.streamdetails.audio_processing
-        if _processing_chains_equal(previous, chain):
+        if previous == chain:
             return False
         queue_item.streamdetails.audio_processing = chain
         queue = self.mass.player_queues.get(queue_id)
@@ -398,7 +385,7 @@ class AudioProcessingManager:
             output.player_ids = [player_id]
             output.fidelity = _get_output_fidelity(streamdetails, item, entry)
             for existing in grouped:
-                if _output_details_equal(existing, output, ignore_players=True):
+                if _output_details_equal_ignoring_players(existing, output):
                     existing.player_ids.append(player_id)
                     break
             else:
@@ -416,21 +403,57 @@ class AudioProcessingManager:
             outputs.update(session.outputs.get(queue_item_id, {}))
         return outputs
 
-    def _sync_legacy_streamdetails(self, queue_id: str) -> None:
+    @staticmethod
+    def _retain_outputs(
+        session: _AudioProcessingSession,
+        player_ids: set[str],
+    ) -> bool:
+        """Drop output entries for players that no longer belong to the queue."""
+        changed = False
+        for queue_item_id, outputs in list(session.outputs.items()):
+            retained = {
+                player_id: output
+                for player_id, output in outputs.items()
+                if player_id in player_ids
+            }
+            if retained == outputs:
+                continue
+            changed = True
+            if retained:
+                session.outputs[queue_item_id] = retained
+            else:
+                del session.outputs[queue_item_id]
+        return changed
+
+    def _sync_legacy_streamdetails(
+        self,
+        queue_id: str,
+        session: _AudioProcessingSession,
+    ) -> None:
         """Update legacy StreamDetails DSP fields from the effective outputs."""
         queue = self.mass.player_queues.get(queue_id)
         if queue is None:
             return
+        active_player_ids: set[str] = set()
+        details_updated = False
         if queue.current_item and queue.current_item.streamdetails:
-            queue.current_item.streamdetails.dsp = self.mass.streams.audio.get_stream_dsp_details(
+            dsp = self.mass.streams.audio.get_stream_dsp_details(
                 queue_id,
                 queue.current_item.queue_item_id,
             )
+            queue.current_item.streamdetails.dsp = dsp
+            active_player_ids.update(dsp)
+            details_updated = True
         if queue.next_item and queue.next_item.streamdetails:
-            queue.next_item.streamdetails.dsp = self.mass.streams.audio.get_stream_dsp_details(
+            dsp = self.mass.streams.audio.get_stream_dsp_details(
                 queue_id,
                 queue.next_item.queue_item_id,
             )
+            queue.next_item.streamdetails.dsp = dsp
+            active_player_ids.update(dsp)
+            details_updated = True
+        if details_updated:
+            self._retain_outputs(session, active_player_ids)
 
     def _prune_played_items(
         self,
@@ -615,43 +638,9 @@ def _is_bit_perfect(
     )
 
 
-def _processing_chains_equal(
-    left: AudioProcessingChain | None,
-    right: AudioProcessingChain | None,
-) -> bool:
-    """Compare every serialized processing field."""
-    if left is None or right is None:
-        return left is right
-    return left.to_dict() == right.to_dict()
-
-
-def _output_entries_equal(left: _AudioOutputEntry, right: _AudioOutputEntry) -> bool:
-    """Compare client-facing and private output fields."""
-    return (
-        left.details.to_dict() == right.details.to_dict()
-        and left.input_format.to_dict() == right.input_format.to_dict()
-        and _audio_formats_equal(left.handoff_format, right.handoff_format)
-        and left.dsp_config_id == right.dsp_config_id
-    )
-
-
-def _output_details_equal(
+def _output_details_equal_ignoring_players(
     left: AudioOutputDetails,
     right: AudioOutputDetails,
-    *,
-    ignore_players: bool = False,
 ) -> bool:
-    """Compare every serialized output field, optionally excluding destinations."""
-    left_data: dict[str, Any] = left.to_dict()
-    right_data: dict[str, Any] = right.to_dict()
-    if ignore_players:
-        left_data["player_ids"] = []
-        right_data["player_ids"] = []
-    return left_data == right_data
-
-
-def _audio_formats_equal(left: AudioFormat | None, right: AudioFormat | None) -> bool:
-    """Compare every serialized audio format field."""
-    if left is None or right is None:
-        return left is right
-    return left.to_dict() == right.to_dict()
+    """Compare output details without their destination players."""
+    return replace(left, player_ids=[]) == replace(right, player_ids=[])

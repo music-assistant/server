@@ -244,6 +244,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if "output_formats" in changed_keys:
             # refresh DSP details since they may have changed
             dsp = self.mass.streams.audio.get_stream_dsp_details(queue_id)
+            self.mass.streams.audio_processing.retain_outputs(queue_id, set(dsp))
             if queue.current_item and queue.current_item.streamdetails:
                 queue.current_item.streamdetails.dsp = dsp
             if queue.next_item and queue.next_item.streamdetails:

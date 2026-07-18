@@ -17,7 +17,13 @@ from music_assistant_models.audio_processing import (
     AudioQuality,
     AudioQueueProcessing,
 )
-from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPState, ToneControlFilter
+from music_assistant_models.dsp import (
+    AudioChannel,
+    DSPConfig,
+    DSPDetails,
+    DSPState,
+    ToneControlFilter,
+)
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
@@ -167,6 +173,7 @@ def test_prefetched_output_does_not_replace_current_chain() -> None:
     next_streamdetails = _streamdetails(item_id="item-2")
     next_item = SimpleNamespace(queue_item_id="item-2", streamdetails=next_streamdetails)
     queue_data.items.append(next_item)
+    queue_data.queue.next_item = next_item
     mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: (
         next_item if item_id == "item-2" else queue_data.items[0]
     )
@@ -527,7 +534,10 @@ def _manager_context(
     mass.player_queues.get_active_queue.return_value = queue
     mass.player_queues.get_item.return_value = queue_item
     mass.player_queues.queue_data_or_none.return_value = queue_data
-    mass.streams.audio.get_stream_dsp_details.return_value = {}
+    mass.streams.audio.get_stream_dsp_details.return_value = {
+        player_id: DSPDetails()
+        for player_id in ("player-1", "player-2", "player-3", "current-player")
+    }
     manager = AudioProcessingManager(mass)
     pcm_format = _format(ContentType.PCM_S24LE, 96000, 24)
     manager.start_session("queue-1", "session-1")

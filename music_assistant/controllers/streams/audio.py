@@ -414,6 +414,10 @@ class StreamsAudio:
             streamdetails.queue_id,
             queue_item.queue_item_id,
         )
+        self.mass.streams.audio_processing.retain_outputs(
+            streamdetails.queue_id,
+            set(streamdetails.dsp),
+        )
 
         self.logger.debug(
             "Retrieved streamdetails for %s in %s milliseconds",
@@ -1236,7 +1240,6 @@ class StreamsAudio:
                     )
                     if group_preventing_dsp:
                         dsp[child_id].output_format = output_format
-        self.mass.streams.audio_processing.retain_outputs(queue_id, set(dsp))
         return dsp
 
     def is_output_limiter_enabled(self, player: Player) -> bool:
