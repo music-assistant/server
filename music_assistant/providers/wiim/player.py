@@ -451,9 +451,12 @@ class WiimPlayer(Player):
         :param device_uri: The media URI currently loaded on the device ("" if none).
         :param play_mode: The device's current play mode (input source).
         """
-        if self.device.playing_status is None:
+        # widened annotation: the SDK types playing_status as non-optional, but
+        # we stay tolerant of a None from mocks/edge paths (as the code always has)
+        sdk_status: PlayingStatus | None = self.device.playing_status
+        if sdk_status is None:
             return None
-        new_state = SDK_TO_MA_STATE.get(self.device.playing_status, PlaybackState.IDLE)
+        new_state = SDK_TO_MA_STATE.get(sdk_status, PlaybackState.IDLE)
         # The device acks transport commands with a transient (false) PLAYING
         # report while no media is loaded yet (observed during group session
         # setup). Nothing can actually play in network mode without a URI, so
