@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import stat
 from pathlib import Path
 
 from aiosendspin.noise.keys import Identity, b64url_decode
@@ -27,8 +26,10 @@ def get_or_create_server_identity(storage_dir: Path) -> Identity:
     except FileNotFoundError:
         pass
     identity = Identity.generate()
-    fd = os.open(key_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    try:
+        fd = os.open(key_path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return Identity.from_private_bytes(b64url_decode(key_path.read_text().strip()))
     with os.fdopen(fd, "w") as f:
         f.write(identity.private_b64u)
-    key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     return identity

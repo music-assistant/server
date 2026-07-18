@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from typing import TYPE_CHECKING
 
 import pytest
+from aiosendspin.noise.keys import Identity
 
 from music_assistant.providers.sendspin.security import (
     IDENTITY_FILENAME,
@@ -30,6 +32,22 @@ def test_identity_is_persistent(tmp_path: Path) -> None:
     first = get_or_create_server_identity(storage_dir)
     second = get_or_create_server_identity(storage_dir)
     assert first == second
+
+
+def test_identity_concurrent_creation_returns_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A key file appearing between the read and the create is loaded, not clobbered."""
+    storage_dir = tmp_path / "sendspin"
+    winner = Identity.generate()
+    real_open = os.open
+
+    def racing_open(path: str, flags: int, mode: int = 0o777) -> int:
+        (storage_dir / IDENTITY_FILENAME).write_text(winner.private_b64u)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    assert get_or_create_server_identity(storage_dir) == winner
 
 
 def test_identity_corrupt_file_raises(tmp_path: Path) -> None:
