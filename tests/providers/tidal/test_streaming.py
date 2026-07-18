@@ -62,16 +62,13 @@ async def test_get_stream_details_lossless(
 ) -> None:
     """Test get_stream_details with LOSSLESS quality."""
     provider_mock.get_track.return_value = mock_track
-    provider_mock.api.get.return_value = (
-        {
-            "manifestMimeType": "application/vnd.tidal.bts",
-            "urls": ["https://example.com/stream.flac"],
-            "audioQuality": "LOSSLESS",
-            "sampleRate": 44100,
-            "bitDepth": 16,
-        },
-        None,
-    )
+    provider_mock.api.get.return_value = {
+        "manifestMimeType": "application/vnd.tidal.bts",
+        "urls": ["https://example.com/stream.flac"],
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
 
     stream_details = await streaming_manager.get_stream_details("123")
 
@@ -437,23 +434,14 @@ async def test_get_stream_details_with_isrc_fallback(
     lib_track.external_ids = [(ExternalID.ISRC, "US1234567890")]
     provider_mock.mass.music.tracks.get_library_item_by_prov_id.return_value = lib_track
 
-    provider_mock.api.get.return_value = (
-        {"data": [{"id": 456}]},  # ISRC lookup response
-        None,
-    )
-
-    # Stream details
     provider_mock.api.get.side_effect = [
-        ({"data": [{"id": 456}]}, None),  # ISRC lookup
-        (
-            {  # Stream details
-                "urls": ["https://example.com/stream.flac"],
-                "audioQuality": "LOSSLESS",
-                "sampleRate": 44100,
-                "bitDepth": 16,
-            },
-            None,
-        ),
+        {"data": [{"id": 456}]},  # ISRC lookup
+        {  # Stream details
+            "urls": ["https://example.com/stream.flac"],
+            "audioQuality": "LOSSLESS",
+            "sampleRate": 44100,
+            "bitDepth": 16,
+        },
     ]
 
     stream_details = await streaming_manager.get_stream_details("123")

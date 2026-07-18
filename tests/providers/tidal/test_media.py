@@ -19,7 +19,7 @@ def provider_mock() -> Mock:
     provider.auth.user_id = "12345"
     provider.auth.country_code = "US"
     provider.api = AsyncMock()
-    provider.api.get_data.return_value = {}
+    provider.api.get.return_value = {}
     provider.api.paginate = MagicMock()
 
     async def async_iter(*_args: Any, **_kwargs: Any) -> Any:
@@ -63,7 +63,7 @@ async def test_search(
     provider_mock: Mock,
 ) -> None:
     """Test search."""
-    provider_mock.api.get_data.return_value = {
+    provider_mock.api.get.return_value = {
         "artists": {"items": [{"id": 1}]},
         "albums": {"items": [{"id": 1}]},
         "tracks": {"items": [{"id": 1}]},
@@ -89,7 +89,7 @@ async def test_search(
     mock_parse_track.assert_called()
     mock_parse_playlist.assert_called()
 
-    provider_mock.api.get_data.assert_called_with(
+    provider_mock.api.get.assert_called_with(
         "search",
         params={
             "query": "query",
@@ -104,13 +104,13 @@ async def test_get_artist(
     mock_parse_artist: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_artist."""
-    provider_mock.api.get_data.return_value = {"id": 1, "name": "Test Artist"}
+    provider_mock.api.get.return_value = {"id": 1, "name": "Test Artist"}
     mock_parse_artist.return_value = Mock(item_id="1")
 
     artist = await media_manager.get_artist("1")
 
     assert artist.item_id == "1"
-    provider_mock.api.get_data.assert_called_with("artists/1")
+    provider_mock.api.get.assert_called_with("artists/1")
     mock_parse_artist.assert_called_once()
 
 
@@ -119,13 +119,13 @@ async def test_get_album(
     mock_parse_album: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_album."""
-    provider_mock.api.get_data.return_value = {"id": 1, "title": "Test Album"}
+    provider_mock.api.get.return_value = {"id": 1, "title": "Test Album"}
     mock_parse_album.return_value = Mock(item_id="1")
 
     album = await media_manager.get_album("1")
 
     assert album.item_id == "1"
-    provider_mock.api.get_data.assert_called_with("albums/1")
+    provider_mock.api.get.assert_called_with("albums/1")
     mock_parse_album.assert_called_once()
 
 
@@ -134,7 +134,7 @@ async def test_get_track(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_track."""
-    provider_mock.api.get_data.side_effect = [
+    provider_mock.api.get.side_effect = [
         {"id": 1, "title": "Test Track"},  # Track data
         {"lyrics": "Test Lyrics"},  # Lyrics data
     ]
@@ -143,9 +143,9 @@ async def test_get_track(
     track = await media_manager.get_track("1")
 
     assert track.item_id == "1"
-    assert provider_mock.api.get_data.call_count == 2
-    provider_mock.api.get_data.assert_any_call("tracks/1")
-    provider_mock.api.get_data.assert_any_call("tracks/1/lyrics")
+    assert provider_mock.api.get.call_count == 2
+    provider_mock.api.get.assert_any_call("tracks/1")
+    provider_mock.api.get.assert_any_call("tracks/1/lyrics")
     mock_parse_track.assert_called_once()
 
 
@@ -154,13 +154,13 @@ async def test_get_playlist(
     mock_parse_playlist: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_playlist."""
-    provider_mock.api.get_data.return_value = {"uuid": "1", "title": "Test Playlist"}
+    provider_mock.api.get.return_value = {"uuid": "1", "title": "Test Playlist"}
     mock_parse_playlist.return_value = Mock(item_id="1")
 
     playlist = await media_manager.get_playlist("1")
 
     assert playlist.item_id == "1"
-    provider_mock.api.get_data.assert_called_with("playlists/1")
+    provider_mock.api.get.assert_called_with("playlists/1")
     mock_parse_playlist.assert_called_once()
 
 
@@ -169,14 +169,14 @@ async def test_get_album_tracks(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_album_tracks."""
-    provider_mock.api.get_data.return_value = {"items": [{"id": 1}]}
+    provider_mock.api.get.return_value = {"items": [{"id": 1}]}
     mock_parse_track.return_value = Mock(item_id="1")
 
     tracks = await media_manager.get_album_tracks("1")
 
     assert len(tracks) == 1
     assert tracks[0].item_id == "1"
-    provider_mock.api.get_data.assert_called_with(
+    provider_mock.api.get.assert_called_with(
         "albums/1/tracks",
         params={"limit": 250},
     )
@@ -187,14 +187,14 @@ async def test_get_artist_albums(
     mock_parse_album: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_artist_albums."""
-    provider_mock.api.get_data.return_value = {"items": [{"id": 1}]}
+    provider_mock.api.get.return_value = {"items": [{"id": 1}]}
     mock_parse_album.return_value = Mock(item_id="1")
 
     albums = await media_manager.get_artist_albums("1")
 
     assert len(albums) == 1
     assert albums[0].item_id == "1"
-    provider_mock.api.get_data.assert_called_with(
+    provider_mock.api.get.assert_called_with(
         "artists/1/albums",
         params={"limit": 250},
     )
@@ -205,14 +205,14 @@ async def test_get_artist_toptracks(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_artist_toptracks."""
-    provider_mock.api.get_data.return_value = {"items": [{"id": 1}]}
+    provider_mock.api.get.return_value = {"items": [{"id": 1}]}
     mock_parse_track.return_value = Mock(item_id="1")
 
     tracks = await media_manager.get_artist_toptracks("1")
 
     assert len(tracks) == 1
     assert tracks[0].item_id == "1"
-    provider_mock.api.get_data.assert_called_with(
+    provider_mock.api.get.assert_called_with(
         "artists/1/toptracks",
         params={"limit": 10, "offset": 0},
     )
@@ -223,14 +223,14 @@ async def test_get_playlist_tracks(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_playlist_tracks."""
-    provider_mock.api.get_data.return_value = {"items": [{"id": 1}]}
+    provider_mock.api.get.return_value = {"items": [{"id": 1}]}
     mock_parse_track.return_value = Mock(item_id="1")
 
     tracks = await media_manager.get_playlist_tracks("1")
 
     assert len(tracks) == 1
     assert tracks[0].item_id == "1"
-    provider_mock.api.get_data.assert_called_with(
+    provider_mock.api.get.assert_called_with(
         "playlists/1/tracks",
         params={"limit": 200, "offset": 0},
     )
@@ -245,7 +245,7 @@ async def test_get_playlist_favorite_tracks(
     assert playlist.item_id == "favorite_tracks"
     assert playlist.name == "Favorite Tracks"
     assert not playlist.is_editable
-    provider_mock.api.get_data.assert_not_called()
+    provider_mock.api.get.assert_not_called()
 
 
 @patch("music_assistant.providers.tidal.media.parse_track")
@@ -253,14 +253,14 @@ async def test_get_playlist_tracks_favorite_tracks(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_playlist_tracks returns favorite tracks ordered by date descending."""
-    provider_mock.api.get_data.return_value = {"items": [{"item": {"id": 1}}]}
+    provider_mock.api.get.return_value = {"items": [{"item": {"id": 1}}]}
     mock_parse_track.return_value = Mock(item_id="1")
 
     tracks = await media_manager.get_playlist_tracks("favorite_tracks", page=0)
 
     assert len(tracks) == 1
     assert tracks[0].item_id == "1"
-    provider_mock.api.get_data.assert_called_with(
+    provider_mock.api.get.assert_called_with(
         "users/12345/favorites/tracks",
         params={"limit": 200, "offset": 0, "order": "DATE", "orderDirection": "DESC"},
     )
