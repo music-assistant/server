@@ -226,13 +226,13 @@ def parse_track(
         track.metadata.lyrics = lyrics["lyrics"]
     if lyrics and "subtitles" in lyrics:
         track.metadata.lrc_lyrics = lyrics["subtitles"]
-    if album_obj := track_obj_data.get("album"):
+    if (album_obj := track_obj_data.get("album")) and album_obj.get("id"):
         # Here we use an ItemMapping as Tidal returns
         # minimal data when getting an Album from a Track
         track.album = provider.get_item_mapping(
             media_type=MediaType.ALBUM,
             key=str(album_obj["id"]),
-            name=album_obj["title"],
+            name=album_obj.get("title") or "",
         )
         if album_obj.get("cover"):
             picture_id = album_obj["cover"].replace("-", "/")

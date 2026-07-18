@@ -118,29 +118,28 @@ class TidalRecommendationManager:
         if cached := await TidalPageParser.from_cache(self.provider, page_path):
             return cached
 
-        try:
-            locale = self.mass.metadata.locale.replace("_", "-")
-            data = await self.api.get(
-                page_path,
-                base_url=WEB_BASE_URL,
-                params={
-                    "locale": locale,
-                    "deviceType": "BROWSER",
-                    "countryCode": self.auth.country_code or "US",
-                },
-            )
+        # Let fetch/parse errors propagate: swallowing them here would make
+        # recommendations() succeed with an empty result, which the caching
+        # wrapper would then store for the full TTL.
+        locale = self.mass.metadata.locale.replace("_", "-")
+        data = await self.api.get(
+            page_path,
+            base_url=WEB_BASE_URL,
+            params={
+                "locale": locale,
+                "deviceType": "BROWSER",
+                "countryCode": self.auth.country_code or "US",
+            },
+        )
 
-            parser = TidalPageParser(self.provider)
-            parser.parse_page_structure(data or {}, page_path)
+        parser = TidalPageParser(self.provider)
+        parser.parse_page_structure(data or {}, page_path)
 
-            await self.mass.cache.set(
-                key=page_path,
-                data=parser.to_cache(),
-                provider=self.provider.instance_id,
-                category=CACHE_CATEGORY_RECOMMENDATIONS,
-                expiration=self.page_cache_ttl,
-            )
-            return parser
-        except Exception:
-            self.logger.exception("Error fetching Tidal page %s", page_path)
-            return TidalPageParser(self.provider)
+        await self.mass.cache.set(
+            key=page_path,
+            data=parser.to_cache(),
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+            expiration=self.page_cache_ttl,
+        )
+        return parser

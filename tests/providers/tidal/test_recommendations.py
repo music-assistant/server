@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 
 from music_assistant.providers.tidal.recommendations import TidalRecommendationManager
 
@@ -136,3 +137,19 @@ async def test_get_page_content(
 
         # Should cache result
         provider_mock.mass.cache.set.assert_called()
+
+
+async def test_get_page_content_propagates_api_errors(
+    recommendation_manager: TidalRecommendationManager, provider_mock: Mock
+) -> None:
+    """Test API failures propagate so an empty result is never cached."""
+    with patch(
+        "music_assistant.providers.tidal.recommendations.TidalPageParser"
+    ) as mock_parser_cls:
+        mock_parser_cls.from_cache = AsyncMock(return_value=None)
+        provider_mock.api.get.side_effect = ResourceTemporarilyUnavailable("API error")
+
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await recommendation_manager.get_page_content("pages/home")
+
+        provider_mock.mass.cache.set.assert_not_called()
