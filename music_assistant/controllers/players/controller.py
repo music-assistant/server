@@ -949,7 +949,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
             )
             if muted:
-                if not player.extra_data.get(ATTR_FAKE_MUTE):
+                if player.extra_data.get(ATTR_FAKE_MUTE) is False:
                     # on a repeated mute command the volume is already 0
                     player.extra_data[ATTR_PREVIOUS_VOLUME] = player.state.volume_level
                 await self._handle_cmd_volume_set(player_id, 0)
