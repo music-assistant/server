@@ -1055,7 +1055,7 @@ class SendspinProvider(PlayerProvider):
         return session
 
     async def _management_call[T](self, connection: SendspinConnection, request: Awaitable[T]) -> T:
-        """Run a management request with a timeout, mapping transport failures to ValueError."""
+        """Run a management request with a timeout, mapping transport failures to SecurityActionError."""
         try:
             async with asyncio.timeout(MANAGEMENT_REQUEST_TIMEOUT):
                 return await request
