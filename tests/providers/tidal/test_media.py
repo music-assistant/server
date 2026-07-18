@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import RetriesExhausted
 from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.providers.tidal.media import TidalMediaManager
@@ -147,6 +148,25 @@ async def test_get_track(
     provider_mock.api.get.assert_any_call("tracks/1")
     provider_mock.api.get.assert_any_call("tracks/1/lyrics")
     mock_parse_track.assert_called_once()
+
+
+@patch("music_assistant.providers.tidal.media.parse_track")
+async def test_get_track_tolerates_lyrics_failure(
+    mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_track still returns the track when the lyrics lookup fails."""
+    provider_mock.api.get.side_effect = [
+        {"id": 1, "title": "Test Track"},  # Track data
+        RetriesExhausted("lyrics lookup failed"),  # Lyrics data
+    ]
+    mock_parse_track.return_value = Mock(item_id="1")
+
+    track = await media_manager.get_track("1")
+
+    assert track.item_id == "1"
+    mock_parse_track.assert_called_once_with(
+        provider_mock, {"id": 1, "title": "Test Track"}, lyrics=None
+    )
 
 
 @patch("music_assistant.providers.tidal.media.parse_playlist")

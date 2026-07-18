@@ -14,6 +14,10 @@ def no_throttling() -> Generator[None]:
     The API client's throttler is class-level shared state: its real-time
     rate window would otherwise carry over between tests and make every
     test wait it out.
+
+    Note: the sleep patch targets the attribute on the shared asyncio
+    module, so asyncio.sleep is mocked process-wide while each test in
+    this directory runs. Keep that in mind for timing-dependent tests.
     """
     with (
         patch(

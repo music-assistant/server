@@ -1,5 +1,6 @@
 """Authentication manager for Tidal integration."""
 
+import asyncio
 import json
 import random
 import time
@@ -23,6 +24,9 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 TOKEN_REFRESH_BUFFER = 60 * 7  # 7 minutes
+# Minimum time between two token refreshes, so that (concurrent) requests
+# hitting 401s cannot hammer the token endpoint with refresh calls.
+TOKEN_REFRESH_COOLDOWN = 30
 
 
 @dataclass
@@ -82,6 +86,8 @@ class TidalAuthManager:
         self.update_config = config_updater
         self.logger = logger
         self._auth_info: dict[str, Any] | None = None
+        self._refresh_lock = asyncio.Lock()
+        self._last_refresh: float = 0.0
         self.user = TidalUser()
 
     async def initialize(self, auth_data: str) -> bool:
@@ -133,46 +139,16 @@ class TidalAuthManager:
         return await self.refresh_token()
 
     async def refresh_token(self) -> bool:
-        """Refresh the auth token."""
-        if not self._auth_info:
-            return False
-
-        refresh_token = self._auth_info.get("refresh_token")
-        if not refresh_token:
-            return False
-
-        client_id = self._auth_info.get("client_id", app_var("tidal_client_id"))
-
-        data = {
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-            "grant_type": "refresh_token",
-            "scope": "r_usr w_usr w_sub",
-        }
-
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-        async with self.http_session.post(
-            f"{AUTH_URL}/token", data=data, headers=headers
-        ) as response:
-            if response.status != 200:
-                self.logger.error("Failed to refresh token: %s", await response.text())
+        """Refresh the auth token (single-flight, with a short cooldown)."""
+        async with self._refresh_lock:
+            # A refresh that just completed (e.g. by a concurrent request that
+            # hit the same 401) is considered good: don't hit the token
+            # endpoint again, let the caller retry with the current token.
+            if time.time() - self._last_refresh < TOKEN_REFRESH_COOLDOWN:
+                return True
+            if not await self._perform_refresh():
                 return False
-
-            token_data = await response.json()
-
-            # Update auth info
-            self._auth_info["access_token"] = token_data["access_token"]
-            if "refresh_token" in token_data:
-                self._auth_info["refresh_token"] = token_data["refresh_token"]
-
-            # Update expiration
-            if "expires_in" in token_data:
-                self._auth_info["expires_at"] = time.time() + token_data["expires_in"]
-
-            # Store updated auth info
-            self.update_config(self._auth_info)
-
+            self._last_refresh = time.time()
             return True
 
     async def update_user_info(self, user_info: dict[str, Any], session_id: str) -> None:
@@ -299,3 +275,46 @@ class TidalAuthManager:
         auth_data["client_secret"] = client_secret
 
         return auth_data
+
+    async def _perform_refresh(self) -> bool:
+        """Perform the actual token refresh request."""
+        if not self._auth_info:
+            return False
+
+        refresh_token = self._auth_info.get("refresh_token")
+        if not refresh_token:
+            return False
+
+        client_id = self._auth_info.get("client_id", app_var("tidal_client_id"))
+
+        data = {
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "grant_type": "refresh_token",
+            "scope": "r_usr w_usr w_sub",
+        }
+
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+        async with self.http_session.post(
+            f"{AUTH_URL}/token", data=data, headers=headers
+        ) as response:
+            if response.status != 200:
+                self.logger.error("Failed to refresh token: %s", await response.text())
+                return False
+
+            token_data = await response.json()
+
+            # Update auth info
+            self._auth_info["access_token"] = token_data["access_token"]
+            if "refresh_token" in token_data:
+                self._auth_info["refresh_token"] = token_data["refresh_token"]
+
+            # Update expiration
+            if "expires_in" in token_data:
+                self._auth_info["expires_at"] = time.time() + token_data["expires_in"]
+
+            # Store updated auth info
+            self.update_config(self._auth_info)
+
+            return True

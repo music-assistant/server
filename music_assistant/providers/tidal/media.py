@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 from aiohttp.client_exceptions import ClientError
@@ -102,10 +101,10 @@ class TidalMediaManager:
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details."""
         try:
-            track_obj, lyrics = await asyncio.gather(
-                self.api.get(f"tracks/{prov_track_id}"),
-                self._get_lyrics(prov_track_id),
-            )
+            # Fetch the track first so a nonexistent track doesn't cost an
+            # extra (throttled) lyrics request.
+            track_obj = await self.api.get(f"tracks/{prov_track_id}")
+            lyrics = await self._get_lyrics(prov_track_id)
             return parse_track(self.provider, track_obj, lyrics=lyrics)
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
@@ -250,7 +249,8 @@ class TidalMediaManager:
         # a missing/failed lyrics response.
         try:
             return await self.api.get(f"tracks/{prov_track_id}/lyrics")
-        except ClientError, MusicAssistantError:
+        except (ClientError, MusicAssistantError) as err:
+            self.logger.debug("Failed to fetch lyrics for track %s: %s", prov_track_id, err)
             return None
 
     def _process_tracks(self, items: list[dict[str, Any]], offset: int) -> list[Track]:
