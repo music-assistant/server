@@ -129,6 +129,10 @@ def _load_certificate(
             LOGGER.warning("WebRTC private key does not match certificate, will regenerate")
             return None
 
+        # key files written by older versions may be world-readable; the save path
+        # only runs on regeneration, so tighten permissions on load as well
+        key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
         return private_key, cert
     except Exception as err:
         LOGGER.warning("Failed to load WebRTC certificate: %s", err)

@@ -56,3 +56,13 @@ def test_private_key_permissions_tightened_on_regeneration(tmp_path: Path) -> No
     (tmp_path / CERT_FILENAME).unlink()
     _get_or_create_certificate(str(tmp_path))
     assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+
+
+def test_private_key_permissions_tightened_on_load(tmp_path: Path) -> None:
+    """Loading a valid pair tightens a loose key file to owner-only access."""
+    _, cert = _get_or_create_certificate(str(tmp_path))
+    key_path = tmp_path / KEY_FILENAME
+    key_path.chmod(0o644)
+    _, cert2 = _get_or_create_certificate(str(tmp_path))
+    assert cert2 == cert
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
