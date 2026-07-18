@@ -219,7 +219,6 @@ class AudioProcessingManager:
         if item_outputs.get(player_id) == entry:
             return False
         item_outputs[player_id] = entry
-        self._sync_legacy_streamdetails(queue_id, session)
         current_changed = self._publish_all(queue_id, session)
         queue = self.mass.player_queues.get(queue_id)
         if current_changed or (
@@ -230,42 +229,37 @@ class AudioProcessingManager:
             self.mass.player_queues.signal_update(queue_id)
         return True
 
-    def retain_outputs(self, queue_id: str, player_ids: set[str]) -> None:
+    def retain_outputs(self, queue_id: str, player_ids: set[str]) -> bool:
         """
         Drop outputs for players no longer attached to a queue.
 
         :param queue_id: Queue identifier.
         :param player_ids: Player identifiers that still belong to the output.
+        :return: Whether pruning published an updated current chain.
         """
         session = self._sessions.get(queue_id)
         if session is None:
-            return
-        if self._retain_outputs(session, player_ids) and self._publish_all(queue_id, session):
+            return False
+        changed = False
+        for queue_item_id, outputs in list(session.outputs.items()):
+            retained = {
+                player_id: output
+                for player_id, output in outputs.items()
+                if player_id in player_ids
+            }
+            if retained == outputs:
+                continue
+            changed = True
+            if retained:
+                session.outputs[queue_item_id] = retained
+            else:
+                del session.outputs[queue_item_id]
+        if not changed:
+            return False
+        current_changed = self._publish_all(queue_id, session)
+        if current_changed:
             self.mass.player_queues.signal_update(queue_id)
-
-    def get_player_output(
-        self,
-        player_id: str,
-        queue_item_id: str | None = None,
-    ) -> AudioOutputDetails | None:
-        """
-        Return the current output details for a player.
-
-        :param player_id: Destination player identifier.
-        :param queue_item_id: Queue item to inspect, defaulting to the current item.
-        """
-        if queue := self.mass.player_queues.get_active_queue(player_id):
-            session = self._sessions.get(queue.queue_id)
-            if queue_item_id is None and queue.current_item:
-                queue_item_id = queue.current_item.queue_item_id
-            outputs = self._get_outputs(session, queue_item_id) if session else {}
-            output = outputs.get(player_id)
-            return deepcopy(output.details) if output else None
-        for session in self._sessions.values():
-            for outputs in session.outputs.values():
-                if output := outputs.get(player_id):
-                    return deepcopy(output.details)
-        return None
+        return current_changed
 
     def update_player_dsp_preset(self, player_id: str, preset_id: str | None) -> None:
         """
@@ -402,58 +396,6 @@ class AudioProcessingManager:
         if queue_item_id is not None:
             outputs.update(session.outputs.get(queue_item_id, {}))
         return outputs
-
-    @staticmethod
-    def _retain_outputs(
-        session: _AudioProcessingSession,
-        player_ids: set[str],
-    ) -> bool:
-        """Drop output entries for players that no longer belong to the queue."""
-        changed = False
-        for queue_item_id, outputs in list(session.outputs.items()):
-            retained = {
-                player_id: output
-                for player_id, output in outputs.items()
-                if player_id in player_ids
-            }
-            if retained == outputs:
-                continue
-            changed = True
-            if retained:
-                session.outputs[queue_item_id] = retained
-            else:
-                del session.outputs[queue_item_id]
-        return changed
-
-    def _sync_legacy_streamdetails(
-        self,
-        queue_id: str,
-        session: _AudioProcessingSession,
-    ) -> None:
-        """Update legacy StreamDetails DSP fields from the effective outputs."""
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
-            return
-        active_player_ids: set[str] = set()
-        details_updated = False
-        if queue.current_item and queue.current_item.streamdetails:
-            dsp = self.mass.streams.audio.get_stream_dsp_details(
-                queue_id,
-                queue.current_item.queue_item_id,
-            )
-            queue.current_item.streamdetails.dsp = dsp
-            active_player_ids.update(dsp)
-            details_updated = True
-        if queue.next_item and queue.next_item.streamdetails:
-            dsp = self.mass.streams.audio.get_stream_dsp_details(
-                queue_id,
-                queue.next_item.queue_item_id,
-            )
-            queue.next_item.streamdetails.dsp = dsp
-            active_player_ids.update(dsp)
-            details_updated = True
-        if details_updated:
-            self._retain_outputs(session, active_player_ids)
 
     def _prune_played_items(
         self,

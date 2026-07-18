@@ -30,13 +30,12 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
     AudioQueueProcessing,
 )
-from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPDetails, DSPState
+from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPState
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
     MediaType,
     PlayerFeature,
-    PlayerType,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -130,8 +129,6 @@ from music_assistant.helpers.util import (
     parse_title_and_version,
     remove_file,
 )
-from music_assistant.providers.sync_group.constants import SGP_PREFIX
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -142,7 +139,6 @@ if TYPE_CHECKING:
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.player import Player
     from music_assistant.models.plugin import PluginProvider
-    from music_assistant.providers.sync_group import SyncGroupPlayer
 
 # ruff: noqa: PLR0915
 
@@ -407,16 +403,6 @@ class StreamsAudio:
             self._get_volume_normalization_preference(streamdetails),
             volume_normalization_enabled,
             streamdetails,
-        )
-
-        # attach the DSP details of all group members
-        streamdetails.dsp = self.get_stream_dsp_details(
-            streamdetails.queue_id,
-            queue_item.queue_item_id,
-        )
-        self.mass.streams.audio_processing.retain_outputs(
-            streamdetails.queue_id,
-            set(streamdetails.dsp),
         )
 
         self.logger.debug(
@@ -1135,112 +1121,6 @@ class StreamsAudio:
                 yield chunk
         finally:
             await remove_file(temp_file)
-
-    def get_player_dsp_details(
-        self,
-        player: Player,
-        group_preventing_dsp: bool = False,
-        queue_item_id: str | None = None,
-    ) -> DSPDetails:
-        """
-        Return DSP details of a single player.
-
-        :param player: The player to get DSP details for.
-        :param group_preventing_dsp: Whether grouping prevents DSP for this player.
-        :param queue_item_id: Queue item whose output format should be reported.
-        """
-        dsp_config = self.mass.config.get_player_dsp_config(player.player_id)
-        dsp_state = DSPState.ENABLED if dsp_config.enabled else DSPState.DISABLED
-        if dsp_state == DSPState.ENABLED and (
-            group_preventing_dsp or is_grouping_preventing_dsp(player)
-        ):
-            dsp_state = DSPState.DISABLED_BY_UNSUPPORTED_GROUP
-            dsp_config = DSPConfig(enabled=False)
-        elif dsp_state == DSPState.DISABLED:
-            dsp_config = DSPConfig(enabled=False)
-
-        dsp_config.filters = [x for x in dsp_config.filters if x.enabled]
-        output = self.mass.streams.audio_processing.get_player_output(
-            player.player_id,
-            queue_item_id,
-        )
-        output_limiter = (
-            output.dsp.output_limiter if output else self.is_output_limiter_enabled(player)
-        )
-        return DSPDetails(
-            state=dsp_state,
-            input_gain=dsp_config.input_gain,
-            filters=dsp_config.filters,
-            output_gain=dsp_config.output_gain,
-            output_limiter=output_limiter,
-            output_format=output.output_format if output else None,
-        )
-
-    def get_stream_dsp_details(
-        self,
-        queue_id: str,
-        queue_item_id: str | None = None,
-    ) -> dict[str, DSPDetails]:
-        """
-        Return DSP details of all players playing a queue.
-
-        :param queue_id: Queue identifier.
-        :param queue_item_id: Queue item whose output formats should be reported.
-        """
-        player = self.mass.players.get_player(queue_id)
-        dsp: dict[str, DSPDetails] = {}
-        assert player is not None
-        group_preventing_dsp = is_grouping_preventing_dsp(player)
-        output_format = None
-        is_external_group = False
-
-        if player.player_id.startswith(SGP_PREFIX):
-            if group_preventing_dsp:
-                sgp_player = cast("SyncGroupPlayer", player)
-                if sync_leader := sgp_player.sync_leader:
-                    if leader_output := self.mass.streams.audio_processing.get_player_output(
-                        sync_leader.player_id,
-                        queue_item_id,
-                    ):
-                        output_format = leader_output.output_format
-        elif player.player_id.startswith(UGP_PREFIX):
-            # UGP is a virtual group player - don't add it to DSP details,
-            # only its children (handled below)
-            pass
-        else:
-            player_dsp_details = self.get_player_dsp_details(
-                player,
-                queue_item_id=queue_item_id,
-            )
-            dsp[player.player_id] = player_dsp_details
-            if group_preventing_dsp:
-                if output := self.mass.streams.audio_processing.get_player_output(
-                    player.player_id,
-                    queue_item_id,
-                ):
-                    output_format = output.output_format
-            is_external_group = (
-                player.state.type
-                in (
-                    PlayerType.GROUP,
-                    PlayerType.STEREO_PAIR,
-                )
-                and PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
-            )
-
-        if player and player.state.group_members and not is_external_group:
-            for child_id in player.state.group_members:
-                if child_id in dsp:
-                    continue
-                if child_player := self.mass.players.get_player(child_id):
-                    dsp[child_id] = self.get_player_dsp_details(
-                        child_player,
-                        group_preventing_dsp=group_preventing_dsp,
-                        queue_item_id=queue_item_id,
-                    )
-                    if group_preventing_dsp:
-                        dsp[child_id].output_format = output_format
-        return dsp
 
     def is_output_limiter_enabled(self, player: Player) -> bool:
         """Check if the player has the output limiter enabled."""

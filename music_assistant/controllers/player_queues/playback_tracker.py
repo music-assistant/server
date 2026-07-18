@@ -145,16 +145,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if not self._update_current_index_from_player(queue, player):
             return
 
-        # This is enough to detect any changes in the DSPDetails
-        # (so child count changed, or any output format changed)
-        output_formats = []
-        if output := self.mass.streams.audio_processing.get_player_output(player.player_id):
-            output_formats.append(str(output.output_format))
-        for child_id in player.state.group_members:
-            if output := self.mass.streams.audio_processing.get_player_output(child_id):
-                output_formats.append(str(output.output_format))
-            else:
-                output_formats.append("unknown")
+        output_player_ids = self._get_output_player_ids(player)
 
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state: CompareState = self._queue_data[queue_id].prev_state or CompareState(
@@ -167,7 +158,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             last_playing_elapsed_time=0,
             stream_title=None,
             codec_type=None,
-            output_formats=None,
+            output_player_ids=None,
         )
         # update last_playing_elapsed_time only when the player is actively playing
         # use corrected_elapsed_time which accounts for time since last update
@@ -203,7 +194,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 if queue.current_item and queue.current_item.streamdetails
                 else None
             ),
-            output_formats=output_formats,
+            output_player_ids=sorted(output_player_ids),
         )
         changed_keys = get_changed_keys(dict(prev_state), dict(new_state))
         with suppress(KeyError):
@@ -238,17 +229,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # also signal update to the player itself so it can update its current_media
                 self.mass.players.trigger_player_update(queue_id)
 
-        if send_update:
+        processing_update_sent = False
+        if "output_player_ids" in changed_keys:
+            processing_update_sent = self.mass.streams.audio_processing.retain_outputs(
+                queue_id,
+                output_player_ids,
+            )
+        if send_update and not processing_update_sent:
             self.signal_update(queue_id)
-
-        if "output_formats" in changed_keys:
-            # refresh DSP details since they may have changed
-            dsp = self.mass.streams.audio.get_stream_dsp_details(queue_id)
-            self.mass.streams.audio_processing.retain_outputs(queue_id, set(dsp))
-            if queue.current_item and queue.current_item.streamdetails:
-                queue.current_item.streamdetails.dsp = dsp
-            if queue.next_item and queue.next_item.streamdetails:
-                queue.next_item.streamdetails.dsp = dsp
 
         # handle updating stream_metadata if needed
         if (
@@ -295,6 +283,15 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # autoplay refills using the per-queue configured Autoplay mode
                 task_id = f"fill_autoplay_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
+
+    def _get_output_player_ids(self, player: Player) -> set[str]:
+        """Return destination player IDs represented in the processing chain."""
+        output_player_ids = {player.protocol_parent_id or player.player_id}
+        for member_id in player.state.group_members:
+            member = self.mass.players.get_player(member_id)
+            output_player_id = member.protocol_parent_id if member else None
+            output_player_ids.add(output_player_id or member_id)
+        return output_player_ids
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
