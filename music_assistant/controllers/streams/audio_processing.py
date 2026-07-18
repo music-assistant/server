@@ -240,8 +240,8 @@ class AudioProcessingManager:
         session = self._sessions.get(queue_id)
         if session is None:
             return
-        if self._retain_outputs(session, player_ids):
-            self._publish_all(queue_id, session)
+        if self._retain_outputs(session, player_ids) and self._publish_all(queue_id, session):
+            self.mass.player_queues.signal_update(queue_id)
 
     def get_player_output(
         self,

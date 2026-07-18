@@ -167,6 +167,26 @@ def test_preset_identity_update_republishes_current_chain() -> None:
     mass.player_queues.signal_update.assert_called_once_with("queue-1")
 
 
+def test_retain_outputs_signals_current_chain_change() -> None:
+    """Pruning a current output publishes the reduced chain."""
+    manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
+    for player_id in ("player-1", "player-2"):
+        manager.update_output(
+            player_id,
+            output_plan,
+            queue_id="queue-1",
+            session_id="session-1",
+            queue_item_id="item-1",
+        )
+    mass.player_queues.signal_update.reset_mock()
+
+    manager.retain_outputs("queue-1", {"player-1"})
+
+    assert streamdetails.audio_processing is not None
+    assert streamdetails.audio_processing.outputs[0].player_ids == ["player-1"]
+    mass.player_queues.signal_update.assert_called_once_with("queue-1")
+
+
 def test_prefetched_output_does_not_replace_current_chain() -> None:
     """An output prepared for the next item does not change the current item."""
     manager, mass, queue_data, streamdetails, lossless_plan, lossy_plan = _manager_context()
