@@ -2,48 +2,35 @@
 
 from __future__ import annotations
 
-import re
+import asyncio
 
 from music_assistant_models.config_entries import ConfigValueOption
 
-from music_assistant.helpers.process import check_output
-
-# Matches e.g. "card 1: USB [USB Audio], device 0: USB Audio [USB Audio]"
-_ARECORD_DEVICE_RE = re.compile(
-    r"^card\s+(?P<card>\d+):.*device\s+(?P<dev>\d+):.*\[(?P<desc>[^\]]+)\]\s*$"
-)
+from .pa_simple import enumerate_pa_sources
 
 
 async def get_available_input_devices() -> list[ConfigValueOption]:
     """
-    Scan for available ALSA capture devices using `arecord -l`.
+    Scan for available PulseAudio/PipeWire capture sources via `pactl`.
 
-    Labels are formatted as: 'hw X,Y - <last [] desc>'.
+    Runs pactl through the default executor since it shells out; called
+    once per config-entries render, not on the audio hot path.
     """
-    devices: list[ConfigValueOption] = []
+    loop = asyncio.get_running_loop()
     try:
-        rc, out = await check_output("arecord", "-l")
-        if rc == 0:
-            for line in out.decode("utf-8", "ignore").strip().splitlines():
-                match = _ARECORD_DEVICE_RE.match(line)
-                if not match:
-                    continue
-                card, dev, desc = match["card"], match["dev"], match["desc"]
-                label = f"hw {card},{dev} - {desc}"
-                devices.append(ConfigValueOption(label, f"alsa:hw:{card},{dev}"))
-    except OSError:
-        # arecord not available on this host
-        pass
+        sources = await loop.run_in_executor(None, enumerate_pa_sources)
+    except (FileNotFoundError, RuntimeError):
+        # pactl not installed, or the PulseAudio/PipeWire server isn't reachable
+        sources = []
 
-    if not devices:
-        devices = [ConfigValueOption("Manual Entry (alsa:hw:X,Y)", "alsa:")]
-    return devices
+    options: list[ConfigValueOption] = []
+    for src in sources:
+        label = src["description"]
+        if src["is_monitor"]:
+            label = f"{label} (monitor)"
+        label = f"{label} — {src['channels']}ch @ {src['sample_rate']}Hz"
+        options.append(ConfigValueOption(src["name"], title=label))
 
-
-def parse_alsa_device_string(device: str) -> str:
-    """Normalize a configured device string into an ALSA device name for arecord."""
-    if device.startswith("alsa:"):
-        return device[5:] or "hw:1,0"
-    if device in ("default", ""):
-        return "hw:1,0"
-    return device
+    if not options:
+        options = [ConfigValueOption("", title="Manual Entry (PA/PipeWire source name)")]
+    return options

@@ -3,8 +3,12 @@
   "domain": "local_audio_source",
   "stage": "alpha",
   "name": "Local Audio Source",
-  "description": "Pipe realtime audio from a local capture device (e.g. Bluetooth receiver or line-in) to any Music Assistant player.",
-  "codeowners": ["@Torrax"],
+  "description": "Pipe realtime audio from a PulseAudio/PipeWire capture source (e.g. Bluetooth receiver or line-in) to any Music Assistant player.",
+  "codeowners": ["@music-assistant"],
+  "credits": [
+    "Torrax",
+    "meiser79"
+  ],
   "documentation": "",
   "multi_instance": true
 }

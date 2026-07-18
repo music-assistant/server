@@ -1,9 +1,9 @@
 """
 Local Audio Source plugin for Music Assistant.
 
-Captures raw PCM from a user-selected ALSA input and exposes it to Music
-Assistant as an AudioSource, streamed to any player through an
-ultra-low-latency CUSTOM stream.
+Captures raw PCM from a user-selected PulseAudio/PipeWire source and
+exposes it to Music Assistant as an AudioSource, streamed to any player
+through an ultra-low-latency CUSTOM stream.
 """
 
 from __future__ import annotations
@@ -71,8 +71,8 @@ async def get_config_entries(
             label="Thumbnail",
             description="Pick a bundled icon or use a custom image URL.",
             options=[
-                ConfigValueOption("Custom URL", ICON_PRESET_CUSTOM),
-                *(ConfigValueOption(label, key) for key, label in ICON_PRESETS.items()),
+                ConfigValueOption(ICON_PRESET_CUSTOM, title="Custom URL"),
+                *(ConfigValueOption(key, title=label) for key, label in ICON_PRESETS.items()),
             ],
             default_value=ICON_PRESET_CUSTOM,
             required=True,
@@ -91,9 +91,9 @@ async def get_config_entries(
             key=CONF_INPUT_DEVICE,
             type=ConfigEntryType.STRING,
             label="Audio Input Device",
-            description="Select an ALSA capture device (arecord -l).",
+            description="Select a PulseAudio/PipeWire capture source (pactl list sources).",
             options=device_options,
-            default_value="alsa:hw:1,0",
+            default_value=device_options[0].value if device_options else None,
             required=True,
         ),
     )

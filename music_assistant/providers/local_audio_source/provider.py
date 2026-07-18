@@ -26,12 +26,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.helpers.process import AsyncProcess
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
     AUDIO_SOURCE_ID,
-    BUFFER_US,
     CHANNELS,
     CONF_FRIENDLY_NAME,
     CONF_ICON_PRESET,
@@ -40,11 +38,10 @@ from .constants import (
     ICON_PRESET_CUSTOM,
     ICON_PRESETS,
     PAUSE_DEBOUNCE_S,
-    PERIOD_US,
     SAMPLE_RATE_HZ,
     SUPPORTED_FEATURES,
 )
-from .helpers import parse_alsa_device_string
+from .pa_simple import PASimpleRecordStream
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -55,9 +52,13 @@ if TYPE_CHECKING:
 # directory holding the bundled preset icon svgs, keyed by ICON_PRESETS
 _IMAGES_DIR = Path(__file__).parent / "images"
 
+# capture chunk duration — matches the streams controller's own
+# AUDIO_SOURCE_CHUNK_SECONDS fast-path granularity for consistent latency
+_CHUNK_MS = 20
+
 
 class LocalAudioSourceProvider(PluginProvider):
-    """Realtime ALSA audio-capture plugin, exposed as a Music Assistant AudioSource."""
+    """Realtime PulseAudio/PipeWire capture plugin, exposed as a Music Assistant AudioSource."""
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -66,24 +67,19 @@ class LocalAudioSourceProvider(PluginProvider):
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
 
         # resolve config
-        self._device: str = cast("str", self.config.get_value(CONF_INPUT_DEVICE))
+        self._pa_source: str = cast("str", self.config.get_value(CONF_INPUT_DEVICE))
         self._friendly_name: str = cast("str", self.config.get_value(CONF_FRIENDLY_NAME))
         self._icon_preset: str = cast(
             "str", self.config.get_value(CONF_ICON_PRESET) or ICON_PRESET_CUSTOM
         )
-        self._thumbnail_image: str = cast(
-            "str", self.config.get_value(CONF_THUMBNAIL_IMAGE) or ""
-        )
-        self._alsa_device: str = parse_alsa_device_string(self._device)
+        self._thumbnail_image: str = cast("str", self.config.get_value(CONF_THUMBNAIL_IMAGE) or "")
 
         # fixed audio params
         self._sample_rate: int = SAMPLE_RATE_HZ
-        self._period_us: int = PERIOD_US
-        self._buffer_us: int = BUFFER_US
         self._channels: int = CHANNELS
 
         # runtime state
-        self._capture_proc: AsyncProcess | None = None
+        self._capture_stream: PASimpleRecordStream | None = None
         self._capture_lock = asyncio.Lock()
         self._paused = False
         self._active_stream_id: str = ""
@@ -172,7 +168,7 @@ class LocalAudioSourceProvider(PluginProvider):
         """Handle close/cleanup of the provider."""
         self.logger.debug("Unloading plugin")
         async with self._capture_lock:
-            await self._stop_capture_process()
+            await self._stop_capture_stream()
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the single AudioSource this plugin exposes."""
@@ -198,14 +194,14 @@ class LocalAudioSourceProvider(PluginProvider):
             stream_type=StreamType.CUSTOM,
             stream_metadata=StreamMetadata(
                 title=self._friendly_name,
-                artist=self._alsa_device,
+                artist=self._pa_source,
             ),
         )
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Yield raw PCM chunks captured from the configured ALSA device."""
+        """Yield raw PCM chunks captured from the configured PulseAudio/PipeWire source."""
         _stream_id = str(uuid4())
         self._active_stream_id = _stream_id
         self._paused = False
@@ -217,12 +213,10 @@ class LocalAudioSourceProvider(PluginProvider):
         captured_session_id = self._active_session_id
 
         bytes_per_sec = self._sample_rate * self._channels * 2  # 16-bit PCM
-        period_s = max(1, self._period_us) / 1_000_000
+        period_s = _CHUNK_MS / 1000
         chunk_size = max(256, int(bytes_per_sec * period_s))
 
-        _stream_details = (
-            f"ID: {_stream_id}//Queue: {consumer_queue}//Device: {self._alsa_device}"
-        )
+        _stream_details = f"ID: {_stream_id}//Queue: {consumer_queue}//Source: {self._pa_source}"
         _stream_acquired = False
 
         self.logger.debug("Ready to capture local audio stream: %s", _stream_details)
@@ -236,11 +230,11 @@ class LocalAudioSourceProvider(PluginProvider):
 
                 if self._paused:
                     async with self._capture_lock:
-                        await self._stop_capture_process()
+                        await self._stop_capture_stream()
                     await asyncio.sleep(PAUSE_DEBOUNCE_S)
                     continue
 
-                chunk = await self._capture_one_chunk(chunk_size, period_s, _stream_acquired)
+                chunk = await self._capture_one_chunk(chunk_size, _stream_acquired)
                 if chunk is None:
                     continue
 
@@ -256,54 +250,56 @@ class LocalAudioSourceProvider(PluginProvider):
             ):
                 self._in_use_by_queue = None
             async with self._capture_lock:
-                await self._stop_capture_process()
+                await self._stop_capture_stream()
             self.logger.debug("Stopped local audio capture: %s", _stream_details)
 
-    async def _capture_one_chunk(
-        self, chunk_size: int, period_s: float, stream_acquired: bool
-    ) -> bytes | None:
+    async def _capture_one_chunk(self, chunk_size: int, stream_acquired: bool) -> bytes | None:
         """
-        Ensure the capture process is running and read one chunk from it.
+        Ensure the capture stream is open and read one chunk from it.
 
-        Returns None if the caller should just loop again (transient hiccup).
-        Raises AudioError if the source cold-starts without ever producing audio,
-        matching the fail-fast contract other AudioSource plugins follow.
+        Returns None if the caller should just loop again (transient hiccup
+        while (re)opening the stream). Raises AudioError if the configured
+        source can't be opened at all, matching the fail-fast contract other
+        AudioSource plugins follow.
+
+        Once open, the actual read blocks at the source's own real-time
+        pace and is intentionally NOT wrapped in an asyncio timeout: unlike
+        AsyncProcess.read() over a pipe, pa_simple_read() is a synchronous
+        C call run via run_in_executor — an asyncio-side timeout can only
+        abandon the awaiting future, it can't interrupt the blocked C call,
+        so a timeout here would just leak an executor thread rather than
+        actually recovering. pa_simple_new() already fails fast in
+        _start_capture_stream() if the source name is invalid or
+        unreachable, which covers the case a read-level timeout was meant
+        to catch.
         """
         async with self._capture_lock:
-            if not self._capture_proc or self._capture_proc.closed:
-                self._capture_proc = await self._start_capture_process(chunk_size)
+            if not self._capture_stream:
+                self._capture_stream = await self._start_capture_stream()
 
-        if not self._capture_proc:
+        if not self._capture_stream:
             if not stream_acquired:
-                self._raise_no_audio_error("Failed to start audio capture")
-            await asyncio.sleep(period_s)
+                self._raise_no_audio_error("Failed to open capture stream")
+            await asyncio.sleep(0.5)
             return None
 
+        loop = asyncio.get_running_loop()
         try:
-            chunk = await asyncio.wait_for(
-                self._capture_proc.read(chunk_size), timeout=max(period_s * 4, 2)
-            )
-        except TimeoutError:
-            if not stream_acquired:
-                self._raise_no_audio_error("No audio received")
-            return None
-
-        if not chunk:
-            # capture process exited/failed; restart on next loop
+            return await loop.run_in_executor(None, self._capture_stream.read, chunk_size)
+        except OSError as err:
+            self.logger.warning("Capture read failed, reopening stream: %s", err)
             async with self._capture_lock:
-                await self._stop_capture_process()
+                await self._stop_capture_stream()
             await asyncio.sleep(0.05)
             return None
 
-        return chunk
-
     def _raise_no_audio_error(self, reason: str) -> None:
-        """Raise a fail-fast AudioError when the configured device never produces audio."""
+        """Raise a fail-fast AudioError when the configured source can't be opened."""
         raise AudioError(
-            f"{reason} on device {self._alsa_device!r}",
+            f"{reason} on source {self._pa_source!r}",
             translation_key="no_packets",
             translation_owner=self.translation_owner,
-            translation_args=[self._alsa_device, self._friendly_name],
+            translation_args=[self._pa_source, self._friendly_name],
         )
 
     def _should_stop_stream(
@@ -316,8 +312,7 @@ class LocalAudioSourceProvider(PluginProvider):
         """Check whether the current get_audio_stream loop should stop and log why."""
         if self._in_use_by_queue != consumer_queue:
             self.logger.debug(
-                "Stopping local audio capture: %s - Reason: plugin is no longer in use by "
-                "queue %s",
+                "Stopping local audio capture: %s - Reason: plugin is no longer in use by queue %s",
                 stream_details,
                 consumer_queue,
             )
@@ -362,9 +357,9 @@ class LocalAudioSourceProvider(PluginProvider):
         # get_stream_details) so preload paths can fetch streamdetails without
         # accidentally blocking a subsequent cross-queue handoff at the actual
         # stream request. There is no separate stop-previous-player step: this
-        # source only has a single passive ALSA capture, so the previous
-        # queue's get_audio_stream loop notices the queue change on its own
-        # and exits cleanly.
+        # source only has a single passive PulseAudio/PipeWire capture, so the
+        # previous queue's get_audio_stream loop notices the queue change on
+        # its own and exits cleanly.
         self._in_use_by_queue = queue_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
@@ -388,55 +383,38 @@ class LocalAudioSourceProvider(PluginProvider):
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
 
-    async def _start_capture_process(self, chunk_size: int) -> AsyncProcess | None:
-        """Start a new arecord capture process."""
-        arecord_cmd: list[str] = [
-            "arecord",
-            "-q",
-            "-D",
-            self._alsa_device,
-            "-f",
-            "S16_LE",
-            "-c",
-            str(self._channels),
-            "-r",
-            str(self._sample_rate),
-            "-t",
-            "raw",
-            "-M",
-            "-F",
-            str(self._period_us),
-            "-B",
-            str(self._buffer_us),
-            "-",
-        ]
+    async def _start_capture_stream(self) -> PASimpleRecordStream | None:
+        """Open a new PulseAudio/PipeWire capture stream via libpulse-simple."""
         self.logger.debug(
-            "Starting capture for %s (dev=%s sr=%d ch=%d F=%dus B=%dus chunk=%dB)",
+            "Opening capture stream for %s (source=%s sr=%d ch=%d)",
             self._friendly_name,
-            self._alsa_device,
+            self._pa_source,
             self._sample_rate,
             self._channels,
-            self._period_us,
-            self._buffer_us,
-            chunk_size,
         )
-        proc = AsyncProcess(
-            arecord_cmd,
-            stdout=True,
-            stderr=True,
-            name=f"local-audio-source[{self._friendly_name}]",
-        )
+        pa_source = self._pa_source
+        app_name = f"music-assistant-{self.instance_id}"
+        sample_rate = self._sample_rate
+        channels = self._channels
+        loop = asyncio.get_running_loop()
         try:
-            await proc.start()
+            return await loop.run_in_executor(
+                None,
+                lambda: PASimpleRecordStream(
+                    source_name=pa_source,
+                    app_name=app_name,
+                    rate=sample_rate,
+                    channels=channels,
+                ),
+            )
         except OSError as err:
-            self.logger.error("arecord failed to start: %s", err)
+            self.logger.error("Failed to open capture stream: %s", err)
             return None
-        else:
-            return proc
 
-    async def _stop_capture_process(self) -> None:
-        """Stop the running arecord capture process, if any. Caller holds _capture_lock."""
-        if self._capture_proc and not self._capture_proc.closed:
+    async def _stop_capture_stream(self) -> None:
+        """Close the running capture stream, if any. Caller holds _capture_lock."""
+        if self._capture_stream:
+            stream, self._capture_stream = self._capture_stream, None
+            loop = asyncio.get_running_loop()
             with suppress(Exception):
-                await self._capture_proc.close()
-        self._capture_proc = None
+                await loop.run_in_executor(None, stream.close)

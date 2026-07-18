@@ -5,7 +5,7 @@ from __future__ import annotations
 from music_assistant_models.enums import ProviderFeature
 
 # config keys
-CONF_INPUT_DEVICE = "input_device"  # e.g. "alsa:hw:1,0"
+CONF_INPUT_DEVICE = "input_device"  # PulseAudio/PipeWire source name, e.g. "alsa_input.usb-..."
 CONF_FRIENDLY_NAME = "friendly_name"  # UI label
 CONF_ICON_PRESET = "icon_preset"  # bundled icon, or "custom" for CONF_THUMBNAIL_IMAGE
 CONF_THUMBNAIL_IMAGE = "thumbnail_image"  # URL, only used when CONF_ICON_PRESET == "custom"
@@ -21,11 +21,11 @@ ICON_PRESETS: dict[str, str] = {
     "stereo": "Stereo / Generic Input",
 }
 
-# fixed audio capture parameters
+# fixed audio capture parameters — PulseAudio/PipeWire resample/remap to this
+# spec on the server side, so it's safe to request regardless of the
+# selected source's native format.
 CHANNELS = 2  # 1=Mono, 2=Stereo
-SAMPLE_RATE_HZ = 44100  # arecord -r
-PERIOD_US = 10000  # arecord -F (ALSA period)
-BUFFER_US = 20000  # arecord -B (small multiple of PERIOD_US)
+SAMPLE_RATE_HZ = 44100
 
 PAUSE_DEBOUNCE_S = 0.5
 RESUME_DEBOUNCE_S = 0.5
