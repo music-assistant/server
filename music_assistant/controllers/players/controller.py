@@ -2196,7 +2196,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         attribute_name: str | None = None,
         attribute_value: Any = _SENTINEL,
         timeout: float = 5.0,
-        stable_for: float = 0.0,
     ) -> AsyncIterator[None]:
         """
         Async context manager that waits for a player state update.
@@ -2205,7 +2204,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         the action that triggers the expected update), then waits for a
         matching update on exit. If ``attribute_name`` and ``attribute_value``
         are both provided and the current value already matches at entry, the
-        wait for an update is skipped (a ``stable_for`` confirmation still applies).
+        wait is skipped.
 
         Example::
 
@@ -2222,8 +2221,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param attribute_value: Optional value the watched attribute must reach.
             Only meaningful in combination with ``attribute_name``.
         :param timeout: Maximum time to wait in seconds.
-        :param stable_for: If > 0, wait this many seconds before confirming the reached
-            value still matches. The total wait may exceed ``timeout`` by one hold.
         """
         update_event = asyncio.Event()
 
@@ -2249,54 +2246,22 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             and (player := self.get_player(player_id)) is not None
             and getattr(player.state, attribute_name, _SENTINEL) == attribute_value
         )
-        # stability only applies when a concrete attribute value is watched
-        if attribute_name is None or attribute_value is _SENTINEL:
-            stable_for = 0.0
-
-        def _matches_expected_value() -> bool:
-            if attribute_name is None:
-                return False
-            player = self.get_player(player_id)
-            return (
-                player is not None
-                and getattr(player.state, attribute_name, _SENTINEL) == attribute_value
-            )
-
-        async def _wait_for_value(deadline: float) -> bool:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            try:
-                async with asyncio.timeout(remaining):
-                    await update_event.wait()
-            except TimeoutError:
-                return False
-            return True
 
         unsub = self.subscribe_player_state_update(_on_state_update)
         try:
             yield
-
-            deadline = time.monotonic() + timeout
-            expected_value_seen = already_satisfied or await _wait_for_value(deadline)
-
-            while expected_value_seen:
-                if stable_for <= 0:
-                    return
-
-                update_event.clear()
-                await asyncio.sleep(stable_for)
-                if _matches_expected_value():
-                    return
-
-                expected_value_seen = await _wait_for_value(deadline)
-
-            self.logger.debug(
-                "Timed out waiting for player update on %s (attr=%s value=%s)",
-                player_id,
-                attribute_name,
-                attribute_value,
-            )
+            if already_satisfied:
+                return
+            try:
+                async with asyncio.timeout(timeout):
+                    await update_event.wait()
+            except TimeoutError:
+                self.logger.debug(
+                    "Timed out waiting for player update on %s (attr=%s value=%s)",
+                    player_id,
+                    attribute_name,
+                    attribute_value,
+                )
         finally:
             unsub()
 

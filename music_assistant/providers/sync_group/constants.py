@@ -21,8 +21,12 @@ IDLE_GRACE_SECONDS: Final[float] = 10.0
 # device — which would otherwise strand a player playing outside the group.
 PLAYBACK_START_TIMEOUT: Final[float] = 5.0
 
-# Required hold time for filtering transient PLAYING reports during group startup.
-PLAYBACK_CONFIRM_HOLD: Final[float] = 2.0
+# Debounce window (seconds) between removing the sync leader and re-forming the
+# group with a new one. Cascaded unjoins (e.g. a Home Assistant automation
+# ungrouping several rooms in short succession) each re-arm the window, so the
+# group re-forms and resumes playback exactly once with the final member list
+# instead of restarting for every removal.
+REFORM_DEBOUNCE_SECONDS: Final[float] = 2.0
 
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
     key="sgp_note",
