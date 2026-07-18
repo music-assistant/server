@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
@@ -28,6 +29,7 @@ from .constants import (
     IDLE_GRACE_SECONDS,
     PLAYBACK_START_TIMEOUT,
     PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
+    REFORM_DEBOUNCE_SECONDS,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +65,14 @@ class SyncGroupPlayer(Player):
         self._attr_needs_poll = True
         # task that dissolves the group after the idle grace window expires
         self._idle_grace_task: asyncio.Task[None] | None = None
+        # task that re-forms the group (debounced) after the sync leader was removed
+        self._reform_task: asyncio.Task[None] | None = None
+        # protocol hint for the debounced re-form, snapshotted before the old
+        # leader was cleared so the new leader keeps protocol continuity
+        self._reform_protocol_domain: str | None = None
+        # monotonic timestamp of the last playback start issued to the leader
+        # (-inf means never)
+        self._playback_start_at: float = float("-inf")
         self._update_attributes()
 
     @cached_property
@@ -82,11 +92,16 @@ class SyncGroupPlayer(Player):
         Return whether this sync group is currently holding its members.
 
         The session is considered active while a sync leader is set (formed and
-        potentially playing/paused) or while the idle grace timer is still
-        pending. ``__final_active_group`` reads this to decide whether the
-        configured members should be marked as ``active_group`` for this group.
+        potentially playing/paused), while the idle grace timer is still
+        pending, or while a debounced re-form is pending. ``__final_active_group``
+        reads this to decide whether the configured members should be marked as
+        ``active_group`` for this group.
         """
-        return self.sync_leader is not None or self._idle_grace_task is not None
+        return (
+            self.sync_leader is not None
+            or self._idle_grace_task is not None
+            or self._reform_task is not None
+        )
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -384,6 +399,10 @@ class SyncGroupPlayer(Player):
         to pin the group as 'active'.
         """
         self._cancel_idle_grace_timer()
+        # an explicit stop also voids any pending debounced re-form and the
+        # startup marker — the user asked for silence
+        self._cancel_reform_timer()
+        self._playback_start_at = float("-inf")
         self._attr_current_media = None
         if sync_leader := self.sync_leader:
             # Use internal handler to target the sync leader directly,
@@ -454,7 +473,14 @@ class SyncGroupPlayer(Player):
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
             )
         sync_leader = self.sync_leader or self._select_sync_leader(new_members=player_ids_to_add)
-        was_playing = self.playback_state == PlaybackState.PLAYING
+        # A start that was just issued to the leader may not be reflected in the
+        # (transient) device state yet, so treat the startup window as playing —
+        # otherwise a (un)group command racing an in-flight start misreads the
+        # group as idle and skips the resume. An explicit pause always wins:
+        # PAUSED is deliberate user intent, never startup noise.
+        was_playing = self.playback_state == PlaybackState.PLAYING or (
+            self.playback_state != PlaybackState.PAUSED and self._playback_recently_started
+        )
 
         # handle additions
         final_players_to_add: list[str] = []
@@ -572,6 +598,10 @@ class SyncGroupPlayer(Player):
                     player_ids_to_add=final_players_to_add,
                     player_ids_to_remove=final_players_to_remove,
                 )
+        elif self._reform_task is not None:
+            # leaderless with a debounced re-form pending: membership just changed,
+            # so re-arm the window — the re-form picks up the final member list.
+            self._schedule_reform_timer()
         # NOTE: If we weren't playing before, we don't need to do anything else,
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(self.player_id)
@@ -586,6 +616,7 @@ class SyncGroupPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         self._cancel_idle_grace_timer()
+        self._cancel_reform_timer()
         await super().on_unload()
         # the player is going away; make sure we don't leave the protocol-level
         # sync group standing with a now-nonexistent leader behind it.
@@ -594,8 +625,10 @@ class SyncGroupPlayer(Player):
 
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
-        # any in-flight grace timer is moot now — we're (re)forming the group
+        # any in-flight grace or debounced re-form timer is moot now —
+        # we're (re)forming the group
         self._cancel_idle_grace_timer()
+        self._cancel_reform_timer()
         self.logger.debug(
             "Forming syncgroup %s, _attr_group_members=%s, sync_leader=%s",
             self.display_name,
@@ -692,6 +725,9 @@ class SyncGroupPlayer(Player):
         if (leader := self.sync_leader) is None:
             yield
             return
+        # stamp the start: device state is unreliable while a start settles, so
+        # group-command decisions treat this window as playing (see set_members)
+        self._playback_start_at = time.monotonic()
         async with self.mass.players.wait_for_player_update(
             leader.player_id,
             attribute_name="playback_state",
@@ -702,8 +738,12 @@ class SyncGroupPlayer(Player):
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
-        # a dissolve is happening now — any pending grace timer is no longer needed
+        # a dissolve is happening now — any pending grace or re-form timer is no
+        # longer needed (_dissolve_and_reform re-arms the re-form right after)
+        # and the session whose start the marker tracked is gone
         self._cancel_idle_grace_timer()
+        self._cancel_reform_timer()
+        self._playback_start_at = float("-inf")
         if sync_leader := self.sync_leader:
             # dissolve the temporary syncgroup from the sync leader
             sync_children = [
@@ -992,18 +1032,20 @@ class SyncGroupPlayer(Player):
         resume_playback: bool = True,
         preferred_protocol_domain: str | None = None,
     ) -> None:
-        """Stop the current sync session, dissolve the syncgroup, and optionally re-form.
+        """
+        Stop the current sync session, dissolve the syncgroup and schedule a re-form.
 
         Used when a seamless handoff isn't possible (e.g. the new leader is not
-        part of the live session). Accepts a brief audio gap in exchange for
-        correctness: the old session is fully torn down before a fresh one starts.
+        part of the live session). The stop/dissolve happens immediately; the
+        re-form (with resume) is debounced so cascaded unjoins coalesce into a
+        single restart with the final member list.
 
         :param old_leader_id: The player_id of the departing leader.
         :param leader_to_stop: The player to stop before dissolving. Defaults
             to ``self.sync_leader`` but callers should pass the old leader
             explicitly when ``self.sync_leader`` has already been cleared.
-        :param resume_playback: If True, call ``play()`` after dissolving to
-            restart playback on the new leader. Pass False when the group was
+        :param resume_playback: If True, schedule the debounced re-form which
+            restarts playback on the new leader. Pass False when the group was
             not actively playing (e.g. paused or idle).
         :param preferred_protocol_domain: Optional snapshot of the active
             protocol domain taken before the old leader was cleared, passed to
@@ -1025,35 +1067,8 @@ class SyncGroupPlayer(Player):
         if old_leader_id in self._attr_group_members:
             self._attr_group_members.remove(old_leader_id)
         if resume_playback and self._attr_group_members:
-            # Wait for the remaining members to report as unsynced before
-            # re-forming. Providers like Sonos propagate group state
-            # asynchronously — the children can still report synced_to for
-            # a few seconds after the leader's ungroup command returns.
-            # snapshot: concurrent (un)group commands may mutate the list while we await
-            members = list(self._attr_group_members)
-            unsync_results = await asyncio.gather(
-                *(self._wait_member_unsynced(m) for m in members),
-                return_exceptions=True,
-            )
-            stuck_members = [
-                members[i] for i, result in enumerate(unsync_results) if result is False
-            ]
-            if stuck_members:
-                self.logger.error(
-                    "Members of group %s still report synced_to after recovery attempts: %s; "
-                    "aborting reform (no playback will resume on this call)",
-                    self.display_name,
-                    stuck_members,
-                )
-                return
-            # Preselect the new leader with the protocol hint so the form
-            # picks a member compatible with the previous session's protocol
-            # (e.g. keep AirPlay if the session was AirPlay).
-            if preferred_protocol_domain is not None:
-                self.sync_leader = self._select_sync_leader(
-                    preferred_protocol_domain=preferred_protocol_domain
-                )
-            await self.play()
+            self._reform_protocol_domain = preferred_protocol_domain
+            self._schedule_reform_timer()
 
     async def _wait_member_unsynced(self, member_id: str, timeout: float = 5.0) -> bool:
         """
@@ -1278,6 +1293,90 @@ class SyncGroupPlayer(Player):
             self.display_name,
         )
         await self._dissolve_syncgroup()
+
+    @property
+    def _playback_recently_started(self) -> bool:
+        """Return whether a playback start was issued within the settle window."""
+        return (time.monotonic() - self._playback_start_at) < PLAYBACK_START_TIMEOUT
+
+    def _schedule_reform_timer(self) -> None:
+        """(Re)schedule the debounced re-form after the sync leader was removed."""
+        # any previously scheduled task is replaced so cascaded unjoins coalesce
+        # into a single re-form with the final member list
+        self._cancel_reform_timer()
+        self.logger.debug(
+            "Scheduling debounced re-form for syncgroup %s in %ss",
+            self.display_name,
+            REFORM_DEBOUNCE_SECONDS,
+        )
+        self._reform_task = self.mass.create_task(self._reform_runner())
+
+    def _cancel_reform_timer(self) -> None:
+        """Cancel any pending debounced re-form task."""
+        if (task := self._reform_task) is None:
+            return
+        self._reform_task = None
+        # never cancel ourselves: the runner ends up here via play() -> _form_syncgroup
+        if task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    async def _reform_runner(self) -> None:
+        """Wait the debounce window, then re-form the group and resume playback."""
+        try:
+            await asyncio.sleep(REFORM_DEBOUNCE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        try:
+            # serialize with (un)group and playback commands targeting this group.
+            # A cancellation (another unjoin re-arming the window, an explicit
+            # stop) may still land while we wait for the lock.
+            async with self.mass.players.get_player_lock(
+                self.player_id, PlayerLockPurpose.PLAYBACK
+            ):
+                # re-check state at execution time — an explicit play may have
+                # re-formed the group already and all members may have been
+                # removed meanwhile
+                if self.sync_leader is not None or not self._attr_group_members:
+                    return
+                # Wait for the remaining members to report as unsynced before
+                # re-forming. Providers like Sonos propagate group state
+                # asynchronously — the children can still report synced_to for
+                # a few seconds after the leader's ungroup command returns.
+                members = list(self._attr_group_members)
+                unsync_results = await asyncio.gather(
+                    *(self._wait_member_unsynced(m) for m in members),
+                    return_exceptions=True,
+                )
+                stuck_members = [
+                    members[i] for i, result in enumerate(unsync_results) if result is False
+                ]
+                if stuck_members:
+                    self.logger.error(
+                        "Members of group %s still report synced_to after recovery attempts: "
+                        "%s; aborting re-form (no playback will resume on this call)",
+                        self.display_name,
+                        stuck_members,
+                    )
+                    return
+                self.logger.info(
+                    "Re-forming syncgroup %s with %s member(s) and resuming playback",
+                    self.display_name,
+                    len(members),
+                )
+                # Preselect the new leader with the protocol hint so the form
+                # picks a member compatible with the previous session's protocol
+                # (e.g. keep AirPlay if the session was AirPlay).
+                if self._reform_protocol_domain is not None:
+                    self.sync_leader = self._select_sync_leader(
+                        preferred_protocol_domain=self._reform_protocol_domain
+                    )
+                await self.play()
+        finally:
+            # normal completion detaches us via play() -> _form_syncgroup already;
+            # this covers the early-return paths so is_active_session settles
+            if self._reform_task is asyncio.current_task():
+                self._reform_task = None
+                self.update_state()
 
     def _resolve_session_target(self, player: Player, domain: str | None) -> Player | None:
         """Resolve the player that participates in the live session for ``domain``.
