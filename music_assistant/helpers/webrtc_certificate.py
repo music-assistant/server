@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import stat
 from datetime import timedelta
 from pathlib import Path
@@ -88,7 +89,9 @@ def _save_certificate(
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    key_path.write_bytes(key_pem)
+    fd = os.open(key_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(key_pem)
 
     # Set restrictive permissions on private key (owner read/write only)
     key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
