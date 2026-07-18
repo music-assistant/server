@@ -56,7 +56,7 @@ def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
     if "created" in artist_obj:
         with suppress(ValueError):
             artist.date_added = datetime.fromisoformat(artist_obj["created"])
-    if artist_obj_data["picture"]:
+    if artist_obj_data.get("picture"):
         picture_id = artist_obj_data["picture"].replace("-", "/")
         image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
         artist.metadata.images = UniqueList(
@@ -198,7 +198,7 @@ def parse_track(
                     bit_depth=24 if hi_res_lossless else 16,
                 ),
                 url=f"https://tidal.com/track/{track_id}",
-                available=track_obj_data["streamReady"],
+                available=track_obj_data.get("streamReady", True),  # Default to available
             )
         },
         disc_number=track_obj_data.get("volumeNumber", 0) or 0,
@@ -207,31 +207,35 @@ def parse_track(
     if "isrc" in track_obj_data:
         track.external_ids.add((ExternalID.ISRC, track_obj_data["isrc"]))
     track.artists = UniqueList()
-    for track_artist in track_obj_data["artists"]:
-        artist = parse_artist(provider, track_artist)
+    for track_artist in track_obj_data.get("artists", []):
+        try:
+            artist = parse_artist(provider, track_artist)
+        except (KeyError, TypeError) as err:
+            provider.logger.warning("Error parsing artist in track %s: %s", name, err)
+            continue
         track.artists.append(artist)
     # metadata
     if "created" in track_obj:
         with suppress(ValueError):
             track.date_added = datetime.fromisoformat(track_obj["created"])
-    track.metadata.explicit = track_obj_data["explicit"]
-    track.metadata.popularity = track_obj_data["popularity"]
+    track.metadata.explicit = track_obj_data.get("explicit", False)
+    track.metadata.popularity = track_obj_data.get("popularity", 0)
     if "copyright" in track_obj_data:
         track.metadata.copyright = track_obj_data["copyright"]
     if lyrics and "lyrics" in lyrics:
         track.metadata.lyrics = lyrics["lyrics"]
     if lyrics and "subtitles" in lyrics:
         track.metadata.lrc_lyrics = lyrics["subtitles"]
-    if track_obj_data["album"]:
+    if album_obj := track_obj_data.get("album"):
         # Here we use an ItemMapping as Tidal returns
         # minimal data when getting an Album from a Track
         track.album = provider.get_item_mapping(
             media_type=MediaType.ALBUM,
-            key=str(track_obj_data["album"]["id"]),
-            name=track_obj_data["album"]["title"],
+            key=str(album_obj["id"]),
+            name=album_obj["title"],
         )
-        if track_obj_data["album"]["cover"]:
-            picture_id = track_obj_data["album"]["cover"].replace("-", "/")
+        if album_obj.get("cover"):
+            picture_id = album_obj["cover"].replace("-", "/")
             image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
             track.metadata.images = UniqueList(
                 [
