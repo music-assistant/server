@@ -20,6 +20,9 @@ from .parsers import (
     parse_playlist,
     parse_track,
 )
+from .parsers_v2 import parse_album as parse_album_v2
+from .parsers_v2 import parse_artist as parse_artist_v2
+from .parsers_v2 import parse_track as parse_track_v2
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
@@ -85,29 +88,45 @@ class TidalMediaManager:
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details."""
         try:
-            data = await self.api.get(f"artists/{prov_artist_id}")
-            return parse_artist(self.provider, data)
+            doc = await self.api.get_jsonapi(
+                f"artists/{prov_artist_id}", include=["profileArt", "biography"]
+            )
+            return parse_artist_v2(self.provider, doc, doc.data)
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details."""
         try:
-            data = await self.api.get(f"albums/{prov_album_id}")
-            return parse_album(self.provider, data)
+            doc = await self.api.get_jsonapi(
+                f"albums/{prov_album_id}", include=["artists", "coverArt", "genres"]
+            )
+            return parse_album_v2(self.provider, doc, doc.data)
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details."""
         try:
-            # Fetch the track first so a nonexistent track doesn't cost an
-            # extra (throttled) lyrics request.
-            track_obj = await self.api.get(f"tracks/{prov_track_id}")
-            lyrics = await self._get_lyrics(prov_track_id)
-            return parse_track(self.provider, track_obj, lyrics=lyrics)
+            # The album cover is resolved via the albums.coverArt include so the
+            # track carries an image, matching the unofficial API's behaviour.
+            doc = await self.api.get_jsonapi(
+                f"tracks/{prov_track_id}",
+                include=["artists", "albums", "albums.coverArt", "genres"],
+            )
+            track = parse_track_v2(self.provider, doc, doc.data)
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+
+        # Lyrics remain on the unofficial API (not exposed at the official
+        # third-party tier). A lyrics failure must not fail the track lookup.
+        if lyrics := await self._get_lyrics(prov_track_id):
+            if plain := lyrics.get("lyrics"):
+                track.metadata.lyrics = plain
+            if synced := lyrics.get("subtitles"):
+                track.metadata.lrc_lyrics = synced
+
+        return track
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details."""

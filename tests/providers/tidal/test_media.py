@@ -100,73 +100,80 @@ async def test_search(
     )
 
 
-@patch("music_assistant.providers.tidal.media.parse_artist")
+@patch("music_assistant.providers.tidal.media.parse_artist_v2")
 async def test_get_artist(
     mock_parse_artist: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
-    """Test get_artist."""
-    provider_mock.api.get.return_value = {"id": 1, "name": "Test Artist"}
+    """Test get_artist uses the official JSON:API endpoint."""
+    doc = Mock()
+    provider_mock.api.get_jsonapi.return_value = doc
     mock_parse_artist.return_value = Mock(item_id="1")
 
     artist = await media_manager.get_artist("1")
 
     assert artist.item_id == "1"
-    provider_mock.api.get.assert_called_with("artists/1")
-    mock_parse_artist.assert_called_once()
+    provider_mock.api.get_jsonapi.assert_called_with(
+        "artists/1", include=["profileArt", "biography"]
+    )
+    mock_parse_artist.assert_called_once_with(provider_mock, doc, doc.data)
 
 
-@patch("music_assistant.providers.tidal.media.parse_album")
+@patch("music_assistant.providers.tidal.media.parse_album_v2")
 async def test_get_album(
     mock_parse_album: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
-    """Test get_album."""
-    provider_mock.api.get.return_value = {"id": 1, "title": "Test Album"}
+    """Test get_album uses the official JSON:API endpoint."""
+    doc = Mock()
+    provider_mock.api.get_jsonapi.return_value = doc
     mock_parse_album.return_value = Mock(item_id="1")
 
     album = await media_manager.get_album("1")
 
     assert album.item_id == "1"
-    provider_mock.api.get.assert_called_with("albums/1")
-    mock_parse_album.assert_called_once()
+    provider_mock.api.get_jsonapi.assert_called_with(
+        "albums/1", include=["artists", "coverArt", "genres"]
+    )
+    mock_parse_album.assert_called_once_with(provider_mock, doc, doc.data)
 
 
-@patch("music_assistant.providers.tidal.media.parse_track")
+@patch("music_assistant.providers.tidal.media.parse_track_v2")
 async def test_get_track(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
-    """Test get_track."""
-    provider_mock.api.get.side_effect = [
-        {"id": 1, "title": "Test Track"},  # Track data
-        {"lyrics": "Test Lyrics"},  # Lyrics data
-    ]
-    mock_parse_track.return_value = Mock(item_id="1")
+    """Test get_track fetches the official track and applies unofficial lyrics."""
+    doc = Mock()
+    provider_mock.api.get_jsonapi.return_value = doc
+    track = Mock(item_id="1")
+    track.metadata = Mock()
+    mock_parse_track.return_value = track
+    provider_mock.api.get.return_value = {"lyrics": "Test Lyrics", "subtitles": "Synced"}
 
-    track = await media_manager.get_track("1")
+    result = await media_manager.get_track("1")
 
-    assert track.item_id == "1"
-    assert provider_mock.api.get.call_count == 2
-    provider_mock.api.get.assert_any_call("tracks/1")
-    provider_mock.api.get.assert_any_call("tracks/1/lyrics")
-    mock_parse_track.assert_called_once()
+    assert result.item_id == "1"
+    provider_mock.api.get_jsonapi.assert_called_with(
+        "tracks/1", include=["artists", "albums", "albums.coverArt", "genres"]
+    )
+    provider_mock.api.get.assert_called_with("tracks/1/lyrics")
+    assert track.metadata.lyrics == "Test Lyrics"
+    assert track.metadata.lrc_lyrics == "Synced"
 
 
-@patch("music_assistant.providers.tidal.media.parse_track")
+@patch("music_assistant.providers.tidal.media.parse_track_v2")
 async def test_get_track_tolerates_lyrics_failure(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test get_track still returns the track when the lyrics lookup fails."""
-    provider_mock.api.get.side_effect = [
-        {"id": 1, "title": "Test Track"},  # Track data
-        RetriesExhausted("lyrics lookup failed"),  # Lyrics data
-    ]
-    mock_parse_track.return_value = Mock(item_id="1")
+    doc = Mock()
+    provider_mock.api.get_jsonapi.return_value = doc
+    track = Mock(item_id="1")
+    mock_parse_track.return_value = track
+    provider_mock.api.get.side_effect = RetriesExhausted("lyrics lookup failed")
 
-    track = await media_manager.get_track("1")
+    result = await media_manager.get_track("1")
 
-    assert track.item_id == "1"
-    mock_parse_track.assert_called_once_with(
-        provider_mock, {"id": 1, "title": "Test Track"}, lyrics=None
-    )
+    assert result.item_id == "1"
+    mock_parse_track.assert_called_once_with(provider_mock, doc, doc.data)
 
 
 @patch("music_assistant.providers.tidal.media.parse_playlist")

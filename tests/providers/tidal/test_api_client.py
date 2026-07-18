@@ -12,6 +12,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.providers.tidal.api_client import TidalAPIClient
+from music_assistant.providers.tidal.constants import OPEN_API_URL
 
 
 @pytest.fixture
@@ -52,6 +53,25 @@ async def test_get_success(api_client: TidalAPIClient, provider_mock: Mock) -> N
 
     result = await api_client.get("test/endpoint")
     assert result == {"data": "test"}
+
+
+async def test_session_id_scoped_to_unofficial_api(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test sessionId is sent to the unofficial API but not the official one."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.json.return_value = {}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    await api_client.get("test/endpoint")
+    assert "sessionId" in provider_mock.mass.http_session.request.call_args[1]["params"]
+
+    await api_client.get("tracks", base_url=OPEN_API_URL)
+    assert "sessionId" not in provider_mock.mass.http_session.request.call_args[1]["params"]
+    assert "countryCode" in provider_mock.mass.http_session.request.call_args[1]["params"]
 
 
 async def test_get_401_error(api_client: TidalAPIClient, provider_mock: Mock) -> None:
