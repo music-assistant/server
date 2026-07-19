@@ -61,6 +61,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.RECOMMENDATIONS,
@@ -85,13 +86,6 @@ class TidalProvider(MusicProvider):
         self.playlists = TidalPlaylistManager(self)
         self.recommendations_manager = TidalRecommendationManager(self)
         self.streaming = TidalStreamingManager(self)
-
-    def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
-        """Update auth config with new auth info."""
-        self._update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
-        self._update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
-        self._update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
-        self._update_config_value(CONF_USER_ID, auth_info["userId"])
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -140,6 +134,11 @@ class TidalProvider(MusicProvider):
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         return await self.media.get_similar_tracks(prov_track_id, limit)
+
+    @use_cache(3600 * 24, allow_expired_cache=True)
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Get similar artists for given artist id."""
+        return await self.media.get_similar_artists(prov_artist_id, limit)
 
     @use_cache(3600 * 24 * 30)
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -242,3 +241,10 @@ class TidalProvider(MusicProvider):
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's recommendations organized into folders."""
         return await self.recommendations_manager.get_recommendations()
+
+    def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
+        """Update auth config with new auth info."""
+        self._update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
+        self._update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
+        self._update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
+        self._update_config_value(CONF_USER_ID, auth_info["userId"])

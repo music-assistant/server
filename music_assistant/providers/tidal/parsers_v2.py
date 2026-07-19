@@ -210,6 +210,8 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
         track.metadata.genres = genres
     if links := _parse_links(attributes):
         track.metadata.links = links
+    if performers := _parse_credits(doc, resource):
+        track.metadata.performers = performers
 
     bpm = attributes.get("bpm")
     musical_key = _parse_musical_key(attributes.get("key"), attributes.get("keyScale"))
@@ -253,6 +255,16 @@ def _split_title_version(title: str, version: str | None) -> tuple[str, str]:
 def _clean_biography(text: str) -> str:
     """Strip Tidal's internal [wimpLink] cross-reference markup from bio text."""
     return _WIMP_LINK_RE.sub("", text).strip()
+
+
+def _parse_credits(doc: JsonApiDocument, resource: dict[str, Any]) -> set[str] | None:
+    """Resolve the credits relationship to a set of contributor names."""
+    names = {
+        name
+        for credit in doc.related(resource, "credits")
+        if (name := credit.get("attributes", {}).get("name"))
+    }
+    return names or None
 
 
 def _parse_genres(doc: JsonApiDocument, resource: dict[str, Any]) -> set[str] | None:

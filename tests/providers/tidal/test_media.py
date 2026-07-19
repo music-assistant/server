@@ -1,5 +1,7 @@
 """Test Tidal Media Manager."""
 
+import json
+import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -8,7 +10,15 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import RetriesExhausted
 from music_assistant_models.media_items import ItemMapping
 
+from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.media import TidalMediaManager
+
+FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "v2"
+
+
+def _load_doc(name: str) -> JsonApiDocument:
+    with open(FIXTURES_DIR / name) as f:
+        return JsonApiDocument(json.load(f))
 
 
 @pytest.fixture
@@ -152,7 +162,7 @@ async def test_get_track(
 
     assert result.item_id == "1"
     provider_mock.api.get_jsonapi.assert_called_with(
-        "tracks/1", include=["artists", "albums", "albums.coverArt", "genres"]
+        "tracks/1", include=["artists", "albums", "albums.coverArt", "genres", "credits"]
     )
     provider_mock.api.get.assert_called_with("tracks/1/lyrics")
     assert track.metadata.lyrics == "Test Lyrics"
@@ -176,6 +186,77 @@ async def test_get_track_tolerates_lyrics_failure(
     mock_parse_track.assert_called_once_with(provider_mock, doc, doc.data)
 
 
+async def test_get_album_tracks(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
+    """Test album tracks read from the official relationship endpoint with ordering."""
+    doc = _load_doc("album_items.json")
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = await media_manager.get_album_tracks("58756127")
+
+    assert len(tracks) == 11
+    assert tracks[0].name == "7 Years"
+    assert tracks[0].track_number == 1
+    assert tracks[0].disc_number == 1
+    assert tracks[0].album is not None
+
+
+async def test_get_artist_albums(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
+    """Test artist albums read from the official relationship endpoint."""
+    doc = _load_doc("artist_albums.json")
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    albums = await media_manager.get_artist_albums("4184211")
+
+    assert len(albums) == 20
+    assert all(album.item_id for album in albums)
+
+
+async def test_get_artist_toptracks(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
+    """Test artist top tracks read from the official relationship endpoint."""
+    provider_mock.api.get_jsonapi.return_value = _load_doc("artist_toptracks.json")
+
+    tracks = await media_manager.get_artist_toptracks("4184211")
+
+    assert len(tracks) == 20
+    provider_mock.api.get_jsonapi.assert_called_with(
+        "artists/4184211/relationships/tracks",
+        params={"collapseBy": "FINGERPRINT"},
+        include=["tracks.artists", "tracks.albums.coverArt"],
+    )
+
+
+async def test_get_similar_tracks_respects_limit(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test similar tracks are read from the official endpoint and capped to the limit."""
+    provider_mock.api.get_jsonapi.return_value = _load_doc("similar_tracks.json")
+
+    tracks = await media_manager.get_similar_tracks("58756128", limit=5)
+
+    assert len(tracks) == 5
+
+
+async def test_get_similar_artists(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
+    """Test similar artists read from the official relationship endpoint."""
+    provider_mock.api.get_jsonapi.return_value = _load_doc("similar_artists.json")
+
+    artists = await media_manager.get_similar_artists("4184211")
+
+    assert len(artists) == 20
+    provider_mock.api.get_jsonapi.assert_called_with(
+        "artists/4184211/relationships/similarArtists",
+        include=["similarArtists.profileArt"],
+    )
+
+
 @patch("music_assistant.providers.tidal.media.parse_playlist")
 async def test_get_playlist(
     mock_parse_playlist: Mock, media_manager: TidalMediaManager, provider_mock: Mock
@@ -189,60 +270,6 @@ async def test_get_playlist(
     assert playlist.item_id == "1"
     provider_mock.api.get.assert_called_with("playlists/1")
     mock_parse_playlist.assert_called_once()
-
-
-@patch("music_assistant.providers.tidal.media.parse_track")
-async def test_get_album_tracks(
-    mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
-) -> None:
-    """Test get_album_tracks."""
-    provider_mock.api.get.return_value = {"items": [{"id": 1}]}
-    mock_parse_track.return_value = Mock(item_id="1")
-
-    tracks = await media_manager.get_album_tracks("1")
-
-    assert len(tracks) == 1
-    assert tracks[0].item_id == "1"
-    provider_mock.api.get.assert_called_with(
-        "albums/1/tracks",
-        params={"limit": 250},
-    )
-
-
-@patch("music_assistant.providers.tidal.media.parse_album")
-async def test_get_artist_albums(
-    mock_parse_album: Mock, media_manager: TidalMediaManager, provider_mock: Mock
-) -> None:
-    """Test get_artist_albums."""
-    provider_mock.api.get.return_value = {"items": [{"id": 1}]}
-    mock_parse_album.return_value = Mock(item_id="1")
-
-    albums = await media_manager.get_artist_albums("1")
-
-    assert len(albums) == 1
-    assert albums[0].item_id == "1"
-    provider_mock.api.get.assert_called_with(
-        "artists/1/albums",
-        params={"limit": 250},
-    )
-
-
-@patch("music_assistant.providers.tidal.media.parse_track")
-async def test_get_artist_toptracks(
-    mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
-) -> None:
-    """Test get_artist_toptracks."""
-    provider_mock.api.get.return_value = {"items": [{"id": 1}]}
-    mock_parse_track.return_value = Mock(item_id="1")
-
-    tracks = await media_manager.get_artist_toptracks("1")
-
-    assert len(tracks) == 1
-    assert tracks[0].item_id == "1"
-    provider_mock.api.get.assert_called_with(
-        "artists/1/toptracks",
-        params={"limit": 10, "offset": 0},
-    )
 
 
 @patch("music_assistant.providers.tidal.media.parse_track")

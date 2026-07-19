@@ -81,12 +81,14 @@ mass = "music_assistant.__main__:main"
 # "claus" is Santa Claus, in the christmas_music genre description
 # "childrens" is the normalized form of the "Children's" audiobook genre (apostrophe stripped)
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
+# tidal fixtures are captured API responses; foreign album/track titles aren't typos
 ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
 music_assistant/providers/sonic_analysis/vendored_clap/**,\
 music_assistant/translations/*.json,\
+tests/providers/tidal/fixtures/**,\
 NOTICE,\
 """
 

@@ -7,6 +7,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ItemMapping
 
+from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.media import TidalMediaManager
 
 
@@ -95,20 +96,26 @@ async def test_get_playlist_fallback_to_mix(
     )
 
 
-@patch("music_assistant.providers.tidal.media.parse_track")
+@patch("music_assistant.providers.tidal.media.parse_track_v2")
 async def test_get_similar_tracks(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
-    """Test get_similar_tracks."""
-    provider_mock.api.get.return_value = {"items": [{"id": 1}, {"id": 2}, {"id": 3}]}
+    """Test get_similar_tracks reads from the official relationship endpoint."""
+    doc = JsonApiDocument(
+        {
+            "data": [{"type": "tracks", "id": str(i)} for i in range(10)],
+            "included": [{"type": "tracks", "id": str(i), "attributes": {}} for i in range(10)],
+        }
+    )
+    provider_mock.api.get_jsonapi.return_value = doc
     mock_parse_track.return_value = Mock(item_id="1")
 
-    tracks = await media_manager.get_similar_tracks("123", limit=25)
+    tracks = await media_manager.get_similar_tracks("123", limit=3)
 
     assert len(tracks) == 3
-    provider_mock.api.get.assert_called_with(
-        "tracks/123/radio",
-        params={"limit": 25},
+    provider_mock.api.get_jsonapi.assert_called_with(
+        "tracks/123/relationships/similarTracks",
+        include=["similarTracks.artists", "similarTracks.albums.coverArt"],
     )
 
 

@@ -221,6 +221,52 @@ async def test_paginate_preserves_params_across_pages(
         assert call[1]["params"]["order"] == "DATE"
 
 
+async def test_paginate_jsonapi_follows_cursor(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test paginate_jsonapi follows links.next and stops when the cursor runs out."""
+    page1 = AsyncMock(spec=ClientResponse)
+    page1.status = 200
+    page1.json.return_value = {
+        "data": [{"type": "tracks", "id": "1"}],
+        "links": {"next": "/x?countryCode=AT&page[cursor]=NEXT%3D123&other=1"},
+    }
+    page2 = AsyncMock(spec=ClientResponse)
+    page2.status = 200
+    page2.json.return_value = {"data": [{"type": "tracks", "id": "2"}]}
+
+    ctx1 = AsyncMock()
+    ctx1.__aenter__.return_value = page1
+    ctx2 = AsyncMock()
+    ctx2.__aenter__.return_value = page2
+    provider_mock.mass.http_session.request = MagicMock(side_effect=[ctx1, ctx2])
+
+    docs = [doc async for doc in api_client.paginate_jsonapi("tracks")]
+
+    assert len(docs) == 2
+    assert [d.data_list[0]["id"] for d in docs] == ["1", "2"]
+    assert provider_mock.mass.http_session.request.call_count == 2
+    # the second request carried the (url-decoded) cursor from page 1's next link
+    second_params = provider_mock.mass.http_session.request.call_args_list[1][1]["params"]
+    assert second_params["page[cursor]"] == "NEXT=123"
+
+
+async def test_paginate_jsonapi_caps_pages(api_client: TidalAPIClient, provider_mock: Mock) -> None:
+    """Test paginate_jsonapi stops at max_pages and warns when more pages remain."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    # every page advertises a next cursor, so the cap is what stops iteration
+    response.json.return_value = {"data": [], "links": {"next": "/x?page[cursor]=C"}}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    docs = [doc async for doc in api_client.paginate_jsonapi("x", max_pages=2)]
+
+    assert len(docs) == 2
+    provider_mock.logger.warning.assert_called_once()
+
+
 async def test_delete_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:
     """Test successful DELETE request."""
     response = AsyncMock(spec=ClientResponse)
