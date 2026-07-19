@@ -28,7 +28,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 
-from .ffmpeg import get_ffmpeg_stream
+from .ffmpeg import DEFAULT_MP3_BIT_RATE, get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
@@ -571,8 +571,9 @@ def calculate_content_length(
         # Source: https://z-issue.com/wp/flac-compression-level-comparison/
         # Real-world variance: 65-85% depending on audio content.
         return int(pcm_size * 0.747)
-    if fmt.content_type in (ContentType.MP3, ContentType.OGG):
-        # CBR 320kbps as set in get_ffmpeg_args
+    if fmt.content_type == ContentType.MP3:
+        return int(((DEFAULT_MP3_BIT_RATE * 1000) / 8) * seconds)
+    if fmt.content_type == ContentType.OGG:
         return int((320000 / 8) * seconds)
     if fmt.content_type in (ContentType.AAC, ContentType.M4A):
         # CBR 256kbps as set in get_ffmpeg_args
