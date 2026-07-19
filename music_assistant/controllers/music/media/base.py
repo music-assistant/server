@@ -1314,7 +1314,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 query_params=query_params,
                 join_parts=join_parts,
                 favorite=favorite,
-                search=search,
+                search=search if not collapse_collections else None,
                 genre_ids=genre_ids,
                 provider_filter=provider_filter,
                 played_only=played_only,
@@ -1327,7 +1327,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 query_parts=query_parts,
                 query_params=query_params,
                 favorite=favorite,
-                search=search,
+                search=search if not collapse_collections else None,
                 genre_ids=genre_ids,
                 provider_filter=provider_filter,
                 played_only=played_only,
@@ -1343,10 +1343,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         if collapse_collections:
             sql_query = await self._adapt_query_for_collections(
-                sql_query,
-                query_params,
-                summary=summary,
-                order_by=order_by,
+                sql_query, query_params, summary=summary, order_by=order_by, search=search
             )
 
         db_rows = await self.mass.music.database.get_rows_from_query(
@@ -1982,6 +1979,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         summary: bool,
         order_by: str | None,
         collection_name: str | None = None,
+        search: str | None = None,
     ) -> str:
         # get column names of base query
         db_rows = await self.mass.music.database.get_rows_from_query(
@@ -1997,78 +1995,80 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             "collections" if summary else 'json_extract("metadata", "$.collections")'
         )
 
-        adapted_sql_query = ""
-        if collection_name:
-            # filter for a single collection
-            adapted_sql_query += "SELECT * FROM ("
+        sql_query = f"""
+        SELECT * FROM (
 
-        adapted_sql_query += f"""
-        WITH
-            joined_table as ({sql_query}),
-            collection_extract as (
-                SELECT
-                    name as media_name,
-                    json_extract(iter_coll.value, "$.title") as collection_title,
-                    json_extract(iter_coll.value, "$.sequence") as collection_sequence,
-                    {json_object} as media_data
-                FROM (
-                    SELECT * FROM joined_table
-                ), json_each({collections_column}) as iter_coll
-            )
-        SELECT
-            'collection' as type,
-            collection_title as name,
-            lower(collection_title) as search_name,
-            (collection_title) as search_sort_name,
-            json_group_array(media_data) as media_data
-        FROM (
-            SELECT * FROM collection_extract
-            ORDER BY collection_title,
-            -- null case
-            CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-            -- numeric before text
-            CASE
-                WHEN collection_sequence IS NOT NULL
-                    AND collection_sequence GLOB '[0-9]*'
-                    AND collection_sequence NOT GLOB '*[^0-9]*'
-                THEN 0
+            WITH
+                joined_table as ({sql_query}),
+                collection_extract as (
+                    SELECT
+                        name as media_name,
+                        json_extract(iter_coll.value, "$.title") as collection_title,
+                        json_extract(iter_coll.value, "$.sequence") as collection_sequence,
+                        {json_object} as media_data
+                    FROM (
+                        SELECT * FROM joined_table
+                    ), json_each({collections_column}) as iter_coll
+                )
+            SELECT
+                'collection' as type,
+                collection_title as name,
+                replace(lower(collection_title),' ','') as search_name,
+                replace(lower(collection_title),' ','') as search_sort_name,
+                json_group_array(media_data) as media_data
+            FROM (
+                SELECT * FROM collection_extract
+                ORDER BY collection_title,
+                -- null case
+                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+                -- numeric before text
+                CASE
                     WHEN collection_sequence IS NOT NULL
-                THEN 1
-            END,
-            -- order NUMERIC
-            CASE
-                WHEN collection_sequence IS NOT NULL
-                    AND collection_sequence GLOB '[0-9]*'
-                    AND collection_sequence NOT GLOB '*[^0-9]*'
-                THEN CAST(collection_sequence AS INTEGER)
-            END,
-            -- order TEXT
-            CASE
-                WHEN collection_sequence IS NOT NULL
-                THEN collection_sequence
-            END COLLATE NOCASE,
-            -- order by media name if no sequence given
-            CASE
-                WHEN collection_sequence IS NULL
-                THEN media_name
-            END COLLATE NOCASE
+                        AND collection_sequence GLOB '[0-9]*'
+                        AND collection_sequence NOT GLOB '*[^0-9]*'
+                    THEN 0
+                        WHEN collection_sequence IS NOT NULL
+                    THEN 1
+                END,
+                -- order NUMERIC
+                CASE
+                    WHEN collection_sequence IS NOT NULL
+                        AND collection_sequence GLOB '[0-9]*'
+                        AND collection_sequence NOT GLOB '*[^0-9]*'
+                    THEN CAST(collection_sequence AS INTEGER)
+                END,
+                -- order TEXT
+                CASE
+                    WHEN collection_sequence IS NOT NULL
+                    THEN collection_sequence
+                END COLLATE NOCASE,
+                -- order by media name if no sequence given
+                CASE
+                    WHEN collection_sequence IS NULL
+                    THEN media_name
+                END COLLATE NOCASE
+            )
+            GROUP BY collection_title
+
+            UNION ALL
+
+            SELECT 'single', name, search_name, search_sort_name, {json_object} FROM joined_table
+                WHERE {collections_column} IS NULL
+                    OR {collections_column} = "[]"
         )
-        GROUP BY collection_title
-
-        UNION ALL
-
-        SELECT 'single', name, search_name, search_sort_name, {json_object} FROM joined_table
-            WHERE {collections_column} IS NULL
-                OR {collections_column} = "[]"
         """
 
         if collection_name:
-            adapted_sql_query += f") WHERE name = '{collection_name}'"
-            return adapted_sql_query
+            sql_query += f" WHERE name = '{collection_name}'"
+            return sql_query
+
+        if search:
+            sql_query += f"WHERE search_name LIKE '%{search}%'"
+            return sql_query
 
         supported_order_keys = ("name", "sort_name")
         if order_by and order_by in supported_order_keys:
             if sort_key := SORT_KEYS.get(order_by):
-                adapted_sql_query += f" ORDER BY {sort_key}"
+                sql_query += f" ORDER BY {sort_key}"
 
-        return adapted_sql_query
+        return sql_query
