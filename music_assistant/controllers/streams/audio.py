@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -112,6 +112,7 @@ from music_assistant.helpers.audio import (
     parse_extinf_metadata,
     realtime_pcm_pacer,
     resample_pcm_audio,
+    resolve_output_player_ids,
 )
 from music_assistant.helpers.dsp import filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
@@ -1146,6 +1147,7 @@ class StreamsAudio:
         queue_id: str | None = None,
         session_id: str | None = None,
         queue_item_id: str | None = None,
+        shared_player_ids: Iterable[str] = (),
     ) -> AudioOutputPlan:
         """
         Return executable filters and matching output details for a player.
@@ -1157,12 +1159,11 @@ class StreamsAudio:
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
+        :param shared_player_ids: Additional players receiving the same encoded output.
         """
         filter_params: list[str] = []
         player = self.mass.players.get_player(player_id)
-        destination_player_id = (
-            player.protocol_parent_id if player and player.protocol_parent_id else player_id
-        )
+        destination_player_id = resolve_output_player_ids(self.mass, (player_id,)).pop()
         if player:
             dsp_config_id = self._resolve_player_dsp_config_id(player)
             dsp = self._resolve_player_dsp_config(player)
@@ -1228,6 +1229,7 @@ class StreamsAudio:
                 queue_id=queue_id,
                 session_id=session_id,
                 queue_item_id=queue_item_id,
+                shared_player_ids=shared_player_ids,
             )
         self.logger.log(
             VERBOSE_LOG_LEVEL,

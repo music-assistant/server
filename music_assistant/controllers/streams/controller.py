@@ -781,6 +781,7 @@ class StreamsController(CoreController):
                 queue_id=queue_id,
                 session_id=session_id,
                 queue_item_id=queue_item.queue_item_id,
+                shared_player_ids=player.state.group_members,
             )
             filter_params = output_plan.filter_params
             # Fast path for live AudioSource: when the player accepts WAV at the
@@ -991,6 +992,7 @@ class StreamsController(CoreController):
             output_format,
             queue_id=queue_id,
             session_id=session_id,
+            shared_player_ids=player.state.group_members,
         )
 
         # all checks passed, start streaming!

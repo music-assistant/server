@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
@@ -18,7 +19,7 @@ from music_assistant_models.audio_processing import (
 from music_assistant_models.dsp import DSPState
 from music_assistant_models.enums import ContentType, CrossfadeMode, VolumeNormalizationMode
 
-from music_assistant.helpers.audio import get_bit_rate
+from music_assistant.helpers.audio import get_bit_rate, resolve_output_player_ids
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -191,6 +192,7 @@ class AudioProcessingManager:
         queue_id: str,
         session_id: str,
         queue_item_id: str | None = None,
+        shared_player_ids: Iterable[str] = (),
     ) -> bool:
         """
         Store an effective player output.
@@ -200,6 +202,7 @@ class AudioProcessingManager:
         :param queue_id: Queue identifier that owns the output.
         :param session_id: Queue session identifier that owns the output.
         :param queue_item_id: Queue item for single-item output, or None for flow output.
+        :param shared_player_ids: Additional players receiving the same encoded output.
         :return: Whether the effective output changed.
         """
         session = self._get_session(queue_id, session_id)
@@ -208,17 +211,30 @@ class AudioProcessingManager:
         self._prune_played_items(queue_id, session)
         if queue_item_id is not None and self._is_played_item(queue_id, queue_item_id):
             return False
-        entry = _AudioOutputEntry(
-            details=deepcopy(output_plan.output_details),
-            input_format=deepcopy(output_plan.input_format),
-            handoff_format=deepcopy(output_plan.handoff_format),
-            dsp_config_id=output_plan.dsp_config_id,
+        destination_player_ids = resolve_output_player_ids(
+            self.mass,
+            (player_id, *shared_player_ids),
         )
-        entry.details.player_ids = [player_id]
-        item_outputs = session.outputs.setdefault(queue_item_id, {})
-        if item_outputs.get(player_id) == entry:
+        entries: dict[str, _AudioOutputEntry] = {}
+        for destination_player_id in sorted(destination_player_ids):
+            details = deepcopy(output_plan.output_details)
+            details.player_ids = [destination_player_id]
+            entries[destination_player_id] = _AudioOutputEntry(
+                details=details,
+                input_format=deepcopy(output_plan.input_format),
+                handoff_format=deepcopy(output_plan.handoff_format),
+                dsp_config_id=output_plan.dsp_config_id,
+            )
+        item_outputs = session.outputs.get(queue_item_id)
+        if item_outputs is not None and all(
+            item_outputs.get(destination_player_id) == entry
+            for destination_player_id, entry in entries.items()
+        ):
             return False
-        item_outputs[player_id] = entry
+        if item_outputs is None:
+            session.outputs[queue_item_id] = entries
+        else:
+            item_outputs.update(entries)
         current_changed = self._publish_all(queue_id, session)
         queue = self.mass.player_queues.get(queue_id)
         if current_changed or (

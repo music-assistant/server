@@ -7,7 +7,7 @@ import logging
 import re
 import struct
 import urllib.parse
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Iterable, Iterator
 from contextlib import aclosing
 from io import BytesIO
 from typing import TYPE_CHECKING, Final
@@ -51,6 +51,21 @@ SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 _MIME_TYPE_OVERRIDES: Final[dict[str, str]] = {
     "mp3": "audio/mpeg",
 }
+
+
+def resolve_output_player_ids(mass: MusicAssistant, player_ids: Iterable[str]) -> set[str]:
+    """
+    Return user-facing player identifiers for audio output destinations.
+
+    :param mass: Music Assistant instance.
+    :param player_ids: Player identifiers to resolve.
+    """
+    output_player_ids: set[str] = set()
+    for player_id in player_ids:
+        player = mass.players.get_player(player_id)
+        protocol_parent_id = player.protocol_parent_id if player else None
+        output_player_ids.add(protocol_parent_id or player_id)
+    return output_player_ids
 
 
 def get_mime_type(format_str: str) -> str:

@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
-from music_assistant.helpers.audio import build_concat_filelist
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from music_assistant.helpers.audio import build_concat_filelist, resolve_output_player_ids
+
+
+def test_resolve_output_player_ids_resolves_parents_and_duplicates() -> None:
+    """Output destinations use user-facing protocol parents without duplicates."""
+    mass = MagicMock()
+    players = {
+        "leader": SimpleNamespace(protocol_parent_id=None),
+        "protocol-child": SimpleNamespace(protocol_parent_id="child"),
+        "child": SimpleNamespace(protocol_parent_id=None),
+    }
+    mass.players.get_player.side_effect = players.get
+
+    result = resolve_output_player_ids(
+        mass,
+        ("leader", "leader", "protocol-child", "child"),
+    )
+
+    assert result == {"leader", "child"}
 
 
 def test_build_concat_filelist_plain_paths() -> None:
