@@ -1,14 +1,24 @@
 """Test Tidal Library Manager."""
 
+import json
+import pathlib
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
 
+from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.library import TidalLibraryManager
+
+FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "v2"
+
+
+def _load_doc(name: str) -> JsonApiDocument:
+    with open(FIXTURES_DIR / name) as f:
+        return JsonApiDocument(json.load(f))
 
 
 @pytest.fixture
@@ -51,106 +61,67 @@ def library_manager(provider_mock: Mock) -> TidalLibraryManager:
     return TidalLibraryManager(provider_mock)
 
 
-@patch("music_assistant.providers.tidal.library.parse_artist")
-async def test_get_artists(
-    mock_parse_artist: Mock, library_manager: TidalLibraryManager, provider_mock: Mock
-) -> None:
-    """Test get_artists."""
-    provider_mock.api.paginate.return_value = [
-        {"created": "2024-01-01T00:00:00", "item": {"id": 1, "name": "Test Artist"}}
-    ]
-    mock_parse_artist.return_value = Mock(item_id="1")
+async def test_get_artists(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
+    """Test library artists read from the official userCollection endpoint."""
+    doc = _load_doc("lib_artists.json")
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
 
     artists = [a async for a in library_manager.get_artists()]
 
-    assert len(artists) == 1
-    assert artists[0].item_id == "1"
-    provider_mock.api.paginate.assert_called_with(
-        "users/12345/favorites/artists",
-    )
-    mock_parse_artist.assert_called_once()
+    assert len(artists) == 20
+    assert artists[0].date_added is not None  # from the addedAt linkage meta
 
 
-@patch("music_assistant.providers.tidal.library.parse_album")
-async def test_get_albums(
-    mock_parse_album: Mock, library_manager: TidalLibraryManager, provider_mock: Mock
-) -> None:
-    """Test get_albums."""
-    provider_mock.api.paginate.return_value = [
-        {"created": "2024-01-01T00:00:00", "item": {"id": 1, "title": "Test Album"}}
-    ]
-    mock_parse_album.return_value = Mock(item_id="1")
+async def test_get_albums(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
+    """Test library albums read from the official userCollection endpoint."""
+    doc = _load_doc("lib_albums.json")
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
 
     albums = [a async for a in library_manager.get_albums()]
 
-    assert len(albums) == 1
-    assert albums[0].item_id == "1"
-    provider_mock.api.paginate.assert_called_with(
-        "users/12345/favorites/albums",
-    )
-    mock_parse_album.assert_called_once()
+    assert len(albums) == 20
+    assert albums[0].date_added is not None
 
 
-@patch("music_assistant.providers.tidal.library.parse_track")
-async def test_get_tracks(
-    mock_parse_track: Mock, library_manager: TidalLibraryManager, provider_mock: Mock
-) -> None:
-    """Test get_tracks."""
-    provider_mock.api.paginate.return_value = [
-        {"created": "2024-01-01T00:00:00", "item": {"id": 1, "title": "Test Track"}}
-    ]
-    mock_parse_track.return_value = Mock(item_id="1")
+async def test_get_tracks(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
+    """Test library tracks read from the official userCollection endpoint."""
+    doc = _load_doc("lib_tracks.json")
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
 
     tracks = [t async for t in library_manager.get_tracks()]
 
-    assert len(tracks) == 1
-    assert tracks[0].item_id == "1"
-    provider_mock.api.paginate.assert_called_with(
-        "users/12345/favorites/tracks",
-    )
-    mock_parse_track.assert_called_once()
+    assert len(tracks) == 20
+    assert tracks[0].date_added is not None
 
 
-@patch("music_assistant.providers.tidal.library.parse_playlist")
-async def test_get_playlists(
-    mock_parse_playlist: Mock, library_manager: TidalLibraryManager, provider_mock: Mock
-) -> None:
-    """Test get_playlists."""
-    # Mock mixes response
-    mixes_response = [{"id": "mix_1", "title": "Mix 1"}]
-    # Mock playlists response
-    playlists_response = [
-        {
-            "created": "2024-01-01T00:00:00",
-            "playlist": {"uuid": "pl_1", "title": "Playlist 1"},
-        }
-    ]
+async def test_get_playlists(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
+    """Test library playlists include mixes and the virtual favorites playlist."""
+    doc = _load_doc("lib_playlists.json")
 
-    # Configure paginate side effect
-    async def paginate_side_effect(endpoint: str, **_kwargs: Any) -> AsyncGenerator[dict[str, Any]]:
-        if "mixes" in endpoint:
-            for item in mixes_response:
-                yield item
-        else:
-            # The ignore[assignment] is needed because of the different return types
-            for item in playlists_response:  # type: ignore[assignment]
-                yield item
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
 
-    provider_mock.api.paginate.side_effect = paginate_side_effect
-
-    # Setup mock return values
-    mock_parse_playlist.side_effect = [
-        Mock(item_id="mix_1"),
-        Mock(item_id="pl_1"),
-    ]
+    provider_mock.api.paginate_jsonapi = _pages
 
     playlists = [p async for p in library_manager.get_playlists()]
 
-    assert len(playlists) == 3
-    assert playlists[0].item_id == "mix_1"
-    assert playlists[1].item_id == "pl_1"
-    assert playlists[2].item_id == "favorite_tracks"
-    assert mock_parse_playlist.call_count == 2
+    # 19 resolved playlists + the trailing virtual "favorite tracks" playlist
+    assert playlists[-1].item_id == "favorite_tracks"
+    # mixes come through the same collection with the "mix_" item id prefix
+    assert any(p.item_id.startswith("mix_") for p in playlists)
+    assert any(not p.item_id.startswith("mix_") for p in playlists[:-1])
 
 
 async def test_add_item_artist(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
@@ -236,12 +207,17 @@ async def test_remove_item_playlist(
 async def test_get_playlists_includes_favorite_tracks(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
-    """Test that get_playlists yields the favorite tracks playlist as the first item."""
-    provider_mock.api.paginate.return_value = []
+    """Test that get_playlists yields the virtual favorite tracks playlist."""
+    empty = JsonApiDocument({"data": [], "included": []})
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield empty
+
+    provider_mock.api.paginate_jsonapi = _pages
 
     playlists = [p async for p in library_manager.get_playlists()]
 
-    assert len(playlists) >= 1
+    assert len(playlists) == 1
     assert playlists[0].item_id == "favorite_tracks"
     assert playlists[0].name == "Favorite Tracks"
     assert not playlists[0].is_editable

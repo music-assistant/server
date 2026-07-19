@@ -38,6 +38,20 @@ class ExternalLink(TypedDict):
     meta: ExternalLinkMeta
 
 
+class PlaylistsAttributes(TypedDict):
+    accessType: Literal["PUBLIC", "UNLISTED"]
+    bounded: bool
+    createdAt: str
+    description: NotRequired[str]
+    duration: NotRequired[str]
+    externalLinks: list[ExternalLink]
+    lastModifiedAt: str
+    name: str
+    numberOfFollowers: int
+    numberOfItems: NotRequired[int]
+    playlistType: Literal["EDITORIAL", "USER", "MIX", "ARTIST"]
+
+
 class TracksAttributes(TypedDict):
     accessType: NotRequired[Literal["PUBLIC", "UNLISTED", "PRIVATE"]]
     ai: NotRequired[bool]

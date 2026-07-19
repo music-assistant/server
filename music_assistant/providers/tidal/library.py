@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from aiohttp.client_exceptions import ClientError
@@ -9,25 +11,28 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 
 from .constants import (
-    BASE_URL_V2,
     FAVORITES_ALBUMS,
     FAVORITES_ARTISTS,
     FAVORITES_MIXES,
     FAVORITES_PLAYLISTS,
     FAVORITES_TRACKS,
 )
-from .parsers import (
-    parse_album,
-    parse_artist,
-    parse_favorite_tracks_playlist,
-    parse_playlist,
-    parse_track,
-)
+from .parsers import parse_favorite_tracks_playlist
+from .parsers_v2 import parse_album as parse_album_v2
+from .parsers_v2 import parse_artist as parse_artist_v2
+from .parsers_v2 import parse_playlist as parse_playlist_v2
+from .parsers_v2 import parse_track as parse_track_v2
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.media_items import Album, Artist, MediaItemType, Playlist, Track
+    from music_assistant_models.media_items import (
+        Album,
+        Artist,
+        MediaItemType,
+        Playlist,
+        Track,
+    )
 
     from .provider import TidalProvider
 
@@ -44,41 +49,54 @@ class TidalLibraryManager:
 
     async def get_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists."""
-        path = f"users/{self.auth.user_id}/{FAVORITES_ARTISTS}"
-        async for item in self.api.paginate(path):
-            if item and item.get("item") and item["item"].get("id"):
-                yield parse_artist(self.provider, item)
+        async for doc in self.api.paginate_jsonapi(
+            "userCollectionArtists/me/relationships/items", include=["items.profileArt"]
+        ):
+            for item in doc.data_list:
+                if resource := doc.resolve(item):
+                    artist = parse_artist_v2(self.provider, doc, resource)
+                    _set_date_added(artist, item)
+                    yield artist
 
     async def get_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums."""
-        path = f"users/{self.auth.user_id}/{FAVORITES_ALBUMS}"
-        async for item in self.api.paginate(path):
-            if item and item.get("item") and item["item"].get("id"):
-                yield parse_album(self.provider, item)
+        async for doc in self.api.paginate_jsonapi(
+            "userCollectionAlbums/me/relationships/items",
+            include=["items.artists", "items.coverArt"],
+        ):
+            for item in doc.data_list:
+                if resource := doc.resolve(item):
+                    album = parse_album_v2(self.provider, doc, resource)
+                    _set_date_added(album, item)
+                    yield album
 
     async def get_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks."""
-        path = f"users/{self.auth.user_id}/{FAVORITES_TRACKS}"
-        async for item in self.api.paginate(path):
-            if item and item.get("item") and item["item"].get("id"):
-                yield parse_track(self.provider, item)
+        async for doc in self.api.paginate_jsonapi(
+            "userCollectionTracks/me/relationships/items",
+            include=["items.artists", "items.albums.coverArt"],
+        ):
+            for item in doc.data_list:
+                if resource := doc.resolve(item):
+                    track = parse_track_v2(self.provider, doc, resource)
+                    _set_date_added(track, item)
+                    yield track
 
     async def get_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists."""
-        # 1. Get favorite mixes
-        async for item in self.api.paginate(
-            FAVORITES_MIXES, item_key="items", base_url=BASE_URL_V2, cursor_based=True
+        # The official playlists collection returns both user playlists and
+        # favourited mixes (as MIX-type playlists).
+        async for doc in self.api.paginate_jsonapi(
+            "userCollectionPlaylists/me/relationships/items",
+            include=["items.coverArt", "items.owners"],
         ):
-            if item and item.get("id"):
-                yield parse_playlist(self.provider, item, is_mix=True)
+            for item in doc.data_list:
+                if resource := doc.resolve(item):
+                    playlist = parse_playlist_v2(self.provider, doc, resource)
+                    _set_date_added(playlist, item)
+                    yield playlist
 
-        # 2. Get user playlists
-        path = f"users/{self.auth.user_id}/playlistsAndFavoritePlaylists"
-        async for item in self.api.paginate(path):
-            if item and item.get("playlist") and item["playlist"].get("uuid"):
-                yield parse_playlist(self.provider, item)
-
-        # 3. Get the virtual favorite tracks playlist
+        # The virtual "favorite tracks" playlist is a Music Assistant construct.
         yield parse_favorite_tracks_playlist(self.provider)
 
     async def add_item(self, item: MediaItemType) -> bool:
@@ -161,3 +179,10 @@ class TidalLibraryManager:
             )
 
         return None, {}, False
+
+
+def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
+    """Set date_added from a userCollection linkage item's addedAt meta."""
+    if added := (item.get("meta") or {}).get("addedAt"):
+        with suppress(ValueError):
+            media_item.date_added = datetime.fromisoformat(added)
