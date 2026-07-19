@@ -28,6 +28,7 @@ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFo
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 
+from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -40,7 +41,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
-from .helpers import player_id_to_mac_address, unix_time_to_ntp
+from .helpers import player_id_to_mac_address
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
@@ -242,7 +243,7 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
             )
             return
-        # Bridge outlives config changes, so re-read wait_start for the current protocol.
+        # Bridge outlives config changes, so re-read the current timing values.
         self._refresh_bridge_timing()
         # Capture and detach old stream resources before scheduling their cleanup.
         # This prevents the async cleanup from accidentally destroying the new
@@ -320,20 +321,24 @@ class SendspinAirPlayBridge:
             if cleanup and not cleanup.done():
                 await cleanup
 
-            # Derive start_ntp from _drop_until_us (set on first chunk arrival)
-            # to give the CLI enough lead time to connect and fill the output buffer.
-            # _drop_until_us may use a different clock, convert to NTP
+            # Derive the audible start instant from _drop_until_us (set on first
+            # chunk arrival) so the CLI has enough lead to connect and establish
+            # the session. _drop_until_us may use a different clock, convert to
+            # unix epoch ms.
             sendspin_clock_now_us = self.sendspin_server.clock.now_us()
             unix_clock_now = time.time()
             future_s = (self._drop_until_us - sendspin_clock_now_us) / 1_000_000
-            start_ntp = unix_time_to_ntp(unix_clock_now + future_s)
+            start_unix_ms = int((unix_clock_now + future_s) * 1000)
+            sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
+            if isinstance(sync_adjust, int) and sync_adjust != 0:
+                start_unix_ms += sync_adjust
 
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
             # for cleanup. If we assigned it earlier, the new stream would be missed
             # and leaked. Only publish once start() succeeds and this task is current.
             new_stream = AirPlayStream(self.airplay_player)
             try:
-                await new_stream.start(start_ntp)
+                await new_stream.start(start_unix_ms)
             except BaseException:
                 with suppress(Exception):
                     await new_stream.stop(force=True)
@@ -346,9 +351,9 @@ class SendspinAirPlayBridge:
             self.airplay_player.stream = new_stream
             self._airplay_stream_ready.set()
             self.logger.info(
-                "Bridge protocol started for %s (NTP=%s, lookahead=%.0fms)",
+                "Bridge protocol started for %s (start_unix_ms=%s, lookahead=%.0fms)",
                 self.airplay_player.display_name,
-                start_ntp,
+                start_unix_ms,
                 future_s * 1000,
             )
             self.mass.create_task(self._wait_for_airplay_connection())
@@ -473,8 +478,9 @@ class SendspinAirPlayBridge:
                 return
 
         if self._airplay_stream_start_task is None:
-            # Set the target start time (wait_start) in the future so the CLI
-            # has enough time to connect and fill the device's output buffer.
+            # Set the audible start instant (wait_start) in the future so the CLI
+            # has enough time to connect and establish the session; the binary
+            # fills the device's buffer ahead of that instant itself.
             wait_start_us = int(self.airplay_player.wait_start * 1_000)
             self._drop_until_us = self.sendspin_server.clock.now_us() + wait_start_us
             self._start_aligned = False
@@ -487,7 +493,7 @@ class SendspinAirPlayBridge:
         if self._drop_until_us and chunk_end_us <= self._drop_until_us:
             return
 
-        # Align the first written chunk so byte 0 of stdin matches start_ntp.
+        # Align the first written chunk so byte 0 of stdin matches the start time.
         if not self._start_aligned:
             if self._align_first_chunk(chunk):
                 self._start_aligned = True
@@ -508,7 +514,7 @@ class SendspinAirPlayBridge:
 
     def _align_first_chunk(self, chunk: AudioChunk) -> bool:
         """
-        Align the first audio chunk so byte 0 of CLI stdin matches start_ntp.
+        Align the first audio chunk so byte 0 of CLI stdin matches the start time.
 
         Inserts silence if the chunk starts after the target time, or trims
         the beginning if the chunk straddles it.
@@ -519,7 +525,7 @@ class SendspinAirPlayBridge:
         bytes_per_frame = BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
 
         if chunk.timestamp_us > self._drop_until_us:
-            # Chunk starts after start_ntp — pad with silence
+            # Chunk starts after the start time — pad with silence
             gap_us = chunk.timestamp_us - self._drop_until_us
             silence_frames = int(gap_us * BRIDGE_SAMPLE_RATE / 1_000_000)
             if silence_frames > 0:
@@ -532,7 +538,7 @@ class SendspinAirPlayBridge:
             self._write_queue.put_nowait(chunk.data)
             return True
         if chunk.timestamp_us < self._drop_until_us:
-            # Chunk straddles start_ntp — trim the beginning
+            # Chunk straddles the start time — trim the beginning
             trim_us = self._drop_until_us - chunk.timestamp_us
             trim_frames = int(trim_us * BRIDGE_SAMPLE_RATE / 1_000_000)
             trim_bytes = trim_frames * bytes_per_frame

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import socket
+import time
 from contextlib import suppress
 from ipaddress import ip_address
 from typing import cast
@@ -14,9 +15,10 @@ from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PLAYERS, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import (
     get_ip_pton,
     get_primary_ip_address_from_zeroconf,
@@ -29,12 +31,13 @@ from .constants import (
     AIRPLAY_VOLUME_MUTE,
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
+    CONF_SYNC_ADJUST_RESET_MARKER,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
 )
-from .helpers import convert_airplay_volume, get_model_info
+from .helpers import convert_airplay_volume, get_cli_binary, get_model_info
 from .player import AirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
@@ -50,11 +53,25 @@ class AirPlayProvider(PlayerProvider):
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
+    _ptp_daemon: AsyncProcess | None = None
+    _ptp_daemon_stdout_task: asyncio.Task[None] | None = None
+    _ptp_daemon_started: float = 0.0
+    _ptp_daemon_restarted: bool = False
+    _ptp_daemon_stop_requested: bool = False
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
         """Return the Sendspin bridge manager."""
         return self._bridge_manager
+
+    @property
+    def ptp_daemon_running(self) -> bool:
+        """Return if the shared PTP clock daemon is running."""
+        return (
+            self._ptp_daemon is not None
+            and not self._ptp_daemon.closed
+            and self._ptp_daemon.returncode is None
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -84,6 +101,15 @@ class AirPlayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
+
+        # One-time reset of sync_adjust values calibrated against the old
+        # (pre-unified-binary) AirPlay implementation.
+        self._migrate_sync_adjust()
+
+        # Run one shared PTP clock daemon for the provider lifetime: all native
+        # AirPlay 2 streams attach to it (--ptp-shared) so multi-room sync groups
+        # lock to a single grandmaster while UDP 319/320 is bound only once.
+        await self._start_ptp_daemon()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -128,6 +154,13 @@ class AirPlayProvider(PlayerProvider):
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
             await bridge_manager.close()
+        # terminate the shared PTP clock daemon
+        self._ptp_daemon_stop_requested = True
+        if self._ptp_daemon_stdout_task and not self._ptp_daemon_stdout_task.done():
+            self._ptp_daemon_stdout_task.cancel()
+        if self._ptp_daemon and not self._ptp_daemon.closed:
+            await self._ptp_daemon.close()
+        self._ptp_daemon = None
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
@@ -145,6 +178,7 @@ class AirPlayProvider(PlayerProvider):
             streams_by_type[stream_type] = streams_by_type.get(stream_type, 0) + 1
         return {
             "dacp_server_running": self._dacp_server.is_serving(),
+            "ptp_daemon_running": self.ptp_daemon_running,
             "active_streams": sum(streams_by_type.values()),
             "streams_by_type": streams_by_type,
         }
@@ -254,6 +288,105 @@ class AirPlayProvider(PlayerProvider):
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
+
+    def _migrate_sync_adjust(self) -> None:
+        """One-time reset of persisted sync_adjust values on this provider's players."""
+        # The unified cliairplay binary auto-compensates device-reported render
+        # latency, so offsets calibrated against the old implementation would now
+        # break sync instead of fixing it. Reset them once; a provider-level
+        # marker prevents wiping adjustments the user makes after the migration.
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, False
+        ):
+            return
+        for raw_conf in list(self.mass.config.get(CONF_PLAYERS, {}).values()):
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not (player_id := raw_conf.get("player_id")):
+                continue
+            stored = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
+            if not stored:
+                continue
+            self.logger.warning(
+                "Resetting sync_adjust of %sms for player %s: the unified AirPlay engine "
+                "compensates device latency automatically, so corrections calibrated "
+                "against the old implementation no longer apply",
+                stored,
+                player_id,
+            )
+            self.mass.config.set_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, True
+        )
+
+    async def _start_ptp_daemon(self) -> None:
+        """Spawn the shared PTP clock daemon (cliairplay --ptp-daemon)."""
+        try:
+            cli_binary = await get_cli_binary()
+        except RuntimeError as err:
+            self.logger.warning(
+                "cliairplay binary unavailable (%s) - "
+                "PTP timing is degraded, AirPlay 2 streams fall back to NTP",
+                err,
+            )
+            return
+        args = [cli_binary, "--ptp-daemon"]
+        bind_ip = str(self.mass.streams.bind_ip)
+        if bind_ip not in ("0.0.0.0", "::", ""):
+            args += ["--if", bind_ip]
+        daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
+        await daemon.start()
+        self._ptp_daemon = daemon
+        self._ptp_daemon_started = time.monotonic()
+        daemon.attach_stderr_reader(self.mass.create_task(self._ptp_daemon_stderr_reader(daemon)))
+        self._ptp_daemon_stdout_task = self.mass.create_task(self._ptp_daemon_stdout_reader(daemon))
+        self.mass.create_task(self._ptp_daemon_monitor(daemon))
+
+    async def _ptp_daemon_stderr_reader(self, daemon: AsyncProcess) -> None:
+        """Forward PTP daemon stderr output to the debug log."""
+        async for line in daemon.iter_stderr():
+            self.logger.debug("PTP daemon: %s", line)
+
+    async def _ptp_daemon_stdout_reader(self, daemon: AsyncProcess) -> None:
+        """Drain (and debug-log) the PTP daemon stdout pipe."""
+        buffer = b""
+        while chunk := await daemon.read(1024):
+            buffer += chunk
+            while b"\n" in buffer:
+                raw_line, buffer = buffer.split(b"\n", 1)
+                if line := raw_line.decode("utf-8", errors="ignore").strip():
+                    self.logger.debug("PTP daemon: %s", line)
+
+    async def _ptp_daemon_monitor(self, daemon: AsyncProcess) -> None:
+        """Watch the PTP daemon process and restart it once if it crashes."""
+        returncode = await daemon.wait()
+        if self._ptp_daemon_stop_requested or self._ptp_daemon is not daemon:
+            return
+        self._ptp_daemon = None
+        runtime = time.monotonic() - self._ptp_daemon_started
+        if runtime < 5:
+            # immediate exit: UDP 319/320 already taken or missing privileges
+            # (root or CAP_NET_BIND_SERVICE) - streams fall back to their
+            # in-process timing engine, so playback keeps working.
+            self.logger.warning(
+                "PTP clock daemon could not start (exit code %s) - PTP timing is degraded. "
+                "Multi-room sync of native AirPlay 2 players may drift; ensure UDP ports "
+                "319/320 are free and the server may bind them.",
+                returncode,
+            )
+            return
+        if not self._ptp_daemon_restarted:
+            self._ptp_daemon_restarted = True
+            self.logger.warning(
+                "PTP clock daemon stopped unexpectedly (exit code %s) - restarting", returncode
+            )
+            await self._start_ptp_daemon()
+            return
+        self.logger.warning(
+            "PTP clock daemon stopped again (exit code %s) - giving up. "
+            "PTP timing is degraded until the provider is reloaded.",
+            returncode,
+        )
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

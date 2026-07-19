@@ -12,22 +12,26 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     IdentifierType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
-    AIRPLAY2_CONNECT_TIME_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
-    AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+    AIRPLAY_HIRES_SAMPLE_RATES,
+    AIRPLAY_LATENCY_AUTO,
+    AIRPLAY_LATENCY_MAX_MS,
     AIRPLAY_PCM_FORMAT,
+    AIRPLAY_SETUP_LEAD_MS,
     BASE_PLAYER_FEATURES,
     BROKEN_AIRPLAY_WARN,
     CONF_ACTION_FINISH_PAIRING,
@@ -36,6 +40,7 @@ from .constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_AIRPLAY_PROTOCOL,
     CONF_AP2PASSWORD,
+    CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
@@ -47,10 +52,7 @@ from .constants import (
     LEGACY_PAIRING_BIT,
     PASSWORD_BIT,
     PIN_REQUIRED,
-    RAOP_CONNECT_TIME_MS,
     RAOP_DISCOVERY_TYPE,
-    RAOP_OUTPUT_BUFFER_MAX_DURATION_MS,
-    RAOP_OUTPUT_BUFFER_MIN_DURATION_MS,
     StreamingProtocol,
 )
 from .helpers import (
@@ -113,9 +115,6 @@ class AirPlayPlayer(Player):
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
-        self._attr_supported_sample_rates = [
-            (AIRPLAY_PCM_FORMAT.sample_rate, AIRPLAY_PCM_FORMAT.bit_depth)
-        ]
 
         # Set player type based on manufacturer/model:
         # - Apple devices (HomePod, Apple TV) have native AirPlay support -> PLAYER
@@ -130,6 +129,40 @@ class AirPlayPlayer(Player):
         """Get the streaming protocol to use/prefer for this player."""
         preferred_option = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL, 0))
         return self._get_protocol_for_config_value(preferred_option)
+
+    @property
+    def protocol_override(self) -> StreamingProtocol | None:
+        """
+        Return the user-forced streaming protocol, or None for automatic selection.
+
+        With automatic selection the cliairplay binary resolves the route itself
+        from the mDNS TXT records (--protocol auto); the ``protocol`` property
+        above then only reflects MA's own planning heuristic (timing, ports).
+        """
+        preferred_option = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL, 0))
+        if preferred_option == StreamingProtocol.RAOP.value:
+            return StreamingProtocol.RAOP
+        if preferred_option == StreamingProtocol.AIRPLAY2.value:
+            return StreamingProtocol.AIRPLAY2
+        return None
+
+    @property
+    def hires_playback_enabled(self) -> bool:
+        """Return if 24-bit hi-res playback is enabled (and possible) for this player."""
+        # 24-bit only works over the native AirPlay 2 flow, so the opt-in is
+        # only effective for AirPlay 2 capable devices that are not forced to RAOP.
+        return (
+            bool(self.config.get_value(CONF_HIRES_PLAYBACK, False))
+            and self.airplay_discovery_info is not None
+            and self.protocol_override != StreamingProtocol.RAOP
+        )
+
+    @property
+    def supported_sample_rates(self) -> list[tuple[int, int]]:
+        """Return the (sample_rate, bit_depth) pairs this player natively supports."""
+        if self.hires_playback_enabled:
+            return AIRPLAY_HIRES_SAMPLE_RATES
+        return [(AIRPLAY_PCM_FORMAT.sample_rate, AIRPLAY_PCM_FORMAT.bit_depth)]
 
     @property
     def needs_setup(self) -> bool:
@@ -173,23 +206,16 @@ class AirPlayPlayer(Player):
         }
 
     @property
-    def output_buffer_duration_ms(self) -> int:
-        """Get the output buffer duration in milliseconds."""
-        # Only the RAOP (AirPlay 1) path exposes a configurable read-ahead buffer;
-        # AirPlay 2 uses the fixed default to avoid interfering with sync.
-        if self.protocol == StreamingProtocol.RAOP:
-            return cast(
-                "int",
-                self.config.get_value(CONF_RAOP_LATENCY, AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS),
-            )
-        return AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS
+    def latency_override_ms(self) -> int:
+        """Get the user-configured playback lead/buffer override (0 = automatic)."""
+        return cast("int", self.config.get_value(CONF_RAOP_LATENCY, AIRPLAY_LATENCY_AUTO))
 
     @property
     def wait_start(self) -> int:
-        """Get the time in ms to allow the device to connect before starting the stream."""
-        if self.protocol == StreamingProtocol.AIRPLAY2:
-            return AIRPLAY2_CONNECT_TIME_MS
-        return RAOP_CONNECT_TIME_MS + self.output_buffer_duration_ms
+        """Get the lead time in ms between starting the stream and the audible start."""
+        # the binary owns all lead/buffer handling from the chosen start instant;
+        # MA only budgets a fixed setup lead for spawn + connect + session setup
+        return AIRPLAY_SETUP_LEAD_MS
 
     async def get_config_entries(
         self,
@@ -260,14 +286,18 @@ class AirPlayPlayer(Player):
             ConfigEntry(
                 key=CONF_RAOP_LATENCY,
                 type=ConfigEntryType.INTEGER,
-                default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
-                range=(
-                    RAOP_OUTPUT_BUFFER_MIN_DURATION_MS,
-                    RAOP_OUTPUT_BUFFER_MAX_DURATION_MS,
-                ),
-                depends_on=CONF_AIRPLAY_PROTOCOL,
-                depends_on_value=StreamingProtocol.RAOP.value,
-                hidden=not is_raop,
+                default_value=AIRPLAY_LATENCY_AUTO,
+                range=(AIRPLAY_LATENCY_AUTO, AIRPLAY_LATENCY_MAX_MS),
+                category="protocol_generic",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_HIRES_PLAYBACK,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                # 24-bit requires the native AirPlay 2 flow, so the option is
+                # only offered for AirPlay 2 capable devices
+                hidden=not self.airplay_discovery_info or is_raop,
                 category="protocol_generic",
                 advanced=True,
             ),
@@ -332,17 +362,18 @@ class AirPlayPlayer(Player):
                 self.stream = None
 
             # select audio source
+            sync_clients = self._get_sync_clients()
+            session_pcm_format = self._get_session_pcm_format(sync_clients, media)
             audio_source = self.mass.streams.get_stream(
-                media, AIRPLAY_FLOW_PCM_FORMAT, self.player_id, use_flow_stream_buffering=True
+                media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
             )
 
             # setup StreamSession for player (and its sync childs if any)
-            sync_clients = self._get_sync_clients()
             provider = cast("AirPlayProvider", self.provider)
             stream_session = AirPlayStreamSession(
                 provider,
                 sync_clients,
-                AIRPLAY_FLOW_PCM_FORMAT,
+                session_pcm_format,
                 media,
             )
             await stream_session.start(audio_source)
@@ -550,6 +581,28 @@ class AirPlayPlayer(Player):
             self._attr_elapsed_time = elapsed_time
             self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
+
+    def get_stream_pcm_format(self, session_pcm_format: AudioFormat) -> AudioFormat:
+        """
+        Return the PCM format to feed this player's cliairplay process.
+
+        :param session_pcm_format: The PCM format of the (shared) stream session.
+        """
+        if not self.hires_playback_enabled:
+            return AIRPLAY_PCM_FORMAT
+        # 24-bit: the binary expects raw s32le input on stdin (--bitdepth 24)
+        # and truncates to 24-bit ALAC internally.
+        supported_rates = {sample_rate for sample_rate, _ in self.supported_sample_rates}
+        sample_rate = (
+            session_pcm_format.sample_rate
+            if session_pcm_format.sample_rate in supported_rates
+            else AIRPLAY_PCM_FORMAT.sample_rate
+        )
+        return AudioFormat(
+            content_type=ContentType.PCM_S32LE,
+            sample_rate=sample_rate,
+            bit_depth=24,
+        )
 
     def sync_volume_level(self) -> None:
         """
@@ -935,6 +988,42 @@ class AirPlayPlayer(Player):
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
+    def _get_session_pcm_format(
+        self, sync_clients: list[AirPlayPlayer], media: PlayerMedia
+    ) -> AudioFormat:
+        """
+        Select the session (flow) PCM format for a new stream session.
+
+        :param sync_clients: All players that will take part in the session.
+        :param media: The media that is about to be played.
+        """
+        # The session runs at 48 kHz only when every member supports it (hi-res
+        # enabled); any 16-bit/44.1 member pins the session to the 44.1 base.
+        common_rates = set.intersection(
+            *({sample_rate for sample_rate, _ in c.supported_sample_rates} for c in sync_clients)
+        )
+        if 48000 not in common_rates:
+            return AIRPLAY_FLOW_PCM_FORMAT
+        # Only lift the session to 48 kHz for 48k-family content; 44.1k(-family)
+        # content stays at 44.1 to avoid a pointless resample for the common case.
+        content_rate = 0
+        if (
+            media.source_id
+            and media.queue_item_id
+            and (
+                queue_item := self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            )
+            and queue_item.streamdetails
+        ):
+            content_rate = queue_item.streamdetails.audio_format.sample_rate
+        if content_rate and content_rate % 48000 == 0:
+            return AudioFormat(
+                content_type=AIRPLAY_FLOW_PCM_FORMAT.content_type,
+                sample_rate=48000,
+                bit_depth=AIRPLAY_FLOW_PCM_FORMAT.bit_depth,
+            )
+        return AIRPLAY_FLOW_PCM_FORMAT
+
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
         sync_clients: list[AirPlayPlayer] = []
@@ -944,4 +1033,4 @@ class AirPlayPlayer(Player):
         for child_id in group_child_ids:
             if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
                 sync_clients.append(client)
-        return sync_clients  # base don
+        return sync_clients

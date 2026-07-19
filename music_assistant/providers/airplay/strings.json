@@ -25,8 +25,16 @@
       "description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports."
     },
     "airplay_latency": {
-      "label": "Milliseconds of data to buffer",
-      "description": "The number of milliseconds of data to buffer\nNOTE: This adds to the latency experienced for commencement of playback. \nTry increasing value if playback is unreliable."
+      "label": "Playback lead/buffer override (milliseconds)",
+      "description": "Override the playback lead (buffer) used by the streaming engine. \nLeave at 0 for automatic: the AirPlay-standard 2000 ms, clamped to the buffering window the device reports. \nOnly set a value if playback on this device is unreliable."
+    },
+    "hires_playback": {
+      "label": "Enable hi-res (24-bit) playback",
+      "description": "Stream 24-bit audio (44.1/48 kHz) to this device using the native AirPlay 2 flow. \nOnly enable if the device actually renders 24-bit — some devices accept the stream and then play silence. \nKnown to work on Apple TV and HomePod."
+    },
+    "sync_adjust": {
+      "label": "Audio synchronization delay correction",
+      "description": "Well-behaved AirPlay devices are kept in sync automatically: the streaming engine compensates the latency the device itself reports, so this should normally stay at 0. \nOnly use this as an escape hatch for oddball/unofficial receivers that consistently play ahead of or behind the rest of the group."
     },
     "pairing_pin": {
       "label": "Enter the 4-digit PIN shown on the device"

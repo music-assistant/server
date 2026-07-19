@@ -5,9 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_PROTOCOL,
+    CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
     StreamingProtocol,
@@ -219,6 +223,107 @@ def test_auto_protocol_selection(
         airplay_discovery_info=MagicMock(),
     )
     assert player._get_protocol_for_config_value(0) == expected
+
+
+# --- Hi-res playback tests ---
+
+
+def _configure_player(player: AirPlayPlayer, values: dict[str, object]) -> None:
+    """Stub the player config to return the given values."""
+    player.config.get_value.side_effect = (  # type: ignore[attr-defined]
+        lambda key, default=None: values.get(key, default)
+    )
+
+
+@pytest.mark.parametrize(
+    ("hires_enabled", "protocol_conf", "has_airplay_info", "expected"),
+    [
+        # hi-res on an AirPlay 2 capable device advertises the 24-bit rates
+        (True, 0, True, [(44100, 24), (48000, 24)]),
+        # forced RAOP cannot do 24-bit: falls back to the 16-bit base
+        (True, StreamingProtocol.RAOP.value, True, [(44100, 16)]),
+        # forced AirPlay 2 keeps hi-res
+        (True, StreamingProtocol.AIRPLAY2.value, True, [(44100, 24), (48000, 24)]),
+        # no _airplay._tcp service: hi-res not possible
+        (True, 0, False, [(44100, 16)]),
+        # option disabled: the 16-bit default
+        (False, 0, True, [(44100, 16)]),
+    ],
+)
+def test_hires_supported_sample_rates(
+    airplay_player: AirPlayPlayer,
+    hires_enabled: bool,
+    protocol_conf: int,
+    has_airplay_info: bool,
+    expected: list[tuple[int, int]],
+) -> None:
+    """The hi-res toggle drives the advertised sample rates (AirPlay 2 only)."""
+    _set_discovery_info(airplay_player, raop=True, airplay=has_airplay_info)
+    _configure_player(
+        airplay_player,
+        {CONF_HIRES_PLAYBACK: hires_enabled, CONF_AIRPLAY_PROTOCOL: protocol_conf},
+    )
+    assert airplay_player.supported_sample_rates == expected
+
+
+def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
+    """With hi-res enabled the stream format is 24-bit in a s32le container."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True)
+    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: True, CONF_AIRPLAY_PROTOCOL: 0})
+
+    session_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
+    )
+    stream_format = airplay_player.get_stream_pcm_format(session_format)
+    # the binary expects raw s32le on stdin for --bitdepth 24
+    assert stream_format.content_type == ContentType.PCM_S32LE
+    assert stream_format.sample_rate == 48000
+    assert stream_format.bit_depth == 24
+
+    # an unsupported session rate falls back to the 44.1 kHz base
+    session_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=96000, bit_depth=32
+    )
+    stream_format = airplay_player.get_stream_pcm_format(session_format)
+    assert stream_format.sample_rate == 44100
+    assert stream_format.bit_depth == 24
+
+
+def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
+    """Without hi-res the stream format is the 44.1/16 default."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True)
+    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: False, CONF_AIRPLAY_PROTOCOL: 0})
+    session_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
+    )
+    assert airplay_player.get_stream_pcm_format(session_format) == AIRPLAY_PCM_FORMAT
+
+
+def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
+    """The session runs at 48 kHz only for 48k content when every member supports it."""
+    hires_client = MagicMock()
+    hires_client.supported_sample_rates = [(44100, 24), (48000, 24)]
+    cd_client = MagicMock()
+    cd_client.supported_sample_rates = [(44100, 16)]
+    media = MagicMock()
+    media.source_id = "queue1"
+    media.queue_item_id = "item1"
+    queue_item = MagicMock()
+    queue_item.streamdetails.audio_format.sample_rate = 48000
+    airplay_player.mass.player_queues.get_item.return_value = queue_item  # type: ignore[attr-defined]
+
+    # all members hi-res capable + 48k-family content: session lifts to 48 kHz
+    fmt = airplay_player._get_session_pcm_format([hires_client, hires_client], media)
+    assert fmt.sample_rate == 48000
+
+    # a 16-bit member pins the session at the 44.1 kHz base
+    fmt = airplay_player._get_session_pcm_format([hires_client, cd_client], media)
+    assert fmt.sample_rate == 44100
+
+    # 44.1-family content stays at 44.1 kHz even for an all-hi-res group
+    queue_item.streamdetails.audio_format.sample_rate = 88200
+    fmt = airplay_player._get_session_pcm_format([hires_client], media)
+    assert fmt.sample_rate == 44100
 
 
 # --- Volume and Mute tests ---

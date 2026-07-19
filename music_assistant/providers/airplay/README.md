@@ -6,9 +6,10 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 
 ### Key Features
 
-- **Dual Protocol Support**: Automatically selects between RAOP and AirPlay 2 based on device capabilities
-- **Native Pairing**: Supports pairing with Apple devices (Apple TV, HomePod, Mac) using HAP (HomeKit Accessory Protocol) or RAOP pairing
-- **Multi-Room Audio**: Synchronizes playback across multiple AirPlay devices with NTP timestamp precision
+- **Dual Protocol Support**: The cliairplay binary automatically resolves the best route (RAOP, AirPlay 2 RAOP-compat or native AirPlay 2) from the device's mDNS TXT records
+- **Pairing**: Supports pairing with Apple devices (Apple TV, HomePod, Mac) using HAP/HomeKit pair-setup (via the cliairplay binary) or legacy RAOP pairing (native)
+- **Multi-Room Audio**: Synchronizes playback across multiple AirPlay devices from a single wall-clock start instant, with a shared PTP clock daemon for native AirPlay 2 timing
+- **Hi-Res Audio**: Optional 24-bit playback (44.1/48 kHz) over the native AirPlay 2 flow (per-player opt-in)
 - **DACP Remote Control**: Receives remote control commands (play/pause/volume/next/previous) from devices while streaming
 - **Late Join Support**: Allows adding players to an existing playback session without interrupting other players
 - **Flow Mode Streaming**: Provides gapless playback and crossfade support by streaming the queue as one continuous audio stream
@@ -60,11 +61,11 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 
 ```
 airplay/
-├── provider.py           # Main provider class, MDNS discovery, DACP server
+├── provider.py           # Main provider class, MDNS discovery, DACP server, PTP daemon
 ├── player.py             # AirPlayPlayer implementation
 ├── stream_session.py     # Manages streaming sessions for synchronized playback
-├── pairing.py           # HAP and RAOP pairing implementations
-├── helpers.py           # Utility functions (NTP conversion, model detection, etc.)
+├── pairing.py           # Pairing: HAP via cliairplay --pair-setup, RAOP native
+├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
 ├── constants.py         # Constants and enums
 ├── stream.py            # Unified AirPlayStream (RAOP + AirPlay 2) driving cliairplay
 └── bin/                 # Platform-specific CLI binaries
@@ -94,10 +95,16 @@ airplay/
 
 ### Automatic Selection
 
-When protocol is set to "Automatically select" (default):
-- **Prefers AirPlay 2** for known models (e.g., Ubiquiti devices) that work better with it
-- **Falls back to RAOP** for all other devices
-- Users can manually override via player configuration if needed
+When protocol is set to "Automatically select" (default), the provider passes
+`--protocol auto` together with the device's full `_airplay._tcp` TXT records
+(`--txt`). The **binary** then resolves the route from the advertised feature
+bits: RAOP vs AirPlay 2, native vs RAOP-compatible flow, transient pairing vs
+stored-credential pair-verify, and PTP vs NTP timing.
+
+The per-player protocol setting acts as an override only: forcing RAOP or
+AirPlay 2 passes that protocol verbatim. MA-side model heuristics
+(`AIRPLAY_2_DEFAULT_MODELS`) remain for planning decisions such as which
+service/port to target and pairing endpoints.
 
 ## Discovery and Player Setup
 
@@ -137,26 +144,27 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 ### Pairing Protocols
 
 1. **HAP (HomeKit Accessory Protocol)** - For AirPlay 2
-   - 6-step SRP authentication with TLV encoding
-   - Ed25519 key exchange
-   - ChaCha20-Poly1305 encryption
-   - Produces 192-character hex credentials
+   - Delegated to the cliairplay binary: `cliairplay --pair-setup --port <port> --dacp <id> <ip>`
+   - The binary POSTs `/pair-pin-start` (device shows its PIN), reads the PIN from stdin,
+     performs the SRP/HomeKit exchange and prints `CREDENTIALS: <192 hex chars>` on stdout
+   - Using the binary guarantees the pairing identity is byte-identical to what
+     pair-verify uses at stream time
 
-2. **RAOP Pairing** - For AirPlay 1
+2. **RAOP Pairing** - For AirPlay 1 (native Python implementation)
    - 3-step SRP authentication with plist encoding
    - Ed25519 key derivation from auth secret
    - AES-GCM encryption
-   - Produces `client_id:auth_secret` format credentials
+   - Produces `client_id:auth_secret` format credentials (the secret is passed
+     to the binary via `--secret` at stream time)
 
 ### Pairing Flow
 
-1. **Start pairing** → POST to `/pair-pin-start` (or protocol-specific endpoint)
-2. **Device displays 4-digit PIN** on screen
-3. **User enters PIN** in Music Assistant configuration
-4. **Complete pairing** → SRP authentication and key exchange
-5. **Store credentials** in player config (protocol-specific key: `raop_credentials` or `airplay_credentials`)
+1. **Start pairing** (config action) → the pair-setup process starts and the device displays its 4-digit PIN
+2. **User enters PIN** in Music Assistant configuration
+3. **Complete pairing** (config action) → the PIN is fed to the pairing process/exchange
+4. **Store credentials** in player config (protocol-specific key: `raop_credentials` or `airplay_credentials`)
 
-**Important**: The DACP ID used during pairing must match the ID used during streaming. The provider uses the first 16 hex characters of `server_id` as a persistent DACP ID to ensure compatibility across restarts.
+**Important**: The DACP ID used during pairing must match the ID used during streaming (pair-verify signs with it). The provider uses the first 16 hex characters of `server_id` as a persistent DACP ID to ensure compatibility across restarts.
 
 ## Streaming Architecture
 
@@ -183,7 +191,8 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 │  filter,     │    │   filter,       │   │  filter,    │
 │  convert)    │    │   convert)      │   │  convert)   │
 └───────┬──────┘    └────────┬────────┘   └──────┬──────┘
-        │ PCM 44.1kHz 16-bit │                    │
+        │ PCM s16le (16-bit) │ or s32le (24-bit hi-res)
+        │                    │                    │
 ┌───────▼──────┐    ┌────────▼────────┐   ┌──────▼──────┐
 │  cliairplay  │    │   cliairplay    │   │  cliairplay │
 │  (RAOP       │    │  (AirPlay 2     │   │  (RAOP      │
@@ -203,12 +212,13 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manages streaming to one or more synchronized players:
 
 1. **Initialization** (`start()` method)
-   - Calculates start time with connection delay buffer
-   - Converts start time to NTP timestamp for precise synchronization
+   - Calculates the audible start instant (`now + setup lead`) as unix epoch milliseconds
+   - Every member receives the exact same start value (`--start-unix-ms`)
 
 2. **Client Setup** (per player, `_start_client()` method)
-   - Creates an `AirPlayStream` instance (protocol selected via `--protocol`)
-   - Starts CLI process with NTP start timestamp
+   - Creates an `AirPlayStream` instance with the player's PCM format
+     (16-bit default, 24-bit s32le when hi-res is enabled)
+   - Starts the CLI process with the shared start instant
    - Configures FFmpeg for audio format conversion and optional DSP filters
    - Pipes FFmpeg output to CLI process stdin
 
@@ -254,9 +264,9 @@ The provider supports synchronized multi-room audio by:
 
 When adding a player to an already-playing session (`add_client()` in [stream_session.py](stream_session.py)):
 
-1. **Ring buffer**: Session maintains ~8 seconds of recent audio chunks in memory
+1. **Ring buffer**: Session maintains a few seconds of recent audio chunks in memory
 2. **Immediate buffered feed**: Late joiner receives buffered chunks immediately to prime the ffmpeg/CLI pipeline
-3. **Compensated start time**: NTP timestamp accounts for buffer duration: `start_time + (seconds_streamed - buffer_duration)`
+3. **Compensated start time**: The joiner's start instant accounts for the buffer duration: `start_time + (seconds_streamed - buffer_duration)`, shifted forward (with the buffer head trimmed) when it would land in the past
 4. **Fast catch-up**: Device processes buffered audio and catches up to real-time position
 5. **Seamless sync**: Joins live stream perfectly synchronized with other players
 
@@ -347,18 +357,21 @@ flag. Binaries are located in the [bin/](bin/) directory and validated on first 
 ### Binary Communication
 
 **Input** (stdin):
-- PCM audio data piped from FFmpeg
+- PCM audio data piped from FFmpeg: s16le for 16-bit, raw s32le for 24-bit
+  (the binary truncates 32→24 internally when `--bitdepth 24` is passed)
+- May be written eagerly, ahead of the scheduled start; byte 0 maps to the
+  sample audible at the start instant
 
 **Commands** (named pipe):
 - Interactive commands sent via `AsyncNamedPipeWriter`
 - Examples: `ACTION=PLAY`, `ACTION=PAUSE`, `VOLUME=50`, `TITLE=Song Name`
 
 **Output** (stderr):
-- Status messages and logs
-- Connection state
-- Playback state changes
-- Elapsed time updates
-- Error messages
+- Normalized `[STATUS]` messages (connected/playing/paused/eof), logs and errors
+
+**Output** (stdout):
+- `[STATUS] latency ...` line with the effective lead and the device's
+  reported buffering window (parsed by `_stdout_reader()` for diagnostics)
 
 The provider monitors stderr in a separate task (`_stderr_reader()` in [stream.py](stream.py)) to:
 - Update player state
@@ -366,31 +379,41 @@ The provider monitors stderr in a separate task (`_stderr_reader()` in [stream.p
 - Handle errors and packet loss
 - Track elapsed time
 
-## NTP Timestamp Synchronization
+## Start Timing and Synchronization
 
-AirPlay uses **NTP (Network Time Protocol)** timestamps for synchronized playback.
+The provider never handles NTP fixed-point formats: the group start is passed
+to the binary as plain unix epoch milliseconds (`--start-unix-ms`), meaning
+"**the first sample is audible exactly at this instant**" on every protocol
+path (RAOP, AirPlay 2 RAOP-compat and native).
 
-### NTP Format
-
-- **64-bit integer**: Upper 32 bits = seconds, lower 32 bits = fractional seconds
-- **NTP epoch**: January 1, 1900 (not Unix epoch 1970)
-- **Precision**: Nanosecond-level timing
-
-### Key Functions
-
-Available in [helpers.py](helpers.py):
-- `get_ntp_timestamp()`: Get current NTP time
-- `ntp_to_unix_time()`: Convert NTP to Unix timestamp
-- `unix_time_to_ntp()`: Convert Unix to NTP timestamp
-- `add_seconds_to_ntp()`: Add offset to NTP timestamp
-
-### Usage in Streaming
-
-1. Calculate desired start time: `current_time + connection_buffer`
-2. Convert to NTP timestamp
-3. Pass to CLI binary via `-ntpstart` argument
-4. All players start at the exact same NTP time
+1. Calculate the start instant: `now + AIRPLAY_SETUP_LEAD_MS` (fixed lead that
+   covers process spawn + connect + session setup)
+2. Pass the **same** value to every member of a sync group (mixed RAOP +
+   AirPlay 2 groups align by construction)
+3. The binary owns all lead/buffer handling from there: it fills the
+   receiver's buffer ahead of the audible start (clamped to the buffering
+   window the device reports), so the start cannot underrun
+4. Audio may be written to the binary's stdin as soon as it is available -
+   byte 0 of stdin maps to the sample audible at the start instant
 5. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
+
+### Shared PTP Clock Daemon
+
+Native AirPlay 2 receivers that advertise `SupportsPTP` are timed via PTP
+(IEEE 1588/gPTP). Only one process per host can bind the privileged PTP ports
+(UDP 319/320) and every receiver in a sync group must lock to the same
+grandmaster, so the provider runs **one** `cliairplay --ptp-daemon` for its
+whole lifetime (spawned at setup, terminated at unload, restarted once if it
+crashes). Every AirPlay 2-capable stream is started with `--ptp-shared` while
+the daemon runs, attaching it to the daemon's elected clock via shared memory.
+
+If the daemon cannot start (ports taken, no root/`CAP_NET_BIND_SERVICE`), a
+warning is logged and streams fall back to their in-process timing engine -
+playback keeps working but multi-room PTP sync may be degraded.
+
+After connect, the binary reports the effective lead and the device's
+buffering window on stdout (`[STATUS] latency lead_ms=... device_min_frames=...
+device_max_frames=...`), which the stream parses and logs for diagnostics.
 
 ## Player Types
 
@@ -419,15 +442,13 @@ The provider creates players with different types based on whether the device is
 ## Configuration Options
 
 ### Protocol Selection
-- **`airplay_protocol`**: Choose RAOP, AirPlay 2, or automatic (default: automatic)
-
-### RAOP-Specific
-- **`encryption`**: Enable/disable encryption (default: enabled)
-- **`alac_encode`**: Enable ALAC compression to save bandwidth (default: enabled)
-- **`ignore_volume`**: Ignore device volume reports (default: false)
+- **`airplay_protocol`**: Choose RAOP, AirPlay 2, or automatic (default: automatic; automatic lets the binary resolve the route from the mDNS TXT)
 
 ### General
-- **`password`**: Device password if required
+- **`password`**: Device password if required (RAOP)
+- **`ignore_volume`**: Ignore device volume reports (default: false)
+- **`airplay_latency`**: Advanced playback lead/buffer override in milliseconds (default 0 = automatic: the binary's 2000 ms AirPlay-standard default, clamped to the device-reported window)
+- **`hires_playback`**: Advanced per-player opt-in for 24-bit playback over native AirPlay 2 (default: off; only shown for AirPlay 2-capable devices - some devices accept 24-bit and play silence, hence opt-in)
 - **`sync_adjust`**: Per-player timing adjustment in milliseconds (default: 0)
 
 ### Pairing (Apple devices only)

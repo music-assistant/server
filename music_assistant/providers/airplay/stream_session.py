@@ -15,7 +15,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
 
-from .helpers import get_final_output_format, ntp_to_unix_time, unix_time_to_ntp
+from .helpers import get_final_output_format
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
@@ -54,7 +54,7 @@ class AirPlayStreamSession:
         self._audio_source_task: asyncio.Task[None] | None = None
         self._player_ffmpeg: dict[str, FFMpeg] = {}
         self._lock = asyncio.Lock()
-        self.start_ntp: int = 0
+        self.start_unix_ms: int = 0
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
@@ -72,8 +72,12 @@ class AirPlayStreamSession:
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds
         self.start_time = cur_time + wait_start_seconds
-        self.start_ntp = unix_time_to_ntp(self.start_time)
-        await asyncio.gather(*[self._start_client(p, self.start_ntp) for p in self.sync_clients])
+        # group start as plain unix epoch milliseconds: every member of the
+        # sync group receives the exact same value (--start-unix-ms)
+        self.start_unix_ms = int(self.start_time * 1000)
+        await asyncio.gather(
+            *[self._start_client(p, self.start_unix_ms) for p in self.sync_clients]
+        )
         self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
         try:
             await asyncio.gather(
@@ -140,7 +144,7 @@ class AirPlayStreamSession:
         starts playing quickly. All work happens under the lock to ensure
         ``seconds_streamed`` and the buffer are consistent.
 
-        Devices generally cannot honour an NTP start anchor that is in the
+        Devices generally cannot honour a start anchor that is in the
         past — they just play whatever the pipe gives them, trailing the
         group by the deficit. To stay in sync we therefore push the late
         joiner's ``start_at`` into the future (at least ``wait_start`` ahead
@@ -150,7 +154,7 @@ class AirPlayStreamSession:
 
         1. Snapshot the ring buffer and calculate how many seconds it holds.
         2. Map the buffer's first byte to its stream position; if the
-           resulting NTP start is in the past, shift it forward to
+           resulting start anchor is in the past, shift it forward to
            ``now + min_headroom`` and trim that many seconds from the buffer
            head so timing stays aligned with the rest of the group.
         3. Start ffmpeg+CLI, write the (possibly trimmed) buffer into ffmpeg
@@ -206,7 +210,7 @@ class AirPlayStreamSession:
                 # connections / very-far-behind joiners.
                 start_at = max(start_at, target_start_at)
 
-            start_ntp = unix_time_to_ntp(start_at)
+            start_unix_ms = int(start_at * 1000)
 
             self.prov.logger.debug(
                 "Late joiner %s: sending %.2fs of buffered audio, "
@@ -225,7 +229,7 @@ class AirPlayStreamSession:
             # ffmpeg accepts data on stdin right away; it queues in the pipe
             # while cliairplay is still connecting to the device.
             try:
-                await self._start_client(airplay_player, start_ntp)
+                await self._start_client(airplay_player, start_unix_ms)
                 if buffered_pcm:
                     await self._write_chunk_to_player(airplay_player, buffered_pcm)
             except Exception as err:
@@ -393,19 +397,20 @@ class AirPlayStreamSession:
             if airplay_player.stream:
                 await airplay_player.stream.write_audio_eof()
 
-    async def _start_client(self, airplay_player: AirPlayPlayer, start_ntp: int) -> None:
+    async def _start_client(self, airplay_player: AirPlayPlayer, start_unix_ms: int) -> None:
         """Start CLI process and ffmpeg for a single client."""
         # sync volume from parent player if needed
         airplay_player.sync_volume_level()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
-        airplay_player.stream = AirPlayStream(airplay_player)
+        stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
+        airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
         airplay_player.stream.session = self
         sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
         if sync_adjust != 0:
-            start_ntp = unix_time_to_ntp(ntp_to_unix_time(start_ntp) + (sync_adjust / 1000))
-        await airplay_player.stream.start(start_ntp)
+            start_unix_ms += sync_adjust
+        await airplay_player.stream.start(start_unix_ms)
         # Start ffmpeg to feed audio to CLI stdin
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.close()

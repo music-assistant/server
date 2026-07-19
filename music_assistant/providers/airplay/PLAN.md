@@ -1,8 +1,10 @@
 # AirPlay Provider Overhaul — Unified `cliairplay` Binary
 
-**Status:** In progress. Native AP2 pipeline established end-to-end against a real
-Apple TV (pair-verify → encrypted RTSP → SETUP → RECORD → encrypted RTP). Audible
-playback still being validated. RAOP + AP2 RAOP-compat fully working and audible.
+**Status:** MA-side integration of the unified binary contract is code-complete.
+Binary side is device-validated: RAOP, AP2 RAOP-compat, native AP2 (transient AND
+HomeKit-PIN pair-verify), PTP timing with multi-room sync via a shared daemon, and
+24-bit hi-res over the realtime stream. Remaining: on-device validation of the
+MA-driven flows, CI-built binaries for all platforms.
 
 **Branch:** `airplay-unified-binary` (freshly cut from `origin/dev`; the earlier
 `gifted-clarke` branch was ~1067 commits behind and is abandoned — its work is
@@ -136,55 +138,55 @@ Changes to port from the abandoned branch (backed up in `/tmp/airplay-backup/`):
 - **`sendspin_bridge.py`** — use `AirPlayStream` instead of `RaopStream`/`AirPlay2Stream`;
   keep dev's first-class derived-transport rework.
 - **`bin/`** — remove `cliraop-*` and `cliap2-*`; add `cliairplay-<os>-<arch>` (only
-  `cliairplay-macos-arm64` built so far; Linux aarch64/x86_64 + macos-x86_64 still to build).
-- CLI args the provider passes: `--protocol`, `--latency`, `--volume`, `--dacp`,
-  `--activeremote`, `--cmdpipe`, `--ntpstart`, `--samplerate`, `--bitdepth`, `--auth`
-  (HAP creds → native flow), mDNS props (`--et/--md/--am/--udn`), `--password`, `--if`,
-  device address + `-` (stdin).
+  `cliairplay-macos-arm64` committed; CI builds the other targets).
+- CLI args the provider passes: `--protocol auto|raop|airplay2`, `--volume`, `--dacp`,
+  `--activeremote`, `--cmdpipe`, `--start-unix-ms`, `--samplerate`, `--bitdepth`,
+  `--latency` (only as explicit user override), `--auth` (HAP creds → native flow),
+  `--secret` (legacy RAOP pairing), `--txt` (full _airplay TXT), mDNS props
+  (`--et/--md/--am/--pk/--pw/--cn/--udn`), `--password`, `--if`, `--publish-ip`,
+  `--ptp-shared` (while the provider's `--ptp-daemon` runs), device address + `-` (stdin).
 
 ---
 
 ## 6. Remaining work
 
-**Done since this plan was first written:** the provider is reconciled onto latest
-dev (branch `airplay-unified-binary`), and the C project is pushed to
-[music-assistant/airplay-cli](https://github.com/music-assistant/airplay-cli)
-(private) — its own `TODO.md` there tracks the binary-side roadmap.
+**Done since this plan was first written:**
+- The provider is reconciled onto latest dev (branch `airplay-unified-binary`); the
+  C project lives at [music-assistant/airplay-cli](https://github.com/music-assistant/airplay-cli)
+  (private) — its own `TODO.md` tracks the binary-side roadmap.
+- Binary-side validation is complete (2026-07-19): native AP2 + PTP audible on Sonos
+  Era/Move and Apple TV 4K, multi-room sync verified across a mixed group, 24-bit
+  hi-res audible over the realtime stream, HomeKit `--pair-setup` end-to-end.
+- **MA-side integration of the new CLI contract (this branch):**
+  - `--protocol auto` is the default; the per-player protocol config is an override
+    only. The full `_airplay._tcp` TXT is passed via `--txt` for route selection.
+  - Group start switched from MA-side NTP math to `--start-unix-ms` ("first sample
+    audible at this instant", same value for every group member). All NTP helpers
+    removed; MA budgets a single fixed `AIRPLAY_SETUP_LEAD_MS` (2500 ms).
+  - `--latency` is only passed when the user explicitly configured an override
+    (0 = automatic: binary default 2000 ms clamped to the device window).
+  - One `cliairplay --ptp-daemon` per provider lifetime (spawn at setup, SIGTERM on
+    unload, restart-once-on-crash); every AP2-capable stream gets `--ptp-shared`.
+  - Per-player hi-res opt-in (`hires_playback`, advanced, AirPlay 2 only):
+    advertises 44100/24 + 48000/24 and feeds the binary s32le with `--bitdepth 24`.
+  - HAP pairing rewired through `cliairplay --pair-setup` (PIN via stdin,
+    `CREDENTIALS:` from stdout); RAOP legacy pairing stays native Python.
+  - `[STATUS] latency` (stdout) parsed and logged; `--publish-ip` passed when it
+    differs from the resolved `--if` address; RAOP `--secret` restored; `--cn` added
+    to the forwarded RAOP mDNS props.
 
 ### Binary distribution
-- Only `cliairplay-macos-arm64` is built; still need linux-aarch64, linux-x86_64,
-  macos-x86_64. The prebuilt macOS binary committed to `bin/` is accepted for **local
-  testing only** — the end goal is to **build the binaries in the MA container build
-  process** rather than committing them. Set up CI in the airplay-cli repo first.
+- The airplay-cli repo cross-builds all four targets in CI (linux x86_64/aarch64,
+  macos arm64/x86_64). The prebuilt macOS binary committed to `bin/` is accepted for
+  **local testing only** — the end goal is to fetch pinned release binaries in the MA
+  container build process rather than committing them.
 
-### cliairplay features (tracked in airplay-cli `TODO.md`)
-- **PTP timing** — Apple/Samsung native AP2 need it; `ap2_ptp.c` is an NTP responder +
-  offset placeholder only. Open question: daemon mode inside the binary vs a
-  centralized PTP client in the MA provider.
-- **Buffered streaming mode** — not implemented.
-- **24-bit audio** — encoder fix in place but **untested end-to-end**; native AP2 only;
-  may depend on PTP and/or buffered streaming.
-
-### Latency trim (done — value pending on-device tuning)
-Dev's session-establishment-latency system compensated for the **old cliap2 (owntone)
-AP2 binary's slow, variable session start** — the very problem the new binary solves.
-Removed:
-- The user-configurable `CONF_SESSION_ESTABLISHMENT_LATENCY` setting + its 150–4000 ms
-  range + the `session_establishment_latency_ms` property (Apple's own UI has no such knob).
-- The AP2 lead is now a single fixed internal `AIRPLAY2_CONNECT_TIME_MS` (1000 ms, down
-  from ~1400 ms) — not user-configurable; the binary controls the whole chain.
-- RAOP timing is **unchanged** (`RAOP_CONNECT_TIME_MS + output_buffer_duration_ms`).
-- Also dropped the orphaned `encryption` / `alac_encode` / `AIRPLAY2_SYNC_WARN` config
-  strings left over from the binary unification.
-
-Still open: **measure the new binary's real AP2 establishment time on-device** and tune
-`AIRPLAY2_CONNECT_TIME_MS`. The robust end-state is to start the playback clock off the
-binary's `[STATUS] connected` event rather than a fixed pre-roll guess.
-
-### Validation
-- Confirm audible **native AP2** playback on Apple TV (session establishes; sound unconfirmed).
-- **24-bit** end-to-end over native AP2.
-- **Multi-room sync** across RAOP + AP2 mixed groups.
+### Validation (MA-driven, on-device)
+- Full regression pass of the MA-driven flows: RAOP, AP2 RAOP-compat, native AP2
+  (transient + pair-verify), mixed sync groups, late join, hi-res opt-in.
+- Config-flow pairing of an Apple TV/HomePod through the new `--pair-setup` path.
+- PTP daemon behaviour in the MA container (non-root 319/320 bind → degraded-mode
+  warning path).
 
 ---
 

@@ -27,25 +27,32 @@ CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
+CONF_HIRES_PLAYBACK: Final[str] = "hires_playback"
 
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-# Read ahead buffer. Default output buffer (--latency) duration.
-AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1500
-# RAOP buffer settings
-RAOP_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 250
-RAOP_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
-# Fixed lead time (ms) to let the binary spawn, connect and establish the session before
-# scheduled playback. Not user-configurable: the cliairplay binary controls the whole chain.
-# Tune here if on-device validation shows a device needs more headroom.
-RAOP_CONNECT_TIME_MS: Final[int] = 1500
-AIRPLAY2_CONNECT_TIME_MS: Final[int] = 1000
+# Fixed lead (ms) between starting the stream and the audible group start
+# (--start-unix-ms means "the first sample is audible exactly at this instant"
+# on every protocol path). Covers process spawn + connect/session setup with
+# margin; the binary fills the receiver's buffer ahead of the audible start
+# automatically, so the start cannot underrun.
+AIRPLAY_SETUP_LEAD_MS: Final[int] = 2500
+# The --latency override is only passed to the binary when the user explicitly
+# configured it; 0 means automatic (the binary's AirPlay-standard 2000 ms
+# default, clamped to the device-reported buffering window).
+AIRPLAY_LATENCY_AUTO: Final[int] = 0
+AIRPLAY_LATENCY_MAX_MS: Final[int] = 5000
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
+
+# Provider-level marker for the one-time reset of user-calibrated sync_adjust
+# values from before the unified cliairplay binary (which auto-compensates
+# device-reported render latency, invalidating old calibrations).
+CONF_SYNC_ADJUST_RESET_MARKER: Final[str] = "unified_binary_sync_adjust_reset"
 
 # Some RAOP models require a higher than default 1000ms buffer to prevent stuttering
 CONF_RAOP_LATENCY: Final[str] = "airplay_latency"
@@ -70,6 +77,10 @@ AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
+# Sample rates advertised when the per-player hi-res option is enabled (AirPlay 2
+# native flow only). At 24-bit the cliairplay binary expects raw s32le on stdin
+# and truncates to 24-bit ALAC internally.
+AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
 
 BROKEN_AIRPLAY_MODELS = (
     # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)

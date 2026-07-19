@@ -6,7 +6,6 @@ import fnmatch
 import logging
 import os
 import platform
-import time
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType
@@ -27,9 +26,6 @@ if TYPE_CHECKING:
     from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
-
-# NTP epoch delta: difference between Unix epoch (1970) and NTP epoch (1900)
-NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
 
 
 async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
@@ -185,90 +181,6 @@ async def get_cli_binary() -> str:
     raise RuntimeError(msg)
 
 
-def get_ntp_timestamp() -> int:
-    """
-    Get current NTP timestamp (64-bit).
-
-    Returns:
-        int: 64-bit NTP timestamp (upper 32 bits = seconds, lower 32 bits = fraction)
-    """
-    # Get current Unix timestamp with microsecond precision
-    current_time = time.time()
-
-    # Split into seconds and microseconds
-    seconds = int(current_time)
-    microseconds = int((current_time - seconds) * 1_000_000)
-
-    # Convert to NTP epoch (add offset from 1970 to 1900)
-    ntp_seconds = seconds + NTP_EPOCH_DELTA
-
-    # Convert microseconds to NTP fraction (2^32 parts per second)
-    # fraction = (microseconds * 2^32) / 1_000_000
-    ntp_fraction = int((microseconds << 32) / 1_000_000)
-
-    # Combine into 64-bit value
-    return (ntp_seconds << 32) | ntp_fraction
-
-
-def ntp_to_seconds_fraction(ntp_timestamp: int) -> tuple[int, int]:
-    """
-    Split NTP timestamp into seconds and fraction components.
-
-    Args:
-        ntp_timestamp: 64-bit NTP timestamp
-
-    Returns:
-        tuple: (seconds, fraction)
-    """
-    seconds = ntp_timestamp >> 32
-    fraction = ntp_timestamp & 0xFFFFFFFF
-    return seconds, fraction
-
-
-def ntp_to_unix_time(ntp_timestamp: int) -> float:
-    """
-    Convert NTP timestamp to Unix timestamp (float).
-
-    Args:
-        ntp_timestamp: 64-bit NTP timestamp
-
-    Returns:
-        float: Unix timestamp (seconds since 1970-01-01)
-    """
-    seconds = ntp_timestamp >> 32
-    fraction = ntp_timestamp & 0xFFFFFFFF
-
-    # Convert back to Unix epoch
-    unix_seconds = seconds - NTP_EPOCH_DELTA
-
-    # Convert fraction to microseconds
-    microseconds = (fraction * 1_000_000) >> 32
-
-    return unix_seconds + (microseconds / 1_000_000)
-
-
-def unix_time_to_ntp(unix_timestamp: float) -> int:
-    """
-    Convert Unix timestamp (float) to NTP timestamp.
-
-    Args:
-        unix_timestamp: Unix timestamp (seconds since 1970-01-01)
-
-    Returns:
-        int: 64-bit NTP timestamp
-    """
-    seconds = int(unix_timestamp)
-    microseconds = int((unix_timestamp - seconds) * 1_000_000)
-
-    # Convert to NTP epoch
-    ntp_seconds = seconds + NTP_EPOCH_DELTA
-
-    # Convert microseconds to NTP fraction
-    ntp_fraction = int((microseconds << 32) / 1_000_000)
-
-    return (ntp_seconds << 32) | ntp_fraction
-
-
 def player_id_to_mac_address(player_id: str) -> str:
     """Convert a player_id to a MAC address-like string."""
     # the player_id is the mac address prefixed with "ap"
@@ -295,26 +207,26 @@ def generate_active_remote_id(mac_address: str) -> str:
     return str(device_id_u32)
 
 
-def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
+def serialize_txt_records(discovery_info: AsyncServiceInfo) -> str:
     """
-    Add seconds to an NTP timestamp.
+    Serialize mDNS TXT records for cliairplay's --txt argument.
 
-    Args:
-        ntp_timestamp: 64-bit NTP timestamp
-        seconds: Number of seconds to add (can be fractional)
+    The binary receives the full _airplay._tcp TXT as a single
+    space-separated "key=value key=value ..." argument and uses it for
+    automatic route selection (RAOP vs AirPlay 2, native vs RAOP-compat,
+    PTP vs NTP). Pairs containing whitespace are skipped as the binary
+    splits the blob on spaces.
 
-    Returns:
-        int: New NTP timestamp with seconds added
+    :param discovery_info: The _airplay._tcp discovery info of the device.
     """
-    # Extract whole seconds and fraction
-    whole_seconds = int(seconds)
-    fraction = seconds - whole_seconds
-
-    # Convert to NTP format (upper 32 bits = seconds, lower 32 bits = fraction)
-    ntp_seconds = whole_seconds << 32
-    ntp_fraction = int(fraction * (1 << 32))
-
-    return ntp_timestamp + ntp_seconds + ntp_fraction
+    pairs: list[str] = []
+    for key, value in discovery_info.decoded_properties.items():
+        if value is None:
+            continue
+        if any(char.isspace() for char in key) or any(char.isspace() for char in value):
+            continue
+        pairs.append(f"{key}={value}")
+    return " ".join(pairs)
 
 
 def get_final_output_format(

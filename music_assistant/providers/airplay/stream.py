@@ -23,15 +23,18 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_PASSWORD,
+    CONF_RAOP_CREDENTIALS,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
     generate_active_remote_id,
     get_cli_binary,
     resolve_if_ip,
+    serialize_txt_records,
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
 
     from music_assistant.providers.airplay.player import AirPlayPlayer
@@ -45,17 +48,18 @@ class AirPlayStream:
     _cli_proc: AsyncProcess | None
     session: AirPlayStreamSession | None = None
 
-    pcm_format = AIRPLAY_PCM_FORMAT
-
-    def __init__(self, player: AirPlayPlayer) -> None:
+    def __init__(self, player: AirPlayPlayer, pcm_format: AudioFormat | None = None) -> None:
         """
         Initialize AirPlay stream.
 
         :param player: The player to stream to.
+        :param pcm_format: The PCM format fed to the binary's stdin
+            (defaults to 44.1kHz/16-bit).
         """
         self.prov = player.provider
         self.mass = player.provider.mass
         self.player = player
+        self.pcm_format = pcm_format or AIRPLAY_PCM_FORMAT
         self.logger = player.provider.logger.getChild("stream")
         mac_address = self.player.device_info.mac_address or self.player.player_id
         self.active_remote_id: str = generate_active_remote_id(mac_address)
@@ -69,6 +73,11 @@ class AirPlayStream:
         self._metadata_checksum = ""
         self._last_progress_sent: int = -1
         self._elapsed_time_offset: float | None = None
+        self._stdout_reader_task: asyncio.Task[None] | None = None
+        # Device latency info reported by the binary after connect (0 = unreported)
+        self.latency_lead_ms: int = 0
+        self.device_min_frames: int = 0
+        self.device_max_frames: int = 0
 
     @property
     def running(self) -> bool:
@@ -80,95 +89,20 @@ class AirPlayStream:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
 
-    async def start(self, start_ntp: int) -> None:
+    async def start(self, start_unix_ms: int) -> None:
         """
         Start cliairplay process.
 
-        :param start_ntp: NTP timestamp to start streaming.
+        :param start_unix_ms: The instant the first sample must be audible,
+            as unix epoch milliseconds. All members of a sync group must
+            receive the same value.
         """
-        cli_binary = await get_cli_binary()
-        protocol = self.player.protocol
-        prov = cast("AirPlayProvider", self.prov)
-
-        args: list[str] = [
-            cli_binary,
-            "--protocol",
-            "raop" if protocol == StreamingProtocol.RAOP else "airplay2",
-            "--latency",
-            str(self.player.output_buffer_duration_ms),
-            "--volume",
-            str(self.player.volume_level),
-            "--dacp",
-            prov.dacp_id,
-            "--activeremote",
-            self.active_remote_id,
-            "--cmdpipe",
-            self.commands_pipe.path,
-            "--ntpstart",
-            str(start_ntp),
-            "--samplerate",
-            str(self.pcm_format.sample_rate),
-            "--bitdepth",
-            str(self.pcm_format.bit_depth),
-        ]
-
-        # Device port (from AP2 or RAOP discovery)
-        if protocol == StreamingProtocol.AIRPLAY2 and self.player.airplay_discovery_info:
-            args += ["--port", str(self.player.airplay_discovery_info.port)]
-            args += ["--name", self.player.display_name]
-            args += ["--hostname", str(self.player.airplay_discovery_info.server)]
-        elif self.player.raop_discovery_info:
-            args += ["--port", str(self.player.raop_discovery_info.port)]
-            args += ["--udn", self.player.raop_discovery_info.name]
-
-        # mDNS properties (needed by both flows)
-        if self.player.raop_discovery_info:
-            for prop in ("et", "md", "am", "pk", "pw"):
-                if prop_value := self.player.raop_discovery_info.decoded_properties.get(prop):
-                    args += [f"--{prop}", prop_value]
-
-        # HAP credentials (triggers native AP2 flow when present)
-        if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
-            creds_str = str(creds)
-            if len(creds_str) == 192:
-                args += ["--auth", creds_str]
-            else:
-                self.player.logger.warning(
-                    "Invalid credentials length: %d (expected 192)", len(creds_str)
-                )
-
-        # Device password
-        if password := self.player.config.get_value(CONF_PASSWORD):
-            args += ["--password", str(password)]
-
-        # Local interface binding
-        if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
-        if if_ip not in ("0.0.0.0", "::", ""):
-            try:
-                source_is_ipv6 = isinstance(ipaddress.ip_address(if_ip), ipaddress.IPv6Address)
-                target_is_ipv6 = ":" in self.player.address
-                if source_is_ipv6 == target_is_ipv6:
-                    args += ["--if", if_ip]
-            except ValueError:
-                pass
-
-        # Debug level
-        if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            args += ["--debug", "10"]
-        elif self.prov.logger.isEnabledFor(logging.DEBUG):
-            args += ["--debug", "5"]
-
-        # Positional args: device address + stdin for audio
-        args += [self.player.address, "-"]
-
-        self.player.logger.debug(
-            "Starting cliairplay (%s) for player %s",
-            "RAOP" if protocol == StreamingProtocol.RAOP else "AP2",
-            self.player.player_id,
-        )
-        self._cli_proc = AsyncProcess(args, stdin=True, stderr=True, name="cliairplay")
+        args = await self._build_cli_args(start_unix_ms)
+        self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
+        self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
         await self._cli_proc.start()
         self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
+        self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
 
     async def wait_for_connection(self) -> None:
         """Wait for device connection to be established."""
@@ -189,6 +123,9 @@ class AirPlayStream:
         await self.send_cli_command("ACTION=STOP")
         self._stopped = True
         await self.commands_pipe.remove()
+        # stop the stdout reader first so process close can drain the pipe
+        if self._stdout_reader_task and not self._stdout_reader_task.done():
+            self._stdout_reader_task.cancel()
         if force:
             if self._cli_proc and not self._cli_proc.closed:
                 await self._cli_proc.kill()
@@ -251,6 +188,168 @@ class AirPlayStream:
         if progress is not None and abs(progress - self._last_progress_sent) >= 2:
             self._last_progress_sent = progress
             await self.send_cli_command(f"PROGRESS={progress}")
+
+    async def _build_cli_args(self, start_unix_ms: int) -> list[str]:  # noqa: PLR0915
+        """Assemble the cliairplay argument list for this stream."""
+        cli_binary = await get_cli_binary()
+        prov = cast("AirPlayProvider", self.prov)
+        # The user-configured protocol acts as an override only; the default is
+        # to let the binary resolve the route from the mDNS TXT (--txt).
+        protocol_override = self.player.protocol_override
+        if protocol_override == StreamingProtocol.RAOP:
+            protocol_arg = "raop"
+        elif protocol_override == StreamingProtocol.AIRPLAY2:
+            protocol_arg = "airplay2"
+        else:
+            protocol_arg = "auto"
+
+        args: list[str] = [
+            cli_binary,
+            "--protocol",
+            protocol_arg,
+            "--volume",
+            str(self.player.volume_level),
+            "--dacp",
+            prov.dacp_id,
+            "--activeremote",
+            self.active_remote_id,
+            "--cmdpipe",
+            self.commands_pipe.path,
+            "--start-unix-ms",
+            str(start_unix_ms),
+            "--samplerate",
+            str(self.pcm_format.sample_rate),
+            "--bitdepth",
+            str(self.pcm_format.bit_depth),
+        ]
+
+        # Playback lead/buffer: the binary's default (2000 ms, clamped to the
+        # device-reported window) is used unless the user explicitly overrides it.
+        if latency_override := self.player.latency_override_ms:
+            args += ["--latency", str(latency_override)]
+
+        airplay_info = self.player.airplay_discovery_info
+        raop_info = self.player.raop_discovery_info
+        # Connection target: the AirPlay 2 service whenever it may be used
+        # (auto or forced airplay2), the RAOP service otherwise. All AirPlay 2
+        # routes (native and RAOP-compat) run against the _airplay._tcp port.
+        if airplay_info and protocol_arg != "raop":
+            args += ["--port", str(airplay_info.port)]
+            args += ["--name", self.player.display_name]
+            args += ["--hostname", str(airplay_info.server)]
+        elif raop_info:
+            args += ["--port", str(raop_info.port)]
+
+        # mDNS properties from the RAOP service (needed by the RAOP-based flows)
+        if raop_info:
+            args += ["--udn", raop_info.name]
+            for prop in ("et", "md", "am", "pk", "pw", "cn"):
+                if prop_value := raop_info.decoded_properties.get(prop):
+                    args += [f"--{prop}", prop_value]
+
+        # Full _airplay._tcp TXT for the binary's automatic route selection
+        if airplay_info and (txt_records := serialize_txt_records(airplay_info)):
+            args += ["--txt", txt_records]
+
+        # HAP credentials (triggers native AP2 flow when present)
+        if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
+            creds_str = str(creds)
+            if len(creds_str) == 192:
+                args += ["--auth", creds_str]
+            else:
+                self.player.logger.warning(
+                    "Invalid credentials length: %d (expected 192)", len(creds_str)
+                )
+
+        # Legacy Apple TV RAOP pairing secret
+        if raop_creds := self.player.config.get_value(CONF_RAOP_CREDENTIALS):
+            # Credentials format is "client_id:auth_secret", the binary expects the secret
+            creds_str = str(raop_creds)
+            auth_secret = creds_str.split(":", 1)[1] if ":" in creds_str else creds_str
+            args += ["--secret", auth_secret]
+
+        # Device password
+        if password := self.player.config.get_value(CONF_PASSWORD):
+            args += ["--password", str(password)]
+
+        # Shared PTP daemon clock (multi-room sync for native AP2 streams)
+        if protocol_arg != "raop" and prov.ptp_daemon_running:
+            args += ["--ptp-shared"]
+
+        # Local interface binding
+        if_arg: str | None = None
+        target_is_ipv6 = ":" in self.player.address
+        if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
+        if if_ip not in ("0.0.0.0", "::", ""):
+            try:
+                source_is_ipv6 = isinstance(ipaddress.ip_address(if_ip), ipaddress.IPv6Address)
+                if source_is_ipv6 == target_is_ipv6:
+                    if_arg = if_ip
+                    args += ["--if", if_ip]
+            except ValueError:
+                pass
+
+        # Address advertised inside the protocol (timing peers) for hosts where
+        # the reachable address differs from the bind address (e.g. containers).
+        publish_ip = str(self.mass.streams.publish_ip or "")
+        if publish_ip and publish_ip != if_arg:
+            try:
+                publish_is_ipv6 = isinstance(
+                    ipaddress.ip_address(publish_ip), ipaddress.IPv6Address
+                )
+                if publish_is_ipv6 == target_is_ipv6:
+                    args += ["--publish-ip", publish_ip]
+            except ValueError:
+                pass
+
+        # Debug level
+        if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            args += ["--debug", "10"]
+        elif self.prov.logger.isEnabledFor(logging.DEBUG):
+            args += ["--debug", "5"]
+
+        # Positional args: device address + stdin for audio
+        args += [self.player.address, "-"]
+        return args
+
+    async def _stdout_reader(self) -> None:
+        """
+        Monitor stdout for the running cliairplay process.
+
+        After connect the binary reports the effective lead and the
+        receiver-reported buffering window on stdout:
+          [STATUS] latency lead_ms=<int> device_min_frames=<int> device_max_frames=<int>
+        """
+        if not self._cli_proc:
+            return
+        buffer = b""
+        while chunk := await self._cli_proc.read(1024):
+            buffer += chunk
+            while b"\n" in buffer:
+                raw_line, buffer = buffer.split(b"\n", 1)
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                if "[STATUS] latency" in line:
+                    self._parse_latency_status(line)
+                self.player.logger.log(VERBOSE_LOG_LEVEL, line)
+
+    def _parse_latency_status(self, line: str) -> None:
+        """Parse and store the [STATUS] latency line reported by the binary."""
+        try:
+            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+            self.latency_lead_ms = int(fields.get("lead_ms", 0))
+            self.device_min_frames = int(fields.get("device_min_frames", 0))
+            self.device_max_frames = int(fields.get("device_max_frames", 0))
+        except ValueError:
+            return
+        self.player.logger.debug(
+            "Device latency for %s: lead=%dms, buffer window=%d-%d frames (0=unreported)",
+            self.player.display_name,
+            self.latency_lead_ms,
+            self.device_min_frames,
+            self.device_max_frames,
+        )
 
     async def _stderr_reader(self) -> None:
         """
