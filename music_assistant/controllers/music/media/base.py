@@ -1349,6 +1349,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_params.setdefault(key, value)
 
         if collapse_collections:
+            if search:
+                query_params["search"] = f"%{search}%"
             sql_query = await self._adapt_query_for_collections(
                 sql_query, query_params, summary=summary, order_by=order_by, search=search
             )
@@ -2072,7 +2074,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return sql_query
 
         if search:
-            sql_query += f"WHERE search_name LIKE '%{search}%'"
+            sql_query += "WHERE search_name LIKE :search"
             return sql_query
 
         supported_order_keys = ("name", "sort_name")
