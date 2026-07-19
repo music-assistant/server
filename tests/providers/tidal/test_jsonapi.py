@@ -67,3 +67,12 @@ def test_next_cursor() -> None:
     assert doc.next_cursor == "abc123"
     bare = JsonApiDocument({"links": {"next": "rawcursor"}})
     assert bare.next_cursor == "rawcursor"
+
+
+def test_next_cursor_percent_encoded_brackets() -> None:
+    """Test the cursor is extracted when the bracket key is percent-encoded."""
+    # This is the real form Tidal returns: page%5Bcursor%5D=<value>.
+    doc = JsonApiDocument(
+        {"links": {"next": "/x?include=items.profileArt&page%5Bcursor%5D=eyJpZCI6Mzk3fQ"}}
+    )
+    assert doc.next_cursor == "eyJpZCI6Mzk3fQ"

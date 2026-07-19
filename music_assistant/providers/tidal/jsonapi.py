@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import parse_qs, urlparse
 
 
 class JsonApiDocument:
@@ -43,10 +43,11 @@ class JsonApiDocument:
         next_link = links.get("next")
         if not isinstance(next_link, str) or not next_link:
             return None
-        # The API returns either a full path with a page[cursor] query param
-        # or the bare cursor value; callers only need the cursor.
-        if "page[cursor]=" in next_link:
-            return unquote(next_link.split("page[cursor]=", 1)[1].split("&", 1)[0])
+        # The next link is a path with a page[cursor] query param, whose brackets
+        # may be percent-encoded (page%5Bcursor%5D). parse_qs decodes both the key
+        # and value; fall back to treating the whole link as a bare cursor.
+        if cursors := parse_qs(urlparse(next_link).query).get("page[cursor]"):
+            return cursors[0]
         return next_link
 
     def resolve(self, identifier: dict[str, Any]) -> dict[str, Any] | None:
