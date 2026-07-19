@@ -101,10 +101,12 @@ When protocol is set to "Automatically select" (default), the provider passes
 bits: RAOP vs AirPlay 2, native vs RAOP-compatible flow, transient pairing vs
 stored-credential pair-verify, and PTP vs NTP timing.
 
-The per-player protocol setting acts as an override only: forcing RAOP or
-AirPlay 2 passes that protocol verbatim. MA-side model heuristics
-(`AIRPLAY_2_DEFAULT_MODELS`) remain for planning decisions such as which
-service/port to target and pairing endpoints.
+The per-player protocol setting acts as an override only (an escape hatch for
+devices with a broken implementation of one of the protocols): forcing RAOP or
+AirPlay 2 passes that protocol verbatim. For MA-side planning decisions (which
+pairing flow to run, which service/port to target) the same feature-bit test
+the binary uses is mirrored in `supports_airplay2()`: any device advertising
+AirPlay 2 gets AirPlay 2, RAOP is only used for devices that do not support it.
 
 ## Discovery and Player Setup
 

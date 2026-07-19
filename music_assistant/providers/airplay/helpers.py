@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 import os
 import platform
@@ -14,10 +13,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import get_source_ip_for_target
-from music_assistant.providers.airplay.constants import (
-    AIRPLAY_2_DEFAULT_MODELS,
-    BROKEN_AIRPLAY_MODELS,
-)
+from music_assistant.providers.airplay.constants import BROKEN_AIRPLAY_MODELS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -134,14 +130,27 @@ def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
     return False
 
 
-def is_airplay2_preferred_model(manufacturer: str, model: str) -> bool:
-    """Check if a model is known to work better with AirPlay 2 protocol."""
-    for ap2_manufacturer, ap2_model in AIRPLAY_2_DEFAULT_MODELS:
-        if fnmatch.fnmatchcase(manufacturer.lower(), ap2_manufacturer.lower()) and (
-            fnmatch.fnmatchcase(model.lower(), ap2_model.lower())
-        ):
-            return True
-    return False
+def supports_airplay2(features_value: str | None) -> bool:
+    """
+    Check if a device advertises AirPlay 2 support in its features bitmask.
+
+    :param features_value: Raw features value from the mDNS TXT records
+        (``features`` on the _airplay service or ``ft`` on the _raop service),
+        formatted as ``0xLOW`` or ``0xLOW,0xHIGH``.
+    """
+    if not features_value:
+        return False
+    try:
+        parts = features_value.split(",")
+        features = int(parts[0], 16)
+        if len(parts) > 1:
+            features |= int(parts[1], 16) << 32
+    except ValueError, TypeError:
+        return False
+    # SupportsUnifiedMediaControl (bit 38) / SupportsCoreUtilsPairingAndEncryption
+    # (bit 48): either one means the device speaks AirPlay 2. This mirrors the
+    # test the cliairplay binary uses for its automatic route selection.
+    return bool((features >> 38) & 1 or (features >> 48) & 1)
 
 
 def is_apple_device(manufacturer: str, model: str) -> bool:

@@ -10,9 +10,11 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
+    CONF_AIRPLAY_CREDENTIALS,
     CONF_AIRPLAY_PROTOCOL,
     CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
+    CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     StreamingProtocol,
 )
@@ -164,6 +166,7 @@ def _set_discovery_info(player: AirPlayPlayer, *, raop: bool, airplay: bool) -> 
         if enabled:
             info = MagicMock()
             info.properties = {}
+            info.decoded_properties = {}
             setattr(player, attr, info)
         else:
             setattr(player, attr, None)
@@ -199,30 +202,79 @@ async def test_airplay_protocol_option_enabled_when_advertised(
 
 
 @pytest.mark.parametrize(
-    ("manufacturer", "model", "expected"),
+    ("airplay_props", "raop_props", "expected"),
     [
-        # AirPlay 2 preferred models get AirPlay 2, even when RAOP is advertised
-        ("AirPlay", "JBL BAR 1300", StreamingProtocol.AIRPLAY2),
-        ("AirPlay", "JBL Charge 5 Wi-Fi", StreamingProtocol.AIRPLAY2),
-        # other devices advertising both protocols default to RAOP
-        ("Test Manufacturer", "Test Model", StreamingProtocol.RAOP),
+        # devices advertising the AirPlay 2 feature bits get AirPlay 2
+        ({"features": "0x4A7FDFD5,0x3C177FDE"}, {}, StreamingProtocol.AIRPLAY2),
+        # the _raop ft field is used as fallback when _airplay lacks features
+        ({}, {"ft": "0x445F8A00,0x1C340"}, StreamingProtocol.AIRPLAY2),
+        # legacy receivers without the AirPlay 2 feature bits stay on RAOP
+        ({"features": "0x5A7FFFF7"}, {}, StreamingProtocol.RAOP),
+        # no features advertised at all: RAOP (safe legacy default)
+        ({}, {}, StreamingProtocol.RAOP),
     ],
 )
 def test_auto_protocol_selection(
-    manufacturer: str, model: str, expected: StreamingProtocol
+    airplay_props: dict[str, str], raop_props: dict[str, str], expected: StreamingProtocol
 ) -> None:
-    """Automatic protocol selection prefers AirPlay 2 for known AP2-preferred models."""
+    """Automatic protocol selection follows the advertised AirPlay 2 feature bits."""
+    raop_info = MagicMock()
+    raop_info.decoded_properties = raop_props
+    airplay_info = MagicMock()
+    airplay_info.decoded_properties = airplay_props
     player = AirPlayPlayer(
         provider=MagicMock(),
         player_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
-        manufacturer=manufacturer,
-        model=model,
-        raop_discovery_info=MagicMock(),
-        airplay_discovery_info=MagicMock(),
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=raop_info,
+        airplay_discovery_info=airplay_info,
     )
     assert player._get_protocol_for_config_value(0) == expected
+
+
+def test_auto_protocol_selection_airplay_service_only() -> None:
+    """A device advertising only the _airplay service gets AirPlay 2 even without features."""
+    airplay_info = MagicMock()
+    airplay_info.decoded_properties = {}
+    player = AirPlayPlayer(
+        provider=MagicMock(),
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=airplay_info,
+    )
+    assert player._get_protocol_for_config_value(0) == StreamingProtocol.AIRPLAY2
+
+
+@pytest.mark.parametrize(
+    ("stored_config", "expected"),
+    [
+        # no credentials at all: pairing is required before the player is usable
+        ({}, True),
+        # a legacy RAOP pairing keeps the player usable after the device
+        # resolves to AirPlay 2 (the binary streams RAOP-compat with the secret)
+        ({CONF_RAOP_CREDENTIALS: "clientid:secret"}, False),
+        # AirPlay 2 credentials obviously suffice as well
+        ({CONF_AIRPLAY_CREDENTIALS: "a" * 192}, False),
+    ],
+)
+def test_needs_setup_accepts_credentials_for_either_protocol(
+    airplay_player: AirPlayPlayer, stored_config: dict[str, str], expected: bool
+) -> None:
+    """A PIN-pairing device needs setup only when no credentials are stored at all."""
+    # PIN-required device that resolves to AirPlay 2 (Apple TV-like)
+    airplay_info = MagicMock()
+    airplay_info.properties = {b"flags": b"0x8"}
+    airplay_info.decoded_properties = {"features": "0x4A7FDFD5,0x3C177FDE"}
+    airplay_player.airplay_discovery_info = airplay_info
+    _configure_player(airplay_player, dict(stored_config))
+    assert airplay_player.needs_setup is expected
 
 
 # --- Hi-res playback tests ---

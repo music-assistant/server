@@ -56,10 +56,10 @@ from .constants import (
     StreamingProtocol,
 )
 from .helpers import (
-    is_airplay2_preferred_model,
     is_apple_device,
     is_broken_airplay_model,
     player_id_to_mac_address,
+    supports_airplay2,
 )
 from .stream_session import AirPlayStreamSession
 
@@ -170,9 +170,14 @@ class AirPlayPlayer(Player):
         if self._requires_pin_pairing() or (
             self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
         ):
-            # check if we have credentials stored for the current protocol
-            creds_key = self._get_credentials_key(self.protocol)
-            if not self.config.get_value(creds_key):
+            # Credentials for either protocol keep the player usable: the binary
+            # picks the best route for the credentials it has. The pairing section
+            # in the player config still offers pairing for the active protocol
+            # (e.g. to upgrade a legacy RAOP pairing to AirPlay 2).
+            if not (
+                self.config.get_value(CONF_AIRPLAY_CREDENTIALS)
+                or self.config.get_value(CONF_RAOP_CREDENTIALS)
+            ):
                 return True
         return False
 
@@ -700,14 +705,15 @@ class AirPlayPlayer(Player):
             return StreamingProtocol.AIRPLAY2
         if config_option == StreamingProtocol.RAOP:
             return StreamingProtocol.RAOP
-        # automatic selection
-        if self.airplay_discovery_info and is_airplay2_preferred_model(
-            self.device_info.manufacturer, self.device_info.model
-        ):
-            return StreamingProtocol.AIRPLAY2
-        # Fall back to AirPlay 2 if RAOP service was not discovered
-        if not self.raop_discovery_info and self.airplay_discovery_info:
-            return StreamingProtocol.AIRPLAY2
+        # Automatic selection: prefer AirPlay 2 whenever the device advertises
+        # support for it (same feature-bit test the binary uses for its route
+        # selection). RAOP is only used for devices without AirPlay 2 support.
+        if self.airplay_discovery_info:
+            features = self.airplay_discovery_info.decoded_properties.get("features")
+            if not features and self.raop_discovery_info:
+                features = self.raop_discovery_info.decoded_properties.get("ft")
+            if supports_airplay2(features) or not self.raop_discovery_info:
+                return StreamingProtocol.AIRPLAY2
         return StreamingProtocol.RAOP
 
     def _get_pairing_config_entries(
