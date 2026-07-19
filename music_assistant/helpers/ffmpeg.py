@@ -29,6 +29,7 @@ LOGGER = logging.getLogger("ffmpeg")
 MINIMAL_FFMPEG_VERSION = 6
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
+DEFAULT_MP3_BIT_RATE: Final[int] = 320
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
@@ -600,7 +601,7 @@ def get_ffmpeg_args(
     elif output_format.content_type == ContentType.AAC:
         output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
     elif output_format.content_type == ContentType.MP3:
-        output_args = ["-f", "mp3", "-b:a", "320k"]
+        output_args = ["-f", "mp3", "-b:a", f"{DEFAULT_MP3_BIT_RATE}k"]
     elif output_format.content_type == ContentType.WAV:
         pcm_format = ContentType.from_bit_depth(output_format.bit_depth)
         output_args = [
