@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from typing import TYPE_CHECKING, Any
 
 from aiohttp.client_exceptions import ClientError
@@ -14,14 +15,13 @@ from music_assistant_models.media_items import SearchResults
 
 from .constants import FAVORITE_TRACKS_PLAYLIST_ID, FAVORITES_TRACKS, PAGES_MIX, PLAYLISTS
 from .parsers import (
-    parse_album,
-    parse_artist,
     parse_favorite_tracks_playlist,
     parse_playlist,
     parse_track,
 )
 from .parsers_v2 import parse_album as parse_album_v2
 from .parsers_v2 import parse_artist as parse_artist_v2
+from .parsers_v2 import parse_playlist as parse_playlist_v2
 from .parsers_v2 import parse_track as parse_track_v2
 
 if TYPE_CHECKING:
@@ -43,47 +43,51 @@ class TidalMediaManager:
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on Tidal."""
-        parsed_results = SearchResults()
-        media_type_strings = []
+        results = SearchResults()
+        wanted = set(media_types)
 
-        if MediaType.ARTIST in media_types:
-            media_type_strings.append("artists")
-        if MediaType.ALBUM in media_types:
-            media_type_strings.append("albums")
-        if MediaType.TRACK in media_types:
-            media_type_strings.append("tracks")
-        if MediaType.PLAYLIST in media_types:
-            media_type_strings.append("playlists")
+        # Build the includes for the requested types only, keeping under the
+        # official API's 10-included-resource cap. Track album covers are
+        # included so track results carry artwork; standalone album results
+        # trade artist names for staying within the cap.
+        includes: list[str] = []
+        if MediaType.TRACK in wanted:
+            includes += ["tracks.artists", "tracks.albums.coverArt"]
+        if MediaType.ALBUM in wanted:
+            includes.append("albums.coverArt")
+        if MediaType.ARTIST in wanted:
+            includes.append("artists.profileArt")
+        if MediaType.PLAYLIST in wanted:
+            includes.append("playlists.coverArt")
+        if not includes:
+            return results
 
-        if not media_type_strings:
-            return parsed_results
+        query = urllib.parse.quote(search_query, safe="")
+        doc = await self.api.get_jsonapi(f"searchResults/{query}", include=includes)
+        data = doc.data
 
-        results = await self.api.get(
-            "search",
-            params={
-                "query": search_query.replace("'", ""),
-                "limit": limit,
-                "types": ",".join(media_type_strings),
-            },
-        )
-
-        if "artists" in results and results["artists"].get("items"):
-            parsed_results.artists = [
-                parse_artist(self.provider, x) for x in results["artists"]["items"]
+        # Slice the resources before parsing so we only parse up to `limit` items.
+        if MediaType.TRACK in wanted:
+            results.tracks = [
+                parse_track_v2(self.provider, doc, res)
+                for res in doc.related(data, "tracks")[:limit]
             ]
-        if "albums" in results and results["albums"].get("items"):
-            parsed_results.albums = [
-                parse_album(self.provider, x) for x in results["albums"]["items"]
+        if MediaType.ALBUM in wanted:
+            results.albums = [
+                parse_album_v2(self.provider, doc, res)
+                for res in doc.related(data, "albums")[:limit]
             ]
-        if "playlists" in results and results["playlists"].get("items"):
-            parsed_results.playlists = [
-                parse_playlist(self.provider, x) for x in results["playlists"]["items"]
+        if MediaType.ARTIST in wanted:
+            results.artists = [
+                parse_artist_v2(self.provider, doc, res)
+                for res in doc.related(data, "artists")[:limit]
             ]
-        if "tracks" in results and results["tracks"].get("items"):
-            parsed_results.tracks = [
-                parse_track(self.provider, x) for x in results["tracks"]["items"]
+        if MediaType.PLAYLIST in wanted:
+            results.playlists = [
+                parse_playlist_v2(self.provider, doc, res)
+                for res in doc.related(data, "playlists")[:limit]
             ]
-        return parsed_results
+        return results
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details."""

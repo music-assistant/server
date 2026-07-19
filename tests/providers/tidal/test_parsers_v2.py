@@ -17,6 +17,7 @@ from music_assistant.providers.tidal.parsers_v2 import (
     _split_title_version,
     parse_album,
     parse_artist,
+    parse_playlist,
     parse_track,
 )
 
@@ -136,6 +137,48 @@ def test_split_title_version(
 ) -> None:
     """Test the title/version split trusts the explicit version attribute."""
     assert _split_title_version(title, version) == (expected_name, expected_version)
+
+
+def test_parse_playlist_editable(provider_mock: Mock) -> None:
+    """Test a playlist owned by the authenticated user is marked editable."""
+    doc = JsonApiDocument(
+        {
+            "data": {
+                "id": "pl-1",
+                "type": "playlists",
+                "attributes": {"name": "My List", "description": "mine", "playlistType": "USER"},
+                "relationships": {"owners": {"data": [{"id": "12345", "type": "owners"}]}},
+            }
+        }
+    )
+    provider_mock.auth.user_id = "12345"
+    provider_mock.auth.user.profile_name = "Me"
+    playlist = parse_playlist(provider_mock, doc, doc.data)
+
+    assert playlist.item_id == "pl-1"
+    assert playlist.name == "My List"
+    assert playlist.is_editable is True
+    assert playlist.owner == "Me"
+    assert playlist.metadata.description == "mine"
+
+
+def test_parse_playlist_not_owned(provider_mock: Mock) -> None:
+    """Test a playlist not owned by the user is not editable."""
+    doc = JsonApiDocument(
+        {
+            "data": {
+                "id": "pl-2",
+                "type": "playlists",
+                "attributes": {"name": "Editorial", "playlistType": "EDITORIAL"},
+                "relationships": {"owners": {"data": []}},
+            }
+        }
+    )
+    provider_mock.auth.user_id = "12345"
+    playlist = parse_playlist(provider_mock, doc, doc.data)
+
+    assert playlist.is_editable is False
+    assert playlist.owner == "Tidal"
 
 
 def test_parse_track_credits(provider_mock: Mock) -> None:

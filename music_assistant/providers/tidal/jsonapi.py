@@ -55,6 +55,16 @@ class JsonApiDocument:
             return None
         return self._included.get((identifier["type"], identifier["id"]))
 
+    def linkage_ids(self, resource: dict[str, Any], relationship: str) -> set[str]:
+        """Return the ids of a resource's relationship linkage (no include needed)."""
+        rel = (resource.get("relationships") or {}).get(relationship) or {}
+        linkage = rel.get("data")
+        if linkage is None:
+            return set()
+        if isinstance(linkage, dict):
+            linkage = [linkage]
+        return {str(item["id"]) for item in linkage if item.get("id")}
+
     def related(self, resource: dict[str, Any], relationship: str) -> list[dict[str, Any]]:
         """
         Resolve a resource's relationship to the included resource objects.
