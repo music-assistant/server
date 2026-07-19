@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
@@ -74,6 +75,7 @@ class _AudioProcessingSession:
     session_id: str
     items: dict[str, _AudioProcessingItem] = field(default_factory=dict)
     outputs: dict[str | None, dict[str, _AudioOutputEntry]] = field(default_factory=dict)
+    shared_output_templates: dict[str | None, _AudioOutputEntry] = field(default_factory=dict)
 
 
 class AudioProcessingManager:
@@ -188,6 +190,7 @@ class AudioProcessingManager:
         player_id: str,
         output_plan: AudioOutputPlan,
         *,
+        shared_player_ids: Iterable[str] | None = None,
         queue_id: str,
         session_id: str,
         queue_item_id: str | None = None,
@@ -197,6 +200,8 @@ class AudioProcessingManager:
 
         :param player_id: Destination player identifier.
         :param output_plan: Effective output processing and private intermediate formats.
+        :param shared_player_ids: Additional players receiving this identical output path.
+            An empty iterable marks a path that can gain shared destinations later.
         :param queue_id: Queue identifier that owns the output.
         :param session_id: Queue session identifier that owns the output.
         :param queue_item_id: Queue item for single-item output, or None for flow output.
@@ -208,17 +213,36 @@ class AudioProcessingManager:
         self._prune_played_items(queue_id, session)
         if queue_item_id is not None and self._is_played_item(queue_id, queue_item_id):
             return False
-        entry = _AudioOutputEntry(
-            details=deepcopy(output_plan.output_details),
-            input_format=deepcopy(output_plan.input_format),
-            handoff_format=deepcopy(output_plan.handoff_format),
-            dsp_config_id=output_plan.dsp_config_id,
-        )
-        entry.details.player_ids = [player_id]
+
+        destination_player_ids = {player_id}
+        if shared_player_ids is not None:
+            destination_player_ids.update(shared_player_ids)
+
+        entries: dict[str, _AudioOutputEntry] = {}
+        for destination_player_id in destination_player_ids:
+            entry = _AudioOutputEntry(
+                details=deepcopy(output_plan.output_details),
+                input_format=deepcopy(output_plan.input_format),
+                handoff_format=deepcopy(output_plan.handoff_format),
+                dsp_config_id=output_plan.dsp_config_id,
+            )
+            entry.details.player_ids = [destination_player_id]
+            entries[destination_player_id] = entry
+
+        if shared_player_ids is None:
+            session.shared_output_templates.pop(queue_item_id, None)
+        else:
+            session.shared_output_templates[queue_item_id] = deepcopy(entries[player_id])
+
         item_outputs = session.outputs.setdefault(queue_item_id, {})
-        if item_outputs.get(player_id) == entry:
+        changed_entries = {
+            destination_player_id: entry
+            for destination_player_id, entry in entries.items()
+            if item_outputs.get(destination_player_id) != entry
+        }
+        if not changed_entries:
             return False
-        item_outputs[player_id] = entry
+        item_outputs.update(changed_entries)
         current_changed = self._publish_all(queue_id, session)
         queue = self.mass.player_queues.get(queue_id)
         if current_changed or (
@@ -231,11 +255,11 @@ class AudioProcessingManager:
 
     def retain_outputs(self, queue_id: str, player_ids: set[str]) -> bool:
         """
-        Drop outputs for players no longer attached to a queue.
+        Reconcile outputs with players attached to a queue.
 
         :param queue_id: Queue identifier.
-        :param player_ids: Player identifiers that still belong to the output.
-        :return: Whether pruning published an updated current chain.
+        :param player_ids: Player identifiers that belong to the output.
+        :return: Whether reconciliation published an updated current chain.
         """
         session = self._sessions.get(queue_id)
         if session is None:
@@ -247,6 +271,13 @@ class AudioProcessingManager:
                 for player_id, output in outputs.items()
                 if player_id in player_ids
             }
+            if template := session.shared_output_templates.get(queue_item_id):
+                added_player_ids = player_ids - retained.keys()
+                if queue_id not in outputs:
+                    added_player_ids.discard(queue_id)
+                for player_id in sorted(added_player_ids):
+                    retained[player_id] = deepcopy(template)
+                    retained[player_id].details.player_ids = [player_id]
             if retained == outputs:
                 continue
             changed = True
@@ -254,6 +285,7 @@ class AudioProcessingManager:
                 session.outputs[queue_item_id] = retained
             else:
                 del session.outputs[queue_item_id]
+                session.shared_output_templates.pop(queue_item_id, None)
         if not changed:
             return False
         current_changed = self._publish_all(queue_id, session)
@@ -278,6 +310,9 @@ class AudioProcessingManager:
                     ):
                         entry.details.dsp.preset_id = preset_id
                         changed = True
+            for entry in session.shared_output_templates.values():
+                if entry.dsp_config_id == player_id:
+                    entry.details.dsp.preset_id = preset_id
             if changed and self._publish_all(queue_id, session):
                 self.mass.player_queues.signal_update(queue_id)
 
@@ -409,6 +444,7 @@ class AudioProcessingManager:
         for queue_item in queue_data.items[: queue_data.queue.current_index]:
             session.items.pop(queue_item.queue_item_id, None)
             session.outputs.pop(queue_item.queue_item_id, None)
+            session.shared_output_templates.pop(queue_item.queue_item_id, None)
             if queue_item.streamdetails:
                 queue_item.streamdetails.audio_processing = None
 

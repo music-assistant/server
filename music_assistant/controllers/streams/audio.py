@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -112,6 +112,7 @@ from music_assistant.helpers.audio import (
     parse_extinf_metadata,
     realtime_pcm_pacer,
     resample_pcm_audio,
+    resolve_output_player_ids,
 )
 from music_assistant.helpers.dsp import filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
@@ -1142,6 +1143,7 @@ class StreamsAudio:
         input_format: AudioFormat,
         output_format: AudioFormat,
         *,
+        shared_player_ids: Iterable[str] | None = None,
         handoff_format: AudioFormat | None = None,
         queue_id: str | None = None,
         session_id: str | None = None,
@@ -1153,6 +1155,8 @@ class StreamsAudio:
         :param player_id: Destination player identifier.
         :param input_format: PCM format entering player-specific processing.
         :param output_format: Furthest downstream output format known to the server.
+        :param shared_player_ids: Additional players receiving this identical output path.
+            An empty iterable marks a path that can gain shared destinations later.
         :param handoff_format: Earlier provider handoff format when it differs.
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.
@@ -1163,6 +1167,12 @@ class StreamsAudio:
         destination_player_id = (
             player.protocol_parent_id if player and player.protocol_parent_id else player_id
         )
+        resolved_shared_player_ids = (
+            resolve_output_player_ids(self.mass, shared_player_ids) - {destination_player_id}
+            if shared_player_ids is not None
+            else None
+        )
+        destination_player_ids = {destination_player_id, *(resolved_shared_player_ids or ())}
         if player:
             dsp_config_id = self._resolve_player_dsp_config_id(player)
             dsp = self._resolve_player_dsp_config(player)
@@ -1202,7 +1212,7 @@ class StreamsAudio:
             filter_params.append("alimiter=limit=-2dB:level=false:asc=true")
 
         output_details = AudioOutputDetails(
-            player_ids=[destination_player_id],
+            player_ids=sorted(destination_player_ids),
             dsp=AudioDSPDetails(
                 state=dsp_state,
                 input_gain=dsp.input_gain if dsp.enabled else 0.0,
@@ -1225,6 +1235,7 @@ class StreamsAudio:
             self.mass.streams.audio_processing.update_output(
                 destination_player_id,
                 output_plan,
+                shared_player_ids=resolved_shared_player_ids,
                 queue_id=queue_id,
                 session_id=session_id,
                 queue_item_id=queue_item_id,
