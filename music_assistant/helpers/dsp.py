@@ -156,12 +156,15 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
     if isinstance(dsp_filter, GainFilter) and dsp_filter.gain != 0:
         filter_params.append(f"volume={dsp_filter.gain}dB")
     if isinstance(dsp_filter, BalanceFilter) and dsp_filter.balance != 0:
-        # attenuate only the channel opposite the slider direction, so there is
-        # no positive gain and thus no clipping risk
-        attenuation = (100 - abs(dsp_filter.balance)) / 100
-        if dsp_filter.balance > 0:
-            filter_params.append(f"pan=stereo|FL={attenuation}*FL|FR=FR")
-        else:
-            filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
+        # balance is a stereo operation; on a non-stereo source the FL/FR pan
+        # expression would output silence, so only apply it to stereo streams
+        if input_format.channels == 2:
+            # attenuate only the channel opposite the slider direction, so there is
+            # no positive gain and thus no clipping risk
+            attenuation = (100 - abs(dsp_filter.balance)) / 100
+            if dsp_filter.balance > 0:
+                filter_params.append(f"pan=stereo|FL={attenuation}*FL|FR=FR")
+            else:
+                filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
 
     return filter_params

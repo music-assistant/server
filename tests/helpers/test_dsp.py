@@ -56,6 +56,13 @@ def test_balance_filter_zero_is_passthrough() -> None:
     assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == []
 
 
+def test_balance_filter_mono_is_skipped() -> None:
+    """Test that balance is skipped on a mono source (stereo-only operation)."""
+    dsp_filter = BalanceFilter(enabled=True, balance=40)
+    mono_format = AudioFormat(sample_rate=48000, channels=1)
+    assert filter_to_ffmpeg_params(dsp_filter, mono_format) == []
+
+
 def test_tone_control_filter() -> None:
     """Test that tone control levels map to equalizer filters, omitting zero levels."""
     dsp_filter = ToneControlFilter(enabled=True, bass_level=4.0, mid_level=0.0, treble_level=-2.0)
