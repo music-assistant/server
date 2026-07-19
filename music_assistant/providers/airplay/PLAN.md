@@ -33,14 +33,14 @@ owntone dependency.
 ### RAOP (AirPlay 1)
 - Full playback via libraop's `raopcl`. 16-bit ALAC. Tested audible on Sonos.
 
-### AirPlay 2 — RAOP-compatible flow (Sonos & most third-party)
-- Sonos advertises AP2 but its firmware rejects the native `streams` SETUP plist
-  (400 Bad Request). It works via the RAOP-compatible path: `auth-setup` (MFi
-  X25519 exchange, no stored credentials) → RAOP `ANNOUNCE`/`SETUP`/`RECORD`.
-- Detected automatically when no HAP credentials are provided.
-- 16-bit ALAC tested audible on Sonos.
+### AirPlay 2 — RAOP-compatible flow
+- The fallback path for devices that can't do a native session: `auth-setup`
+  (MFi X25519 exchange, no stored credentials) → RAOP `ANNOUNCE`/`SETUP`/`RECORD`.
+- 16-bit ALAC tested audible on Sonos. Note: Sonos (and JBL/WiiM) actually take
+  the NATIVE flow via transient pairing — auto-selection prefers it; compat
+  remains the safety net.
 
-### AirPlay 2 — native flow (Apple TV / HomePod)
+### AirPlay 2 — native flow (all tested devices)
 - Full HAP pair-verify against a real Apple TV (tvOS 26.4, AppleTV11,1):
   X25519 ECDH + Ed25519 signatures + HKDF-SHA512 + ChaCha20-Poly1305.
 - Encrypted RTSP channel (HAP framing: 2-byte LE length + ciphertext + 16-byte tag,
@@ -49,13 +49,20 @@ owntone dependency.
   `timingProtocol`), events reverse-connection, stream SETUP (`streams` array), RECORD.
 - Encrypted RTP audio: ALAC → ChaCha20-Poly1305 (key = X25519 shared secret,
   nonce = 4 zero bytes + 2-byte seqnum, AAD = 8 bytes of RTP header) + sync packets.
-- Session establishes end-to-end; audio-audible validation still open.
+- EAR-VERIFIED on Sonos Era 100 pair + Move (transient pairing) and Apple TV 4K
+  (HomeKit-PIN pair-verify), including multi-room sync on a shared PTP daemon
+  clock, MIXED RAOP+AP2 groups on one `--start-unix-ms`, and automatic
+  compensation of device-reported render latency (`arrivalToRenderLatencyMs`,
+  Apple TV ~107 ms through its TV).
 
 ### 24-bit ALAC
 - Encoder fixed: the libcodecs `alac_wrapper.cpp` hardcoded `mFormatFlags=1` (16-bit);
   our `alac_ext.cpp` override sets it from the actual bit depth (16→1, 20→2, 24→3, 32→4).
-- Only usable over the **native AP2** path (Sonos won't take 24-bit ALAC over RAOP;
-  RAOP path stays 16-bit). Input from FFmpeg is s32le for 24-bit, truncated to s24le.
+- Rides the native AP2 REALTIME stream. Ear-verified on Apple TV at 44.1/24 and
+  48/24 (correct speed, reference-receiver decode). Input from FFmpeg is s32le,
+  truncated to s24le in the binary. Per-player opt-in in MA: device format
+  tables are unreliable in both directions (Apple TV renders unadvertised
+  24-bit; Sonos 200-accepts 48/24 then plays silence).
 
 ---
 
@@ -198,3 +205,57 @@ Changes to port from the abandoned branch (backed up in `/tmp/airplay-backup/`):
   `base64.urlsafe_b64encode(server_id[:32])`); DACP id `B2763ADADB414A27`.
 - Test tone: `ffmpeg -f lavfi -i "sine=frequency=440:duration=5" -ar 44100 -ac 2 -f s16le`.
 - Sonos needs a metadata command (`ACTION=SENDMETA`) after connect before it emits audio.
+
+---
+
+## 8. Future architecture (planned)
+
+### 8.1 Two player models
+
+Split the provider into two implementations:
+
+1. **Generic AirPlay devices** (Sonos, Samsung, JBL, WiiM, …) —
+   `PlayerType.PROTOCOL`: an AirPlay streaming endpoint and nothing more. No
+   Companion, no MRP. Full metadata support via the DMAP/SET_PARAMETER channel
+   (already implemented; these devices require and consume it).
+2. **Apple devices** (Apple TV, HomePod) — `PlayerType.PLAYER`: AirPlay for
+   streaming PLUS complete device integration in the spirit of Home Assistant's
+   apple_tv integration — know when external media is playing on the device,
+   control power, playback and volume, track state even when MA is not
+   streaming. This is the **Companion protocol** (plus MRP for the
+   now-playing session, below).
+
+### 8.2 MRP + Companion — and where each lives
+
+Only genuine Apple devices speak MRP/Companion; generic receivers are fully
+served by the DMAP metadata they already get.
+
+- **MRP now-playing (during OUR stream)** rides the AirPlay 2 **data channel of
+  the active session** (encrypted with the session's keys). The natural home is
+  the **cli binary** — it owns the session, the channel and the keys, and MA
+  already feeds it metadata over the cmdpipe; the binary would translate that
+  to MRP protobuf frames. Benefits: tvOS now-playing display, and standby
+  prevention (tvOS gates "media playing, don't sleep" on the MRP-established
+  system session — the reason an Apple TV can sleep mid-stream today).
+- **Companion protocol (device control, independent of streaming)** is a
+  separate connection that exists with or without an active AirPlay session.
+  The natural home is **MA/Python** (pyatv is the mature reference
+  implementation and a candidate dependency) — power on/off, wake-on-play,
+  external-playback state, volume/remote control.
+
+### 8.3 Bonus: Apple TV as a cast display
+
+Mirror of the cast-displays feature (cast button on the quiz / party /
+fullscreen now-playing pages): render such a page on the Apple TV. Honest
+assessment of the AirPlay routes:
+
+- **MRP now-playing screen** — realistic v1: tvOS's own now-playing UI with our
+  metadata/artwork/progress. "Now playing controls only", but cheap once MRP
+  exists.
+- **AirPlay screen stream (mirroring, type 110)** — technically the full
+  answer (arbitrary page → H.264 → ATV), but requires a server-side headless
+  render + encode pipeline; heavy, exploratory.
+- **HLS video session** — hand the ATV a video URL of a server-rendered
+  stream; middle ground, also exploratory.
+
+Decision deferred until MRP lands; v1 = the MRP now-playing screen.
