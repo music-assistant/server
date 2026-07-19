@@ -32,7 +32,12 @@ from music_assistant_models.media_items import (
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 if TYPE_CHECKING:
-    from ._openapi_models import AlbumsAttributes, ArtistsAttributes, TracksAttributes
+    from ._openapi_models import (
+        AlbumsAttributes,
+        ArtistsAttributes,
+        PlaylistsAttributes,
+        TracksAttributes,
+    )
     from .jsonapi import JsonApiDocument
     from .provider import TidalProvider
 
@@ -238,17 +243,30 @@ def parse_playlist(
     provider: TidalProvider, doc: JsonApiDocument, resource: dict[str, Any]
 ) -> Playlist:
     """Parse an official Tidal playlist resource to a generic Playlist."""
-    playlist_id = str(resource["id"])
-    attributes: dict[str, Any] = resource.get("attributes", {})
-    # A playlist is editable when the authenticated user is one of its owners.
-    # This needs the "owners" relationship to be present; search omits it (it
-    # would exceed the include cap), so search results are non-editable by design.
-    owner_ids = doc.linkage_ids(resource, "owners")
-    user_id = str(provider.auth.user_id) if provider.auth.user_id else None
-    is_editable = bool(user_id and user_id in owner_ids)
-    owner_name = "Tidal"
-    if is_editable:
-        owner_name = provider.auth.user.profile_name or provider.auth.user.user_name or str(user_id)
+    raw_id = str(resource["id"])
+    attributes: PlaylistsAttributes = resource.get("attributes", {})
+    # Mixes are exposed as playlists but keep the "mix_" item id so they open via
+    # the existing (unofficial) mix flow.
+    is_mix = attributes.get("playlistType") == "MIX"
+    if is_mix:
+        playlist_id = f"mix_{raw_id}"
+        owner_name = "Created by Tidal"
+        is_editable = False
+        url = f"https://tidal.com/mix/{raw_id}"
+    else:
+        playlist_id = raw_id
+        # A playlist is editable when the authenticated user is one of its owners.
+        # This needs the "owners" relationship to be present; search omits it (it
+        # would exceed the include cap), so search results are non-editable there.
+        owner_ids = doc.linkage_ids(resource, "owners")
+        user_id = str(provider.auth.user_id) if provider.auth.user_id else None
+        is_editable = bool(user_id and user_id in owner_ids)
+        owner_name = "Tidal"
+        if is_editable:
+            owner_name = (
+                provider.auth.user.profile_name or provider.auth.user.user_name or str(user_id)
+            )
+        url = f"https://tidal.com/playlist/{raw_id}"
 
     playlist = Playlist(
         item_id=playlist_id,
@@ -260,7 +278,7 @@ def parse_playlist(
                 item_id=playlist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://tidal.com/playlist/{playlist_id}",
+                url=url,
                 is_unique=is_editable,
             )
         },
@@ -268,9 +286,6 @@ def parse_playlist(
     )
     if description := attributes.get("description"):
         playlist.metadata.description = description
-    if created := attributes.get("createdAt"):
-        with suppress(ValueError):
-            playlist.date_added = datetime.fromisoformat(created)
     if image := _resolve_image(provider, doc, resource, "coverArt"):
         playlist.metadata.images = UniqueList([image])
     return playlist

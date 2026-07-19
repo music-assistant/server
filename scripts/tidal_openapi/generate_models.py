@@ -38,6 +38,7 @@ SEED_SCHEMAS = [
     "Tracks_Attributes",
     "Albums_Attributes",
     "Artists_Attributes",
+    "Playlists_Attributes",
 ]
 
 FILE_HEADER = '''"""
