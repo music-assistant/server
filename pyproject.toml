@@ -67,7 +67,7 @@ test = [
   "pytest-cov==7.0.0",
   "syrupy==5.2.0",
   "tomli==2.4.1",
-  "ruff==0.15.6",
+  "ruff==0.15.22",
   "yappi==1.7.6",
 ]
 
