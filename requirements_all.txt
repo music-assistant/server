@@ -13,7 +13,7 @@ aiohttp-socks==0.11.0
 aiojellyfin==0.14.1
 aiomusiccast==0.15.0
 aiortc>=1.6.0
-aiosendspin[server]==6.1.1
+aiosendspin[server]==7.0.0
 aioslimproto==3.1.9
 aiosonos==0.1.12
 aiosqlite==0.22.1
