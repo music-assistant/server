@@ -30,7 +30,7 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
     AudioQueueProcessing,
 )
-from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPState
+from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPFilter, DSPState
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
@@ -1189,11 +1189,18 @@ class StreamsAudio:
             dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
 
         enabled_filters = [dsp_filter for dsp_filter in dsp.filters if dsp_filter.enabled]
+        # a neutral filter (0 dB gain, centered balance) emits no params; exclude
+        # it so it is not reported as an active, non-bit-perfect stage
+        effective_filters: list[DSPFilter] = []
         if dsp.enabled:
             if dsp.input_gain != 0:
                 filter_params.append(f"volume={dsp.input_gain}dB")
             for dsp_filter in enabled_filters:
-                filter_params.extend(filter_to_ffmpeg_params(dsp_filter, input_format))
+                params = filter_to_ffmpeg_params(dsp_filter, input_format)
+                if not params:
+                    continue
+                filter_params.extend(params)
+                effective_filters.append(dsp_filter)
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
@@ -1216,7 +1223,7 @@ class StreamsAudio:
             dsp=AudioDSPDetails(
                 state=dsp_state,
                 input_gain=dsp.input_gain if dsp.enabled else 0.0,
-                filters=enabled_filters if dsp.enabled else [],
+                filters=effective_filters,
                 output_gain=dsp.output_gain if dsp.enabled else 0.0,
                 output_limiter=limiter_enabled,
                 preset_id=dsp.preset_id,

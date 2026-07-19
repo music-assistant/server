@@ -609,10 +609,12 @@ def _is_bit_perfect(
     ):
         return False
     details = output.details
+    # an enabled DSP with no effective filters and no gain leaves samples untouched
+    dsp_alters_audio = details.dsp.state == DSPState.ENABLED and (
+        bool(details.dsp.filters) or details.dsp.input_gain != 0 or details.dsp.output_gain != 0
+    )
     return not (
-        details.dsp.state == DSPState.ENABLED
-        or details.dsp.output_limiter
-        or details.source_channel is not None
+        dsp_alters_audio or details.dsp.output_limiter or details.source_channel is not None
     )
 
 

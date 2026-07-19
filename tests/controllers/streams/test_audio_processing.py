@@ -493,6 +493,31 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     )
 
 
+def test_player_output_plan_excludes_neutral_filters() -> None:
+    """A filter that emits no FFmpeg params is left out of the reported chain."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(
+        enabled=True,
+        filters=[ToneControlFilter(enabled=True)],
+    )
+    mass.config.get_raw_player_config_value.return_value = "stereo"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.output_details.dsp.filters == []
+    assert not any(param.startswith("equalizer=") for param in plan.filter_params)
+
+
 @pytest.mark.asyncio
 async def test_single_stream_handler_shares_native_group_members(
     monkeypatch: pytest.MonkeyPatch,
