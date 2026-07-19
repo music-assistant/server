@@ -136,6 +136,76 @@ def test_audio_processing_manager_attaches_grouped_chain() -> None:
     )
 
 
+def test_shared_output_destinations_are_registered_atomically() -> None:
+    """One shared output publishes all destinations in a single queue update."""
+    manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
+    mass.player_queues.signal_update.reset_mock()
+
+    assert manager.update_output(
+        "leader",
+        output_plan,
+        shared_player_ids={"leader", "sync-child"},
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert streamdetails.audio_processing is not None
+    assert len(streamdetails.audio_processing.outputs) == 1
+    assert streamdetails.audio_processing.outputs[0].player_ids == ["leader", "sync-child"]
+    mass.player_queues.signal_update.assert_called_once_with("queue-1")
+
+    mass.player_queues.signal_update.reset_mock()
+    assert not manager.update_output(
+        "leader",
+        output_plan,
+        shared_player_ids={"sync-child"},
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    mass.player_queues.signal_update.assert_not_called()
+
+
+def test_shared_output_adds_member_without_stream_restart() -> None:
+    """A late native-sync member inherits the active shared output path."""
+    manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
+    manager.update_output(
+        "leader",
+        output_plan,
+        shared_player_ids=(),
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    mass.player_queues.signal_update.reset_mock()
+
+    assert manager.retain_outputs("queue-1", {"queue-1", "leader", "late-member"})
+
+    assert streamdetails.audio_processing is not None
+    assert streamdetails.audio_processing.outputs[0].player_ids == ["late-member", "leader"]
+    mass.player_queues.signal_update.assert_called_once_with("queue-1")
+
+
+def test_independent_output_does_not_add_group_member() -> None:
+    """Membership changes do not expand an independently processed output."""
+    manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
+    manager.update_output(
+        "leader",
+        output_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    mass.player_queues.signal_update.reset_mock()
+
+    assert not manager.retain_outputs("queue-1", {"leader", "independent-member"})
+
+    assert streamdetails.audio_processing is not None
+    assert streamdetails.audio_processing.outputs[0].player_ids == ["leader"]
+    mass.player_queues.signal_update.assert_not_called()
+
+
 def test_preset_identity_update_republishes_current_chain() -> None:
     """Preset updates follow a changed config owner even when output details match."""
     manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
@@ -169,14 +239,14 @@ def test_preset_identity_update_republishes_current_chain() -> None:
 def test_retain_outputs_signals_current_chain_change() -> None:
     """Pruning a current output publishes the reduced chain."""
     manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
-    for player_id in ("player-1", "player-2"):
-        manager.update_output(
-            player_id,
-            output_plan,
-            queue_id="queue-1",
-            session_id="session-1",
-            queue_item_id="item-1",
-        )
+    manager.update_output(
+        "player-1",
+        output_plan,
+        shared_player_ids={"player-2"},
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
     mass.player_queues.signal_update.reset_mock()
 
     assert manager.retain_outputs("queue-1", {"player-1"})
@@ -283,9 +353,11 @@ def test_manager_rejects_superseded_and_cleared_sessions() -> None:
     assert not manager.update_output(
         "stale-player",
         lossless_plan,
+        shared_player_ids={"stale-child"},
         queue_id="queue-1",
         session_id="session-1",
     )
+    assert streamdetails.audio_processing is None
 
     manager.update_item_context(
         "queue-1",
@@ -419,7 +491,11 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
     player = MagicMock(player_id="protocol-1", protocol_parent_id="player-1")
     player.state.active_group = None
     player.state.synced_to = None
-    mass.players.get_player.return_value = player
+    shared_player = MagicMock(player_id="protocol-2", protocol_parent_id="player-2")
+    mass.players.get_player.side_effect = lambda player_id: {
+        "protocol-1": player,
+        "protocol-2": shared_player,
+    }.get(player_id)
     mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
     mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: (
         False if isinstance(default, bool) else "right"
@@ -436,11 +512,12 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
         "protocol-1",
         pcm_format,
         pcm_format,
+        shared_player_ids={"protocol-1", "protocol-2"},
         queue_id="queue-1",
         session_id="session-1",
     )
 
-    assert plan.output_details.player_ids == ["player-1"]
+    assert plan.output_details.player_ids == ["player-1", "player-2"]
     assert plan.output_details.dsp.preset_id == "parent-preset"
     assert plan.dsp_config_id == "player-1"
     assert plan.output_details.source_channel == AudioChannel.FR
@@ -448,6 +525,14 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
     assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
         "player-1"
     }
+    mass.streams.audio_processing.update_output.assert_called_once_with(
+        "player-1",
+        plan,
+        shared_player_ids={"player-2"},
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id=None,
+    )
 
 
 def test_single_member_group_uses_child_dsp_preset() -> None:

@@ -7,7 +7,7 @@ import logging
 import re
 import struct
 import urllib.parse
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Iterable, Iterator
 from contextlib import aclosing
 from io import BytesIO
 from typing import TYPE_CHECKING, Final
@@ -666,6 +666,26 @@ def get_bit_rate(fmt: AudioFormat) -> int:
     if fmt.bit_rate:
         return int(fmt.bit_rate / 1000) if fmt.bit_rate >= 10000 else fmt.bit_rate
     return int((calculate_content_length(fmt, seconds=1) / 1000) * 8)
+
+
+def resolve_output_player_ids(
+    mass: MusicAssistant,
+    player_ids: Iterable[str],
+) -> set[str]:
+    """
+    Resolve output destinations to their user-facing player identifiers.
+
+    :param mass: Music Assistant instance.
+    :param player_ids: Player or protocol-player identifiers to resolve.
+    :return: Deduplicated user-facing player identifiers.
+    """
+    resolved_ids: set[str] = set()
+    for player_id in player_ids:
+        player = mass.players.get_player(player_id)
+        resolved_ids.add(
+            player.protocol_parent_id if player and player.protocol_parent_id else player_id
+        )
+    return resolved_ids
 
 
 def is_grouping_preventing_dsp(player: Player) -> bool:

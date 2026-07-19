@@ -778,6 +778,7 @@ class StreamsController(CoreController):
                 player_id=player.player_id,
                 input_format=pcm_format,
                 output_format=output_format,
+                shared_player_ids=player.state.group_members,
                 queue_id=queue_id,
                 session_id=session_id,
                 queue_item_id=queue_item.queue_item_id,
@@ -989,6 +990,7 @@ class StreamsController(CoreController):
             player.player_id,
             flow_pcm_format,
             output_format,
+            shared_player_ids=player.state.group_members,
             queue_id=queue_id,
             session_id=session_id,
         )
