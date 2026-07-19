@@ -47,6 +47,7 @@ from music_assistant_models.media_items import (
     SoundEffect,
     Track,
 )
+from music_assistant_models.media_items.media_item import MediaCollection
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
@@ -83,6 +84,7 @@ from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.controllers.music.recency import RecencyEngine
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
 from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
@@ -887,6 +889,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> MediaItemType | BrowseFolder:
         """Fetch MediaItem by uri."""
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
+        self.logger.error("%s %s %s", media_type, provider_instance_id_or_domain, item_id)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
@@ -978,6 +981,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise MediaNotFoundError(
                 f"SoundEffect {provider_instance_id_or_domain}/{item_id} not found"
             )
+        if media_type == MediaType.COLLECTION:
+            ctrl = self.get_controller_for_collection(item_id)
+            return await ctrl.get_collection(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
@@ -1413,7 +1419,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             seconds_played = 0
             if (
                 fully_played
-                and not isinstance(media_item, Album | Artist | Genre | Playlist | Podcast)
+                and not isinstance(
+                    media_item, Album | Artist | Genre | Playlist | Podcast | MediaCollection
+                )
                 and isinstance(media_item.duration, int)  # for Radio duration can be None
             ):
                 seconds_played = media_item.duration
@@ -1779,6 +1787,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         raise NotImplementedError(
             f"No media controller available for media type: {media_type.value}"
         )
+
+    def get_controller_for_collection(
+        self, item_id: str
+    ) -> (
+        ArtistsController
+        | AlbumsController
+        | TracksController
+        | RadioController
+        | PlaylistController
+        | AudiobooksController
+        | PodcastsController
+        | GenreController
+    ):
+        """Return controller for MediaType."""
+        media_type = get_collection_item_media_type_from_item_id(item_id)
+        controller = self.get_controller(media_type)
+        if not isinstance(controller, AudiobooksController):
+            # currently only supported for audiobooks
+            raise NotImplementedError(
+                f"No media controller available for media type: {media_type.value}"
+            )
+        return controller
 
     def get_provider_instances(
         self, domain: str, return_unavailable: bool = False

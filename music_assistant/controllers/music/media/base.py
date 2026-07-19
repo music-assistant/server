@@ -52,6 +52,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.collections import (
+    get_collection_item_id,
+    get_collection_name_from_item_id,
+)
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
@@ -592,9 +596,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             case _:
                 return []
 
-    async def get_collection(self, name: str) -> MediaCollection[ItemCls]:
+    async def get_collection(self, item_id: str) -> MediaCollection[ItemCls]:
         """Get a single collection."""
         query_params: dict[str, Any] = {}
+        name = get_collection_name_from_item_id(item_id)
         sql_query, base_query_params = self._build_final_query([], [], None, summary=False)
         for key, value in base_query_params.items():
             query_params.setdefault(key, value)
@@ -610,7 +615,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return cast(
             "MediaCollection[ItemCls]",
             MediaCollection(
-                item_id=db_rows[0]["name"],
+                item_id=get_collection_item_id(db_rows[0]["name"], item_media_type=self.media_type),
                 name=db_rows[0]["name"],
                 provider="library",
                 provider_mappings=set(),
@@ -1366,7 +1371,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 elif db_row["type"] == "collection":
                     items.append(
                         MediaCollection[ItemCls](
-                            item_id=db_row["name"],
+                            item_id=get_collection_item_id(
+                                db_row["name"], item_media_type=self.media_type
+                            ),
                             name=db_row["name"],
                             provider="library",
                             provider_mappings=set(),

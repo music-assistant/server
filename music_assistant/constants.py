@@ -1041,3 +1041,5 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     # external (hass_players)
     "external",
 }
+
+COLLECTION_ITEM_ID_SEPARATOR = "___"
