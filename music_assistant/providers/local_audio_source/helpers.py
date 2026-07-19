@@ -15,6 +15,11 @@ async def get_available_input_devices() -> list[ConfigValueOption]:
 
     Runs pactl through the default executor since it shells out; called
     once per config-entries render, not on the audio hot path.
+
+    Monitor sources (loopback capture of what's playing on a sink) are
+    excluded here — this picker is for physical/external capture devices.
+    enumerate_pa_sources() itself still returns them for callers that do
+    want the full list.
     """
     loop = asyncio.get_running_loop()
     try:
@@ -25,10 +30,9 @@ async def get_available_input_devices() -> list[ConfigValueOption]:
 
     options: list[ConfigValueOption] = []
     for src in sources:
-        label = src["description"]
         if src["is_monitor"]:
-            label = f"{label} (monitor)"
-        label = f"{label} — {src['channels']}ch @ {src['sample_rate']}Hz"
+            continue
+        label = f"{src['description']} — {src['channels']}ch @ {src['sample_rate']}Hz"
         options.append(ConfigValueOption(src["name"], title=label))
 
     if not options:

@@ -9,10 +9,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
+import numpy as np
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
+    PlaybackState,
     SourceControl,
     StreamType,
 )
@@ -31,15 +33,24 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import (
     AUDIO_SOURCE_ID,
     CHANNELS,
+    CONF_AUTO_TRIGGER,
     CONF_FRIENDLY_NAME,
     CONF_ICON_PRESET,
     CONF_INPUT_DEVICE,
+    CONF_TARGET_PLAYER_ID,
     CONF_THUMBNAIL_IMAGE,
+    CONF_TRIGGER_THRESHOLD_DBFS,
+    DEFAULT_TRIGGER_THRESHOLD_DBFS,
     ICON_PRESET_CUSTOM,
     ICON_PRESETS,
     PAUSE_DEBOUNCE_S,
+    PLAYER_ID_AUTO,
     SAMPLE_RATE_HZ,
+    SENSOR_CHUNK_MS,
+    SENSOR_RETRY_S,
     SUPPORTED_FEATURES,
+    TRIGGER_ATTACK_S,
+    TRIGGER_RELEASE_S,
 )
 from .pa_simple import PASimpleRecordStream
 
@@ -55,6 +66,23 @@ _IMAGES_DIR = Path(__file__).parent / "images"
 # capture chunk duration — matches the streams controller's own
 # AUDIO_SOURCE_CHUNK_SECONDS fast-path granularity for consistent latency
 _CHUNK_MS = 20
+
+
+def _pcm_rms_dbfs(chunk: bytes) -> float:
+    """
+    Compute the RMS level of a 16-bit little-endian PCM chunk, in dBFS.
+
+    0 dBFS = full scale (loudest possible sample); silence trends toward
+    -inf, clamped here at -120 dBFS to keep threshold comparisons well
+    defined for empty/near-empty chunks.
+    """
+    if not chunk:
+        return -120.0
+    samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float64)
+    rms = np.sqrt(np.mean(np.square(samples)))
+    if rms <= 0:
+        return -120.0
+    return float(20 * np.log10(rms / 32768.0))
 
 
 class LocalAudioSourceProvider(PluginProvider):
@@ -73,6 +101,14 @@ class LocalAudioSourceProvider(PluginProvider):
             "str", self.config.get_value(CONF_ICON_PRESET) or ICON_PRESET_CUSTOM
         )
         self._thumbnail_image: str = cast("str", self.config.get_value(CONF_THUMBNAIL_IMAGE) or "")
+        self._auto_trigger: bool = bool(self.config.get_value(CONF_AUTO_TRIGGER))
+        self._target_player_id: str = cast(
+            "str", self.config.get_value(CONF_TARGET_PLAYER_ID) or PLAYER_ID_AUTO
+        )
+        self._trigger_threshold_dbfs: float = cast(
+            "float",
+            self.config.get_value(CONF_TRIGGER_THRESHOLD_DBFS) or DEFAULT_TRIGGER_THRESHOLD_DBFS,
+        )
 
         # fixed audio params
         self._sample_rate: int = SAMPLE_RATE_HZ
@@ -92,6 +128,13 @@ class LocalAudioSourceProvider(PluginProvider):
         # stream request — used to reject stale on_source_unselected callbacks
         # after a same-queue reconnect supersedes the previous request.
         self._active_session_id: str | None = None
+        # set by _trigger_playback() when the signal sensor auto-started a
+        # queue on our own initiative; cleared on manual on_source_unselected
+        # or when the sensor auto-stops it again. Only ever stop a queue via
+        # the sensor if we're the ones who started it — a user-initiated
+        # session (via Live Inputs) is left alone.
+        self._auto_triggered_queue: str | None = None
+        self._sensor_task: asyncio.Task[None] | None = None
 
         self._audio_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
@@ -120,7 +163,7 @@ class LocalAudioSourceProvider(PluginProvider):
             can_seek=False,
             can_next_previous=False,
             exclusive=True,
-            allow_external_trigger=False,
+            allow_external_trigger=self._auto_trigger,
             # capture only starts once a player selects this source
             can_initiate=True,
         )
@@ -164,9 +207,21 @@ class LocalAudioSourceProvider(PluginProvider):
         """Return a (default) instance name postfix for this provider instance."""
         return self._friendly_name
 
+    async def handle_async_init(self) -> None:
+        """Start the signal-detection sensor task, if auto-start is configured."""
+        if not self._auto_trigger:
+            return
+        self._sensor_task = self.mass.create_task(
+            self._sensor_loop(), task_id=f"local_audio_source_sensor_{self.instance_id}"
+        )
+
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self.logger.debug("Unloading plugin")
+        if self._sensor_task and not self._sensor_task.done():
+            self._sensor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._sensor_task
         async with self._capture_lock:
             await self._stop_capture_stream()
 
@@ -361,6 +416,15 @@ class LocalAudioSourceProvider(PluginProvider):
         # previous queue's get_audio_stream loop notices the queue change on
         # its own and exits cleanly.
         self._in_use_by_queue = queue_id
+        # If a different queue than the one we auto-started is claiming the
+        # source (manual selection elsewhere, or exclusivity handing it to a
+        # new queue), our previous auto-trigger claim is stale — drop it so
+        # the sensor doesn't later try to stop a queue that isn't ours
+        # anymore. When _trigger_playback() itself is what led here, it
+        # already set _auto_triggered_queue to this exact queue_id before
+        # play_media() ran, so this check is a no-op in that case.
+        if self._auto_triggered_queue and self._auto_triggered_queue != queue_id:
+            self._auto_triggered_queue = None
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
@@ -382,6 +446,155 @@ class LocalAudioSourceProvider(PluginProvider):
         self._active_session_id = None
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
+        if self._auto_triggered_queue == queue_id:
+            self._auto_triggered_queue = None
+
+    async def _sensor_loop(self) -> None:
+        """
+        Watch the configured source's signal level and auto play/stop a target player.
+
+        Runs for the lifetime of the provider whenever auto-start-on-signal is
+        enabled. Uses its own PASimpleRecordStream, entirely separate from the
+        one get_audio_stream() opens for actual playback — PulseAudio/PipeWire
+        natively fan a source out to multiple simultaneous readers, so the
+        sensor and an active playback stream can both read the same source at
+        once without conflict.
+        """
+        loop = asyncio.get_running_loop()
+        chunk_bytes = max(
+            256, int(self._sample_rate * self._channels * 2 * (SENSOR_CHUNK_MS / 1000))
+        )
+        stream: PASimpleRecordStream | None = None
+        loud_since: float | None = None
+        quiet_since: float | None = None
+        try:
+            while True:
+                if not stream:
+                    try:
+                        stream = await loop.run_in_executor(
+                            None,
+                            lambda: PASimpleRecordStream(
+                                source_name=self._pa_source,
+                                app_name=f"music-assistant-{self.instance_id}-sensor",
+                                rate=self._sample_rate,
+                                channels=self._channels,
+                            ),
+                        )
+                    except OSError as err:
+                        self.logger.warning(
+                            "Signal sensor couldn't open %r, retrying in %.0fs: %s",
+                            self._pa_source,
+                            SENSOR_RETRY_S,
+                            err,
+                        )
+                        await asyncio.sleep(SENSOR_RETRY_S)
+                        continue
+
+                try:
+                    chunk = await loop.run_in_executor(None, stream.read, chunk_bytes)
+                except OSError as err:
+                    self.logger.warning("Signal sensor read failed, reopening: %s", err)
+                    with suppress(Exception):
+                        await loop.run_in_executor(None, stream.close)
+                    stream = None
+                    await asyncio.sleep(1)
+                    continue
+
+                now = loop.time()
+                if _pcm_rms_dbfs(chunk) > self._trigger_threshold_dbfs:
+                    quiet_since = None
+                    loud_since = loud_since or now
+                    if (
+                        not self._in_use_by_queue
+                        and now - loud_since >= TRIGGER_ATTACK_S
+                    ):
+                        self._trigger_playback()
+                else:
+                    loud_since = None
+                    quiet_since = quiet_since or now
+                    if (
+                        self._auto_triggered_queue
+                        and now - quiet_since >= TRIGGER_RELEASE_S
+                    ):
+                        self._auto_stop_playback()
+        finally:
+            if stream:
+                with suppress(Exception):
+                    await loop.run_in_executor(None, stream.close)
+
+    def _player_display_name(self, player_id: str) -> str:
+        """Resolve a player_id to its display name for logging, falling back to the raw id."""
+        if player := self.mass.players.get_player(player_id):
+            return player.display_name
+        return player_id
+
+    def _get_target_player_id(self) -> str | None:
+        """
+        Determine the target player ID for auto-triggered playback.
+
+        - PLAYER_ID_AUTO: prefer a player that's currently playing something
+          else, else fall back to the first available player.
+        - A specific configured player_id: used as-is if it still exists.
+
+        :return: The player ID to use, or None if no player is available.
+        """
+        if self._target_player_id != PLAYER_ID_AUTO:
+            if self.mass.players.get_player(self._target_player_id):
+                return self._target_player_id
+            self.logger.warning(
+                "Configured auto-start target player '%s' no longer exists",
+                self._target_player_id,
+            )
+            return None
+
+        all_players = list(self.mass.players.all_players(False, False))
+        for player in all_players:
+            if player.state.playback_state == PlaybackState.PLAYING:
+                self.logger.debug("Auto-selecting playing player: %s", player.display_name)
+                return player.player_id
+        if all_players:
+            first_player = all_players[0]
+            self.logger.debug(
+                "Auto-selecting first available player: %s", first_player.display_name
+            )
+            return first_player.player_id
+        return None
+
+    def _trigger_playback(self) -> None:
+        """Auto-start playback of this AudioSource on the resolved target player."""
+        target = self._get_target_player_id()
+        if not target:
+            self.logger.warning(
+                "Signal detected on %s but no target player is available; not starting "
+                "playback.",
+                self._friendly_name,
+            )
+            return
+        self.logger.info(
+            "Signal detected on %s, starting playback on %s",
+            self._friendly_name,
+            self._player_display_name(target),
+        )
+        # Set before play_media() runs so the on_source_selected callback it
+        # triggers (asynchronously, once the stream actually connects) sees
+        # this queue_id already recorded as ours — see the comment in
+        # on_source_selected.
+        self._auto_triggered_queue = target
+        self.mass.create_task(
+            self.mass.player_queues.play_media(target, str(self._audio_source.uri))
+        )
+
+    def _auto_stop_playback(self) -> None:
+        """Auto-stop playback we previously started ourselves, now that it's gone quiet."""
+        queue_id = self._auto_triggered_queue
+        self._auto_triggered_queue = None
+        if queue_id:
+            self.logger.info(
+                "Signal on %s went quiet, stopping playback on %s",
+                self._friendly_name,
+                self._player_display_name(queue_id),
+            )
+            self.mass.create_task(self.mass.player_queues.stop(queue_id))
 
     async def _start_capture_stream(self) -> PASimpleRecordStream | None:
         """Open a new PulseAudio/PipeWire capture stream via libpulse-simple."""

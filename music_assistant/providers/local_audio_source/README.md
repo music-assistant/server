@@ -7,7 +7,7 @@
 ## ✨ What it does
 
 - **Bring outside audio into Music Assistant.** Use your computer as the bridge.
-- **Any PulseAudio/PipeWire source.** Line-in jacks, USB audio interfaces, built-in mic/line sources, Bluetooth receivers, or even monitor sources (capture what's currently playing on a sink).
+- **Any PulseAudio/PipeWire source.** Line-in jacks, USB audio interfaces, built-in mic/line sources, Bluetooth receivers.
 - **Simple to set up.** Pick the source from a dropdown, start the stream, and it shows up as a source in your players.
 - **Custom source personalization.** Give it your own display name and thumbnail — pick a bundled icon or use your own image URL.
 
@@ -39,7 +39,7 @@
 
 - **Display Name** – what shows up in source lists.
 - **Thumbnail** – pick a bundled icon (Bluetooth, Cable, Vinyl, Stereo, Chromecast, …) or a custom image URL.
-- **Audio Input Device** – dropdown of PulseAudio/PipeWire sources detected via `pactl list sources`, including monitor sources.
+- **Audio Input Device** – dropdown of PulseAudio/PipeWire sources detected via `pactl list sources` (monitor sources — i.e. "what's currently playing on sink X" — are excluded from this list).
 
 Sample rate and channel count are fixed at 44.1kHz stereo; PulseAudio/PipeWire transparently resample and remap whichever source you pick to that format, so this works regardless of the source's native rate/channel count (e.g. a mono USB mic).
 

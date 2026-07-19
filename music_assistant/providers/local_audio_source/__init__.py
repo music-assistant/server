@@ -16,12 +16,17 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 
 from .constants import (
+    CONF_AUTO_TRIGGER,
     CONF_FRIENDLY_NAME,
     CONF_ICON_PRESET,
     CONF_INPUT_DEVICE,
+    CONF_TARGET_PLAYER_ID,
     CONF_THUMBNAIL_IMAGE,
+    CONF_TRIGGER_THRESHOLD_DBFS,
+    DEFAULT_TRIGGER_THRESHOLD_DBFS,
     ICON_PRESET_CUSTOM,
     ICON_PRESETS,
+    PLAYER_ID_AUTO,
 )
 from .helpers import get_available_input_devices
 from .provider import LocalAudioSourceProvider
@@ -42,7 +47,7 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
+    mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
@@ -55,6 +60,12 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     device_options = await get_available_input_devices()
+    player_options = [
+        ConfigValueOption(x.player_id, title=x.display_name)
+        for x in sorted(
+            mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
+        )
+    ]
 
     return (
         CONF_ENTRY_WARN_PREVIEW,
@@ -95,5 +106,49 @@ async def get_config_entries(
             options=device_options,
             default_value=device_options[0].value if device_options else None,
             required=True,
+        ),
+        ConfigEntry(
+            key=CONF_AUTO_TRIGGER,
+            type=ConfigEntryType.BOOLEAN,
+            label="Auto-start on signal",
+            description=(
+                "Watch the input for signal and automatically start/stop playback on a "
+                "chosen player — for devices that are always connected (e.g. a USB sound "
+                "card) rather than selected on demand from Live Inputs."
+            ),
+            default_value=False,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_TARGET_PLAYER_ID,
+            type=ConfigEntryType.STRING,
+            label="Auto-start target player",
+            description=(
+                "Which player to start automatically when signal is detected. "
+                "'Auto' prefers whichever player is currently playing, falling back to "
+                "the first available player."
+            ),
+            options=[
+                ConfigValueOption(PLAYER_ID_AUTO, title="Auto"),
+                *player_options,
+            ],
+            default_value=PLAYER_ID_AUTO,
+            required=True,
+            depends_on=CONF_AUTO_TRIGGER,
+            depends_on_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_TRIGGER_THRESHOLD_DBFS,
+            type=ConfigEntryType.FLOAT,
+            label="Signal threshold (dBFS)",
+            description=(
+                "RMS level above which the input counts as active audio. "
+                "Higher (closer to 0) = less sensitive, lower = more sensitive to quiet "
+                "signals and background noise."
+            ),
+            default_value=DEFAULT_TRIGGER_THRESHOLD_DBFS,
+            required=False,
+            depends_on=CONF_AUTO_TRIGGER,
+            depends_on_value=True,
         ),
     )
