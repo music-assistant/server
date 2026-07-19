@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from aiosendspin.models.core import PairMethodDescriptor
-from aiosendspin.models.types import PairMethod
+from aiosendspin.models.types import PairAbortReason, PairMethod
+from aiosendspin.noise.driver import HandshakeAbortedError
+from aiosendspin.noise.pairing import PairingAbortError, PairingError
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 
 from .constants import BRIDGE_PREFIX
 
@@ -23,6 +27,55 @@ class SecurityActionError(Exception):
         super().__init__(alert_key if detail is None else f"{alert_key}: {detail}")
         self.alert_key = alert_key
         self.detail = detail
+
+
+@dataclass(frozen=True)
+class AlertText:
+    """A strings.json slug and optional {0}-placeholder params for an operator ALERT entry."""
+
+    key: str
+    params: list[str] | None = None
+
+
+_PAIR_ABORT_KEYS = {
+    PairAbortReason.ATTEMPT_TIMEOUT: "pairing_error_timeout",
+    PairAbortReason.CONCURRENT_ATTEMPT: "pairing_error_concurrent",
+    PairAbortReason.LOCKED_OUT: "pairing_error_locked_out",
+    PairAbortReason.METHOD_NOT_SUPPORTED: "pairing_error_method_unsupported",
+    PairAbortReason.PIN_LENGTH_UNACCEPTABLE: "pairing_error_pin_length",
+    PairAbortReason.PIN_MISMATCH: "pairing_error_pin_mismatch",
+    PairAbortReason.USER_CANCELLED: "pairing_error_cancelled",
+}
+
+
+def error_alert(err: Exception) -> AlertText:
+    """Map a pairing or management failure to a localized operator alert."""
+    if isinstance(err, SecurityActionError):
+        return AlertText(err.alert_key, [err.detail] if err.detail is not None else None)
+    if isinstance(err, PairingAbortError):
+        key = _PAIR_ABORT_KEYS.get(err.reason)
+        if key is not None:
+            return AlertText(key)
+        return AlertText("pairing_error_aborted", [err.reason.value])
+    if isinstance(err, TimeoutError):
+        return AlertText("pairing_error_timeout")
+    if isinstance(err, OSError):
+        return AlertText("pairing_error_storage", [str(err)])
+    if isinstance(err, HandshakeAbortedError):
+        return AlertText("pairing_error_handshake")
+    if isinstance(err, PairingError):
+        return AlertText("pairing_error_failed", [str(err)])
+    return AlertText("pairing_error_generic")
+
+
+def alert_entry(text: AlertText) -> ConfigEntry:
+    """Build an ALERT config entry from a localized alert descriptor."""
+    return ConfigEntry(key=text.key, type=ConfigEntryType.ALERT, translation_params=text.params)
+
+
+def action_entry(action: str, *, advanced: bool = False) -> ConfigEntry:
+    """Build an ACTION config entry whose key mirrors its action."""
+    return ConfigEntry(key=action, type=ConfigEntryType.ACTION, action=action, advanced=advanced)
 
 
 def effective_pair_methods(

@@ -6,7 +6,6 @@ import asyncio
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
 from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -17,11 +16,11 @@ from aiosendspin.models.management import (
     SetStaticPinConfig,
     SetUnpairedAccessConfig,
 )
-from aiosendspin.models.types import PairAbortReason, PairMethod, PlaybackStateType, PlayerCommand
+from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.models.visualizer import BeatAvailability, BeatTiming
 from aiosendspin.noise.driver import HandshakeAbortedError
-from aiosendspin.noise.pairing import PairingAbortError, PairingError
+from aiosendspin.noise.pairing import PairingError
 from aiosendspin.noise.trust_store import PskCategory
 from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -104,9 +103,13 @@ from .constants import (
     DEFAULT_SENDSPIN_STATIC_DELAY,
 )
 from .helpers import (
+    AlertText,
     SecurityActionError,
+    action_entry,
+    alert_entry,
     effective_pair_methods,
     effective_unpaired_access,
+    error_alert,
     mac_from_bridge_client_id,
 )
 from .playback import SendspinPlaybackSession
@@ -195,55 +198,6 @@ _MANAGEMENT_ACTIONS = {
         dynamic_pin=SetDynamicPinConfig(enabled=False)
     ),
 }
-
-
-@dataclass(frozen=True)
-class _AlertText:
-    """A strings.json slug and optional {0}-placeholder params for an operator ALERT entry."""
-
-    key: str
-    params: list[str] | None = None
-
-
-_PAIR_ABORT_KEYS = {
-    PairAbortReason.ATTEMPT_TIMEOUT: "pairing_error_timeout",
-    PairAbortReason.CONCURRENT_ATTEMPT: "pairing_error_concurrent",
-    PairAbortReason.LOCKED_OUT: "pairing_error_locked_out",
-    PairAbortReason.METHOD_NOT_SUPPORTED: "pairing_error_method_unsupported",
-    PairAbortReason.PIN_LENGTH_UNACCEPTABLE: "pairing_error_pin_length",
-    PairAbortReason.PIN_MISMATCH: "pairing_error_pin_mismatch",
-    PairAbortReason.USER_CANCELLED: "pairing_error_cancelled",
-}
-
-
-def _error_alert(err: Exception) -> _AlertText:
-    """Map a pairing or management failure to a localized operator alert."""
-    if isinstance(err, SecurityActionError):
-        return _AlertText(err.alert_key, [err.detail] if err.detail is not None else None)
-    if isinstance(err, PairingAbortError):
-        key = _PAIR_ABORT_KEYS.get(err.reason)
-        if key is not None:
-            return _AlertText(key)
-        return _AlertText("pairing_error_aborted", [err.reason.value])
-    if isinstance(err, TimeoutError):
-        return _AlertText("pairing_error_timeout")
-    if isinstance(err, OSError):
-        return _AlertText("pairing_error_storage", [str(err)])
-    if isinstance(err, HandshakeAbortedError):
-        return _AlertText("pairing_error_handshake")
-    if isinstance(err, PairingError):
-        return _AlertText("pairing_error_failed", [str(err)])
-    return _AlertText("pairing_error_generic")
-
-
-def _alert_entry(text: _AlertText) -> ConfigEntry:
-    """Build an ALERT config entry from a localized alert descriptor."""
-    return ConfigEntry(key=text.key, type=ConfigEntryType.ALERT, translation_params=text.params)
-
-
-def _action_entry(action: str, *, advanced: bool = False) -> ConfigEntry:
-    """Build an ACTION config entry whose key mirrors its action."""
-    return ConfigEntry(key=action, type=ConfigEntryType.ACTION, action=action, advanced=advanced)
 
 
 if TYPE_CHECKING:
@@ -577,21 +531,21 @@ class SendspinBasePlayer(Player):
         if self.api.connection is None:
             return []
         provider = cast("SendspinProvider", self.provider)
-        alert: _AlertText | None = None
+        alert: AlertText | None = None
         if action is not None:
             alert = await self._handle_security_action(provider, action, values or {})
 
         pin_session = provider.get_pin_session(self.player_id)
         if pin_session is not None and pin_session.finished:
             if alert is None and pin_session.error is not None:
-                alert = _error_alert(pin_session.error)
+                alert = error_alert(pin_session.error)
             provider.clear_pin_session(self.player_id)
             pin_session = None
 
         status, actions = await self._security_state_entries(provider, pin_session)
         entries = [status] if status is not None else []
         if alert is not None:
-            entries.append(_alert_entry(alert))
+            entries.append(alert_entry(alert))
         return entries + actions
 
     async def _security_state_entries(
@@ -639,9 +593,9 @@ class SendspinBasePlayer(Player):
 
         actions = self._pair_offer_entries(info, pairing_config)
         if trusted_unpaired:
-            actions.append(_action_entry(CONF_ACTION_REVOKE_UNPAIRED, advanced=True))
+            actions.append(action_entry(CONF_ACTION_REVOKE_UNPAIRED, advanced=True))
         elif effective_unpaired_access(info, pairing_config):
-            actions.append(_action_entry(CONF_ACTION_ALLOW_UNPAIRED))
+            actions.append(action_entry(CONF_ACTION_ALLOW_UNPAIRED))
         return status, actions
 
     async def _paired_entries(
@@ -665,13 +619,13 @@ class SendspinBasePlayer(Player):
                     management_config = await provider.management_get_pairing_config(self.player_id)
                 except SecurityActionError as err:
                     provider.exit_management(self.player_id)
-                    entries.append(_alert_entry(_error_alert(err)))
+                    entries.append(alert_entry(error_alert(err)))
             if management_config is not None:
                 entries.extend(self._management_section_entries(management_config))
                 return entries
-        entries.append(_action_entry(CONF_ACTION_MANAGEMENT_ENTER, advanced=True))
+        entries.append(action_entry(CONF_ACTION_MANAGEMENT_ENTER, advanced=True))
         entries.extend(self._verify_offer_entry(info, record, pairing_config))
-        entries.append(_action_entry(CONF_ACTION_UNPAIR, advanced=True))
+        entries.append(action_entry(CONF_ACTION_UNPAIR, advanced=True))
         return entries
 
     @staticmethod
@@ -680,10 +634,10 @@ class SendspinBasePlayer(Player):
         entries: list[ConfigEntry] = []
         if pin_session.can_retry:
             if pin_session.error is not None:
-                entries.append(_alert_entry(_error_alert(pin_session.error)))
+                entries.append(alert_entry(error_alert(pin_session.error)))
             else:
                 entries.append(ConfigEntry(key="pairing_error_generic", type=ConfigEntryType.ALERT))
-            entries.append(_action_entry(CONF_ACTION_PAIR_PIN_RETRY))
+            entries.append(action_entry(CONF_ACTION_PAIR_PIN_RETRY))
         elif pin_session.awaiting_pin:
             entries.append(
                 ConfigEntry(
@@ -702,7 +656,7 @@ class SendspinBasePlayer(Player):
                     value="",
                 )
             )
-            entries.append(_action_entry(CONF_ACTION_PAIR_PIN_SUBMIT))
+            entries.append(action_entry(CONF_ACTION_PAIR_PIN_SUBMIT))
         else:
             entries.append(
                 ConfigEntry(
@@ -712,7 +666,7 @@ class SendspinBasePlayer(Player):
                     type=ConfigEntryType.LABEL,
                 )
             )
-        entries.append(_action_entry(CONF_ACTION_PAIR_PIN_CANCEL))
+        entries.append(action_entry(CONF_ACTION_PAIR_PIN_CANCEL))
         return entries
 
     @staticmethod
@@ -727,8 +681,8 @@ class SendspinBasePlayer(Player):
                 default_value="",
                 value="",
             ),
-            _action_entry(CONF_ACTION_PAIR_TOKEN_SUBMIT),
-            _action_entry(CONF_ACTION_PAIR_TOKEN_CANCEL),
+            action_entry(CONF_ACTION_PAIR_TOKEN_SUBMIT),
+            action_entry(CONF_ACTION_PAIR_TOKEN_CANCEL),
         ]
 
     @staticmethod
@@ -743,7 +697,7 @@ class SendspinBasePlayer(Player):
                 if config.unpaired_access.enabled
                 else CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE
             )
-            entries.append(_action_entry(action))
+            entries.append(action_entry(action))
         entries.extend(
             SendspinBasePlayer._management_pin_method_entries(
                 config.static_pin,
@@ -758,7 +712,7 @@ class SendspinBasePlayer(Player):
                 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE,
             )
         )
-        entries.append(_action_entry(CONF_ACTION_MANAGEMENT_EXIT))
+        entries.append(action_entry(CONF_ACTION_MANAGEMENT_EXIT))
         return entries
 
     @staticmethod
@@ -771,7 +725,7 @@ class SendspinBasePlayer(Player):
         if method is None:
             return []
         action = disable_action if method.enabled else enable_action
-        return [_action_entry(action)]
+        return [action_entry(action)]
 
     @staticmethod
     def _pair_offer_entries(
@@ -793,13 +747,13 @@ class SendspinBasePlayer(Player):
 
         entries: list[ConfigEntry] = []
         if usable_pin_methods:
-            entries.append(_action_entry(CONF_ACTION_PAIR_PIN_START))
+            entries.append(action_entry(CONF_ACTION_PAIR_PIN_START))
             if usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}:
-                entries.append(_action_entry(CONF_ACTION_PAIR_STATIC_PIN_START, advanced=True))
+                entries.append(action_entry(CONF_ACTION_PAIR_STATIC_PIN_START, advanced=True))
         elif pin_descriptors:
             entries.append(ConfigEntry(key="pin_locked_out", type=ConfigEntryType.ALERT))
         if offers_token:
-            entries.append(_action_entry(CONF_ACTION_PAIR_TOKEN))
+            entries.append(action_entry(CONF_ACTION_PAIR_TOKEN))
         if not pair_methods:
             entries.append(ConfigEntry(key="no_pair_methods", type=ConfigEntryType.ALERT))
         return entries
@@ -821,14 +775,14 @@ class SendspinBasePlayer(Player):
             return []
         if record is not None and PairMethod.DYNAMIC_PIN in record.pair_methods:
             return []
-        return [_action_entry(CONF_ACTION_VERIFY_PIN_START, advanced=True)]
+        return [action_entry(CONF_ACTION_VERIFY_PIN_START, advanced=True)]
 
     async def _handle_security_action(
         self,
         provider: SendspinProvider,
         action: str,
         values: dict[str, ConfigValueType],
-    ) -> _AlertText | None:
+    ) -> AlertText | None:
         """Execute a pairing action, returning a localized alert for the UI on failure."""
         try:
             if action == CONF_ACTION_PAIR_TOKEN:
@@ -836,7 +790,7 @@ class SendspinBasePlayer(Player):
             elif action == CONF_ACTION_PAIR_TOKEN_SUBMIT:
                 token_value = str(values.get(CONF_PAIRING_TOKEN) or "").strip()
                 if not token_value:
-                    return _AlertText("pairing_token_required")
+                    return AlertText("pairing_token_required")
                 await provider.pair_with_token(self.player_id, token_value)
                 provider.close_token_pairing(self.player_id)
             elif action == CONF_ACTION_PAIR_TOKEN_CANCEL:
@@ -853,7 +807,7 @@ class SendspinBasePlayer(Player):
             elif action == CONF_ACTION_PAIR_PIN_SUBMIT:
                 pin = str(values.get(CONF_PAIRING_PIN) or "").strip()
                 if not pin:
-                    return _AlertText("pin_required")
+                    return AlertText("pin_required")
                 await provider.submit_pin(self.player_id, pin)
             elif action == CONF_ACTION_PAIR_PIN_CANCEL:
                 await provider.cancel_pin_pairing(self.player_id)
@@ -884,7 +838,7 @@ class SendspinBasePlayer(Player):
             SecurityActionError,
             ValueError,
         ) as err:
-            return _error_alert(err)
+            return error_alert(err)
         return None
 
 
