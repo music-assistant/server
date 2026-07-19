@@ -223,9 +223,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
-        :param without_collections: Do not return audiobooks which are part of a collection
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param collapse_collections: Collapse available collections. Items in a collection won't
+            be returned individually.
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []

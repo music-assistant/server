@@ -452,6 +452,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param played_only: Only include items that have been played (last_played > 0).
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param collapse_collections: Collapse available collections. Items in a collection won't
+            be returned individually.
         """
         items = await self.get_library_items_by_query(
             favorite=favorite,
@@ -598,8 +600,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     async def get_collection(self, item_id: str) -> MediaCollection[ItemCls]:
         """Get a single collection."""
-        query_params: dict[str, Any] = {}
         name = get_collection_name_from_item_id(item_id)
+        query_params: dict[str, Any] = {"collection_name": name}
         sql_query, base_query_params = self._build_final_query([], [], None, summary=False)
         for key, value in base_query_params.items():
             query_params.setdefault(key, value)
@@ -2061,12 +2063,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
             SELECT 'single', name, search_name, search_sort_name, {json_object} FROM joined_table
                 WHERE {collections_column} IS NULL
-                    OR {collections_column} = "[]"
+                    OR {collections_column} = '[]'
         )
         """
 
         if collection_name:
-            sql_query += f" WHERE name = '{collection_name}'"
+            sql_query += " WHERE type = 'collection' AND name = :collection_name"
             return sql_query
 
         if search:
