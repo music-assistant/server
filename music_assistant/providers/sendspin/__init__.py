@@ -60,6 +60,5 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             range=(4, 12),
             default_value=DEFAULT_MIN_PIN_LENGTH,
-            advanced=True,
         ),
     )
