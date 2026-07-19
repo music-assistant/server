@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import RetriesExhausted
-from music_assistant_models.media_items import ItemMapping
+from music_assistant_models.media_items import ItemMapping, Playlist
 
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.media import TidalMediaManager
@@ -61,53 +61,60 @@ def media_manager(provider_mock: Mock) -> TidalMediaManager:
     return TidalMediaManager(provider_mock)
 
 
-@patch("music_assistant.providers.tidal.media.parse_artist")
-@patch("music_assistant.providers.tidal.media.parse_album")
-@patch("music_assistant.providers.tidal.media.parse_track")
-@patch("music_assistant.providers.tidal.media.parse_playlist")
-async def test_search(
-    mock_parse_playlist: Mock,
-    mock_parse_track: Mock,
-    mock_parse_album: Mock,
-    mock_parse_artist: Mock,
-    media_manager: TidalMediaManager,
-    provider_mock: Mock,
-) -> None:
-    """Test search."""
-    provider_mock.api.get.return_value = {
-        "artists": {"items": [{"id": 1}]},
-        "albums": {"items": [{"id": 1}]},
-        "tracks": {"items": [{"id": 1}]},
-        "playlists": {"items": [{"uuid": "1"}]},
-    }
-
-    mock_parse_artist.return_value = Mock(item_id="1", media_type=MediaType.ARTIST)
-    mock_parse_album.return_value = Mock(item_id="1", media_type=MediaType.ALBUM)
-    mock_parse_track.return_value = Mock(item_id="1", media_type=MediaType.TRACK)
-    mock_parse_playlist.return_value = Mock(item_id="1", media_type=MediaType.PLAYLIST)
+async def test_search(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
+    """Test search reads all types from the official searchResults endpoint."""
+    provider_mock.api.get_jsonapi.return_value = _load_doc("search.json")
 
     results = await media_manager.search(
-        "query", [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST]
+        "lukas graham",
+        [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST],
+        limit=5,
     )
 
-    assert len(results.artists) == 1
-    assert len(results.albums) == 1
-    assert len(results.tracks) == 1
-    assert len(results.playlists) == 1
+    # 20 of each in the fixture, capped to the limit
+    assert len(results.tracks) == 5
+    assert len(results.albums) == 5
+    assert len(results.artists) == 5
+    assert len(results.playlists) == 5
+    assert results.tracks[0].name == "7 Years"
+    first_playlist = results.playlists[0]
+    assert isinstance(first_playlist, Playlist)
+    assert first_playlist.is_editable is False
 
-    mock_parse_artist.assert_called()
-    mock_parse_album.assert_called()
-    mock_parse_track.assert_called()
-    mock_parse_playlist.assert_called()
-
-    provider_mock.api.get.assert_called_with(
-        "search",
-        params={
-            "query": "query",
-            "types": "artists,albums,tracks,playlists",
-            "limit": 5,
-        },
+    provider_mock.api.get_jsonapi.assert_called_with(
+        "searchResults/lukas%20graham",
+        include=[
+            "tracks.artists",
+            "tracks.albums.coverArt",
+            "albums.coverArt",
+            "artists.profileArt",
+            "playlists.coverArt",
+        ],
     )
+
+
+async def test_search_single_type_and_query_encoding(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test search requests only the includes for the wanted types and encodes the query."""
+    provider_mock.api.get_jsonapi.return_value = _load_doc("search.json")
+
+    results = await media_manager.search("AC/DC", [MediaType.ARTIST])
+
+    assert results.tracks == []
+    provider_mock.api.get_jsonapi.assert_called_with(
+        "searchResults/AC%2FDC", include=["artists.profileArt"]
+    )
+
+
+async def test_search_no_types_short_circuits(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test search with no supported media types does not hit the API."""
+    results = await media_manager.search("x", [])
+
+    assert results.tracks == []
+    provider_mock.api.get_jsonapi.assert_not_called()
 
 
 @patch("music_assistant.providers.tidal.media.parse_artist_v2")

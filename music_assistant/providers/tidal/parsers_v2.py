@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
     AudioMetadata,
     MediaItemImage,
     MediaItemLink,
+    Playlist,
     ProviderMapping,
     Track,
     UniqueList,
@@ -231,6 +232,48 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
             track.metadata.images = UniqueList([image])
 
     return track
+
+
+def parse_playlist(
+    provider: TidalProvider, doc: JsonApiDocument, resource: dict[str, Any]
+) -> Playlist:
+    """Parse an official Tidal playlist resource to a generic Playlist."""
+    playlist_id = str(resource["id"])
+    attributes: dict[str, Any] = resource.get("attributes", {})
+    # A playlist is editable when the authenticated user is one of its owners.
+    # This needs the "owners" relationship to be present; search omits it (it
+    # would exceed the include cap), so search results are non-editable by design.
+    owner_ids = doc.linkage_ids(resource, "owners")
+    user_id = str(provider.auth.user_id) if provider.auth.user_id else None
+    is_editable = bool(user_id and user_id in owner_ids)
+    owner_name = "Tidal"
+    if is_editable:
+        owner_name = provider.auth.user.profile_name or provider.auth.user.user_name or str(user_id)
+
+    playlist = Playlist(
+        item_id=playlist_id,
+        provider=provider.instance_id,
+        name=attributes.get("name", "Unknown"),
+        owner=owner_name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=playlist_id,
+                provider_domain=provider.domain,
+                provider_instance=provider.instance_id,
+                url=f"https://tidal.com/playlist/{playlist_id}",
+                is_unique=is_editable,
+            )
+        },
+        is_editable=is_editable,
+    )
+    if description := attributes.get("description"):
+        playlist.metadata.description = description
+    if created := attributes.get("createdAt"):
+        with suppress(ValueError):
+            playlist.date_added = datetime.fromisoformat(created)
+    if image := _resolve_image(provider, doc, resource, "coverArt"):
+        playlist.metadata.images = UniqueList([image])
+    return playlist
 
 
 def _split_title_version(title: str, version: str | None) -> tuple[str, str]:

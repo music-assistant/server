@@ -167,7 +167,9 @@ async def test_get_mix_details_no_rows(
 
 async def test_search_empty_results(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
     """Test search with empty results."""
-    provider_mock.api.get.return_value = {}
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
+        {"data": {"id": "query", "type": "searchResults", "relationships": {}}}
+    )
 
     results = await media_manager.search("query", [MediaType.ARTIST])
 
