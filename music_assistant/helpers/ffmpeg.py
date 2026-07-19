@@ -546,6 +546,13 @@ def get_ffmpeg_args(
                 "-reconnect_on_http_error",
                 "5xx,429",
             ]
+            if "-post_data" in extra_input_args:
+                # ffmpeg does not include Range headers on POST reconnects, so byte-range
+                # seeking via reconnect is not available. Mark the stream non-seekable so
+                # demuxers do not attempt end-of-file probes (e.g. OGG duration detection)
+                # that would trigger Range-less restarts from byte 0. MA-initiated seeks
+                # still work via -ss decode-and-discard.
+                input_args += ["-seekable", "0"]
         if input_format.content_type.is_pcm():
             input_args += [
                 "-ac",
