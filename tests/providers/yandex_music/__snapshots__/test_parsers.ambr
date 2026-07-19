@@ -436,7 +436,7 @@
       'media_type': 'album',
       'metadata': dict({
         'artist_entity_type': None,
-      'chapters': None,
+        'chapters': None,
         'collections': None,
         'copyright': None,
         'description': None,
@@ -509,7 +509,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'artist_entity_type': None,
-      'chapters': None,
+          'chapters': None,
           'collections': None,
           'copyright': None,
           'description': None,
