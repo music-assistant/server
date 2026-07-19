@@ -1695,6 +1695,8 @@
   "provider.plex.config_entries.auth_myplex.label": "Authenticate with MyPlex",
   "provider.plex.config_entries.collection_prefix.description": "Prefix to add to collection names when imported as playlists",
   "provider.plex.config_entries.collection_prefix.label": "Collection Prefix",
+  "provider.plex.config_entries.extended_recommendations.description": "Show additional recommendation hubs in the dashboard, including 'Mixes For You', recent library playlists, and 'On This Day' releases. Matches the hub set Plex's own clients surface. Changes take effect on the next recommendations refresh.",
+  "provider.plex.config_entries.extended_recommendations.label": "Extended recommendations",
   "provider.plex.config_entries.gdm.action_label": "Use Plex GDM to discover local servers",
   "provider.plex.config_entries.gdm.description": "Enable \"GDM\" to discover local Plex servers automatically.",
   "provider.plex.config_entries.gdm.label": "Use Plex GDM to discover local servers",
