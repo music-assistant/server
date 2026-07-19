@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.audio_processing import (
@@ -39,6 +39,7 @@ from music_assistant.controllers.streams.audio_processing import (
     get_audio_quality,
     get_normalization_details,
 )
+from music_assistant.controllers.streams.controller import StreamsController
 
 
 def _format(
@@ -482,7 +483,44 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     assert plan.dsp_config_id == "player-1"
     assert plan.output_details.source_channel == AudioChannel.FL
     assert plan.output_details.output_format == output_format
-    mass.streams.audio_processing.update_output.assert_called_once()
+    mass.streams.audio_processing.update_output.assert_called_once_with(
+        "player-1",
+        plan,
+        shared_player_ids=None,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_stream_handler_shares_native_group_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regular single-item HTTP stream registers native group members."""
+    controller, request, group_members = _native_stream_handler_context(monkeypatch)
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert controller.audio.get_player_output_plan.call_args.kwargs["shared_player_ids"] is (
+        group_members
+    )
+
+
+@pytest.mark.asyncio
+async def test_flow_stream_handler_shares_native_group_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regular flow HTTP stream registers native group members."""
+    controller, request, group_members = _native_stream_handler_context(monkeypatch)
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_flow_stream(request)
+
+    assert controller.audio.get_player_output_plan.call_args.kwargs["shared_player_ids"] is (
+        group_members
+    )
 
 
 def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -674,3 +712,82 @@ def _streamdetails(item_id: str = "item-1") -> StreamDetails:
         audio_format=_format(ContentType.FLAC, 96000, 24, bit_rate=3200),
         media_type=MediaType.TRACK,
     )
+
+
+class _OutputPlanRequested(Exception):
+    """Signal that a stream handler reached output planning."""
+
+
+def _native_stream_handler_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Any, MagicMock, list[str]]:
+    """Return a native HTTP stream handler prepared to stop at output planning."""
+    mass = MagicMock()
+    streamdetails = _streamdetails()
+    queue_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="Track",
+        duration=180,
+        streamdetails=streamdetails,
+        media_item=None,
+        media_type=MediaType.TRACK,
+        extra_attributes={},
+        image=None,
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        current_item=queue_item,
+        crossfade_enabled=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    queue_data = SimpleNamespace(session_id="session-1")
+    mass.player_queues.get.return_value = queue
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.get_item.return_value = queue_item
+    mass.config.get_raw_core_config_value.return_value = 8
+    mass.config.get_raw_player_config_value.return_value = "disabled"
+
+    group_members = ["player-1", "player-2"]
+    player = MagicMock(player_id="player-1", protocol_parent_id=None)
+    player.state.group_members = group_members
+    player.state.supported_features = set()
+    player.state.name = "Player"
+    player.get_config_value.return_value = "default"
+    mass.players.get_player.return_value = player
+
+    pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
+    output_format = _format(ContentType.FLAC, 48000, 24)
+    audio = MagicMock()
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)
+    audio.select_flow_pcm_format = AsyncMock(return_value=pcm_format)
+    audio.get_output_format = AsyncMock(return_value=output_format)
+    audio.get_player_output_plan.side_effect = _OutputPlanRequested
+
+    controller = cast("Any", object.__new__(StreamsController))
+    controller.mass = mass
+    controller.audio = audio
+    controller.logger = MagicMock()
+    controller._log_request = MagicMock()
+    controller._update_audio_processing_context = MagicMock()
+    controller._active_output_streams = 0
+
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.web.StreamResponse",
+        MagicMock(return_value=response),
+    )
+    request = MagicMock()
+    request.method = "GET"
+    request.headers = {}
+    request.match_info = {
+        "queue_id": "queue-1",
+        "session_id": "session-1",
+        "queue_item_id": "item-1",
+        "player_id": "player-1",
+        "fmt": "flac",
+    }
+    return controller, request, group_members
