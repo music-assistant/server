@@ -204,7 +204,9 @@ class HueEntertainmentBridge:
         self._cancel_render_loop()
         if self._stop_debounce_task and not self._stop_debounce_task.done():
             self._stop_debounce_task.cancel()
-            self._stop_debounce_task = None
+            with suppress(asyncio.CancelledError):
+                await self._stop_debounce_task
+        self._stop_debounce_task = None
 
         if self._sendspin_client:
             await self.sendspin_server.remove_client(self._sendspin_client.client_id)

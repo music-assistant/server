@@ -528,11 +528,9 @@ class SendspinBasePlayer(Player):
         """Build the pairing/security section entries, handling any pairing action."""
         if self._is_bridge_or_web_player:
             return []
-        if self.api.connection is None:
-            return []
         provider = cast("SendspinProvider", self.provider)
         alert: AlertText | None = None
-        if action is not None:
+        if action is not None and self.api.connection is not None:
             alert = await self._handle_security_action(provider, action, values or {})
 
         pin_session = provider.get_pin_session(self.player_id)
