@@ -121,14 +121,13 @@ class TidalProvider(MusicProvider):
         if not await self.auth.initialize(json.dumps(auth_data)):
             raise LoginFailed("Failed to authenticate with Tidal")
 
-        api_result = await self.api.get("sessions")
-        user_info = api_result[0] if isinstance(api_result, tuple) else api_result
+        user_info = await self.api.get("sessions")
         logged_in_user = await self.get_user(str(user_info.get("userId")))
         await self.auth.update_user_info(logged_in_user, str(user_info.get("sessionId")))
 
     async def get_user(self, prov_user_id: str) -> dict[str, Any]:
         """Get user information."""
-        return await self.api.get_data(f"users/{prov_user_id}")
+        return await self.api.get(f"users/{prov_user_id}")
 
     @use_cache(3600 * 24 * 14)
     async def search(
