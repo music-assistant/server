@@ -14,12 +14,15 @@ import logging
 import time
 from typing import TYPE_CHECKING, cast
 
+import aiofiles
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.images import get_image_thumb
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_PASSWORD,
@@ -78,6 +81,11 @@ class AirPlayStream:
         self.latency_lead_ms: int = 0
         self.device_min_frames: int = 0
         self.device_max_frames: int = 0
+        # Route the binary resolved for this stream (empty until reported),
+        # e.g. "AirPlay 2 (native, PTP)" or "RAOP"
+        self.active_route: str = ""
+        # Local file the rendered cover art is written to for the binary to embed
+        self._artwork_path = f"/tmp/cliairplay-art-{self.player.player_id}.jpg"  # noqa: S108
 
     @property
     def running(self) -> bool:
@@ -183,8 +191,8 @@ class AirPlayStream:
 
             await self.send_cli_command(cmd)
             self._last_progress_sent = 0
-            if metadata.image_url:
-                await self.send_cli_command(f"ARTWORK={metadata.image_url}")
+            if metadata.image_url and (artwork := await self._prepare_artwork(metadata.image_url)):
+                await self.send_cli_command(f"ARTWORK={artwork}")
         if progress is not None and abs(progress - self._last_progress_sent) >= 2:
             self._last_progress_sent = progress
             await self.send_cli_command(f"PROGRESS={progress}")
@@ -316,8 +324,9 @@ class AirPlayStream:
         """
         Monitor stdout for the running cliairplay process.
 
-        After connect the binary reports the effective lead and the
-        receiver-reported buffering window on stdout:
+        The binary reports its resolved route at startup and the effective
+        lead plus receiver-reported buffering window after connect:
+          [STATUS] route protocol=<raop|airplay2> flow=<...> timing=<ntp|ptp> buffered=<0|1>
           [STATUS] latency lead_ms=<int> device_min_frames=<int> device_max_frames=<int>
         """
         if not self._cli_proc:
@@ -330,9 +339,26 @@ class AirPlayStream:
                 line = raw_line.decode("utf-8", errors="ignore").strip()
                 if not line:
                     continue
-                if "[STATUS] latency" in line:
+                if "[STATUS] route" in line:
+                    self._parse_route_status(line)
+                elif "[STATUS] latency" in line:
                     self._parse_latency_status(line)
                 self.player.logger.log(VERBOSE_LOG_LEVEL, line)
+
+    def _parse_route_status(self, line: str) -> None:
+        """Parse the [STATUS] route line and log which route this stream took."""
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        protocol = fields.get("protocol", "")
+        if protocol == "airplay2":
+            flow = fields.get("flow", "")
+            timing = fields.get("timing", "")
+            details = "buffered" if fields.get("buffered") == "1" else flow
+            self.active_route = f"AirPlay 2 ({details}, {timing.upper()})"
+        else:
+            self.active_route = "RAOP"
+        self.player.logger.info(
+            "Streaming to %s via %s", self.player.display_name, self.active_route
+        )
 
     def _parse_latency_status(self, line: str) -> None:
         """Parse and store the [STATUS] latency line reported by the binary."""
@@ -376,9 +402,10 @@ class AirPlayStream:
             elif "[STATUS] playing elapsed_ms=" in line:
                 try:
                     millis = int(line.split("elapsed_ms=")[1])
-                    self._update_elapsed(millis / 1000)
                 except ValueError, IndexError:
                     pass
+                else:
+                    self._update_elapsed(millis / 1000)
             elif "[STATUS] paused" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
             elif "[STATUS] eof" in line:
@@ -415,4 +442,34 @@ class AirPlayStream:
             self._elapsed_time_offset = max(0, time.time() - self.session.start_time - elapsed_time)
         if self._elapsed_time_offset:
             elapsed_time += self._elapsed_time_offset
-        self.player.set_state_from_stream(elapsed_time=elapsed_time, stream=self)
+        # The binary only emits this status while actually playing, so it is
+        # also the signal that drives the player into the PLAYING state.
+        self.player.set_state_from_stream(
+            state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
+        )
+
+    async def _prepare_artwork(self, image_url: str) -> str | None:
+        """
+        Render cover art to a local JPEG file the binary can embed.
+
+        The binary consumes artwork as a local file only; it does not fetch
+        URLs. The image is flattened to JPEG (legacy AirPlay receivers cannot
+        be assumed to handle transparency) and written to a per-player path.
+
+        :param image_url: The (imageproxy or remote) cover-art URL.
+        """
+        try:
+            jpeg = await get_image_thumb(
+                self.mass,
+                image_url,
+                AIRPLAY_ARTWORK_SIZE,
+                "",
+                image_format="JPEG",
+                flatten_transparency=True,
+            )
+            async with aiofiles.open(self._artwork_path, "wb") as artfile:
+                await artfile.write(jpeg)
+        except Exception as err:
+            self.player.logger.debug("Could not prepare artwork: %s", err)
+            return None
+        return self._artwork_path
