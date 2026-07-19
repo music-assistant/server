@@ -5,6 +5,7 @@ import math
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CompressorFilter,
     CrossfeedFilter,
     GainFilter,
     HighLowPassFilter,
@@ -13,6 +14,7 @@ from music_assistant_models.dsp import (
     ParametricEQBand,
     ParametricEQBandType,
     ParametricEQFilter,
+    SafetyLimiterFilter,
     StereoWidthFilter,
     ToneControlFilter,
     TransposeFilter,
@@ -270,3 +272,39 @@ def test_high_low_pass_mode_changes_coefficients() -> None:
         enabled=True, mode=HighLowPassMode.LOW_PASS, frequency=1000.0, slope=HighLowPassSlope.DB12
     )
     assert filter_to_ffmpeg_params(high, INPUT_FORMAT) != filter_to_ffmpeg_params(low, INPUT_FORMAT)
+
+
+def test_safety_limiter_filter() -> None:
+    """Test that a safety limiter maps to an in-chain alimiter at the given ceiling."""
+    dsp_filter = SafetyLimiterFilter(enabled=True, ceiling=-2.0)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == [
+        "alimiter=limit=-2.0dB:level=false:asc=true"
+    ]
+
+
+def test_compressor_filter() -> None:
+    """Test that a compressor maps to acompressor with dB/ms/ratio values."""
+    dsp_filter = CompressorFilter(
+        enabled=True,
+        threshold=-18.0,
+        ratio=2.0,
+        attack=20.0,
+        release=250.0,
+        knee=9.0,
+        makeup=0.0,
+    )
+    expected = (
+        "acompressor=threshold=-18.0dB:ratio=2.0:attack=20.0:release=250.0"
+        f":knee={10 ** (9.0 / 20)}:makeup=0.0dB"
+    )
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == [expected]
+
+
+def test_compressor_knee_db_maps_to_linear_factor() -> None:
+    """Test that a knee width in dB maps to acompressor's linear knee factor."""
+    # 0 dB is a hard knee, acompressor's minimum knee factor of 1.0
+    hard_knee = CompressorFilter(enabled=True, knee=0.0)
+    assert ":knee=1.0:" in filter_to_ffmpeg_params(hard_knee, INPUT_FORMAT)[0]
+    # 18 dB maps to ~7.94, just under acompressor's maximum knee factor of 8
+    soft_knee = CompressorFilter(enabled=True, knee=18.0)
+    assert f":knee={10 ** (18.0 / 20)}:" in filter_to_ffmpeg_params(soft_knee, INPUT_FORMAT)[0]

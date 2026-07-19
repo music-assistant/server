@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CompressorFilter,
     CrossfeedFilter,
     DSPFilter,
     GainFilter,
@@ -14,6 +15,7 @@ from music_assistant_models.dsp import (
     HighLowPassMode,
     ParametricEQBandType,
     ParametricEQFilter,
+    SafetyLimiterFilter,
     StereoWidthFilter,
     ToneControlFilter,
     TransposeFilter,
@@ -184,6 +186,19 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
         # these quality options if they prove too costly on low powered hardware
         filter_params.append(
             f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
+        )
+    if isinstance(dsp_filter, SafetyLimiterFilter):
+        # in-chain user safety limiter, upstream of the global output safety limiter;
+        # level=false keeps it a transparent ceiling (no auto make-up)
+        filter_params.append(f"alimiter=limit={dsp_filter.ceiling}dB:level=false:asc=true")
+    if isinstance(dsp_filter, CompressorFilter):
+        # acompressor knee is threshold/sqrt(knee)..threshold*sqrt(knee), so a knee
+        # width of N dB maps to a linear knee factor of 10**(N/20)
+        knee = 10 ** (dsp_filter.knee / 20)
+        filter_params.append(
+            f"acompressor=threshold={dsp_filter.threshold}dB:ratio={dsp_filter.ratio}"
+            f":attack={dsp_filter.attack}:release={dsp_filter.release}"
+            f":knee={knee}:makeup={dsp_filter.makeup}dB"
         )
 
     if isinstance(dsp_filter, HighLowPassFilter):
