@@ -138,6 +138,15 @@ def test_split_title_version(
     assert _split_title_version(title, version) == (expected_name, expected_version)
 
 
+def test_parse_track_credits(provider_mock: Mock) -> None:
+    """Test track credits are resolved into performers."""
+    doc = _load("track_credits.json")
+    track = parse_track(provider_mock, doc, doc.data)
+
+    assert track.metadata.performers
+    assert "Lukas Forchhammer" in track.metadata.performers
+
+
 def test_parse_track_no_includes(provider_mock: Mock) -> None:
     """Test a track with unresolved relationships still parses core fields."""
     doc = JsonApiDocument(

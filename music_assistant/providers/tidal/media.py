@@ -112,7 +112,7 @@ class TidalMediaManager:
             # track carries an image, matching the unofficial API's behaviour.
             doc = await self.api.get_jsonapi(
                 f"tracks/{prov_track_id}",
-                include=["artists", "albums", "albums.coverArt", "genres"],
+                include=["artists", "albums", "albums.coverArt", "genres", "credits"],
             )
             track = parse_track_v2(self.provider, doc, doc.data)
         except (ClientError, KeyError, ValueError) as err:
@@ -144,6 +144,112 @@ class TidalMediaManager:
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
 
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Get album tracks."""
+        tracks: list[Track] = []
+        try:
+            async for doc in self.api.paginate_jsonapi(
+                f"albums/{prov_album_id}/relationships/items",
+                include=["items.artists", "items.albums.coverArt"],
+            ):
+                for item in doc.data_list:
+                    if not (resource := doc.resolve(item)):
+                        continue
+                    track = parse_track_v2(self.provider, doc, resource)
+                    item_meta = item.get("meta") or {}
+                    track.track_number = item_meta.get("trackNumber", 0) or 0
+                    track.disc_number = item_meta.get("volumeNumber", 0) or 0
+                    tracks.append(track)
+        except (ClientError, KeyError, ValueError) as err:
+            raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
+        return tracks
+
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
+        """Get artist albums."""
+        albums: list[Album] = []
+        try:
+            async for doc in self.api.paginate_jsonapi(
+                f"artists/{prov_artist_id}/relationships/albums",
+                include=["albums.artists", "albums.coverArt"],
+            ):
+                for item in doc.data_list:
+                    if resource := doc.resolve(item):
+                        albums.append(parse_album_v2(self.provider, doc, resource))
+        except (ClientError, KeyError, ValueError) as err:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+        return albums
+
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Get artist top tracks."""
+        # Top tracks are a bounded, ranked list: the first page is enough.
+        try:
+            doc = await self.api.get_jsonapi(
+                f"artists/{prov_artist_id}/relationships/tracks",
+                params={"collapseBy": "FINGERPRINT"},
+                include=["tracks.artists", "tracks.albums.coverArt"],
+            )
+            return [
+                parse_track_v2(self.provider, doc, resource)
+                for item in doc.data_list
+                if (resource := doc.resolve(item))
+            ]
+        except (ClientError, KeyError, ValueError) as err:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Get similar tracks."""
+        # Similar tracks are a bounded, ranked list: the first page is enough.
+        try:
+            doc = await self.api.get_jsonapi(
+                f"tracks/{prov_track_id}/relationships/similarTracks",
+                include=["similarTracks.artists", "similarTracks.albums.coverArt"],
+            )
+            tracks = [
+                parse_track_v2(self.provider, doc, resource)
+                for item in doc.data_list
+                if (resource := doc.resolve(item))
+            ]
+            return tracks[:limit]
+        except (ClientError, KeyError, ValueError) as err:
+            raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Get similar artists."""
+        # Similar artists are a bounded, ranked list: the first page is enough.
+        try:
+            doc = await self.api.get_jsonapi(
+                f"artists/{prov_artist_id}/relationships/similarArtists",
+                include=["similarArtists.profileArt"],
+            )
+            artists = [
+                parse_artist_v2(self.provider, doc, resource)
+                for item in doc.data_list
+                if (resource := doc.resolve(item))
+            ]
+            return artists[:limit]
+        except (ClientError, KeyError, ValueError) as err:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """Get playlist tracks."""
+        page_size = 200
+        offset = page * page_size
+
+        if prov_playlist_id == FAVORITE_TRACKS_PLAYLIST_ID:
+            return await self._get_favorite_tracks(page_size, offset)
+
+        if prov_playlist_id.startswith("mix_"):
+            return await self._get_mix_tracks(prov_playlist_id[4:], page_size, offset)
+
+        try:
+            data = await self.api.get(
+                f"{PLAYLISTS}/{prov_playlist_id}/tracks",
+                params={"limit": page_size, "offset": offset},
+            )
+            return self._process_tracks(data.get("items", []), offset)
+        except MediaNotFoundError:
+            return await self._get_mix_tracks(prov_playlist_id, page_size, offset)
+
     async def _get_mix_details(self, prov_mix_id: str) -> Playlist:
         """Get details for a Tidal Mix."""
         try:
@@ -169,60 +275,6 @@ class TidalMediaManager:
             return parse_playlist(self.provider, mix_obj, is_mix=True)
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Mix {prov_mix_id} not found") from err
-
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get album tracks."""
-        try:
-            data = await self.api.get(f"albums/{prov_album_id}/tracks", params={"limit": 250})
-            return [parse_track(self.provider, x) for x in data.get("items", [])]
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
-
-    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get artist albums."""
-        try:
-            data = await self.api.get(f"artists/{prov_artist_id}/albums", params={"limit": 250})
-            return [parse_album(self.provider, x) for x in data.get("items", [])]
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
-
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get artist top tracks."""
-        try:
-            data = await self.api.get(
-                f"artists/{prov_artist_id}/toptracks", params={"limit": 10, "offset": 0}
-            )
-            return [parse_track(self.provider, x) for x in data.get("items", [])]
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
-
-    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Get similar tracks."""
-        try:
-            data = await self.api.get(f"tracks/{prov_track_id}/radio", params={"limit": limit})
-            return [parse_track(self.provider, x) for x in data.get("items", [])]
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
-
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks."""
-        page_size = 200
-        offset = page * page_size
-
-        if prov_playlist_id == FAVORITE_TRACKS_PLAYLIST_ID:
-            return await self._get_favorite_tracks(page_size, offset)
-
-        if prov_playlist_id.startswith("mix_"):
-            return await self._get_mix_tracks(prov_playlist_id[4:], page_size, offset)
-
-        try:
-            data = await self.api.get(
-                f"{PLAYLISTS}/{prov_playlist_id}/tracks",
-                params={"limit": page_size, "offset": offset},
-            )
-            return self._process_tracks(data.get("items", []), offset)
-        except MediaNotFoundError:
-            return await self._get_mix_tracks(prov_playlist_id, page_size, offset)
 
     async def _get_favorite_tracks(self, limit: int, offset: int) -> list[Track]:
         """Get the user's favorite tracks in descending order (newest first)."""

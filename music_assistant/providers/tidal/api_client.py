@@ -65,6 +65,30 @@ class TidalAPIClient:
         )
         return JsonApiDocument(data)
 
+    async def paginate_jsonapi(
+        self,
+        endpoint: str,
+        include: Sequence[str] | None = None,
+        params: dict[str, Any] | None = None,
+        max_pages: int = 50,
+        **kwargs: Any,
+    ) -> AsyncGenerator[JsonApiDocument]:
+        """Yield successive JSON:API document pages, following the cursor links."""
+        cursor: str | None = None
+        for _ in range(max_pages):
+            page_params = dict(params or {})
+            if cursor:
+                page_params["page[cursor]"] = cursor
+            doc = await self.get_jsonapi(endpoint, include=include, params=page_params, **kwargs)
+            yield doc
+            cursor = doc.next_cursor
+            if not cursor:
+                return
+        # Reached the page cap while more pages remained: surface the truncation.
+        self.logger.warning(
+            "Stopped paginating %s after %d pages; results may be truncated", endpoint, max_pages
+        )
+
     async def post(
         self,
         endpoint: str,

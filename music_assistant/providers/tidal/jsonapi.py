@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import unquote
 
 
 class JsonApiDocument:
@@ -45,8 +46,14 @@ class JsonApiDocument:
         # The API returns either a full path with a page[cursor] query param
         # or the bare cursor value; callers only need the cursor.
         if "page[cursor]=" in next_link:
-            return next_link.split("page[cursor]=", 1)[1].split("&", 1)[0]
+            return unquote(next_link.split("page[cursor]=", 1)[1].split("&", 1)[0])
         return next_link
+
+    def resolve(self, identifier: dict[str, Any]) -> dict[str, Any] | None:
+        """Resolve a resource identifier ({type, id}) to its included resource."""
+        if "type" not in identifier or "id" not in identifier:
+            return None
+        return self._included.get((identifier["type"], identifier["id"]))
 
     def related(self, resource: dict[str, Any], relationship: str) -> list[dict[str, Any]]:
         """
