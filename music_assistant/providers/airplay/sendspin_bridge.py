@@ -71,6 +71,34 @@ def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
     return None
 
 
+def sendspin_audible_instant_to_unix_ms(
+    audible_instant_us: int,
+    sendspin_now_us: int,
+    unix_now: float,
+) -> int:
+    """
+    Map an audible instant on the Sendspin clock to a unix epoch millisecond.
+
+    Sendspin schedules playback on its own monotonic clock (``server.clock.now_us()``)
+    whereas the AirPlay binary's ``--start-unix-ms`` contract is unix wall-clock.
+    The two clocks share no epoch, so only the *offset from now* transfers between
+    them: this takes how far ``audible_instant_us`` sits in the future on the
+    Sendspin clock and applies that same offset to a unix reading captured at the
+    same instant. Because the offset is a delta on a single clock, the standing
+    offset between the Sendspin clock and unix wall-clock cancels out -- the only
+    residual is the rate skew across the (sub-second to a few seconds) lead, which
+    stays well under a millisecond. ``sendspin_now_us`` and ``unix_now`` must be
+    sampled back to back for that cancellation to hold.
+
+    :param audible_instant_us: Sendspin-clock instant the first sample must be audible.
+    :param sendspin_now_us: ``sendspin_server.clock.now_us()`` captured now.
+    :param unix_now: ``time.time()`` captured at the same instant as sendspin_now_us.
+    :return: The unix epoch millisecond that coincides with ``audible_instant_us``.
+    """
+    future_s = (audible_instant_us - sendspin_now_us) / 1_000_000
+    return int((unix_now + future_s) * 1000)
+
+
 class SendspinAirPlayBridge:
     """
     Manages the Sendspin to AirPlay bridge for a single player.
@@ -323,12 +351,25 @@ class SendspinAirPlayBridge:
 
             # Derive the audible start instant from _drop_until_us (set on first
             # chunk arrival) so the CLI has enough lead to connect and establish
-            # the session. _drop_until_us may use a different clock, convert to
-            # unix epoch ms.
+            # the session. _drop_until_us is on the Sendspin (monotonic) clock;
+            # map it to the unix epoch ms the binary's --start-unix-ms expects.
             sendspin_clock_now_us = self.sendspin_server.clock.now_us()
             unix_clock_now = time.time()
-            future_s = (self._drop_until_us - sendspin_clock_now_us) / 1_000_000
-            start_unix_ms = int((unix_clock_now + future_s) * 1000)
+            start_unix_ms = sendspin_audible_instant_to_unix_ms(
+                self._drop_until_us, sendspin_clock_now_us, unix_clock_now
+            )
+            lead_us = self._drop_until_us - sendspin_clock_now_us
+            if lead_us <= 0:
+                # Session setup outran the lead budget (e.g. a slow teardown of a
+                # previous stream ahead of us). The anchor is already in the past,
+                # so the binary cannot honour it and playback starts late relative
+                # to the Sendspin timeline. Surface it instead of failing silently.
+                self.logger.warning(
+                    "AirPlay start anchor for %s is not in the future "
+                    "(setup exceeded the %dms lead) - playback may start late",
+                    self.airplay_player.display_name,
+                    int(self.airplay_player.wait_start),
+                )
             sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
             if isinstance(sync_adjust, int) and sync_adjust != 0:
                 start_unix_ms += sync_adjust
@@ -354,7 +395,7 @@ class SendspinAirPlayBridge:
                 "Bridge protocol started for %s (start_unix_ms=%s, lookahead=%.0fms)",
                 self.airplay_player.display_name,
                 start_unix_ms,
-                future_s * 1000,
+                lead_us / 1000,
             )
             self.mass.create_task(self._wait_for_airplay_connection())
         except Exception as err:
