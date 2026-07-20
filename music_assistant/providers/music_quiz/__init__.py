@@ -53,18 +53,18 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from music_assistant_models.auth import Scope, UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, PlayerType, QueueOption
+from music_assistant_models.enums import ConfigEntryType, PlayerType, ProviderFeature, QueueOption
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -76,7 +76,6 @@ from music_assistant_models.media_items import Track
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
-    get_current_user,
     impersonated_user,
 )
 from music_assistant.helpers import guest_access
@@ -149,7 +148,6 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -207,7 +205,7 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
+    mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
@@ -220,12 +218,24 @@ async def get_config_entries(
     :param action: Optional action key called from config entries UI.
     :param values: The (intermediate) raw values for config entries sent with the action.
     """
+    ai_available = any(
+        isinstance(provider, PluginProvider)
+        for provider in mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
+    )
+    ai_setting = ConfigEntry(
+        key=CONF_USE_AI_DISTRACTORS,
+        type=ConfigEntryType.BOOLEAN,
+        required=False,
+        default_value=False,
+        read_only=not ai_available,
+    )
+    if ai_available:
+        return (ai_setting,)
     return (
+        ai_setting,
         ConfigEntry(
-            key=CONF_USE_AI_DISTRACTORS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=False,
+            key="ai_unavailable",
+            type=ConfigEntryType.ALERT,
         ),
     )
 
@@ -271,8 +281,7 @@ class MusicQuizPlugin(PluginProvider):
             self._unregister_handles.append(
                 self.mass.register_api_command(command, handler, required_scope=Scope.USERS_INVITE)
             )
-        # guest game commands: any authenticated user passes the API layer,
-        # the handlers themselves validate the caller is the quiz guest user
+        # Participant game commands are available to any authenticated user.
         guest_commands: tuple[tuple[str, _ApiHandler], ...] = (
             ("music_quiz/info", self.get_game_info),
             ("music_quiz/join", self.join_game),
@@ -419,7 +428,10 @@ class MusicQuizPlugin(PluginProvider):
                 sources=await self._resolve_sources(game_config.source_uris),
                 created_at=time.time(),
             )
-            quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
+            quiz_strategy, answer_strategy = self._resolve_game_strategies(
+                game,
+                recent_track_uris=self._recent_track_uris_for_game(self._game),
+            )
             initial_round_task = await self._prepare_initial_round(quiz_strategy)
             selected_player = self._validate_playback_config(game_config)
             if selected_player is not None:
@@ -496,7 +508,10 @@ class MusicQuizPlugin(PluginProvider):
         """
         async with self._game_lock:
             game = self._require_game()
-            quiz_strategy, answer_strategy = self._resolve_game_strategies(game)
+            quiz_strategy, answer_strategy = self._resolve_game_strategies(
+                game,
+                recent_track_uris=self._recent_track_uris_for_game(game),
+            )
             initial_round_task = await self._prepare_initial_round(quiz_strategy)
             self._cancel_timers()
             self._cancel_next_round_task()
@@ -563,7 +578,6 @@ class MusicQuizPlugin(PluginProvider):
         :return: The player's private player_id (their credential for further
             game commands) and their personalized game state.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             player_name = name.strip()[:MAX_PLAYER_NAME_LENGTH]
@@ -597,7 +611,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param player_id: The player's private player_id.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             player = _get_player(game, player_id)
@@ -611,7 +624,6 @@ class MusicQuizPlugin(PluginProvider):
         :param player_id: The player's private player_id.
         :return: True when the player still exists, otherwise False.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             if self._game is None or (player := _find_player(self._game, player_id)) is None:
                 return False
@@ -629,7 +641,6 @@ class MusicQuizPlugin(PluginProvider):
         :param player_id: The player's private player_id.
         :param submission: Discriminated answer submission.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             submission_type = submission.get("answer_type")
@@ -651,7 +662,6 @@ class MusicQuizPlugin(PluginProvider):
         :param player_id: The player's private player_id.
         :param suggestion_id: Selected suggestion ID.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             if game.answer_type != MusicQuizAnswerType.MULTIPLE_CHOICE:
@@ -668,7 +678,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param player_id: The player's private player_id.
         """
-        self._validate_guest_access()
         async with self._game_lock:
             game, _, answer_type = self._require_game_strategies()
             player = _get_player(game, player_id)
@@ -691,7 +700,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._validate_guest_access()
         # hold the playback lock across resolving and joining the session so a
         # guest can never be attached to a session that is being torn down
         async with self._playback_lock:
@@ -707,7 +715,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._validate_guest_access()
         async with self._playback_lock:
             if self._playback_session is not None:
                 await self._playback_session.remove_guest_listener(web_player_id)
@@ -718,7 +725,6 @@ class MusicQuizPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         """
-        self._validate_guest_access()
         async with self._playback_lock:
             session = await self._get_or_create_session_locked()
             return session is not None and session.can_listen_in(web_player_id)
@@ -731,17 +737,35 @@ class MusicQuizPlugin(PluginProvider):
             raise MusicQuizNoGameError("There is no active Music Quiz game")
         return self._game
 
-    def _resolve_game_strategies(self, game: MusicQuizGame) -> tuple[QuizType, QuizAnswerType]:
+    def _resolve_game_strategies(
+        self,
+        game: MusicQuizGame,
+        *,
+        recent_track_uris: Iterable[str] = (),
+    ) -> tuple[QuizType, QuizAnswerType]:
         """
         Resolve the strategies declared by game state.
 
         :param game: Game whose strategy identities should be resolved.
+        :param recent_track_uris: Earlier game tracks to deprioritize.
         """
         quiz_type_class = get_quiz_type(game.quiz_type)
         answer_type_class = get_answer_type(game.answer_type)
         if quiz_type_class.answer_type != game.answer_type:
             raise InvalidDataError("Quiz type answer type does not match the game")
-        return quiz_type_class(self.mass, game.config), answer_type_class()
+        quiz_type = quiz_type_class(self.mass, game.config)
+        quiz_type.add_recent_track_uris(recent_track_uris)
+        return quiz_type, answer_type_class()
+
+    def _recent_track_uris_for_game(self, game: MusicQuizGame | None) -> set[str]:
+        """Return source tracks represented by an earlier game."""
+        if game is None:
+            return set()
+        quiz_type_class = get_quiz_type(game.quiz_type)
+        quiz_type = self._quiz_type
+        if quiz_type is None or type(quiz_type) is not quiz_type_class:
+            quiz_type = quiz_type_class(self.mass, game.config)
+        return quiz_type.get_recent_track_uris(game.rounds)
 
     def _require_game_strategies(
         self,
@@ -759,21 +783,6 @@ class MusicQuizPlugin(PluginProvider):
         ):
             raise InvalidDataError("Music Quiz game strategy identity mismatch")
         return game, self._quiz_type, self._answer_type
-
-    @staticmethod
-    def _validate_guest_access() -> None:
-        """
-        Validate the current user is an authenticated dedicated guest.
-
-        :raises InvalidDataError: If the user is not a dedicated guest.
-        """
-        user = get_current_user()
-        if not user or user.role != UserRole.GUEST:
-            raise InvalidDataError(
-                "This action is only available to Music Quiz guests",
-                translation_key="music_quiz_guest_only",
-                translation_owner=TRANSLATION_OWNER,
-            )
 
     def _submit_player_answer(
         self,
@@ -893,7 +902,7 @@ class MusicQuizPlugin(PluginProvider):
     async def _start_next_round(self) -> None:
         """Prepare the next round, start its playback (if any) and open the answering phase."""
         with _system_auth_context():
-            game, quiz_type, answer_type = self._require_game_strategies()
+            game, _, answer_type = self._require_game_strategies()
             round_index = len(game.rounds)
             next_round = await self._prepare_playable_round(round_index)
             started_at = time.time()
@@ -908,8 +917,6 @@ class MusicQuizPlugin(PluginProvider):
                 started_at + answer_window,
                 task_id=self._reveal_timer_id,
             )
-            if next_round.track_uri and quiz_type.warm_up_lyrics:
-                self._warm_up_lyrics(next_round.track_uri)
             self._prefetch_round(round_index + 1)
             self._signal_game_updated()
 
@@ -1162,9 +1169,21 @@ class MusicQuizPlugin(PluginProvider):
         """Initialize a quiz type and complete its first round before opening the lobby."""
         with _system_auth_context():
             await quiz_type.initialize()
-            task = self.mass.create_task(quiz_type.prepare_round(0, []))
+            task = self.mass.create_task(self._prepare_round(quiz_type, 0, []))
             await task
         return task
+
+    async def _prepare_round(
+        self,
+        quiz_type: QuizType,
+        round_index: int,
+        previous_rounds: list[MusicQuizRound],
+    ) -> MusicQuizRound:
+        """Prepare a round and its required assets."""
+        game_round = await quiz_type.prepare_round(round_index, previous_rounds)
+        if game_round.track_uri and quiz_type.prefetch_lyrics:
+            await self._fetch_lyrics(game_round.track_uri)
+        return game_round
 
     def _prefetch_round(self, round_index: int) -> None:
         """Prepare an upcoming round in the background."""
@@ -1174,7 +1193,7 @@ class MusicQuizPlugin(PluginProvider):
         game, quiz_type, _ = self._require_game_strategies()
         with _system_auth_context():
             self._next_round_task = self.mass.create_task(
-                quiz_type.prepare_round(round_index, list(game.rounds))
+                self._prepare_round(quiz_type, round_index, list(game.rounds))
             )
 
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
@@ -1188,13 +1207,15 @@ class MusicQuizPlugin(PluginProvider):
                 if prepared.round_index == round_index:
                     return prepared
             except asyncio.CancelledError:
-                pass
+                current_task = asyncio.current_task()
+                if current_task is None or current_task.cancelling():
+                    raise
             except Exception as err:
                 self.logger.warning(
                     "Prefetched Music Quiz round failed, preparing a fresh one: %s", err
                 )
         with _system_auth_context():
-            return await quiz_type.prepare_round(round_index, list(game.rounds))
+            return await self._prepare_round(quiz_type, round_index, list(game.rounds))
 
     def _cancel_next_round_task(self) -> None:
         """Cancel a pending round prefetch task."""
@@ -1301,23 +1322,14 @@ class MusicQuizPlugin(PluginProvider):
             and game.current_round_index == round_index
         )
 
-    def _warm_up_lyrics(self, track_uri: str) -> None:
-        """Fetch/caches the track lyrics so they are ready when revealed."""
-        with _system_auth_context():
-            self.mass.create_task(
-                self._fetch_lyrics(track_uri),
-                task_id=f"music_quiz_lyrics_{self.instance_id}",
-                abort_existing=True,
-            )
-
     async def _fetch_lyrics(self, track_uri: str) -> None:
-        """Best-effort lyrics warm-up for the given track."""
+        """Fetch lyrics for a prepared round."""
         try:
             track = await self.mass.music.get_item_by_uri(track_uri)
             if isinstance(track, Track):
                 await self.mass.metadata.get_track_lyrics(track)
         except Exception as err:
-            self.logger.debug("Lyrics warm-up failed for %s: %s", track_uri, err)
+            self.logger.debug("Lyrics prefetch failed for %s: %s", track_uri, err)
 
     # ---------- playback ----------
 
@@ -1602,6 +1614,8 @@ class MusicQuizPlugin(PluginProvider):
             and state.enabled
             and not state.hide_in_ui
             and not state.needs_setup
+            and state.synced_to is None
+            and state.active_group is None
             and state.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
             and player.is_native_player
             and player.provider.domain != SENDSPIN_DOMAIN

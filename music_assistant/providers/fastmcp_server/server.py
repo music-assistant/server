@@ -143,11 +143,14 @@ class MCPServerRuntime:
             ``new`` here would always be empty — the caller's set is the only
             reliable signal.
         """
-        from .constants import PERMISSION_KEYS  # noqa: PLC0415
+        from .constants import CONF_META_TOOL_DISCOVERY, PERMISSION_KEYS  # noqa: PLC0415
 
         # ``set().issubset(...)`` is True, so an empty ``changed_keys`` (no-op
         # call) classifies as permission-only and skips a pointless restart.
-        permission_only = changed_keys.issubset(PERMISSION_KEYS)
+        # The meta-discovery flag rides the same path: the transform reads it
+        # through a closure over ``_config``, so assigning the new config below
+        # is the entire swap.
+        permission_only = changed_keys.issubset(PERMISSION_KEYS | {CONF_META_TOOL_DISCOVERY})
 
         self._config = new_config
         if permission_only and hasattr(self, "_allowed_tags"):
@@ -234,14 +237,9 @@ class MCPServerRuntime:
         )
         mcp.mount(build_metadata_server(self._mass), namespace="metadata")
 
-        from .debug.event_buffer import EventBuffer  # noqa: PLC0415
         from .tools import build_debug_server  # noqa: PLC0415
 
-        if bool(self._config.get_value(CONF_DEBUG_EVENTS)):
-            cap_value = self._config.get_value(CONF_DEBUG_EVENT_BUFFER_CAPACITY)
-            capacity = int(cap_value) if isinstance(cap_value, int | float | str) else 500
-            self._event_buffer = EventBuffer(self._mass, capacity=capacity)
-            self._event_buffer.start()
+        self._maybe_start_event_buffer()
 
         mcp.mount(
             build_debug_server(
@@ -274,6 +272,7 @@ class MCPServerRuntime:
         register_prompts(mcp, self._config)
 
         self._apply_tag_filter(mcp, enabled_tags(self._config))
+        self._register_meta_discovery(mcp)
 
         self._mcp = mcp
         extra_origins = str(self._config.get_value(CONF_EXTRA_ALLOWED_ORIGINS) or "")
@@ -319,6 +318,29 @@ class MCPServerRuntime:
             self._mount_path,
             bool(verifier),
             len(enabled_tags(self._config)),
+        )
+
+    def _maybe_start_event_buffer(self) -> None:
+        """Start the debug event buffer when the ``debug_events`` flag is on."""
+        from .debug.event_buffer import EventBuffer  # noqa: PLC0415
+
+        if not bool(self._config.get_value(CONF_DEBUG_EVENTS)):
+            return
+        cap_value = self._config.get_value(CONF_DEBUG_EVENT_BUFFER_CAPACITY)
+        capacity = int(cap_value) if isinstance(cap_value, int | float | str) else 500
+        self._event_buffer = EventBuffer(self._mass, capacity=capacity)
+        self._event_buffer.start()
+
+    def _register_meta_discovery(self, mcp: Any) -> None:
+        """Install the opt-in simplified tool discovery (meta-tool) layer."""
+        from .constants import CONF_META_TOOL_DISCOVERY  # noqa: PLC0415
+        from .meta_discovery import register_meta_discovery  # noqa: PLC0415
+
+        register_meta_discovery(
+            mcp,
+            enabled=lambda: bool(self._config.get_value(CONF_META_TOOL_DISCOVERY)),
+            allowed_tags_provider=lambda: self._allowed_tags,
+            lookup_component_tags=build_tag_lookup(mcp),
         )
 
     def _apply_tag_filter(self, mcp: Any, allowed: set[Any]) -> None:

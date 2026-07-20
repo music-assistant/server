@@ -147,3 +147,55 @@ async def test_browse_maps_files_to_sound_effects() -> None:
     assert len(result) == 1
     assert result[0].media_type == MediaType.SOUND_EFFECT
     assert result[0].item_id == "rain.mp3"
+    provider.mass.music.tracks.get_library_item_by_prov_id.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_browse_returns_library_track_for_cataloged_file() -> None:
+    """Browse returns the canonical library track for a cataloged music file."""
+    provider = _create_provider()
+    provider.media_content_type = "music"
+    audio_file = MagicMock()
+    audio_file.is_dir = False
+    audio_file.filename = "track.flac"
+    audio_file.ext = "flac"
+    audio_file.relative_path = "album/track.flac"
+    audio_file.absolute_path = "/media/album/track.flac"
+    library_track = MagicMock()
+    library_track.item_id = "42"
+    library_track.provider = "library"
+    provider._scandir = AsyncMock(return_value=[audio_file])  # type: ignore[method-assign]
+    provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        return_value=library_track
+    )
+
+    result = await provider.browse("filesystem_local--test://album")
+
+    assert result == [library_track]
+    provider.mass.music.tracks.get_library_item_by_prov_id.assert_awaited_once_with(
+        "album/track.flac", "filesystem_local--test"
+    )
+
+
+@pytest.mark.asyncio
+async def test_browse_returns_provider_mapping_for_uncataloged_file() -> None:
+    """Browse retains the filesystem mapping when a music file is not cataloged."""
+    provider = _create_provider()
+    provider.media_content_type = "music"
+    audio_file = MagicMock()
+    audio_file.is_dir = False
+    audio_file.filename = "track.flac"
+    audio_file.ext = "flac"
+    audio_file.relative_path = "album/track.flac"
+    audio_file.absolute_path = "/media/album/track.flac"
+    provider._scandir = AsyncMock(return_value=[audio_file])  # type: ignore[method-assign]
+    provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        return_value=None
+    )
+
+    result = await provider.browse("filesystem_local--test://album")
+
+    assert len(result) == 1
+    assert result[0].media_type == MediaType.TRACK
+    assert result[0].item_id == "album/track.flac"
+    assert result[0].provider == "filesystem_local--test"

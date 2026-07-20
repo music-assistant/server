@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
@@ -196,6 +197,20 @@ async def test_run_offloaded_without_cap_runs_plainly() -> None:
     # The MagicMock attribute is not an asyncio.Semaphore, so this falls back to a plain thread.
     result = await provider._run_offloaded(lambda value: value * 2, 21)
     assert result == 42
+
+
+@pytest.mark.asyncio
+async def test_run_offloaded_timed_returns_result_and_execution_seconds() -> None:
+    """_run_offloaded_timed forwards args and reports the callable's own execution time."""
+    provider = _make_provider()
+
+    def _work(value: int) -> int:
+        time.sleep(0.05)
+        return value * 2
+
+    result, seconds = await provider._run_offloaded_timed(_work, 21)
+    assert result == 42
+    assert seconds >= 0.05
 
 
 @pytest.mark.asyncio

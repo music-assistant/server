@@ -13,11 +13,13 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
     MusicQuizConfig,
 )
+from music_assistant.providers.music_quiz.quiz_types.base import QUIZ_TRACK_RECENCY_SECONDS
 from music_assistant.providers.music_quiz.quiz_types.guess_the_song import (
     GuessTheSongQuizType,
     _track_to_candidate,
@@ -96,6 +98,7 @@ def _quiz_type(
     mass.music.tracks.similar_tracks = AsyncMock(return_value=[])
     mass.music.artists.similar_artists = AsyncMock(return_value=[])
     mass.music.artists.top_tracks = AsyncMock(return_value=[])
+    mass.music.recency.snapshot = AsyncMock(return_value=RecencySnapshot(now=0))
     mass.metadata.get_image_url_for_item = AsyncMock(return_value=None)
     mass.get_providers_supporting_feature = MagicMock(return_value=[])
     config = MusicQuizConfig(
@@ -143,6 +146,49 @@ def test_reject_track_removes_it_from_the_source_pool() -> None:
     quiz_type.reject_track(failed.uri)
 
     assert quiz_type._source_track_pool == _pool([available])
+
+
+@pytest.mark.asyncio
+async def test_initialize_reads_partial_play_recency() -> None:
+    """Load interrupted playback history for quiz track selection."""
+    quiz_type, mass = _quiz_type()
+    snapshot = RecencySnapshot(now=100)
+    mass.music.recency.snapshot.return_value = snapshot
+
+    await quiz_type.initialize()
+
+    assert quiz_type._recency_snapshot is snapshot
+    mass.music.recency.snapshot.assert_awaited_once_with(
+        RecencyWindows(song_seconds=QUIZ_TRACK_RECENCY_SECONDS),
+        include_partially_played=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_selection_prefers_tracks_not_played_recently() -> None:
+    """Choose a fresh source track while retaining recent tracks as fallback candidates."""
+    quiz_type, _ = _quiz_type()
+    recent = _track("recent", "Teardrop", "Massive Attack")
+    fresh = _track("fresh", "Genesis", "Justice")
+    quiz_type._source_track_pool = _pool([recent, fresh])
+    quiz_type._recency_snapshot = RecencySnapshot(
+        now=100,
+        song_ts={(recent.provider, recent.item_id): 100},
+    )
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.guess_the_song.secrets.choice",
+        side_effect=lambda candidates: candidates[0],
+    ) as choose:
+        selected = await quiz_type._get_next_source_track(set())
+        assert quiz_type._recency_snapshot is not None
+        quiz_type._recency_snapshot.song_ts[(fresh.provider, fresh.item_id)] = 100
+        fallback = await quiz_type._get_next_source_track(set())
+
+    assert selected is fresh
+    assert fallback is recent
+    assert choose.call_args_list[0].args[0] == [fresh]
+    assert choose.call_args_list[1].args[0] == [recent, fresh]
 
 
 @pytest.mark.asyncio

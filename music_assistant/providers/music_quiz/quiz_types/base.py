@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from typing import TYPE_CHECKING, ClassVar, Final, cast
 
 from music_assistant_models.enums import MediaType
@@ -20,6 +20,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.music.constants import DYNAMIC_RADIO_DYNAMIC_TARGET
+from music_assistant.controllers.music.recency import RecencyWindows
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.uri import parse_uri
@@ -29,6 +30,7 @@ from music_assistant.providers.music_quiz.models import MusicQuizAnswerType
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType
 
+    from music_assistant.controllers.music.recency import RecencySnapshot
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.music_quiz.models import (
         MusicQuizConfig,
@@ -46,6 +48,7 @@ GENRE_TRACK_PAGE_SIZE = 100
 MAX_GENRE_TRACK_COUNT = 500
 MAX_SUGGESTION_COUNT = 12
 PLAYBACK_REPLACEMENT_RESERVE = 4
+QUIZ_TRACK_RECENCY_SECONDS = 24 * 60 * 60
 MIN_RELEASE_YEAR = 1000
 SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
     {
@@ -74,7 +77,7 @@ class QuizType(ABC):
     """
 
     answer_type: ClassVar[MusicQuizAnswerType]
-    warm_up_lyrics: ClassVar[bool] = False
+    prefetch_lyrics: ClassVar[bool] = False
     reveal_auto_advance_delay: ClassVar[float | None] = None
     completed_reveal_auto_advance_delay: ClassVar[float | None] = None
 
@@ -88,6 +91,8 @@ class QuizType(ABC):
         self.mass = mass
         self.config = config
         self._source_track_pool: dict[str, Track] | None = None
+        self._recency_snapshot: RecencySnapshot | None = None
+        self._recent_track_uris: set[str] = set()
 
     @property
     def uses_audio(self) -> bool:
@@ -166,7 +171,26 @@ class QuizType(ABC):
 
     async def initialize(self) -> None:
         """Prepare game-level content required before the game is created."""
-        return
+        self._recency_snapshot = await self.mass.music.recency.snapshot(
+            RecencyWindows(song_seconds=QUIZ_TRACK_RECENCY_SECONDS),
+            include_partially_played=True,
+        )
+
+    def add_recent_track_uris(self, track_uris: Iterable[str]) -> None:
+        """
+        Treat tracks selected by an earlier game as recently played.
+
+        :param track_uris: Track URIs to deprioritize during selection.
+        """
+        self._recent_track_uris.update(track_uris)
+
+    def get_recent_track_uris(self, rounds: list[MusicQuizRound]) -> set[str]:
+        """
+        Return the source tracks represented by completed game rounds.
+
+        :param rounds: Rounds from an earlier game.
+        """
+        return {game_round.track_uri for game_round in rounds if game_round.track_uri}
 
     @abstractmethod
     async def prepare_round(
@@ -354,6 +378,27 @@ class QuizType(ABC):
                 pool.setdefault(track.uri, track)
         if len(pool) == initial_pool_size:
             LOGGER.debug("Radio playlists returned no new playable tracks for Music Quiz")
+
+    def _recency_candidates(
+        self,
+        tracks: list[Track],
+        *,
+        prefer_recent: bool = False,
+    ) -> list[Track]:
+        """Return the preferred recency tier, falling back to the complete candidate pool."""
+        tracks_with_recency = [(track, self._track_is_recent(track)) for track in tracks]
+        preferred = [
+            track for track, is_recent in tracks_with_recency if is_recent is prefer_recent
+        ]
+        return preferred or tracks
+
+    def _track_is_recent(self, track: Track) -> bool:
+        """Return whether a track was selected or heard recently."""
+        if track.uri and track.uri in self._recent_track_uris:
+            return True
+        return self._recency_snapshot is not None and self._recency_snapshot.track_recent(
+            track, QUIZ_TRACK_RECENCY_SECONDS
+        )
 
 
 def get_track_release_year(track: Track) -> int | None:

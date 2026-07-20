@@ -18,6 +18,7 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import PlayerMedia
@@ -351,6 +352,8 @@ class SendspinPlaybackSession:
         # internally for DSP headroom.
         self._pcm_format: AudioFormat = _DEFAULT_PCM_FORMAT
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
+        self._queue_id: str | None = None
+        self._queue_session_id: str | None = None
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
         """
@@ -726,6 +729,8 @@ class SendspinPlaybackSession:
         # building any pipelines; member ffmpeg pipelines and pre-computed filter
         # params depend on this rate so the cache must also be cleared
         self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
+        self._queue_id = media.source_id
+        self._queue_session_id = get_media_session_id(media)
         self._pipeline_config_cache.clear()
         self.player.logger.debug(
             "Sendspin session PCM format: %d Hz / F32",
@@ -1230,19 +1235,30 @@ class SendspinPlaybackSession:
             output_channels = "stereo"
         try:
             output_format = self._get_member_output_format(player_id)
-            filter_params = tuple(
-                self.player.mass.streams.audio.get_player_filter_params(
-                    player_id,
-                    self._pcm_format,
-                    output_format,
-                )
+            output_plan = self.player.mass.streams.audio.get_player_output_plan(
+                player_id,
+                self._pcm_format,
+                output_format,
+                handoff_format=self._pcm_format,
             )
+            filter_params = tuple(output_plan.filter_params)
         except Exception:
             filter_params = ()
+            output_plan = None
         custom_filter_graph = any(
             param.strip() and not param.strip().startswith("alimiter=") for param in filter_params
         )
         requires_transform = dsp_enabled or output_channels != "stereo" or custom_filter_graph
+        if output_plan is not None:
+            if not requires_transform:
+                output_plan.output_details.dsp.output_limiter = False
+            if self._queue_id is not None and self._queue_session_id is not None:
+                self.player.mass.streams.audio_processing.update_output(
+                    output_plan.output_details.player_ids[0],
+                    output_plan,
+                    queue_id=self._queue_id,
+                    session_id=self._queue_session_id,
+                )
         return _PipelineConfig(
             requires_transform=requires_transform,
             output_channels=output_channels,

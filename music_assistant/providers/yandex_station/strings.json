@@ -1,0 +1,90 @@
+{
+  "config_entries": {
+    "remember_session": {
+      "label": "[%key:common::config_entries::remember_session::label%]",
+      "description": "[%key:common::config_entries::remember_session::description%]"
+    },
+    "intercept_feature_enabled": {
+      "label": "Experimental: Enable intercept feature",
+      "description": "Master switch for the intercept feature. When ON, individual stations can be configured (in their player settings) to redirect Alice-initiated playback to another Music Assistant player. When OFF, intercept is fully disabled regardless of per-player settings. Requires the 'yandex_music' music provider to be configured to actually resolve tracks."
+    },
+    "cookies": {
+      "label": "Browser Cookies",
+      "description": "Open passport.yandex.ru/profile in your browser, use \"Copy Cookies\" extension to copy cookies, paste here. Supports JSON array or raw cookie string."
+    },
+    "clear_auth": {
+      "label": "[%key:common::config_entries::clear_auth::label%]",
+      "description": "[%key:common::config_entries::clear_auth::description%]",
+      "action_label": "[%key:common::config_entries::clear_auth::action_label%]"
+    },
+    "x_token": {
+      "label": "Yandex X-Token",
+      "description": "Long-lived session token. Auto-obtained via login flows."
+    },
+    "music_token": {
+      "label": "Yandex Music Token",
+      "description": "Auto-obtained from one of the login flows."
+    },
+    "refresh_token": {
+      "label": "Refresh token"
+    },
+    "voice_control": {
+      "label": "Experimental: Voice control integration",
+      "description": "Auto-resume MA queue after voice commands like 'Алиса, стоп' or 'Алиса, дальше'. Experimental — may cause unexpected behavior."
+    },
+    "intercept_enabled": {
+      "label": "Experimental: Intercept native Station playback",
+      "description": "When the Station starts native Yandex Music playback (typically triggered by an Alice voice command, but also a touch on the Station UI), silence the Station (setVolume 0; the Station keeps playing its own queue in the background so we see every next track) and play the same track on the chosen target player. Requires the provider-level intercept feature to be enabled and a configured 'yandex_music' music provider."
+    },
+    "intercept_target_player_id": {
+      "label": "Intercept target player",
+      "description": "Music Assistant player that receives intercepted playback. Lists every registered player except this Station; pause / volume_set / seek mirrors gracefully no-op on players that don't support them."
+    },
+    "auth_device": {
+      "label": "[%key:common::config_entries::auth_device::label%]",
+      "description": "[%key:common::config_entries::auth_device::description%]",
+      "action_label": "[%key:common::config_entries::auth_device::action_label%]"
+    },
+    "auth_qr": {
+      "label": "[%key:common::config_entries::auth_qr::label%]",
+      "description": "[%key:common::config_entries::auth_qr::description%]",
+      "action_label": "[%key:common::config_entries::auth_qr::action_label%]"
+    },
+    "auth_cookies": {
+      "label": "[%key:common::config_entries::auth_cookies::label%]",
+      "description": "[%key:common::config_entries::auth_cookies::description%]",
+      "action_label": "[%key:common::config_entries::auth_cookies::action_label%]"
+    },
+    "ym_instance": {
+      "label": "Yandex account source",
+      "description": "Borrow the Yandex account of a configured Yandex Music provider (single login, one token family) or use this provider's own credentials. When borrowing, authentication is managed in the linked Yandex Music provider.",
+      "options": {
+        "__own__": "Use own credentials (default)"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Play music on Yandex Station smart speakers via local Glagol protocol."
+  },
+  "page": {
+    "device_code": {
+      "title": "Login to Yandex Station",
+      "step_copy": "[%key:common::page::device_code::step_copy%]",
+      "hint_copy": "[%key:common::page::device_code::hint_copy%]",
+      "copied": "[%key:common::page::device_code::copied%]",
+      "copy_manual": "[%key:common::page::device_code::copy_manual%]",
+      "step_open": "[%key:common::page::device_code::step_open%]",
+      "open_button": "[%key:common::page::device_code::open_button%]",
+      "expires_label": "[%key:common::page::device_code::expires_label%]",
+      "expired_title": "[%key:common::page::device_code::expired_title%]",
+      "expired_text": "[%key:common::page::device_code::expired_text%]",
+      "success_title": "[%key:common::page::device_code::success_title%]",
+      "success_text": "[%key:common::page::device_code::success_text%]",
+      "failed_title": "[%key:common::page::device_code::failed_title%]",
+      "failed_text": "[%key:common::page::device_code::failed_text%]",
+      "denied_text": "[%key:common::page::device_code::denied_text%]",
+      "ended_title": "[%key:common::page::device_code::ended_title%]",
+      "ended_text": "[%key:common::page::device_code::ended_text%]"
+    }
+  }
+}
