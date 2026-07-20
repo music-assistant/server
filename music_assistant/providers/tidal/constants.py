@@ -24,7 +24,6 @@ REDIRECT_URI = "https://tidal.com/android/login/auth"
 # API paths (relative to BASE_URL unless used with an explicit base_url)
 PLAYLISTS = "playlists"
 PAGES_MIX = "pages/mix"
-FAVORITES_TRACKS = "favorites/tracks"
 
 # Actions
 CONF_ACTION_START_PKCE_LOGIN = "start_pkce_login"

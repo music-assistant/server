@@ -13,7 +13,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import SearchResults
 
-from .constants import FAVORITE_TRACKS_PLAYLIST_ID, FAVORITES_TRACKS, PAGES_MIX, PLAYLISTS
+from .constants import FAVORITE_TRACKS_PLAYLIST_ID, PAGES_MIX, PLAYLISTS
 from .parsers import (
     parse_favorite_tracks_playlist,
     parse_playlist,
@@ -240,7 +240,7 @@ class TidalMediaManager:
         offset = page * page_size
 
         if prov_playlist_id == FAVORITE_TRACKS_PLAYLIST_ID:
-            return await self._get_favorite_tracks(page_size, offset)
+            return await self._get_favorite_tracks(offset)
 
         if prov_playlist_id.startswith("mix_"):
             return await self._get_mix_tracks(prov_playlist_id[4:], page_size, offset)
@@ -280,21 +280,24 @@ class TidalMediaManager:
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Mix {prov_mix_id} not found") from err
 
-    async def _get_favorite_tracks(self, limit: int, offset: int) -> list[Track]:
-        """Get the user's favorite tracks in descending order (newest first)."""
-        try:
-            data = await self.api.get(
-                f"users/{self.provider.auth.user_id}/{FAVORITES_TRACKS}",
-                params={
-                    "limit": limit,
-                    "offset": offset,
-                    "order": "DATE",
-                    "orderDirection": "DESC",
-                },
-            )
-            return self._process_tracks(data.get("items", []), offset)
-        except (ClientError, KeyError, ValueError) as err:
-            raise MediaNotFoundError("Starred tracks not found") from err
+    async def _get_favorite_tracks(self, offset: int) -> list[Track]:
+        """Get the user's favorite tracks from the official user collection (newest first)."""
+        # The official collection is cursor-paginated, which does not map to MA's
+        # page-based interface. Walk the whole collection on the first page (cached
+        # by get_playlist_tracks) and return nothing for later pages.
+        if offset > 0:
+            return []
+        tracks: list[Track] = []
+        async for doc in self.api.paginate_jsonapi(
+            "userCollectionTracks/me/relationships/items",
+            include=["items.artists", "items.albums.coverArt"],
+        ):
+            for item in doc.data_list:
+                if resource := doc.resolve(item):
+                    track = parse_track_v2(self.provider, doc, resource)
+                    track.position = len(tracks) + 1
+                    tracks.append(track)
+        return tracks
 
     async def _get_mix_tracks(self, mix_id: str, limit: int, offset: int) -> list[Track]:
         """Get tracks from a mix."""

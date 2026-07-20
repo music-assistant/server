@@ -309,19 +309,46 @@ async def test_get_playlist_favorite_tracks(
     provider_mock.api.get.assert_not_called()
 
 
-@patch("music_assistant.providers.tidal.media.parse_track")
+@patch("music_assistant.providers.tidal.media.parse_track_v2")
 async def test_get_playlist_tracks_favorite_tracks(
     mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
-    """Test get_playlist_tracks returns favorite tracks ordered by date descending."""
-    provider_mock.api.get.return_value = {"items": [{"item": {"id": 1}}]}
-    mock_parse_track.return_value = Mock(item_id="1")
+    """Test get_playlist_tracks walks the official collection with sequential positions."""
+    doc = JsonApiDocument(
+        {
+            "data": [
+                {"type": "tracks", "id": "1"},
+                {"type": "tracks", "id": "2"},
+            ],
+            "included": [
+                {"type": "tracks", "id": "1", "attributes": {}},
+                {"type": "tracks", "id": "2", "attributes": {}},
+            ],
+        }
+    )
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+    mock_parse_track.side_effect = [Mock(item_id="1"), Mock(item_id="2")]
 
     tracks = await media_manager.get_playlist_tracks("favorite_tracks", page=0)
 
-    assert len(tracks) == 1
+    assert len(tracks) == 2
     assert tracks[0].item_id == "1"
-    provider_mock.api.get.assert_called_with(
-        "users/12345/favorites/tracks",
-        params={"limit": 200, "offset": 0, "order": "DATE", "orderDirection": "DESC"},
-    )
+    assert tracks[0].position == 1
+    assert tracks[1].item_id == "2"
+    assert tracks[1].position == 2
+
+
+async def test_get_playlist_tracks_favorite_tracks_later_page(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_playlist_tracks returns nothing for pages after the first, without a fetch."""
+    provider_mock.api.paginate_jsonapi = Mock()
+
+    tracks = await media_manager.get_playlist_tracks("favorite_tracks", page=1)
+
+    assert tracks == []
+    provider_mock.api.paginate_jsonapi.assert_not_called()
