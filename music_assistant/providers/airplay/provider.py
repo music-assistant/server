@@ -26,9 +26,11 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
+from .apple_device import AppleDevicePlayer
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
+    COMPANION_DISCOVERY_TYPE,
     CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
     CONF_LEGACY_AIRPLAY_PROTOCOL,
@@ -41,14 +43,9 @@ from .constants import (
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
 )
-from .helpers import convert_airplay_volume, get_cli_binary, get_model_info
-from .player import AirPlayPlayer
+from .helpers import convert_airplay_volume, get_cli_binary, get_model_info, is_apple_device
+from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
-
-# TODO: AirPlay provider
-# Implement Companion protocol for communicating with original Apple (TV) devices
-# This allows for getting state/metadata changes from the device,
-# even if we are not actively streaming to it.
 
 # Marker the `cliairplay --ptp-daemon` process prints once it has bound the
 # privileged PTP ports (UDP 319/320) and opened its control channel. Until this
@@ -141,6 +138,8 @@ class AirPlayProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
+
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
 
@@ -180,6 +179,11 @@ class AirPlayProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        if (info and info.type == COMPANION_DISCOVERY_TYPE) or name.endswith(
+            COMPANION_DISCOVERY_TYPE
+        ):
+            await self._handle_companion_service_state_change(name, state_change, info)
+            return
         if not info:
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
@@ -341,23 +345,67 @@ class AirPlayProvider(PlayerProvider):
             model,
         )
 
-        # Create single AirPlayPlayer for all devices
-        # Pairing config entries will be shown conditionally based on device type
-        player = AirPlayPlayer(
-            provider=self,
-            player_id=player_id,
-            raop_discovery_info=raop_discovery_info,
-            airplay_discovery_info=airplay_discovery_info,
-            address=address,
-            display_name=display_name,
-            manufacturer=manufacturer,
-            model=model,
-            initial_volume=volume,
-        )
+        player: AirPlayPlayer
+        if is_apple_device(manufacturer, model):
+            companion_info = self._companion_info_by_address.get(address)
+            player = AppleDevicePlayer(
+                provider=self,
+                player_id=player_id,
+                raop_discovery_info=raop_discovery_info,
+                airplay_discovery_info=airplay_discovery_info,
+                companion_discovery_info=companion_info,
+                address=address,
+                display_name=display_name,
+                manufacturer=manufacturer,
+                model=model,
+                initial_volume=volume,
+            )
+        else:
+            player = GenericAirPlayPlayer(
+                provider=self,
+                player_id=player_id,
+                raop_discovery_info=raop_discovery_info,
+                airplay_discovery_info=airplay_discovery_info,
+                address=address,
+                display_name=display_name,
+                manufacturer=manufacturer,
+                model=model,
+                initial_volume=volume,
+            )
         await self.mass.players.register(player)
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
+
+    async def _handle_companion_service_state_change(
+        self,
+        name: str,
+        state_change: ServiceStateChange,
+        info: AsyncServiceInfo | None,
+    ) -> None:
+        """Associate a Companion service with its Apple AirPlay player."""
+        if state_change == ServiceStateChange.Removed:
+            # Keep the last endpoint while the device sleeps. Apple devices can
+            # withdraw services from mDNS before Companion reports the asleep
+            # state, but the existing endpoint is still needed to wake them.
+            return
+        if info is None:
+            return
+
+        addresses = set(info.parsed_addresses())
+        for address in addresses:
+            self._companion_info_by_address[address] = info
+        player = next(
+            (
+                candidate
+                for candidate in self.get_players()
+                if isinstance(candidate, AppleDevicePlayer) and candidate.address in addresses
+            ),
+            None,
+        )
+        if player is None:
+            return
+        await player.set_companion_discovery_info(info)
 
     def _migrate_sync_adjust(self) -> None:
         """One-time reset of persisted sync_adjust values on this provider's players."""

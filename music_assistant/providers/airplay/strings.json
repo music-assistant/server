@@ -47,6 +47,42 @@
     },
     "reset_pairing": {
       "label": "Reset {0} pairing"
+    },
+    "companion_pairing_pin": {
+      "label": "Enter the 4-digit PIN shown on the Apple device"
+    },
+    "companion_pairing_instructions": {
+      "label": "Pair Apple device controls to monitor power and external playback, wake the device before playing, and control native playback and volume."
+    },
+    "start_companion_pairing": {
+      "label": "Pair Apple device controls"
+    },
+    "finish_companion_pairing": {
+      "label": "Complete Apple device pairing"
+    },
+    "companion_pairing_status": {
+      "label": "Apple device controls are paired and ready."
+    },
+    "reset_companion_pairing": {
+      "label": "Reset Apple device controls"
+    },
+    "mrp_pairing_pin": {
+      "label": "Enter the 4-digit PIN shown on the Apple device"
+    },
+    "mrp_pairing_instructions": {
+      "label": "Pair Apple playback monitoring to show the active app and media playing outside Music Assistant. This uses a separate pairing from AirPlay streaming and Apple device controls."
+    },
+    "start_mrp_pairing": {
+      "label": "Pair Apple playback monitoring"
+    },
+    "finish_mrp_pairing": {
+      "label": "Complete playback monitoring pairing"
+    },
+    "mrp_pairing_status": {
+      "label": "Apple playback monitoring is paired and ready."
+    },
+    "reset_mrp_pairing": {
+      "label": "Reset Apple playback monitoring"
     }
   },
   "manifest": {

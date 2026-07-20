@@ -31,8 +31,11 @@ CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_FORCE_RAOP: Final[str] = "force_raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
 CONF_HIRES_PLAYBACK: Final[str] = "hires_playback"
+CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
+CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
+COMPANION_DISCOVERY_TYPE: Final[str] = "_companion-link._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
@@ -82,6 +85,14 @@ CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_pairing"
 CONF_ACTION_RESET_PAIRING: Final[str] = "reset_pairing"
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
+CONF_ACTION_START_COMPANION_PAIRING: Final[str] = "start_companion_pairing"
+CONF_ACTION_FINISH_COMPANION_PAIRING: Final[str] = "finish_companion_pairing"
+CONF_ACTION_RESET_COMPANION_PAIRING: Final[str] = "reset_companion_pairing"
+CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
+CONF_ACTION_START_MRP_PAIRING: Final[str] = "start_mrp_pairing"
+CONF_ACTION_FINISH_MRP_PAIRING: Final[str] = "finish_mrp_pairing"
+CONF_ACTION_RESET_MRP_PAIRING: Final[str] = "reset_mrp_pairing"
+CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 
