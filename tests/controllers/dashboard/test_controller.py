@@ -6,10 +6,11 @@ from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.dashboard import DashboardDevice
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.dashboard import DashboardDevice, DashboardSession
+from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import (
     ActionUnavailable,
+    MusicAssistantError,
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
@@ -39,6 +40,8 @@ def _make_controller() -> DashboardController:
     """Build a DashboardController instance without running its (network-touching) __init__."""
     controller = DashboardController.__new__(DashboardController)
     controller.mass = MagicMock()
+    controller.logger = MagicMock()
+    controller._sessions = {}
     return controller
 
 
@@ -52,6 +55,7 @@ def _make_provider(*, supports_dashboard: bool) -> MagicMock:
         )
     provider.get_dashboard_devices = AsyncMock(return_value=[])
     provider.show_dashboard = AsyncMock()
+    provider.hide_dashboard = AsyncMock()
     return provider
 
 
@@ -116,6 +120,111 @@ async def test_show_dashboard_happy_path() -> None:
 
     provider.show_dashboard.assert_awaited_once_with(
         device_id="device1", path="/party", remote_id="remote123", cast_code="code456"
+    )
+
+
+async def test_show_dashboard_stores_session_and_signals_event() -> None:
+    """A successful show stores the session and signals the sessions-updated event."""
+    controller = _make_controller()
+    provider = _make_provider(supports_dashboard=True)
+    controller.mass.get_provider.return_value = provider  # type: ignore[attr-defined]
+    controller.mass.webserver.remote_access.is_enabled = True  # type: ignore[misc]
+    controller.mass.webserver.remote_access.remote_id = "remote123"  # type: ignore[misc]
+
+    with patch.object(DashboardController, "_get_cast_code", AsyncMock(return_value="code456")):
+        await controller.show_dashboard("chromecast", "device1", "/party")
+
+    session = DashboardSession(device_id="device1", provider_instance="chromecast", path="/party")
+    assert controller._sessions[("chromecast", "device1")] == session
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[session]
+    )
+
+
+async def test_show_dashboard_replaces_existing_session_for_same_device() -> None:
+    """Re-showing on the same device replaces its previous session entry."""
+    controller = _make_controller()
+    provider = _make_provider(supports_dashboard=True)
+    controller.mass.get_provider.return_value = provider  # type: ignore[attr-defined]
+    controller.mass.webserver.remote_access.is_enabled = True  # type: ignore[misc]
+    controller.mass.webserver.remote_access.remote_id = "remote123"  # type: ignore[misc]
+
+    with patch.object(DashboardController, "_get_cast_code", AsyncMock(return_value="code456")):
+        await controller.show_dashboard("chromecast", "device1", "/party")
+        await controller.show_dashboard("chromecast", "device1", "/queue")
+
+    assert controller._sessions == {
+        ("chromecast", "device1"): DashboardSession(
+            device_id="device1", provider_instance="chromecast", path="/queue"
+        )
+    }
+
+
+async def test_get_dashboard_sessions_returns_stored_sessions() -> None:
+    """The sessions command returns all currently tracked sessions."""
+    controller = _make_controller()
+    session = DashboardSession(device_id="device1", provider_instance="chromecast", path="/party")
+    controller._sessions[("chromecast", "device1")] = session
+
+    sessions = await controller.get_dashboard_sessions()
+
+    assert sessions == [session]
+
+
+async def test_hide_dashboard_rejects_unknown_provider() -> None:
+    """Hiding fails when the given provider instance does not resolve to a provider."""
+    controller = _make_controller()
+    controller.mass.get_provider.return_value = None  # type: ignore[attr-defined]
+
+    with pytest.raises(ProviderUnavailableError):
+        await controller.hide_dashboard("unknown", "device1")
+
+
+async def test_hide_dashboard_rejects_provider_without_feature() -> None:
+    """Hiding fails when the resolved provider does not declare SHOW_DASHBOARD."""
+    controller = _make_controller()
+    provider = _make_provider(supports_dashboard=False)
+    controller.mass.get_provider.return_value = provider  # type: ignore[attr-defined]
+
+    with pytest.raises(UnsupportedFeaturedException):
+        await controller.hide_dashboard("chromecast", "device1")
+
+    provider.hide_dashboard.assert_not_awaited()
+
+
+async def test_hide_dashboard_removes_session_and_signals_event() -> None:
+    """A successful hide drops the tracked session and signals the sessions-updated event."""
+    controller = _make_controller()
+    provider = _make_provider(supports_dashboard=True)
+    controller.mass.get_provider.return_value = provider  # type: ignore[attr-defined]
+    controller._sessions[("chromecast", "device1")] = DashboardSession(
+        device_id="device1", provider_instance="chromecast", path="/party"
+    )
+
+    await controller.hide_dashboard("chromecast", "device1")
+
+    provider.hide_dashboard.assert_awaited_once_with("device1")
+    assert ("chromecast", "device1") not in controller._sessions
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
+    )
+
+
+async def test_hide_dashboard_cleans_up_even_when_provider_raises() -> None:
+    """The session is dropped and the event signaled even if the provider had nothing to hide."""
+    controller = _make_controller()
+    provider = _make_provider(supports_dashboard=True)
+    provider.hide_dashboard = AsyncMock(side_effect=MusicAssistantError("nothing to hide"))
+    controller.mass.get_provider.return_value = provider  # type: ignore[attr-defined]
+    controller._sessions[("chromecast", "device1")] = DashboardSession(
+        device_id="device1", provider_instance="chromecast", path="/party"
+    )
+
+    await controller.hide_dashboard("chromecast", "device1")
+
+    assert ("chromecast", "device1") not in controller._sessions
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
     )
 
 

@@ -26,7 +26,7 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import MULTICHANNEL_RECHECK_INTERVAL
-from .helpers import ChromecastInfo, send_show_dashboard
+from .helpers import ChromecastInfo, send_hide_dashboard, send_show_dashboard
 from .player import ChromecastPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
@@ -191,6 +191,15 @@ class ChromecastProvider(PlayerProvider):
                 translation_owner=self.translation_owner,
                 translation_args=[chromecast.name],
             ) from err
+
+    async def hide_dashboard(self, device_id: str) -> None:
+        """
+        Hide a Music Assistant dashboard from a Cast display device.
+
+        :param device_id: Device ID as returned by `get_dashboard_devices`.
+        """
+        chromecast = await self._get_or_create_chromecast(device_id)
+        await self.mass.loop.run_in_executor(None, send_hide_dashboard, chromecast)
 
     ### Discovery callbacks
 

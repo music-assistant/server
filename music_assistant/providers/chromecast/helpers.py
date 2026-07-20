@@ -93,6 +93,26 @@ def send_show_dashboard(
     )
 
 
+def send_hide_dashboard(chromecast: Chromecast) -> bool:
+    """
+    Send a hide_dashboard message to an already-running MA receiver app.
+
+    Blocking call, run from an executor. Does not launch the app: if the
+    receiver isn't already showing a dashboard, there is nothing to hide.
+
+    :param chromecast: Connected Chromecast to hide the dashboard on.
+    :return: Whether a hide_dashboard message was sent.
+    """
+    if (
+        chromecast.app_id != MASS_APP_ID
+        or DASHBOARD_NAMESPACE not in chromecast.socket_client.app_namespaces
+    ):
+        return False
+
+    chromecast.socket_client.send_app_message(DASHBOARD_NAMESPACE, {"type": "hide_dashboard"})
+    return True
+
+
 @dataclass
 class ChromecastInfo:
     """

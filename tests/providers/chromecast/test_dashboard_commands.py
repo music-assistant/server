@@ -120,3 +120,29 @@ async def test_show_dashboard_wraps_timeout_error() -> None:
         pytest.raises(PlayerUnavailableError),
     ):
         await provider.show_dashboard(str(device_uuid), "/party", "remote123", "code456")
+
+
+async def test_hide_dashboard_delegates_to_helper() -> None:
+    """The resolved chromecast is passed to the hide helper via the executor."""
+    provider = _make_provider()
+
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    provider._dashboard_connections = {str(device_uuid): connected_chromecast}
+
+    with patch(
+        "music_assistant.providers.chromecast.provider.send_hide_dashboard"
+    ) as mock_send_hide_dashboard:
+        await provider.hide_dashboard(str(device_uuid))
+
+    mock_send_hide_dashboard.assert_called_once_with(connected_chromecast)
+
+
+async def test_hide_dashboard_raises_for_unknown_device() -> None:
+    """An unknown device_id (not in the browser's discovered devices) is rejected."""
+    provider = _make_provider()
+    provider.browser = MagicMock(devices={})
+
+    with pytest.raises(PlayerUnavailableError):
+        await provider.hide_dashboard(str(uuid4()))

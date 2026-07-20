@@ -93,6 +93,17 @@ class PlayerProvider(Provider):
         """
         raise NotImplementedError
 
+    async def hide_dashboard(self, device_id: str) -> None:
+        """
+        Hide a Music Assistant dashboard from a display device.
+
+        Only called for providers that declare the SHOW_DASHBOARD feature.
+        Must be a graceful no-op when no dashboard is currently showing.
+
+        :param device_id: Provider-scoped device ID, as returned by `get_dashboard_devices`.
+        """
+        raise NotImplementedError
+
     @property
     def players(self) -> list[Player]:
         """Return all players belonging to this provider."""
