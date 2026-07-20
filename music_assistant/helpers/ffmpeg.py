@@ -662,6 +662,51 @@ def get_ffmpeg_args(
     return generic_args + input_args + extra_args + output_args
 
 
+async def check_ffmpeg_version() -> None:
+    """Check if ffmpeg is present (with libsoxr support)."""
+    # check for FFmpeg presence
+    try:
+        returncode, output = await check_output("ffmpeg", "-version")
+    except FileNotFoundError:
+        raise AudioError(
+            "FFmpeg binary is missing from system. "
+            "Please install ffmpeg on your OS to enable playback."
+        )
+    if returncode != 0:
+        err_msg = "Error determining FFmpeg version on your system."
+        if returncode < 0:
+            # error below 0 is often illegal instruction
+            err_msg += " - Your CPU may be too old to run this version of FFmpeg."
+        err_msg += f" - Additional info: {returncode} {output.decode().strip()}"
+        raise AudioError(err_msg)
+    # parse version number from output
+    try:
+        version = output.decode().split("ffmpeg version ")[1].split(" ")[0].split("-")[0]
+    except IndexError:
+        raise AudioError(
+            "Error determining FFmpeg version on your system."
+            f"Additional info: {returncode} {output.decode().strip()}"
+        )
+    libsoxr_support = "enable-libsoxr" in output.decode()
+    # use globals as in-memory cache
+    await set_global_cache_values(
+        {CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support, CACHE_ATTR_FFMPEG_VERSION: version}
+    )
+
+    major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
+    if major_version < MINIMAL_FFMPEG_VERSION:
+        raise AudioError(
+            f"FFmpeg version {version} is not supported. "
+            f"Minimal version required is {MINIMAL_FFMPEG_VERSION}."
+        )
+
+    LOGGER.info(
+        "Detected ffmpeg version %s %s",
+        version,
+        "with libsoxr support" if libsoxr_support else "",
+    )
+
+
 def _build_filtergraph_args(filter_params: list[str | ComplexFilter]) -> list[str]:
     """
     Render a DSP filter chain to FFmpeg command-line arguments.
@@ -712,48 +757,3 @@ def _build_filtergraph_args(filter_params: list[str | ComplexFilter]) -> list[st
     flush_pending()
 
     return ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]
-
-
-async def check_ffmpeg_version() -> None:
-    """Check if ffmpeg is present (with libsoxr support)."""
-    # check for FFmpeg presence
-    try:
-        returncode, output = await check_output("ffmpeg", "-version")
-    except FileNotFoundError:
-        raise AudioError(
-            "FFmpeg binary is missing from system. "
-            "Please install ffmpeg on your OS to enable playback."
-        )
-    if returncode != 0:
-        err_msg = "Error determining FFmpeg version on your system."
-        if returncode < 0:
-            # error below 0 is often illegal instruction
-            err_msg += " - Your CPU may be too old to run this version of FFmpeg."
-        err_msg += f" - Additional info: {returncode} {output.decode().strip()}"
-        raise AudioError(err_msg)
-    # parse version number from output
-    try:
-        version = output.decode().split("ffmpeg version ")[1].split(" ")[0].split("-")[0]
-    except IndexError:
-        raise AudioError(
-            "Error determining FFmpeg version on your system."
-            f"Additional info: {returncode} {output.decode().strip()}"
-        )
-    libsoxr_support = "enable-libsoxr" in output.decode()
-    # use globals as in-memory cache
-    await set_global_cache_values(
-        {CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support, CACHE_ATTR_FFMPEG_VERSION: version}
-    )
-
-    major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
-    if major_version < MINIMAL_FFMPEG_VERSION:
-        raise AudioError(
-            f"FFmpeg version {version} is not supported. "
-            f"Minimal version required is {MINIMAL_FFMPEG_VERSION}."
-        )
-
-    LOGGER.info(
-        "Detected ffmpeg version %s %s",
-        version,
-        "with libsoxr support" if libsoxr_support else "",
-    )
