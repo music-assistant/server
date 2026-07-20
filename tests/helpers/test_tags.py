@@ -748,7 +748,7 @@ def test_id3_albumartist_tag_semicolon_single_mbid() -> None:
 
 def _read_replaygain_track_gain(path: str) -> str | None:
     """Read REPLAYGAIN_TRACK_GAIN from a file using mutagen (format-agnostic)."""
-    audio = mutagen.File(path)  # type: ignore[attr-defined]
+    audio = mutagen.File(path)
     if audio is None or audio.tags is None:
         return None
     tag_key_mp4 = "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"
