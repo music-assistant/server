@@ -54,10 +54,25 @@ class TidalPlaylistManager:
     async def add_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add tracks to playlist."""
         try:
-            body = {"data": [{"type": "tracks", "id": str(tid)} for tid in prov_track_ids]}
-            await self.api.write_jsonapi(
+            sent = [await self.provider.redirect_cached_id(str(tid)) for tid in prov_track_ids]
+            body = {"data": [{"type": "tracks", "id": i} for i in sent]}
+            result = await self.api.write_jsonapi(
                 "POST", f"playlists/{prov_playlist_id}/relationships/items", body
             )
+            added = {d["id"] for d in result.get("data", [])}
+            stale_originals = [
+                str(orig) for orig, s in zip(prov_track_ids, sent, strict=True) if s not in added
+            ]
+            resolved = [
+                live
+                for orig in stale_originals
+                if (live := await self.provider.resolve_live_track_id(orig))
+            ]
+            if resolved:
+                retry_body = {"data": [{"type": "tracks", "id": i} for i in resolved]}
+                await self.api.write_jsonapi(
+                    "POST", f"playlists/{prov_playlist_id}/relationships/items", retry_body
+                )
         except ClientError as err:
             raise ResourceTemporarilyUnavailable("Failed to add tracks") from err
 

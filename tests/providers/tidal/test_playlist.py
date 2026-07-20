@@ -21,6 +21,8 @@ def provider_mock() -> Mock:
     provider.auth.user.user_name = "someuser"
     provider.api = AsyncMock()
     provider.logger = Mock()
+    provider.redirect_cached_id = AsyncMock(side_effect=lambda item_id: item_id)
+    provider.resolve_live_track_id = AsyncMock(return_value=None)
     return provider
 
 
@@ -78,27 +80,35 @@ async def test_create_playlist_failure(
 async def test_add_playlist_tracks_single(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test add_tracks with a single track id."""
+    """Test add_tracks with a single track id, all accepted, no healing needed."""
+    provider_mock.api.write_jsonapi.return_value = {"data": [{"type": "tracks", "id": "track_1"}]}
+
     await playlist_manager.add_tracks("1", ["track_1"])
 
-    provider_mock.api.write_jsonapi.assert_called_with(
+    provider_mock.api.write_jsonapi.assert_called_once_with(
         "POST",
         "playlists/1/relationships/items",
         {"data": [{"type": "tracks", "id": "track_1"}]},
     )
+    provider_mock.resolve_live_track_id.assert_not_called()
 
 
 async def test_add_playlist_tracks_multiple(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test add_tracks batches multiple track ids into a single POST."""
+    """Test add_tracks batches multiple track ids into a single POST, all accepted."""
+    provider_mock.api.write_jsonapi.return_value = {
+        "data": [{"type": "tracks", "id": "track_1"}, {"type": "tracks", "id": "track_2"}]
+    }
+
     await playlist_manager.add_tracks("1", ["track_1", "track_2"])
 
-    provider_mock.api.write_jsonapi.assert_called_with(
+    provider_mock.api.write_jsonapi.assert_called_once_with(
         "POST",
         "playlists/1/relationships/items",
         {"data": [{"type": "tracks", "id": "track_1"}, {"type": "tracks", "id": "track_2"}]},
     )
+    provider_mock.resolve_live_track_id.assert_not_called()
 
 
 async def test_add_playlist_tracks_failure(
@@ -109,6 +119,60 @@ async def test_add_playlist_tracks_failure(
 
     with pytest.raises(ResourceTemporarilyUnavailable):
         await playlist_manager.add_tracks("1", ["track_1"])
+
+
+async def test_add_playlist_tracks_stale_id_heals(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test a stale track id omitted from the response is resolved and retried."""
+    provider_mock.api.write_jsonapi.return_value = {"data": [{"type": "tracks", "id": "track_1"}]}
+    provider_mock.resolve_live_track_id = AsyncMock(return_value="track_2_live")
+
+    await playlist_manager.add_tracks("1", ["track_1", "track_2"])
+
+    provider_mock.resolve_live_track_id.assert_called_once_with("track_2")
+    assert provider_mock.api.write_jsonapi.call_count == 2
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "POST",
+        "playlists/1/relationships/items",
+        {"data": [{"type": "tracks", "id": "track_2_live"}]},
+    )
+
+
+async def test_add_playlist_tracks_stale_id_unresolvable(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test a stale track id that cannot be resolved results in no retry POST."""
+    provider_mock.api.write_jsonapi.return_value = {"data": [{"type": "tracks", "id": "track_1"}]}
+    # resolve_live_track_id default (from fixture) already returns None.
+
+    await playlist_manager.add_tracks("1", ["track_1", "track_2"])
+
+    provider_mock.resolve_live_track_id.assert_called_once_with("track_2")
+    assert provider_mock.api.write_jsonapi.call_count == 1
+
+
+async def test_add_playlist_tracks_preemptive_redirect(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test a cached redirect is applied before sending, avoiding a reactive resolve."""
+
+    async def _redirect(item_id: str) -> str:
+        return "track_1_live" if item_id == "track_1" else item_id
+
+    provider_mock.redirect_cached_id = AsyncMock(side_effect=_redirect)
+    provider_mock.api.write_jsonapi.return_value = {
+        "data": [{"type": "tracks", "id": "track_1_live"}]
+    }
+
+    await playlist_manager.add_tracks("1", ["track_1"])
+
+    provider_mock.api.write_jsonapi.assert_called_once_with(
+        "POST",
+        "playlists/1/relationships/items",
+        {"data": [{"type": "tracks", "id": "track_1_live"}]},
+    )
+    provider_mock.resolve_live_track_id.assert_not_called()
 
 
 def _entries_page(entries: list[dict[str, Any]]) -> Any:

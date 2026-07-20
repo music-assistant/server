@@ -53,6 +53,9 @@ def provider_mock() -> Mock:
 
     provider.get_item_mapping.side_effect = get_item_mapping
 
+    provider.redirect_cached_id = AsyncMock(side_effect=lambda item_id: item_id)
+    provider.resolve_live_track_id = AsyncMock(return_value=None)
+
     return provider
 
 
@@ -143,6 +146,8 @@ async def test_add_item(
 ) -> None:
     """Test add_item POSTs to the official user collection endpoint."""
     item = Mock(item_id="123", media_type=media_type)
+    # Only consulted for the TRACK/POST healing path; harmless for other media types.
+    provider_mock.api.write_jsonapi.return_value = {"data": [{"type": resource_type, "id": "123"}]}
 
     assert await library_manager.add_item(item) is True
     provider_mock.api.write_jsonapi.assert_called_with(
@@ -150,6 +155,7 @@ async def test_add_item(
         f"{collection}/me/relationships/items",
         {"data": [{"type": resource_type, "id": "123"}]},
     )
+    provider_mock.resolve_live_track_id.assert_not_called()
 
 
 @pytest.mark.parametrize(("media_type", "collection", "resource_type"), _COLLECTION_CASES)
@@ -191,6 +197,61 @@ async def test_add_item_returns_false_on_error(
     item = Mock(item_id="123", media_type=MediaType.TRACK)
 
     assert await library_manager.add_item(item) is False
+
+
+async def test_add_item_track_stale_id_heals(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test a stale favorite track id omitted from the response is resolved and retried."""
+    provider_mock.api.write_jsonapi.return_value = {"data": []}
+    provider_mock.resolve_live_track_id = AsyncMock(return_value="123_live")
+    item = Mock(item_id="123", media_type=MediaType.TRACK)
+
+    assert await library_manager.add_item(item) is True
+
+    provider_mock.resolve_live_track_id.assert_called_once_with("123")
+    assert provider_mock.api.write_jsonapi.call_count == 2
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "POST",
+        "userCollectionTracks/me/relationships/items",
+        {"data": [{"type": "tracks", "id": "123_live"}]},
+    )
+
+
+async def test_add_item_track_stale_id_unresolvable(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test a stale favorite track id that cannot be resolved results in no retry POST."""
+    provider_mock.api.write_jsonapi.return_value = {"data": []}
+    # resolve_live_track_id default (from fixture) already returns None.
+    item = Mock(item_id="123", media_type=MediaType.TRACK)
+
+    assert await library_manager.add_item(item) is True
+
+    provider_mock.resolve_live_track_id.assert_called_once_with("123")
+    assert provider_mock.api.write_jsonapi.call_count == 1
+
+
+async def test_add_item_non_track_no_healing(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test a non-track favorite add never consults the healing resolver."""
+    item = Mock(item_id="123", media_type=MediaType.ALBUM)
+
+    assert await library_manager.add_item(item) is True
+
+    provider_mock.resolve_live_track_id.assert_not_called()
+    assert provider_mock.api.write_jsonapi.call_count == 1
+
+
+async def test_remove_item_track_no_healing(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test a track favorite removal (DELETE) never consults the healing resolver."""
+    assert await library_manager.remove_item("123", MediaType.TRACK) is True
+
+    provider_mock.resolve_live_track_id.assert_not_called()
+    assert provider_mock.api.write_jsonapi.call_count == 1
 
 
 async def test_add_item_unsupported_media_type_returns_false(

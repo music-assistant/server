@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -25,11 +26,13 @@ from music_assistant.models.music_provider import MusicProvider
 from .api_client import TidalAPIClient
 from .auth_manager import TidalAuthManager
 from .constants import (
+    CACHE_CATEGORY_ISRC_MAP,
     CACHE_CATEGORY_RECOMMENDATIONS,
     CONF_AUTH_TOKEN,
     CONF_EXPIRY_TIME,
     CONF_REFRESH_TOKEN,
     CONF_USER_ID,
+    OPEN_API_URL,
 )
 from .library import TidalLibraryManager
 from .media import TidalMediaManager
@@ -242,9 +245,113 @@ class TidalProvider(MusicProvider):
         """Get this provider's recommendations organized into folders."""
         return await self.recommendations_manager.get_recommendations()
 
+    async def redirect_cached_id(self, item_id: str) -> str:
+        """
+        Redirect a (possibly stale) track id to its cached live id, if any.
+
+        This is a cheap, cache-only lookup with no network calls, intended for
+        preemptively redirecting ids when building write batches. Use
+        :meth:`resolve_live_track_id` when a reactive, healing lookup is needed.
+
+        :param item_id: The provider track id to look up.
+        """
+        cached_id = await self.mass.cache.get(
+            item_id, provider=self.instance_id, category=CACHE_CATEGORY_ISRC_MAP
+        )
+        return cached_id or item_id
+
+    async def resolve_live_track_id(self, item_id: str) -> str | None:
+        """
+        Resolve a possibly-stale track id to its live id via ISRC, healing the library DB.
+
+        Tidal frequently deletes and re-adds tracks under new ids, so a stored
+        track id can go dead. This looks up the track's ISRC and finds the
+        current live id on Tidal, caching the redirect and scheduling a
+        best-effort DB heal of the library's provider mapping.
+
+        :param item_id: The (possibly stale) provider track id to resolve.
+        :return: The live track id if it differs from `item_id`, else `None`.
+        """
+        if cached_id := await self.mass.cache.get(
+            item_id, provider=self.instance_id, category=CACHE_CATEGORY_ISRC_MAP
+        ):
+            if cached_id == item_id:
+                return None
+            # Validate the cached live id is still resolvable. Tidal can churn a
+            # track more than once, leaving a dead id cached; if it is gone, drop
+            # the entry and re-resolve from the ISRC below.
+            try:
+                await self.get_track(cached_id)
+            except MediaNotFoundError:
+                await self.mass.cache.delete(
+                    item_id, provider=self.instance_id, category=CACHE_CATEGORY_ISRC_MAP
+                )
+            else:
+                return str(cached_id)
+
+        lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+            item_id, self.instance_id
+        )
+        if not lib_track:
+            return None
+
+        isrc = next((x[1] for x in lib_track.external_ids if x[0] == ExternalID.ISRC), None)
+        if not isrc:
+            return None
+
+        data = await self.api.get("tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL)
+        items = data.get("data", [])
+        if not items:
+            return None
+
+        live_id = str(items[0]["id"])
+        if live_id == item_id:
+            return None
+
+        await self.mass.cache.set(
+            key=item_id,
+            data=live_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_ISRC_MAP,
+            persistent=True,
+            expiration=86400 * 90,
+        )
+
+        self.mass.create_task(self._heal_track_mapping(lib_track.item_id, item_id, live_id))
+
+        return live_id
+
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
         """Update auth config with new auth info."""
         self._update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
         self._update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
         self._update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
         self._update_config_value(CONF_USER_ID, auth_info["userId"])
+
+    async def _heal_track_mapping(self, db_item_id: str | int, stale_id: str, live_id: str) -> None:
+        """Best-effort heal of a stale Tidal provider mapping on a library track."""
+        try:
+            live_track = await self.get_track(live_id)
+            new_mapping = next(
+                (
+                    m
+                    for m in live_track.provider_mappings
+                    if m.provider_instance == self.instance_id
+                ),
+                None,
+            )
+            if new_mapping is None:
+                return
+
+            await self.mass.music.tracks.add_provider_mappings(db_item_id, [new_mapping])
+            await self.mass.music.tracks.remove_provider_mapping(
+                db_item_id, self.instance_id, stale_id
+            )
+            self.logger.debug("Healed stale Tidal track mapping %s -> %s", stale_id, live_id)
+        except (MediaNotFoundError, OperationalError, AssertionError) as err:
+            self.logger.debug(
+                "Failed to heal stale Tidal track mapping %s -> %s: %s",
+                stale_id,
+                live_id,
+                err,
+            )
