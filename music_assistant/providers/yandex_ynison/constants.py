@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Final
 
+from ya_passport_auth.ma import BORROW_SOURCE_OWN
+
 # Ynison WebSocket endpoints
 YNISON_REDIRECT_URL: Final[str] = (
     "wss://ynison.music.yandex.ru/redirector.YnisonRedirectService/GetRedirectToYnison"
@@ -34,7 +36,9 @@ CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 OUTPUT_AUTO: Final[str] = "auto"
 
 # Sentinel value for CONF_YM_INSTANCE — use own manually entered token
-YM_INSTANCE_OWN: Final[str] = "__own__"
+# Sentinel for "use own credentials" — canonical value lives in the shared
+# auth layer (same literal the plugin has always persisted).
+YM_INSTANCE_OWN: Final[str] = BORROW_SOURCE_OWN
 
 # Player selection
 PLAYER_ID_AUTO: Final[str] = "__auto__"

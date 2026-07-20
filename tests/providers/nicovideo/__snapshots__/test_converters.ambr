@@ -2063,7 +2063,6 @@
       'sample_rate': 48000,
     }),
     'audio_processing': None,
-    'dsp': None,
     'duration': 2,
     'item_id': 'sm45285955',
     'loudness': -7000.0,
