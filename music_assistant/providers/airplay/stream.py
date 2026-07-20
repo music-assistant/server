@@ -324,10 +324,12 @@ class AirPlayStream:
         """
         Monitor stdout for the running cliairplay process.
 
-        The binary reports its resolved route at startup and the effective
-        lead plus receiver-reported buffering window after connect:
+        The binary reports its resolved route at startup, the effective lead
+        plus receiver-reported buffering window after connect, and the result
+        of MediaRemote now-playing pushes (Apple devices):
           [STATUS] route protocol=<raop|airplay2> flow=<...> timing=<ntp|ptp> buffered=<0|1>
           [STATUS] latency lead_ms=<int> device_min_frames=<int> device_max_frames=<int>
+          [STATUS] mrp path=<command> status=<http status>
         """
         if not self._cli_proc:
             return
@@ -341,9 +343,21 @@ class AirPlayStream:
                     continue
                 if "[STATUS] route" in line:
                     self._parse_route_status(line)
+                elif "[STATUS] mrp" in line:
+                    self._parse_mrp_status(line)
                 elif "[STATUS] latency" in line:
                     self._parse_latency_status(line)
                 self.player.logger.log(VERBOSE_LOG_LEVEL, line)
+
+    def _parse_mrp_status(self, line: str) -> None:
+        """Parse the [STATUS] mrp line and log the now-playing push result."""
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        self.player.logger.info(
+            "MRP now-playing push (%s path) for %s: HTTP %s",
+            fields.get("path", "?"),
+            self.player.display_name,
+            fields.get("status", "?"),
+        )
 
     def _parse_route_status(self, line: str) -> None:
         """Parse the [STATUS] route line and log which route this stream took."""
