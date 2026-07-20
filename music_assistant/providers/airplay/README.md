@@ -563,4 +563,3 @@ The bridge consists of:
 ## Future Enhancements
 
 - **Companion protocol**: Implement idle state monitoring for Apple devices
-- **AirPlay 2 volume feedback**: Add DACP volume support for AirPlay 2
