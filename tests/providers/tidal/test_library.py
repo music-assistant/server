@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
 
@@ -124,84 +125,94 @@ async def test_get_playlists(library_manager: TidalLibraryManager, provider_mock
     assert any(not p.item_id.startswith("mix_") for p in playlists[:-1])
 
 
-async def test_add_item_artist(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
-    """Test add_item for artist."""
-    item = Mock(item_id="123", media_type=MediaType.ARTIST)
-    await library_manager.add_item(item)
+_COLLECTION_CASES = [
+    (MediaType.ARTIST, "userCollectionArtists", "artists"),
+    (MediaType.ALBUM, "userCollectionAlbums", "albums"),
+    (MediaType.TRACK, "userCollectionTracks", "tracks"),
+    (MediaType.PLAYLIST, "userCollectionPlaylists", "playlists"),
+]
 
-    provider_mock.api.post.assert_called_with(
-        "users/12345/favorites/artists",
-        data={"artistId": "123"},
-        as_form=True,
+
+@pytest.mark.parametrize(("media_type", "collection", "resource_type"), _COLLECTION_CASES)
+async def test_add_item(
+    media_type: MediaType,
+    collection: str,
+    resource_type: str,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test add_item POSTs to the official user collection endpoint."""
+    item = Mock(item_id="123", media_type=media_type)
+
+    assert await library_manager.add_item(item) is True
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "POST",
+        f"{collection}/me/relationships/items",
+        {"data": [{"type": resource_type, "id": "123"}]},
     )
 
 
-async def test_add_item_album(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
-    """Test add_item for album."""
-    item = Mock(item_id="123", media_type=MediaType.ALBUM)
-    await library_manager.add_item(item)
-
-    provider_mock.api.post.assert_called_with(
-        "users/12345/favorites/albums",
-        data={"albumId": "123"},
-        as_form=True,
+@pytest.mark.parametrize(("media_type", "collection", "resource_type"), _COLLECTION_CASES)
+async def test_remove_item(
+    media_type: MediaType,
+    collection: str,
+    resource_type: str,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test remove_item DELETEs from the official user collection endpoint."""
+    assert await library_manager.remove_item("123", media_type) is True
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "DELETE",
+        f"{collection}/me/relationships/items",
+        {"data": [{"type": resource_type, "id": "123"}]},
     )
 
 
-async def test_add_item_track(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
-    """Test add_item for track."""
+async def test_add_mix_strips_prefix(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test a mix favorite is written to the playlists collection without the mix_ prefix."""
+    item = Mock(item_id="mix_abc123", media_type=MediaType.PLAYLIST)
+
+    await library_manager.add_item(item)
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "POST",
+        "userCollectionPlaylists/me/relationships/items",
+        {"data": [{"type": "playlists", "id": "abc123"}]},
+    )
+
+
+async def test_add_item_returns_false_on_error(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test add_item returns False when the write fails."""
+    provider_mock.api.write_jsonapi.side_effect = ClientError()
     item = Mock(item_id="123", media_type=MediaType.TRACK)
-    await library_manager.add_item(item)
 
-    provider_mock.api.post.assert_called_with(
-        "users/12345/favorites/tracks",
-        data={"trackId": "123"},
-        as_form=True,
-    )
+    assert await library_manager.add_item(item) is False
 
 
-async def test_add_item_playlist(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
-    """Test add_item for playlist."""
-    item = Mock(item_id="123", media_type=MediaType.PLAYLIST)
-    await library_manager.add_item(item)
-
-    provider_mock.api.post.assert_called_with(
-        "users/12345/favorites/playlists",
-        data={"uuids": "123"},
-        as_form=True,
-    )
-
-
-async def test_remove_item_artist(
+async def test_add_item_unsupported_media_type_returns_false(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
-    """Test remove_item for artist."""
-    await library_manager.remove_item("123", MediaType.ARTIST)
+    """Test add_item returns False for a media type without a collection mapping."""
+    item = Mock(item_id="123", media_type=MediaType.RADIO)
 
-    provider_mock.api.delete.assert_called_with("users/12345/favorites/artists/123")
-
-
-async def test_remove_item_album(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
-    """Test remove_item for album."""
-    await library_manager.remove_item("123", MediaType.ALBUM)
-
-    provider_mock.api.delete.assert_called_with("users/12345/favorites/albums/123")
+    assert await library_manager.add_item(item) is False
+    provider_mock.api.write_jsonapi.assert_not_called()
 
 
-async def test_remove_item_track(library_manager: TidalLibraryManager, provider_mock: Mock) -> None:
-    """Test remove_item for track."""
-    await library_manager.remove_item("123", MediaType.TRACK)
-
-    provider_mock.api.delete.assert_called_with("users/12345/favorites/tracks/123")
-
-
-async def test_remove_item_playlist(
+async def test_remove_mix_strips_prefix(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
-    """Test remove_item for playlist."""
-    await library_manager.remove_item("123", MediaType.PLAYLIST)
-
-    provider_mock.api.delete.assert_called_with("users/12345/favorites/playlists/123")
+    """Test a mix is removed from the playlists collection without the mix_ prefix."""
+    await library_manager.remove_item("mix_abc123", MediaType.PLAYLIST)
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "DELETE",
+        "userCollectionPlaylists/me/relationships/items",
+        {"data": [{"type": "playlists", "id": "abc123"}]},
+    )
 
 
 async def test_get_playlists_includes_favorite_tracks(

@@ -10,18 +10,19 @@ from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 
-from .constants import (
-    FAVORITES_ALBUMS,
-    FAVORITES_ARTISTS,
-    FAVORITES_MIXES,
-    FAVORITES_PLAYLISTS,
-    FAVORITES_TRACKS,
-)
 from .parsers import parse_favorite_tracks_playlist
 from .parsers_v2 import parse_album as parse_album_v2
 from .parsers_v2 import parse_artist as parse_artist_v2
 from .parsers_v2 import parse_playlist as parse_playlist_v2
 from .parsers_v2 import parse_track as parse_track_v2
+
+# MediaType -> (official collection resource, JSON:API resource type).
+_COLLECTIONS = {
+    MediaType.ARTIST: ("userCollectionArtists", "artists"),
+    MediaType.ALBUM: ("userCollectionAlbums", "albums"),
+    MediaType.TRACK: ("userCollectionTracks", "tracks"),
+    MediaType.PLAYLIST: ("userCollectionPlaylists", "playlists"),
+}
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -101,84 +102,27 @@ class TidalLibraryManager:
 
     async def add_item(self, item: MediaItemType) -> bool:
         """Add item to library."""
-        endpoint, data, is_mix = self._get_endpoint_data(item.item_id, item.media_type, "add")
-        if not endpoint:
-            return False
-
-        try:
-            if is_mix:
-                await self.api.put(endpoint, data=data, as_form=True)
-            else:
-                await self.api.post(
-                    f"users/{self.auth.user_id}/{endpoint}", data=data, as_form=True
-                )
-            return True
-        except ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable:
-            return False
+        return await self._modify_collection(item.item_id, item.media_type, "POST")
 
     async def remove_item(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from library."""
-        endpoint, data, is_mix = self._get_endpoint_data(prov_item_id, media_type, "remove")
-        if not endpoint:
-            return False
+        return await self._modify_collection(prov_item_id, media_type, "DELETE")
 
+    async def _modify_collection(self, item_id: str, media_type: MediaType, method: str) -> bool:
+        """Add (POST) or remove (DELETE) an item via the official user collection."""
+        collection = _COLLECTIONS.get(media_type)
+        if not collection:
+            return False
+        resource_name, resource_type = collection
+        # Mixes are stored with a "mix_" prefix but live in the playlists collection.
+        if media_type == MediaType.PLAYLIST and item_id.startswith("mix_"):
+            item_id = item_id[4:]
+        body = {"data": [{"type": resource_type, "id": item_id}]}
         try:
-            if is_mix:
-                await self.api.put(endpoint, data=data, as_form=True)
-            else:
-                await self.api.delete(f"users/{self.auth.user_id}/{endpoint}")
+            await self.api.write_jsonapi(method, f"{resource_name}/me/relationships/items", body)
             return True
         except ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable:
             return False
-
-    def _get_endpoint_data(
-        self, item_id: str, media_type: MediaType, operation: str
-    ) -> tuple[str | None, dict[str, Any], bool]:
-        """Get endpoint and data for library operations."""
-        if media_type == MediaType.PLAYLIST and item_id.startswith("mix_"):
-            mix_id = item_id[4:]
-            if operation == "add":
-                return (
-                    f"{FAVORITES_MIXES}/add",
-                    {
-                        "mixIds": mix_id,
-                        "onArtifactNotFound": "FAIL",
-                        "deviceType": "BROWSER",
-                    },
-                    True,
-                )
-            return (
-                f"{FAVORITES_MIXES}/remove",
-                {"mixIds": mix_id, "deviceType": "BROWSER"},
-                True,
-            )
-
-        if media_type == MediaType.ARTIST:
-            return (
-                (FAVORITES_ARTISTS, {"artistId": item_id}, False)
-                if operation == "add"
-                else (f"{FAVORITES_ARTISTS}/{item_id}", {}, False)
-            )
-        if media_type == MediaType.ALBUM:
-            return (
-                (FAVORITES_ALBUMS, {"albumId": item_id}, False)
-                if operation == "add"
-                else (f"{FAVORITES_ALBUMS}/{item_id}", {}, False)
-            )
-        if media_type == MediaType.TRACK:
-            return (
-                (FAVORITES_TRACKS, {"trackId": item_id}, False)
-                if operation == "add"
-                else (f"{FAVORITES_TRACKS}/{item_id}", {}, False)
-            )
-        if media_type == MediaType.PLAYLIST:
-            return (
-                (FAVORITES_PLAYLISTS, {"uuids": item_id}, False)
-                if operation == "add"
-                else (f"{FAVORITES_PLAYLISTS}/{item_id}", {}, False)
-            )
-
-        return None, {}, False
 
 
 def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:

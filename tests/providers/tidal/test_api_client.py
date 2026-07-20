@@ -221,6 +221,27 @@ async def test_paginate_preserves_params_across_pages(
         assert call[1]["params"]["order"] == "DATE"
 
 
+async def test_write_jsonapi(api_client: TidalAPIClient, provider_mock: Mock) -> None:
+    """Test write_jsonapi sends the JSON:API content type and serialized body."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 204
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    await api_client.write_jsonapi(
+        "POST",
+        "userCollectionTracks/me/relationships/items",
+        {"data": [{"type": "tracks", "id": "1"}]},
+    )
+
+    call = provider_mock.mass.http_session.request.call_args
+    assert call[0][0] == "POST"
+    assert call[1]["headers"]["Content-Type"] == "application/vnd.api+json"
+    # the body is sent as a serialized JSON string, not aiohttp's json= kwarg
+    assert '"type": "tracks"' in call[1]["data"]
+
+
 async def test_paginate_jsonapi_follows_cursor(
     api_client: TidalAPIClient, provider_mock: Mock
 ) -> None:

@@ -65,6 +65,16 @@ class TidalAPIClient:
         )
         return JsonApiDocument(data)
 
+    async def write_jsonapi(
+        self, method: str, endpoint: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Send a JSON:API write (POST/DELETE) to the official Tidal API."""
+        headers = {"Content-Type": JSONAPI_CONTENT_TYPE, "Accept": JSONAPI_CONTENT_TYPE}
+        result, _ = await self._request(
+            method, endpoint, base_url=OPEN_API_URL, data=json.dumps(body), headers=headers
+        )
+        return result
+
     async def paginate_jsonapi(
         self,
         endpoint: str,
