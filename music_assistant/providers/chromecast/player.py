@@ -32,7 +32,6 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from .constants import (
     APP_MEDIA_RECEIVER,
     CAST_PLAYER_CONFIG_ENTRIES,
-    CONF_DASHBOARD_APP_ID,
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
     CONF_USE_MASS_APP,
@@ -408,12 +407,7 @@ class ChromecastPlayer(Player):
         else:
             app_id = APP_MEDIA_RECEIVER
 
-        # the dashboard receiver embeds the media player, so a running dashboard
-        # session can accept audio directly - relaunching would kill the dashboard
-        dashboard_app_id = self.provider.get_config_value(
-            CONF_DASHBOARD_APP_ID, MASS_APP_ID, return_type=str
-        )
-        if self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER, dashboard_app_id):
+        if self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             return  # already active with a compatible media receiver app
 
         def launched_callback(success: bool, response: dict[str, Any] | None) -> None:  # noqa: ARG001

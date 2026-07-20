@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import pychromecast
-from music_assistant_models.auth import Scope
-from music_assistant_models.errors import ActionUnavailable, PlayerUnavailableError
+from music_assistant_models.dashboard import DashboardDevice
+from music_assistant_models.errors import PlayerUnavailableError
 from pychromecast.const import CAST_TYPE_CHROMECAST
 from pychromecast.controllers.multizone import MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
@@ -22,19 +22,15 @@ from music_assistant.constants import (
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.cast_dashboard import get_cast_code
 from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_DASHBOARD_APP_ID, MASS_APP_ID, MULTICHANNEL_RECHECK_INTERVAL
-from .dashboard_controller import MusicAssistantCastController
-from .helpers import ChromecastInfo
+from .constants import MULTICHANNEL_RECHECK_INTERVAL
+from .helpers import ChromecastInfo, send_show_dashboard
 from .player import ChromecastPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
@@ -77,26 +73,11 @@ class ChromecastProvider(PlayerProvider):
         self.bridge_manager = SendspinBridgeManager(self)
         # Cast connections opened on-demand for dashboard casting (not registered players)
         self._dashboard_connections: dict[str, pychromecast.Chromecast] = {}
-        # One dashboard controller per device: pychromecast keeps registered handlers in a
-        # set, so registering a fresh instance per cast would accumulate handlers forever.
-        self._dashboard_controllers: dict[str, MusicAssistantCastController] = {}
-        self._unregister_dashboard_commands: list[Callable[[], None]] = []
         # set-up pychromecast logging
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("pychromecast").setLevel(logging.DEBUG)
         else:
             logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
-
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        self._unregister_dashboard_commands = [
-            self.mass.register_api_command("chromecast/display_devices", self.get_display_devices),
-            self.mass.register_api_command(
-                "chromecast/show_dashboard",
-                self.show_dashboard,
-                required_scope=Scope.PLAYERS_CONTROL,
-            ),
-        ]
 
     async def discover_players(self) -> None:
         """Discover Cast players on the network."""
@@ -108,16 +89,6 @@ class ChromecastProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
-        for unregister in self._unregister_dashboard_commands:
-            unregister()
-        self._unregister_dashboard_commands.clear()
-
-        for device_id, controller in self._dashboard_controllers.items():
-            if (chromecast := self._resolve_dashboard_chromecast(device_id)) is not None:
-                with contextlib.suppress(Exception):
-                    chromecast.unregister_handler(controller)
-        self._dashboard_controllers.clear()
-
         dashboard_connections = list(self._dashboard_connections.values())
         self._dashboard_connections.clear()
         for chromecast in dashboard_connections:
@@ -171,7 +142,7 @@ class ChromecastProvider(PlayerProvider):
             "models": models,
         }
 
-    async def get_display_devices(self) -> list[dict[str, str]]:
+    async def get_dashboard_devices(self) -> list[DashboardDevice]:
         """
         Return all discovered video-capable Cast devices.
 
@@ -180,50 +151,46 @@ class ChromecastProvider(PlayerProvider):
         """
         assert self.browser is not None  # for type checking
         return [
-            {"device_id": str(uuid), "name": cast_info.friendly_name or str(uuid)}
+            DashboardDevice(
+                device_id=str(uuid),
+                provider_instance=self.instance_id,
+                name=cast_info.friendly_name or str(uuid),
+                player_id=str(uuid) if self.mass.players.get_player(str(uuid)) else None,
+            )
             for uuid, cast_info in self.browser.devices.items()
             if cast_info.cast_type == CAST_TYPE_CHROMECAST
         ]
 
-    async def show_dashboard(self, device_id: str, path: str) -> None:
+    async def show_dashboard(
+        self, device_id: str, path: str, remote_id: str, cast_code: str
+    ) -> None:
         """
         Show a Music Assistant dashboard on a Cast display device.
 
-        :param device_id: Device ID as returned by `chromecast/display_devices`.
+        :param device_id: Device ID as returned by `get_dashboard_devices`.
         :param path: Frontend route to show on the display (e.g. "/party").
+        :param remote_id: Remote access ID the receiver connects to.
+        :param cast_code: One-time code the receiver exchanges for a viewer token.
         """
-        remote_access = self.mass.webserver.remote_access
-        if not remote_access.is_enabled or not remote_access.remote_id:
-            msg = "Remote access must be enabled to cast dashboards"
-            raise ActionUnavailable(
-                msg,
-                translation_key="remote_access_required",
-                translation_owner=self.translation_owner,
-            )
-
         chromecast = await self._get_or_create_chromecast(device_id)
-        cast_code = await get_cast_code(self.mass)
-        app_id = self.get_config_value(CONF_DASHBOARD_APP_ID, MASS_APP_ID, return_type=str)
-        controller = self._dashboard_controllers.get(device_id)
-        if controller is not None and controller.supporting_app_id != app_id:
-            # configured app id changed: swap out the stale controller
-            with contextlib.suppress(Exception):
-                chromecast.unregister_handler(controller)
-            controller = None
-        if controller is None:
-            controller = MusicAssistantCastController(app_id)
-            self._dashboard_controllers[device_id] = controller
-        # handler registration is set-based, so (re)registering the cached
-        # controller is a safe no-op on an already-registered socket
-        chromecast.register_handler(controller)
-        await self.mass.loop.run_in_executor(
-            None,
-            controller.show_dashboard,
-            remote_access.remote_id,
-            cast_code,
-            path,
-            str(self.mass.version),
-        )
+        try:
+            await self.mass.loop.run_in_executor(
+                None,
+                send_show_dashboard,
+                chromecast,
+                remote_id,
+                cast_code,
+                path,
+                str(self.mass.version),
+            )
+        except TimeoutError as err:
+            msg = f"Timed out launching app on {chromecast.name}"
+            raise PlayerUnavailableError(
+                msg,
+                translation_key="app_launch_timeout",
+                translation_owner=self.translation_owner,
+                translation_args=[chromecast.name],
+            ) from err
 
     ### Discovery callbacks
 
@@ -405,12 +372,3 @@ class ChromecastProvider(PlayerProvider):
         chromecast = await self.mass.loop.run_in_executor(None, _connect)
         self._dashboard_connections[device_id] = chromecast
         return chromecast
-
-    def _resolve_dashboard_chromecast(self, device_id: str) -> pychromecast.Chromecast | None:
-        """Return an existing Chromecast object for the device, without connecting."""
-        if (chromecast := self._dashboard_connections.get(device_id)) is not None:
-            return chromecast
-        castplayer = self.mass.players.get_player(device_id)
-        if isinstance(castplayer, ChromecastPlayer):
-            return castplayer.cc
-        return None

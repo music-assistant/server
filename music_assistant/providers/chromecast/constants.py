@@ -12,12 +12,12 @@ from music_assistant.constants import (
     create_sample_rates_config_entry,
 )
 
-MASS_APP_ID = "C35B0678"
+MASS_APP_ID = "920426A9"  # TODO: dev receiver app, swap back to "C35B0678" before release
 APP_MEDIA_RECEIVER = "CC1AD845"
 SENDSPIN_CAST_APP_ID = "DD107DDB"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
-CONF_DASHBOARD_APP_ID = "dashboard_app_id"
+DASHBOARD_NAMESPACE = "urn:x-cast:io.music-assistant.cast"
 
 # Interval (seconds) before an unavailable player is re-evaluated as a possible
 # passive multichannel endpoint that should be removed from the setup.
@@ -44,13 +44,6 @@ CAST_PLAYER_CONFIG_ENTRIES = (
         default_value=True,
         advanced=True,
     ),
-)
-
-CONF_ENTRY_DASHBOARD_APP_ID = ConfigEntry(
-    key=CONF_DASHBOARD_APP_ID,
-    type=ConfigEntryType.STRING,
-    default_value=MASS_APP_ID,
-    advanced=True,
 )
 
 # originally/officially cast supports 96k sample rate (even for groups)

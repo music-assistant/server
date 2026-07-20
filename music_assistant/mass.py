@@ -47,6 +47,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.dashboard import DashboardController
 from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.metadata import MetaDataController
@@ -153,6 +154,7 @@ class MusicAssistant:
     streams: StreamsController
     translations: TranslationController
     diagnostics: DiagnosticsController
+    dashboard: DashboardController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
@@ -182,7 +184,7 @@ class MusicAssistant:
         self._http_session: ClientSession | None = None
         self._http_session_no_ssl: ClientSession | None = None
 
-    async def start(self) -> None:
+    async def start(self) -> None:  # noqa: PLR0915
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
         # start() runs on the event loop thread, so this is the loop's thread id.
@@ -233,6 +235,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.players))
             tg.create_task(setup_controller(self.player_queues))
             tg.create_task(setup_controller(self.diagnostics))
+            tg.create_task(setup_controller(self.dashboard))
 
         for controller_name in (
             "cache",
@@ -286,6 +289,7 @@ class MusicAssistant:
         await self.players.close()
         await self.translations.close()
         await self.diagnostics.close()
+        await self.dashboard.close()
         # cleanup cache and config
         await self.config.close()
         await self.cache.close()
@@ -984,6 +988,7 @@ class MusicAssistant:
             self.webserver.auth,
             self.streams.audio_analysis,
             self.diagnostics,
+            self.dashboard,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -1019,6 +1024,7 @@ class MusicAssistant:
         self.streams = StreamsController(self)
         self.translations = TranslationController(self)
         self.diagnostics = DiagnosticsController(self)
+        self.dashboard = DashboardController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)

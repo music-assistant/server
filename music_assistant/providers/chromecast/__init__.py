@@ -4,24 +4,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.enums import ProviderFeature
 from pychromecast.controllers.media import MediaController
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 
-from .constants import CONF_ENTRY_DASHBOARD_APP_ID
 from .provider import ChromecastProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-SUPPORTED_FEATURES: set[ProviderFeature] = (
-    set()
-)  # we don't have any special supported features (yet)
+SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.SHOW_DASHBOARD}
 
 # Monkey patch the Media controller here to store the queue items
 _patched_process_media_status_org = MediaController._process_media_status
@@ -61,4 +58,4 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS, CONF_ENTRY_DASHBOARD_APP_ID)
+    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)

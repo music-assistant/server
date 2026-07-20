@@ -1,0 +1,9 @@
+{
+  "manifest": {
+    "name": "Dashboard",
+    "description": "Casts Music Assistant dashboards to display devices."
+  },
+  "errors": {
+    "remote_access_required": "Remote access must be enabled to cast dashboards"
+  }
+}

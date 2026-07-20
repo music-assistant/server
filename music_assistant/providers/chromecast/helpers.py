@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+import time
 import urllib.error
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from pychromecast import dial
@@ -12,7 +14,10 @@ from pychromecast.const import CAST_TYPE_GROUP
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
+from .constants import DASHBOARD_NAMESPACE, MASS_APP_ID
+
 if TYPE_CHECKING:
+    from pychromecast import Chromecast
     from pychromecast.controllers.media import MediaStatus, MediaStatusListener
     from pychromecast.controllers.multizone import MultizoneManager, MultiZoneManagerListener
     from pychromecast.controllers.receiver import CastStatus
@@ -24,6 +29,68 @@ if TYPE_CHECKING:
     from .player import ChromecastPlayer
 
 DEFAULT_PORT = 8009
+DASHBOARD_NAMESPACE_POLL_INTERVAL = 0.1
+
+
+def send_show_dashboard(
+    chromecast: Chromecast,
+    remote_id: str,
+    cast_code: str,
+    path: str,
+    server_version: str,
+    timeout: float = 30.0,
+) -> None:
+    """
+    Launch the MA cast receiver app and send it a show_dashboard message.
+
+    Blocking call, run from an executor.
+
+    :param chromecast: Connected Chromecast to show the dashboard on.
+    :param remote_id: Remote access ID the receiver connects to.
+    :param cast_code: One-time code the receiver exchanges for a viewer token.
+    :param path: Frontend route to show (e.g. "/party").
+    :param server_version: MA server version; the receiver picks the frontend channel from it.
+    :param timeout: Seconds to wait for the app launch and the dashboard namespace.
+    :raises TimeoutError: If the receiver app did not launch (in time), or the
+        dashboard namespace never became available.
+    """
+    launched = threading.Event()
+    launch_success = False
+
+    def _on_launched(success: bool, _response: dict[str, Any] | None) -> None:
+        nonlocal launch_success
+        launch_success = success
+        launched.set()
+
+    deadline = time.monotonic() + timeout
+    chromecast.socket_client.receiver_controller.launch_app(
+        MASS_APP_ID, callback_function=_on_launched
+    )
+    if not launched.wait(timeout):
+        msg = f"Timed out launching app on {chromecast.name}"
+        raise TimeoutError(msg)
+    if not launch_success:
+        msg = f"Failed to launch app on {chromecast.name}"
+        raise TimeoutError(msg)
+
+    # tiny race: the namespace only appears once the socket client has processed
+    # the same receiver status that completes the launch callback
+    while DASHBOARD_NAMESPACE not in chromecast.socket_client.app_namespaces:
+        if time.monotonic() >= deadline:
+            msg = f"Timed out waiting for the dashboard namespace on {chromecast.name}"
+            raise TimeoutError(msg)
+        time.sleep(DASHBOARD_NAMESPACE_POLL_INTERVAL)
+
+    chromecast.socket_client.send_app_message(
+        DASHBOARD_NAMESPACE,
+        {
+            "type": "show_dashboard",
+            "remoteId": remote_id,
+            "castCode": cast_code,
+            "path": path,
+            "serverVersion": server_version,
+        },
+    )
 
 
 @dataclass
