@@ -487,13 +487,13 @@ class AriaCastReceiver(PluginProvider):
         elif command == "stop":
             await self._cmd_pause()
         elif command == "next":
-            if self._active_player_id:
+            if self._in_use_by_queue:
                 with suppress(Exception):
-                    await self.mass.player_queues.next(self._active_player_id)
+                    await self.mass.player_queues.next(self._in_use_by_queue)
         elif command == "previous":
-            if self._active_player_id:
+            if self._in_use_by_queue:
                 with suppress(Exception):
-                    await self.mass.player_queues.previous(self._active_player_id)
+                    await self.mass.player_queues.previous(self._in_use_by_queue)
         elif command == "seek":
             # The live AriaCast source has no seekable timeline on the MA side
             # (audio_source.can_seek is False); accept and ack per spec, no-op.
