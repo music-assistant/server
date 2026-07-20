@@ -658,7 +658,7 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
             return object()
 
     class DummyQueue:
-        current_index = None
+        current_index: int | None = None
 
     class DummyPlayerQueues:
         def clear(self, queue_id: str) -> None:
@@ -895,9 +895,10 @@ async def test_dynamic_mode_appends_to_playing_queue_when_clear_disabled(
     player_queues = RecordingPlayerQueues(BusyQueue())
 
     class DummyMass:
-        players = DummyPlayers()
+        def __init__(self) -> None:
+            self.players = DummyPlayers()
+            self.player_queues = player_queues
 
-    DummyMass.player_queues = player_queues
     runtime = watchdog_runtime_cls()
     _set_runtime_mass(runtime, DummyMass())
     session = SessionState(session_id="s1", station_id="st", mode="dynamic")
@@ -947,9 +948,10 @@ async def test_dynamic_mode_starts_playback_on_idle_queue_when_clear_disabled(
     player_queues = RecordingPlayerQueues(IdleQueue())
 
     class DummyMass:
-        players = DummyPlayers()
+        def __init__(self) -> None:
+            self.players = DummyPlayers()
+            self.player_queues = player_queues
 
-    DummyMass.player_queues = player_queues
     runtime = watchdog_runtime_cls()
     _set_runtime_mass(runtime, DummyMass())
     session = SessionState(session_id="s1", station_id="st", mode="dynamic")
@@ -1021,9 +1023,10 @@ async def test_dynamic_mode_targets_active_group_queue(
     player_queues = GroupPlayerQueues(GroupQueue())
 
     class DummyMass:
-        players = DummyPlayers()
+        def __init__(self) -> None:
+            self.players = DummyPlayers()
+            self.player_queues = player_queues
 
-    DummyMass.player_queues = player_queues
     runtime = watchdog_runtime_cls()
     _set_runtime_mass(runtime, DummyMass())
     session = SessionState(session_id="s1", station_id="st", mode="dynamic")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from music_assistant_models.errors import InvalidDataError
@@ -289,7 +289,8 @@ def test_write_sections_keeps_existing_file_when_write_fails(
     storage._sections_file = sections_file
     storage._sections = {"s1": {"id": "s1", "name": "S1", "type": "ai_text", "prompt": "P"}}
 
-    real_open = storage_module.aiofiles.open
+    storage_aiofiles = cast("Any", storage_module).aiofiles
+    real_open = storage_aiofiles.open
 
     class FailingWriteFile:
         """Async file wrapper whose write always fails (simulated disk error)."""
@@ -314,7 +315,7 @@ def test_write_sections_keeps_existing_file_when_write_fails(
             return FailingWriteFile(real_open(path, mode, *args, **kwargs))
         return real_open(path, mode, *args, **kwargs)
 
-    monkeypatch.setattr(storage_module.aiofiles, "open", failing_open)
+    monkeypatch.setattr(storage_aiofiles, "open", failing_open)
 
     with pytest.raises(OSError, match="disk full"):
         asyncio.run(storage._write_sections())
