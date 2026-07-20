@@ -603,10 +603,9 @@ class SendspinPlayer(SendspinBasePlayer):
             and self._attr_playback_state == PlaybackState.PAUSED
             and self._attr_current_media is not None
         ):
-            # Resuming the same track leaves current_media's identity unchanged, so
-            # the debounced media-updated callback won't fire. Refresh the anchor
-            # before update_state() (called by super()) runs, so corrected_elapsed_time
-            # extrapolates from the resume moment instead of through the paused span.
+            # current_media's identity is unchanged on resume, so update_state()
+            # below won't debounce a metadata push; refresh the anchor now so
+            # corrected_elapsed_time doesn't extrapolate through the paused span.
             self._attr_current_media.elapsed_time_last_updated = time.time()
         super().group_event_cb(group, event)
         match event:
@@ -614,9 +613,7 @@ class SendspinPlayer(SendspinBasePlayer):
                 PlaybackStateType.PLAYING,
                 PlaybackStateType.PAUSED,
             ):
-                # Sendspin spec requires progress on every playback-state transition
-                # (play/pause/resume); current_media identity is unchanged across
-                # pause/resume so the media-updated callback alone won't cover it.
+                # Same reason as above: push progress explicitly (README:1445).
                 self.mass.create_task(
                     self.send_current_media_metadata(),
                     task_id=f"sendspin_metadata_{self.player_id}",
