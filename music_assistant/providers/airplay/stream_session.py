@@ -58,12 +58,14 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
-        # Raw PCM ring buffer for late joiners.  Capped at ~5 seconds.
-        # When a late joiner arrives we send this buffer to prime its
-        # pipeline so it starts playing quickly instead of waiting for
-        # the full pipeline to fill from scratch.
+        # Raw PCM ring buffer for late joiners. When a late joiner arrives we
+        # send this buffer to prime its pipeline so it starts playing quickly
+        # instead of waiting for the full pipeline to fill from scratch.
+        # Must cover how far the feed runs ahead of the audible position
+        # (the binary's ring cap of latency+2s plus the ~2s receiver buffer)
+        # with enough slack left to prime the joiner.
         self._pcm_buffer = bytearray()
-        self._pcm_buffer_max = pcm_format.pcm_sample_size * 5  # 5 seconds
+        self._pcm_buffer_max = pcm_format.pcm_sample_size * 10  # 10 seconds
 
     async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
         """Initialize stream session for all players."""
