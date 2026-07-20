@@ -41,9 +41,7 @@ class TidalPlaylistManager:
         """Add tracks to playlist."""
         try:
             # Get ETag first
-            api_result = await self.api.get(f"{PLAYLISTS}/{prov_playlist_id}", return_etag=True)
-            playlist_obj = api_result[0] if isinstance(api_result, tuple) else api_result
-            etag = api_result[1] if isinstance(api_result, tuple) else None
+            playlist_obj, etag = await self.api.get_with_etag(f"{PLAYLISTS}/{prov_playlist_id}")
 
             data = {
                 "onArtifactNotFound": "SKIP",
@@ -63,8 +61,7 @@ class TidalPlaylistManager:
         """Remove tracks from playlist."""
         try:
             # Get ETag first
-            api_result = await self.api.get(f"{PLAYLISTS}/{prov_playlist_id}", return_etag=True)
-            etag = api_result[1] if isinstance(api_result, tuple) else None
+            _, etag = await self.api.get_with_etag(f"{PLAYLISTS}/{prov_playlist_id}")
 
             # Tidal uses 0-based indices in URL path
             indices = ",".join(str(pos - 1) for pos in positions)

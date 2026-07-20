@@ -8,7 +8,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -29,6 +29,9 @@ from .constants import (
 )
 from .http_server import MSXHTTPServer
 from .player import MSXPlayer
+
+if TYPE_CHECKING:
+    from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,7 @@ class SharedGroupStream:
         self.started = asyncio.Event()
         self.finished = False
         self.producer_error: Exception | None = None
+        self.output_plan: AudioOutputPlan | None = None
         self._lock = asyncio.Lock()
         self._total_bytes = 0
         self._start_time: float = 0
