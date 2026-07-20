@@ -81,11 +81,9 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MASS_PLAYER_ID,
             type=ConfigEntryType.STRING,
-            label="Connected Music Assistant Player",
-            description="The player to route AriaCast audio to.",
             default_value=PLAYER_ID_AUTO,
             options=[
-                ConfigValueOption(title="Auto (prefer playing player)", value=PLAYER_ID_AUTO),
+                ConfigValueOption(PLAYER_ID_AUTO),
                 *(
                     ConfigValueOption(title=p.display_name, value=p.player_id)
                     for p in sorted(
@@ -116,11 +114,13 @@ class AriaCastReceiver(PluginProvider):
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
+        """Return the features supported by this provider."""
         return SUPPORTED_FEATURES
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
+        """Initialize the AriaCast Receiver provider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._default_player_id = str(config.get_value(CONF_MASS_PLAYER_ID))
 
@@ -139,7 +139,7 @@ class AriaCastReceiver(PluginProvider):
         # /stats counters (spec: transport.md "GET /stats")
         self._stats_received_frames: int = 0
         self._stats_overruns: int = 0
-        self._stats_task: asyncio.Task | None = None
+        self._stats_task: asyncio.Task[None] | None = None
 
         # MA stream-routing state
         self._active_player_id: str | None = None
@@ -198,9 +198,7 @@ class AriaCastReceiver(PluginProvider):
 
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
-        site = web.TCPSite(
-            self._runner, "0.0.0.0", ARIACAST_PORT, reuse_address=True
-        )
+        site = web.TCPSite(self._runner, "0.0.0.0", ARIACAST_PORT, reuse_address=True)
         try:
             await site.start()
         except OSError as err:
@@ -243,9 +241,11 @@ class AriaCastReceiver(PluginProvider):
     # -----------------------------------------------------------------------
 
     async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the single AriaCast audio source."""
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+        """Return stream details for the given audio source."""
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
         # Allow through if currently playing OR if a player has played before (resume path)
@@ -297,9 +297,7 @@ class AriaCastReceiver(PluginProvider):
                 except TimeoutError:
                     # Cold-start check: fail fast if sender never starts sending
                     if not acquired and not self._is_playing:
-                        raise AudioError(
-                            "AriaCast sender is not streaming audio"
-                        ) from None
+                        raise AudioError("AriaCast sender is not streaming audio") from None
                     continue
         finally:
             self.logger.debug("Audio stream ended: queue=%s", consumer_queue)
@@ -316,6 +314,7 @@ class AriaCastReceiver(PluginProvider):
     async def on_source_selected(
         self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
     ) -> None:
+        """Handle source selection by a player queue."""
         if source_id != AUDIO_SOURCE_ID:
             return
         self._in_use_by_queue = queue_id
@@ -325,6 +324,7 @@ class AriaCastReceiver(PluginProvider):
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
     ) -> None:
+        """Handle source deselection by a player queue."""
         if source_id != AUDIO_SOURCE_ID:
             return
         if self._active_session_id != stream_session_id:
@@ -336,6 +336,7 @@ class AriaCastReceiver(PluginProvider):
     async def on_source_control(
         self, source_id: str, action: SourceControl, value: int | None = None
     ) -> None:
+        """Handle playback control actions forwarded from the queue."""
         if source_id != AUDIO_SOURCE_ID:
             return
         if action == SourceControl.PLAY:
@@ -348,6 +349,7 @@ class AriaCastReceiver(PluginProvider):
             await self._forward_action("previous")
 
     async def resolve_image(self, path: str) -> bytes:
+        """Return image bytes for the given path."""
         if path.startswith("artwork_") and self._artwork_bytes:
             return self._artwork_bytes
         return b""
@@ -372,12 +374,14 @@ class AriaCastReceiver(PluginProvider):
         self._audio_sender_ws = ws
 
         # Protocol handshake
-        await ws.send_json({
-            "status": "READY",
-            "sample_rate": 48000,
-            "channels": 2,
-            "frame_size": FRAME_SIZE,
-        })
+        await ws.send_json(
+            {
+                "status": "READY",
+                "sample_rate": 48000,
+                "channels": 2,
+                "frame_size": FRAME_SIZE,
+            }
+        )
         self.logger.info("AriaCast sender connected from %s", request.remote)
 
         try:
@@ -413,7 +417,7 @@ class AriaCastReceiver(PluginProvider):
         self.logger.info("AriaCast sender disconnected from %s", request.remote)
         # If we were the active stream, mark as not playing so get_audio_stream can exit cleanly
         if self._is_playing:
-            self.logger.debug("Sender disconnected while playing – clearing is_playing")
+            self.logger.debug("Sender disconnected while playing - clearing is_playing")
             self._is_playing = False
         return ws
 
@@ -427,11 +431,13 @@ class AriaCastReceiver(PluginProvider):
         # Spec (transport.md): the Python server sends an initial status frame
         # on /control (unlike the Go server, which sends nothing here).
         current_volume = self._get_current_volume()
-        await ws.send_json({
-            "status": "READY",
-            "volume_available": current_volume is not None,
-            "current_volume": current_volume if current_volume is not None else -1,
-        })
+        await ws.send_json(
+            {
+                "status": "READY",
+                "volume_available": current_volume is not None,
+                "current_volume": current_volume if current_volume is not None else -1,
+            }
+        )
 
         try:
             async for msg in ws:
@@ -515,7 +521,11 @@ class AriaCastReceiver(PluginProvider):
     ) -> None:
         """Handle a volume/volume_set command per control.md."""
         player_id = self._active_player_id or self._get_target_player_id()
-        player = self.mass.players.get_player(player_id) if player_id else None
+        if not player_id:
+            with suppress(Exception):
+                await ws.send_json({"command": "volume", "level": -1, "success": False})
+            return
+        player = self.mass.players.get_player(player_id)
 
         if not player or player.state.volume_level is None:
             with suppress(Exception):
@@ -698,11 +708,11 @@ class AriaCastReceiver(PluginProvider):
         # Accept both camelCase (Android) and snake_case (spec broadcast) per interop rule
         duration = data.get("durationMs") or data.get("duration_ms")
         if duration is not None:
-            m.duration = int(duration) / 1000
+            m.duration = int(duration) // 1000
 
         position = data.get("positionMs") or data.get("position_ms")
         if position is not None:
-            m.elapsed_time = int(position) / 1000
+            m.elapsed_time = int(position) // 1000
             m.elapsed_time_last_updated = time.time()
 
         artwork = data.get("artworkUrl") or data.get("artwork_url")
@@ -769,9 +779,7 @@ class AriaCastReceiver(PluginProvider):
         """Download artwork from the sender's HTTP server and cache it."""
         await asyncio.sleep(0.2)  # let the sender stabilise the image
         try:
-            async with self.mass.http_session.get(
-                url, timeout=ClientTimeout(total=5)
-            ) as resp:
+            async with self.mass.http_session.get(url, timeout=ClientTimeout(total=5)) as resp:
                 if resp.status == 200:
                     data = await resp.read()
                     if data:
@@ -845,24 +853,32 @@ class AriaCastReceiver(PluginProvider):
 
         local_ip = self._get_local_ip()
 
-        response_payload = json.dumps({
-            "server_name": "MusicAssistant AriaCast Receiver",
-            "ip": local_ip,
-            "port": ARIACAST_PORT,
-            "samplerate": 48000,
-            "channels": 2,
-        }).encode()
+        response_payload = json.dumps(
+            {
+                "server_name": "MusicAssistant AriaCast Receiver",
+                "ip": local_ip,
+                "port": ARIACAST_PORT,
+                "samplerate": 48000,
+                "channels": 2,
+            }
+        ).encode()
 
         class _Proto(asyncio.DatagramProtocol):
-            def __init__(self, transport_holder: list, payload: bytes, logger: Any) -> None:
+            def __init__(
+                self,
+                transport_holder: list[asyncio.DatagramTransport],
+                payload: bytes,
+                logger: Any,
+            ) -> None:
                 self._holder = transport_holder
                 self._payload = payload
                 self._log = logger
 
-            def connection_made(self, transport: asyncio.DatagramTransport) -> None:
-                self._holder.append(transport)
+            def connection_made(self, transport: asyncio.BaseTransport) -> None:
+                if isinstance(transport, asyncio.DatagramTransport):
+                    self._holder.append(transport)
 
-            def datagram_received(self, data: bytes, addr: tuple) -> None:
+            def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
                 if data.strip() == b"DISCOVER_AUDIOCAST":
                     self._log.debug("Discovery from %s", addr)
                     transport = self._holder[0] if self._holder else None
@@ -889,7 +905,7 @@ class AriaCastReceiver(PluginProvider):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
+                return str(s.getsockname()[0])
         except Exception:
             return "127.0.0.1"
 

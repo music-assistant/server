@@ -1,0 +1,14 @@
+{
+  "config_entries": {
+    "mass_player_id": {
+      "label": "Connected Music Assistant Player",
+      "description": "The player to route AriaCast audio to.",
+      "options": {
+        "__auto__": "Auto (prefer playing player)"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Receive AriaCast audio streams over WebSocket and use them as a source in Music Assistant."
+  }
+}
