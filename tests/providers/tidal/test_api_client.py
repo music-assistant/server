@@ -240,6 +240,8 @@ async def test_write_jsonapi(api_client: TidalAPIClient, provider_mock: Mock) ->
     assert call[1]["headers"]["Content-Type"] == "application/vnd.api+json"
     # the body is sent as a serialized JSON string, not aiohttp's json= kwarg
     assert '"type": "tracks"' in call[1]["data"]
+    # a per-request Idempotency-Key is sent so a throttler-driven retry dedups server-side
+    assert call[1]["headers"].get("Idempotency-Key")
 
 
 async def test_paginate_jsonapi_follows_cursor(

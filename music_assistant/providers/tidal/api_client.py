@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from music_assistant_models.errors import (
     LoginFailed,
@@ -69,7 +70,11 @@ class TidalAPIClient:
         self, method: str, endpoint: str, body: dict[str, Any]
     ) -> dict[str, Any]:
         """Send a JSON:API write (POST/DELETE) to the official Tidal API."""
-        headers = {"Content-Type": JSONAPI_CONTENT_TYPE, "Accept": JSONAPI_CONTENT_TYPE}
+        headers = {
+            "Content-Type": JSONAPI_CONTENT_TYPE,
+            "Accept": JSONAPI_CONTENT_TYPE,
+            "Idempotency-Key": str(uuid4()),
+        }
         result, _ = await self._request(
             method, endpoint, base_url=OPEN_API_URL, data=json.dumps(body), headers=headers
         )

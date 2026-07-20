@@ -116,7 +116,8 @@ def parse_album(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
     name, version = _split_title_version(
         attributes.get("title", "Unknown Album"), attributes.get("version") or None
     )
-    available = "STREAM" in (attributes.get("availability") or ["STREAM"])
+    availability = attributes.get("availability")
+    available = "STREAM" in availability if availability is not None else True
     album = Album(
         item_id=album_id,
         provider=provider.instance_id,
@@ -174,7 +175,8 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
         attributes.get("title", "Unknown"), attributes.get("version") or None
     )
     hi_res_lossless = "HIRES_LOSSLESS" in (attributes.get("mediaTags") or [])
-    available = "STREAM" in (attributes.get("availability") or ["STREAM"])
+    availability = attributes.get("availability")
+    available = "STREAM" in availability if availability is not None else True
     track = Track(
         item_id=track_id,
         provider=provider.instance_id,

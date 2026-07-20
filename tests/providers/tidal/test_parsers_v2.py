@@ -217,6 +217,42 @@ def test_parse_track_no_includes(provider_mock: Mock) -> None:
     assert next(iter(track.provider_mappings)).audio_format.bit_depth == 24
 
 
+def test_parse_track_availability_empty_array(provider_mock: Mock) -> None:
+    """Test a track with a present-but-empty availability array is marked unavailable."""
+    doc = JsonApiDocument(
+        {
+            "data": {
+                "id": "1",
+                "type": "tracks",
+                "attributes": {
+                    "title": "No Stream",
+                    "duration": "PT1M0S",
+                    "availability": [],
+                },
+                "relationships": {},
+            }
+        }
+    )
+    track = parse_track(provider_mock, doc, doc.data)
+    assert next(iter(track.provider_mappings)).available is False
+
+
+def test_parse_track_availability_missing(provider_mock: Mock) -> None:
+    """Test a track with no availability key defaults to available."""
+    doc = JsonApiDocument(
+        {
+            "data": {
+                "id": "1",
+                "type": "tracks",
+                "attributes": {"title": "No Info", "duration": "PT1M0S"},
+                "relationships": {},
+            }
+        }
+    )
+    track = parse_track(provider_mock, doc, doc.data)
+    assert next(iter(track.provider_mappings)).available is True
+
+
 def test_parse_album_genres(provider_mock: Mock) -> None:
     """Test album genres are resolved from the genres relationship."""
     doc = JsonApiDocument(
@@ -232,6 +268,43 @@ def test_parse_album_genres(provider_mock: Mock) -> None:
     )
     album = parse_album(provider_mock, doc, doc.data)
     assert album.metadata.genres == {"Rock"}
+
+
+def test_parse_album_availability_empty_array(provider_mock: Mock) -> None:
+    """Test an album with a present-but-empty availability array is marked unavailable."""
+    doc = JsonApiDocument(
+        {
+            "data": {
+                "id": "1",
+                "type": "albums",
+                "attributes": {
+                    "title": "No Stream",
+                    "albumType": "ALBUM",
+                    "explicit": False,
+                    "availability": [],
+                },
+                "relationships": {},
+            }
+        }
+    )
+    album = parse_album(provider_mock, doc, doc.data)
+    assert next(iter(album.provider_mappings)).available is False
+
+
+def test_parse_album_availability_missing(provider_mock: Mock) -> None:
+    """Test an album with no availability key defaults to available."""
+    doc = JsonApiDocument(
+        {
+            "data": {
+                "id": "1",
+                "type": "albums",
+                "attributes": {"title": "No Info", "albumType": "ALBUM", "explicit": False},
+                "relationships": {},
+            }
+        }
+    )
+    album = parse_album(provider_mock, doc, doc.data)
+    assert next(iter(album.provider_mappings)).available is True
 
 
 @pytest.mark.parametrize(

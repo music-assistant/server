@@ -277,9 +277,9 @@ class TidalProvider(MusicProvider):
         ):
             if cached_id == item_id:
                 return None
-            # Validate the cached live id is still resolvable. Tidal can churn a
-            # track more than once, leaving a dead id cached; if it is gone, drop
-            # the entry and re-resolve from the ISRC below.
+            # Best-effort re-check of the cached live id (bounded by get_track's own
+            # cache): if it has itself gone dead, drop the entry and re-resolve from
+            # the ISRC below.
             try:
                 await self.get_track(cached_id)
             except MediaNotFoundError:

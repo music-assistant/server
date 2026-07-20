@@ -93,11 +93,14 @@ class TidalPlaylistManager:
                 index = pos - 1
                 if 0 <= index < len(entries):
                     entry = entries[index]
+                    item_uuid = (entry.get("meta") or {}).get("itemId")
+                    if not item_uuid:
+                        continue
                     selected.append(
                         {
                             "type": entry["type"],
                             "id": entry["id"],
-                            "meta": {"itemId": entry["meta"]["itemId"]},
+                            "meta": {"itemId": item_uuid},
                         }
                     )
 

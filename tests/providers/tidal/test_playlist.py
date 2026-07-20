@@ -242,6 +242,25 @@ async def test_remove_playlist_tracks_out_of_range_position(
     provider_mock.api.write_jsonapi.assert_not_called()
 
 
+async def test_remove_playlist_tracks_skips_entry_missing_item_id(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test remove_tracks skips an entry lacking meta.itemId without raising."""
+    entries: list[dict[str, Any]] = [
+        {"type": "tracks", "id": "track_1"},  # missing "meta" entirely
+        {"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}},
+    ]
+    provider_mock.api.paginate_jsonapi = _entries_page(entries)
+
+    await playlist_manager.remove_tracks("1", (1, 2))
+
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "DELETE",
+        "playlists/1/relationships/items",
+        {"data": [{"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}}]},
+    )
+
+
 async def test_remove_playlist_tracks_failure(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
