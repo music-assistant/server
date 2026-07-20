@@ -41,7 +41,7 @@ owntone dependency.
   remains the safety net.
 
 ### AirPlay 2 — native flow (all tested devices)
-- Full HAP pair-verify against a real Apple TV (tvOS 26.4, AppleTV11,1):
+- Full HAP pair-verify against a real Apple TV 4K:
   X25519 ECDH + Ed25519 signatures + HKDF-SHA512 + ChaCha20-Poly1305.
 - Encrypted RTSP channel (HAP framing: 2-byte LE length + ciphertext + 16-byte tag,
   nonce = 4 zero bytes + 8-byte LE counter, 1024-byte max frames).
@@ -49,11 +49,11 @@ owntone dependency.
   `timingProtocol`), events reverse-connection, stream SETUP (`streams` array), RECORD.
 - Encrypted RTP audio: ALAC → ChaCha20-Poly1305 (key = X25519 shared secret,
   nonce = 4 zero bytes + 2-byte seqnum, AAD = 8 bytes of RTP header) + sync packets.
-- EAR-VERIFIED on Sonos Era 100 pair + Move (transient pairing) and Apple TV 4K
-  (HomeKit-PIN pair-verify), including multi-room sync on a shared PTP daemon
-  clock, MIXED RAOP+AP2 groups on one `--start-unix-ms`, and automatic
-  compensation of device-reported render latency (`arrivalToRenderLatencyMs`,
-  Apple TV ~107 ms through its TV).
+- EAR-VERIFIED on a Sonos stereo pair + a second Sonos (transient pairing) and
+  an Apple TV 4K (HomeKit-PIN pair-verify), including multi-room sync on a
+  shared PTP daemon clock, MIXED RAOP+AP2 groups on one `--start-unix-ms`, and
+  automatic compensation of device-reported render latency
+  (`arrivalToRenderLatencyMs`, Apple TV ~107 ms through its TV).
 
 ### 24-bit ALAC
 - Encoder fixed: the libcodecs `alac_wrapper.cpp` hardcoded `mFormatFlags=1` (16-bit);
@@ -74,7 +74,7 @@ owntone dependency.
    Using `4` returned HTTP 200 but TLV error `0x02` (authentication) and silently
    dropped all encrypted messages afterward. This was the single biggest blocker.
 
-2. **client_id = DACP ID as UPPERCASE ASCII string** (e.g. `b"B2763ADADB414A27"`),
+2. **client_id = DACP ID as UPPERCASE ASCII string** (e.g. `b"AABBCCDD11223344"`),
    not raw bytes. Must match what MA's pair-setup sent (owntone formats it via
    `%016PRIX64`). MA's `provider.dacp_id` is already uppercased.
 
@@ -161,9 +161,10 @@ Changes to port from the abandoned branch (backed up in `/tmp/airplay-backup/`):
 - The provider is reconciled onto latest dev (branch `airplay-unified-binary`); the
   C project lives at [music-assistant/airplay-cli](https://github.com/music-assistant/airplay-cli)
   (private) — its own `TODO.md` tracks the binary-side roadmap.
-- Binary-side validation is complete (2026-07-19): native AP2 + PTP audible on Sonos
-  Era/Move and Apple TV 4K, multi-room sync verified across a mixed group, 24-bit
-  hi-res audible over the realtime stream, HomeKit `--pair-setup` end-to-end.
+- Binary-side validation is complete (2026-07-19): native AP2 + PTP audible on
+  Sonos speakers and an Apple TV 4K, multi-room sync verified across a mixed
+  group, 24-bit hi-res audible over the realtime stream, HomeKit `--pair-setup`
+  end-to-end.
 - **MA-side integration of the new CLI contract (this branch):**
   - `--protocol auto` is the default; the per-player protocol config is an override
     only. The full `_airplay._tcp` TXT is passed via `--txt` for route selection.
@@ -199,10 +200,11 @@ Changes to port from the abandoned branch (backed up in `/tmp/airplay-backup/`):
 
 ## 7. Test references
 
-- Sonos Move 2 "Move speaker Woonkamer": `192.168.1.224:7000` (RAOP + AP2 RAOP-compat).
-- Apple TV "Slaapkamer": `192.168.1.17:7000`, AppleTV11,1 / tvOS 26.4 (native AP2).
+- Reference devices: a Sonos portable speaker (RAOP + AP2 RAOP-compat) and an
+  Apple TV 4K (native AP2, HomeKit-PIN paired).
   Credentials live in MA settings (`airplay_credentials`, Fernet-encrypted with
-  `base64.urlsafe_b64encode(server_id[:32])`); DACP id `B2763ADADB414A27`.
+  `base64.urlsafe_b64encode(server_id[:32])`); the DACP id is derived from the
+  server id.
 - Test tone: `ffmpeg -f lavfi -i "sine=frequency=440:duration=5" -ar 44100 -ac 2 -f s16le`.
 - Sonos needs a metadata command (`ACTION=SENDMETA`) after connect before it emits audio.
 
