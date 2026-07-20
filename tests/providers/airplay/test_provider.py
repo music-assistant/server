@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant.constants import CONF_SYNC_ADJUST
@@ -10,6 +11,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_SYNC_ADJUST_RESET_MARKER,
     StreamingProtocol,
 )
+from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
 from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
@@ -53,7 +55,7 @@ def _make_provider(
 
 def test_sync_adjust_migration_resets_stored_values() -> None:
     """Persisted sync_adjust values are reset once and the marker is written."""
-    player_configs = {
+    player_configs: dict[str, dict[str, object]] = {
         "apaaa": {"player_id": "apaaa", "provider": INSTANCE_ID},
         "apbbb": {"player_id": "apbbb", "provider": INSTANCE_ID},
         # player of another provider must be left alone
@@ -68,18 +70,20 @@ def test_sync_adjust_migration_resets_stored_values() -> None:
     prov._migrate_sync_adjust()
 
     # only the airplay player with a non-zero offset is reset
-    prov.mass.config.set_raw_player_config_value.assert_called_once_with(
+    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_called_once_with(
         "apaaa", CONF_SYNC_ADJUST, 0
     )
     # the one-time marker is written afterwards
-    prov.mass.config.set_raw_provider_config_value.assert_called_once_with(
+    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_called_once_with(
         INSTANCE_ID, CONF_SYNC_ADJUST_RESET_MARKER, True
     )
 
 
 def test_sync_adjust_migration_runs_only_once() -> None:
     """With the marker set, the migration must not touch player configs again."""
-    player_configs = {"apaaa": {"player_id": "apaaa", "provider": INSTANCE_ID}}
+    player_configs: dict[str, dict[str, object]] = {
+        "apaaa": {"player_id": "apaaa", "provider": INSTANCE_ID}
+    }
     prov = _make_provider(
         marker_set=True,
         player_configs=player_configs,
@@ -88,8 +92,8 @@ def test_sync_adjust_migration_runs_only_once() -> None:
 
     prov._migrate_sync_adjust()
 
-    prov.mass.config.set_raw_player_config_value.assert_not_called()
-    prov.mass.config.set_raw_provider_config_value.assert_not_called()
+    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_not_called()
 
 
 # --- Shared PTP clock daemon: readiness signal ---------------------------------
@@ -201,7 +205,9 @@ def _ap2_player() -> MagicMock:
 def _make_ptp_session(prov: MagicMock, sync_clients: list[MagicMock]) -> AirPlayStreamSession:
     """Build a stream session wired to a mock provider for PTP-decision tests."""
     pcm_format = MagicMock()
-    return AirPlayStreamSession(prov, sync_clients, pcm_format, MagicMock())
+    return AirPlayStreamSession(
+        prov, cast("list[AirPlayPlayer]", sync_clients), pcm_format, MagicMock()
+    )
 
 
 async def test_session_resolves_shared_ptp_when_daemon_ready() -> None:
