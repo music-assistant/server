@@ -93,10 +93,15 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             ("ai_radio/ui_settings", self.get_ui_settings),
         )
         for command, handler in api_handlers:
-            self._unregister_handles.append(
-                self.mass.register_api_command(
-                    command, handler, required_scope=Scope.CONFIG_PROVIDERS_WRITE
+            required_scope = (
+                Scope.CONFIG_PROVIDERS_READ
+                if command.endswith(
+                    ("/list", "/get", "/template", "/validate", "/status", "/ui_settings")
                 )
+                else Scope.CONFIG_PROVIDERS_WRITE
+            )
+            self._unregister_handles.append(
+                self.mass.register_api_command(command, handler, required_scope=required_scope)
             )
         self.logger.info(
             "AI Radio API routes registered (%d handlers)",

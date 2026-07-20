@@ -225,7 +225,7 @@ class AIRadioStorageMixin:
             value = source_general.get(key, defaults[key])
             try:
                 return int(value)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 return int(defaults[key])
 
         return {
@@ -326,8 +326,8 @@ class AIRadioStorageMixin:
             "name": name,
             "source_playlist_id": source_playlist_id,
             "source_playlist_provider": source_playlist_provider,
-            "target_playlist_provider": str(station.get("target_playlist_provider", "builtin")),
-            "default_player_id": str(station.get("default_player_id", "")),
+            "target_playlist_provider": str(station.get("target_playlist_provider") or "builtin"),
+            "default_player_id": str(station.get("default_player_id") or ""),
             "max_duration_minutes": max(
                 0.0,
                 _require_number(

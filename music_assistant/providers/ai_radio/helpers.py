@@ -140,7 +140,7 @@ def coerce_float(value: Any, default: float) -> float:
     """Convert arbitrary value to float with a safe fallback."""
     try:
         return float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 
@@ -148,5 +148,5 @@ def coerce_int(value: Any, default: int) -> int:
     """Convert arbitrary value to int with a safe fallback."""
     try:
         return int(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
