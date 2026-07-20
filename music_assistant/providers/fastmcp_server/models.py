@@ -147,10 +147,20 @@ class AddToQueueResult:
 
 @dataclass
 class RecommendationFolderBrief:
-    """One curated recommendation folder (e.g. "Mood: Focus") with its track URIs."""
+    """One curated recommendation row (e.g. "Mood: Focus"), without its items."""
 
     name: str
-    item_uris: list[str] = field(default_factory=list)
+    provider: str
+    item_id: str
+
+
+@dataclass
+class RecommendationItemBrief:
+    """One item inside a recommendation row."""
+
+    uri: str
+    name: str
+    media_type: str | None = None
 
 
 # ---- Debug namespace response dataclasses (spec 0005) ----

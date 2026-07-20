@@ -64,25 +64,6 @@ async def test_source_descriptor_fields(mass: MusicAssistant) -> None:
     assert folder.items == []
 
 
-async def test_callable_source_builds_folder(mass: MusicAssistant) -> None:
-    """A callable source builds a RecommendationFolder from its factory output."""
-    source = CallableRecommendationSource(
-        mass,
-        item_id="x",
-        name="X",
-        translation_key="x_key",
-        icon="mdi-x",
-        items_factory=lambda: _async_return(_fake_items()),
-    )
-    folder = await source.build()
-    assert folder is not None
-    assert folder.item_id == "x"
-    assert folder.name == "X"
-    assert folder.translation_key == "x_key"
-    assert folder.icon == "mdi-x"
-    assert [item.item_id for item in folder.items] == ["a"]
-
-
 async def test_recently_played_rolls_up_to_container(mass: MusicAssistant) -> None:
     """Playing an album shows the album, not its individual tracks."""
     await _add_playlog_row(

@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
     RecommendationFolder,
-    UniqueList,
 )
 
 if TYPE_CHECKING:
@@ -55,19 +54,6 @@ class RecommendationSource(ABC):
             name=self.name,
             translation_key=self.translation_key,
             icon=self.icon,
-            enabled_by_default=self.enabled_by_default,
-        )
-
-    async def build(self) -> RecommendationFolder | None:
-        """Build this source's RecommendationFolder; subclasses may return None to suppress the row."""
-        items = await self.get_items()
-        return RecommendationFolder(
-            item_id=self.item_id,
-            provider=self.provider,
-            name=self.name,
-            translation_key=self.translation_key,
-            icon=self.icon,
-            items=cast("UniqueList[MediaItemType | ItemMapping | BrowseFolder]", list(items)),
             enabled_by_default=self.enabled_by_default,
         )
 

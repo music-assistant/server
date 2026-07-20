@@ -532,7 +532,7 @@ class MusicProvider(Provider):
         """
         return path
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """
         Browse this provider's items.
 
@@ -607,14 +607,11 @@ class MusicProvider(Provider):
             return [x async for x in self.get_sound_effects()]
         if subpath == "recommendations" and sub_subpath:
             # recommendations contents listing
-            recommendations = await self.recommendations()
-            for rec in recommendations:
-                if rec.item_id == sub_subpath:
-                    return rec.items
+            return await self.get_recommendation_items(sub_subpath)
         if subpath == "recommendations":
             # Main recommendations listing
             result: list[BrowseFolder] = []
-            recommendations = await self.recommendations()
+            recommendations = await self.get_recommendations()
             for rec in recommendations:
                 result.append(
                     BrowseFolder(
@@ -733,21 +730,6 @@ class MusicProvider(Provider):
             # only one level, return the items directly
             return await self.browse(folders[0].path)
         return folders
-
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's recommendations.
-
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
-
-        Overrides may accept an optional ``wanted: set[str] | None = None`` parameter
-        to build only the requested rows: the set holds the row item_ids to build;
-        None means build all rows.
-        """
-        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
-            raise NotImplementedError
-        return []
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """
