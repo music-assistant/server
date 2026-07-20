@@ -20,7 +20,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -40,6 +39,7 @@ from .constants import (
     CONF_ACTION_START_PAIRING,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_AP2PASSWORD,
+    CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_FORCE_RAOP,
     CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
@@ -269,7 +269,7 @@ class AirPlayPlayer(Player):
 
         # Regular AirPlay config entries
         base_entries += [
-            CONF_ENTRY_SYNC_ADJUST,
+            CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
             ConfigEntry(
                 key=CONF_PASSWORD,
                 type=ConfigEntryType.SECURE_STRING,

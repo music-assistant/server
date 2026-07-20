@@ -51,9 +51,12 @@ owntone dependency.
   nonce = 4 zero bytes + 2-byte seqnum, AAD = 8 bytes of RTP header) + sync packets.
 - EAR-VERIFIED on a Sonos stereo pair + a second Sonos (transient pairing) and
   an Apple TV 4K (HomeKit-PIN pair-verify), including multi-room sync on a
-  shared PTP daemon clock, MIXED RAOP+AP2 groups on one `--start-unix-ms`, and
-  automatic compensation of device-reported render latency
-  (`arrivalToRenderLatencyMs`, Apple TV ~107 ms through its TV).
+  shared PTP daemon clock and MIXED RAOP+AP2 groups on one `--start-unix-ms`.
+  Device-reported render latency (`arrivalToRenderLatencyMs`, Apple TV ~107 ms,
+  HomePod ~69 ms) is parsed and surfaced for diagnostics but NOT applied to the
+  timeline: receivers already self-compensate it, so applying it made those
+  devices play early. Real downstream latency (TV / AV receiver / amplifier) is
+  per-household and dialed in manually via the player's `sync_adjust`.
 
 ### 24-bit ALAC
 - Encoder fixed: the libcodecs `alac_wrapper.cpp` hardcoded `mFormatFlags=1` (16-bit);

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from enum import IntEnum
 from typing import Final
 
@@ -9,7 +10,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import INTERNAL_PCM_FORMAT
+from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, INTERNAL_PCM_FORMAT
 
 DOMAIN = "airplay"
 
@@ -64,9 +65,16 @@ CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
 
 # Provider-level marker for the one-time reset of user-calibrated sync_adjust
-# values from before the unified cliairplay binary (which auto-compensates
-# device-reported render latency, invalidating old calibrations).
+# values from before the unified cliairplay binary, whose different timing model
+# invalidates offsets calibrated against the old implementation.
 CONF_SYNC_ADJUST_RESET_MARKER: Final[str] = "unified_binary_sync_adjust_reset"
+
+# AirPlay serves the shared sync-adjust control as a non-advanced (always visible)
+# setting: with the unified binary no longer auto-applying device-reported render
+# latency, this is now the primary way to compensate a device wired to a TV / AV
+# receiver / amplifier that adds its own audio delay. The AirPlay-scoped strings
+# spell out the sign; the shared entry stays advanced for other providers.
+CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
 
 # Some RAOP models require a higher than default 1000ms buffer to prevent stuttering
 CONF_RAOP_LATENCY: Final[str] = "airplay_latency"

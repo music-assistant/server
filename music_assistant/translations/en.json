@@ -810,7 +810,7 @@
   "provider.airplay.config_entries.password.label": "Device password",
   "provider.airplay.config_entries.reset_pairing.label": "Reset {0} pairing",
   "provider.airplay.config_entries.start_pairing.label": "Start {0} pairing",
-  "provider.airplay.config_entries.sync_adjust.description": "Well-behaved AirPlay devices are kept in sync automatically: the streaming engine compensates the latency the device itself reports, so this should normally stay at 0. \nOnly use this as an escape hatch for oddball/unofficial receivers that consistently play ahead of or behind the rest of the group.",
+  "provider.airplay.config_entries.sync_adjust.description": "Shifts when audio is heard on this device relative to the other players in a synced group. \nNegative values make this device play earlier; positive values make it play later. \nUse a negative value when this device is connected to a TV, AV receiver or amplifier that adds a processing delay, which makes it play slightly behind the rest of the group. \nExample: if this device lags the group by about 100 ms, set it to -100 to pull it back into sync.",
   "provider.airplay.config_entries.sync_adjust.label": "Audio synchronization delay correction",
   "provider.airplay.manifest.description": "Stream to AirPlay-enabled devices on your local network.",
   "provider.airplay_receiver.config_entries.airplay_name.description": "How should this AirPlay receiver be named in the AirPlay device list?",

@@ -25,7 +25,7 @@
     },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
-      "description": "Well-behaved AirPlay devices are kept in sync automatically: the streaming engine compensates the latency the device itself reports, so this should normally stay at 0. \nOnly use this as an escape hatch for oddball/unofficial receivers that consistently play ahead of or behind the rest of the group."
+      "description": "Shifts when audio is heard on this device relative to the other players in a synced group. \nNegative values make this device play earlier; positive values make it play later. \nUse a negative value when this device is connected to a TV, AV receiver or amplifier that adds a processing delay, which makes it play slightly behind the rest of the group. \nExample: if this device lags the group by about 100 ms, set it to -100 to pull it back into sync."
     },
     "pairing_pin": {
       "label": "Enter the 4-digit PIN shown on the device"

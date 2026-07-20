@@ -8,6 +8,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
@@ -161,6 +162,17 @@ async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlaye
     """The ignore_volume setting must be offered in the player config entries."""
     entries = await airplay_player.get_config_entries()
     assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_config_entries_sync_adjust_is_non_advanced(airplay_player: AirPlayPlayer) -> None:
+    """AirPlay offers sync_adjust as a discoverable (non-advanced) setting."""
+    entries = await airplay_player.get_config_entries()
+    entry = next((entry for entry in entries if entry.key == CONF_SYNC_ADJUST), None)
+    assert entry is not None
+    # non-advanced so users can find it: it is the primary control for compensating
+    # a device wired to a TV / AV receiver / amplifier that adds its own audio delay
+    assert entry.advanced is False
 
 
 def _set_discovery_info(

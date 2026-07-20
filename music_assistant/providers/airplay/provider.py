@@ -343,10 +343,10 @@ class AirPlayProvider(PlayerProvider):
 
     def _migrate_sync_adjust(self) -> None:
         """One-time reset of persisted sync_adjust values on this provider's players."""
-        # The unified cliairplay binary auto-compensates device-reported render
-        # latency, so offsets calibrated against the old implementation would now
-        # break sync instead of fixing it. Reset them once; a provider-level
-        # marker prevents wiping adjustments the user makes after the migration.
+        # The unified cliairplay binary uses a different timing model than the old
+        # implementation, so offsets calibrated against it would now break sync
+        # instead of fixing it. Reset them once; a provider-level marker prevents
+        # wiping adjustments the user makes after the migration.
         if self.mass.config.get_raw_provider_config_value(
             self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, False
         ):
@@ -361,8 +361,8 @@ class AirPlayProvider(PlayerProvider):
                 continue
             self.logger.warning(
                 "Resetting sync_adjust of %sms for player %s: the unified AirPlay engine "
-                "compensates device latency automatically, so corrections calibrated "
-                "against the old implementation no longer apply",
+                "uses a different timing model, so corrections calibrated against the old "
+                "implementation no longer apply",
                 stored,
                 player_id,
             )
