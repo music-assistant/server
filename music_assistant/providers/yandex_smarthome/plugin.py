@@ -21,9 +21,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from ya_dialogs_api import SecretStr
+
 from music_assistant.models.plugin import PluginProvider
 
-from ._compat import SecretStr
 from .cloud import CloudManager
 from .constants import (
     CLOUD_CALLBACK_URL,
@@ -34,12 +35,14 @@ from .constants import (
     CONF_DIRECT_ACCESS_TOKEN,
     CONF_DIRECT_CLIENT_SECRET,
     CONF_EXPOSED_PLAYERS,
+    CONF_EXPOSED_PLAYLISTS,
     CONF_INSTANCE_NAME,
     CONF_SKILL_ID,
     CONF_SKILL_TOKEN,
     CONNECTION_TYPE_CLOUD,
     CONNECTION_TYPE_CLOUD_PLUS,
     CONNECTION_TYPE_DIRECT,
+    MAX_INPUT_SOURCES,
     YANDEX_DIALOGS_CALLBACK_BASE,
 )
 from .direct import DirectConnectionHandler
@@ -103,6 +106,23 @@ class YandexSmartHomePlugin(PluginProvider):
             exposed_raw = []
         self._exposed_ids: set[str] | None = set(exposed_raw) if exposed_raw else None
 
+        # Parse exposed playlists (URIs) — capped at MAX_INPUT_SOURCES.
+        playlists_raw = self.config.get_value(CONF_EXPOSED_PLAYLISTS) or []
+        if isinstance(playlists_raw, str):
+            playlists_raw = [x.strip() for x in playlists_raw.split(",") if x.strip()]
+        elif isinstance(playlists_raw, list):
+            playlists_raw = [str(x) for x in playlists_raw if x]
+        else:
+            playlists_raw = []
+        if len(playlists_raw) > MAX_INPUT_SOURCES:
+            self.logger.warning(
+                "Exposed playlists count (%d) exceeds cap %d; truncating",
+                len(playlists_raw),
+                MAX_INPUT_SOURCES,
+            )
+            playlists_raw = playlists_raw[:MAX_INPUT_SOURCES]
+        self._exposed_playlists: tuple[str, ...] = tuple(playlists_raw)
+
         self.logger.info(
             "Yandex Smart Home plugin init (mode=%s, name=%s)",
             self._connection_type,
@@ -123,6 +143,33 @@ class YandexSmartHomePlugin(PluginProvider):
             await self._start_direct_mode()
         else:
             self.logger.error("Unknown connection type: %s", self._connection_type)
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        is_removed will be set to True when the provider is removed from the configuration.
+        """
+        self.logger.info("Yandex Smart Home plugin unloading (removed=%s)", is_removed)
+
+        if self._state_notifier:
+            await self._state_notifier.stop()
+            self._state_notifier = None
+
+        if self._direct_handler:
+            self._direct_handler.unregister_routes()
+            self._direct_handler = None
+
+        if self._cloud_manager:
+            await self._cloud_manager.disconnect()
+            self._cloud_manager = None
+
+        if self._cloud_task:
+            cloud_task = self._cloud_task
+            self._cloud_task = None
+            if not cloud_task.done():
+                cloud_task.cancel()
 
     async def _start_cloud_mode(self) -> None:
         """Initialize and start cloud relay connection + state notifier."""
@@ -184,18 +231,22 @@ class YandexSmartHomePlugin(PluginProvider):
             auth_header=auth_header,
             logger=self.logger,
             exposed_ids=self._exposed_ids,
+            playlist_uris=self._exposed_playlists,
         )
         await self._state_notifier.start()
 
     async def _start_direct_mode(self) -> None:
-        """Initialize direct connection mode — HTTP endpoints + state notifier."""
-        if not self._skill_id or not self._skill_token or not self._skill_token.get_secret():
-            self.logger.error(
-                "Direct mode requires skill_id and skill_token — "
-                "create a private skill in Yandex.Dialogs and configure the tokens"
-            )
-            return
+        """
+        Initialize direct connection mode — HTTP endpoints + state notifier.
 
+        Two-stage: HTTP routes are registered as soon as ``direct_client_secret``
+        is available (auto-generated when the user opens the config form), so
+        Yandex's backend-validation step during ``request_deploy`` can reach
+        them before the skill is created. The state notifier (outgoing
+        callbacks to Yandex) only starts once ``skill_id``/``skill_token``
+        are populated by a successful auto-create — there is nothing to
+        report state to before that point.
+        """
         if not self._direct_client_secret:
             self.logger.error("Direct mode requires a client secret for OAuth account linking")
             return
@@ -215,24 +266,48 @@ class YandexSmartHomePlugin(PluginProvider):
             exposed_ids=self._exposed_ids,
             logger=self.logger,
             on_token_created=_on_token_created,
+            playlist_uris=self._exposed_playlists,
         )
         self._direct_handler.register_routes()
 
-        # State notifier — callback to Yandex Dialogs (same as Cloud Plus)
-        session = self.mass.http_session
-        callback_url = f"{YANDEX_DIALOGS_CALLBACK_BASE}/{self._skill_id}/callback/state"
-        auth_header = {"Authorization": f"OAuth {self._skill_token.get_secret()}"}
+        # State notifier needs skill_id + skill_token to push state callbacks
+        # to Yandex — these only exist after a successful auto-create AND the
+        # user pasting the OAuth token. Skip silently if either is missing;
+        # this is the normal "first run" / "skill created but token not yet
+        # pasted" state.
+        has_skill_id = bool(self._skill_id)
+        skill_token = self._skill_token
+        has_skill_token = skill_token is not None and bool(skill_token.get_secret())
+        if has_skill_id and has_skill_token and skill_token is not None:
+            session = self.mass.http_session
+            callback_url = f"{YANDEX_DIALOGS_CALLBACK_BASE}/{self._skill_id}/callback/state"
+            auth_header = {"Authorization": f"OAuth {skill_token.get_secret()}"}
 
-        self._state_notifier = StateNotifier(
-            mass=self.mass,
-            session=session,
-            user_id=self._user_id,
-            callback_url=callback_url,
-            auth_header=auth_header,
-            logger=self.logger,
-            exposed_ids=self._exposed_ids,
-        )
-        await self._state_notifier.start()
+            self._state_notifier = StateNotifier(
+                mass=self.mass,
+                session=session,
+                user_id=self._user_id,
+                callback_url=callback_url,
+                auth_header=auth_header,
+                logger=self.logger,
+                exposed_ids=self._exposed_ids,
+                playlist_uris=self._exposed_playlists,
+            )
+            await self._state_notifier.start()
+        else:
+            missing = []
+            if not has_skill_id:
+                missing.append("Skill ID")
+            if not has_skill_token:
+                missing.append("Skill OAuth Token")
+            self.logger.info(
+                "Direct mode: HTTP routes registered, but state notifier is "
+                "idle (missing: %s). Open the plugin settings: 'Auto-create "
+                "Smart Home skill' fills the Skill ID for you, then open the "
+                "OAuth-token URL shown in the form, approve access, and paste "
+                "the resulting access_token into 'Skill OAuth Token'.",
+                " + ".join(missing),
+            )
 
         self.logger.info("Direct connection mode started")
 
@@ -257,6 +332,7 @@ class YandexSmartHomePlugin(PluginProvider):
                     self.mass,
                     self._user_id,
                     exposed_ids=self._exposed_ids,
+                    playlist_uris=self._exposed_playlists,
                 )
                 return build_response(request_id, asdict(device_list))
 
@@ -267,14 +343,20 @@ class YandexSmartHomePlugin(PluginProvider):
                     if isinstance(d, dict) and (device_id := d.get("id"))
                 ]
                 states = await handle_devices_query(
-                    self.mass, device_ids, exposed_ids=self._exposed_ids
+                    self.mass,
+                    device_ids,
+                    exposed_ids=self._exposed_ids,
+                    playlist_uris=self._exposed_playlists,
                 )
                 return build_response(request_id, asdict(states))
 
             if normalized == "/user/devices/action":
                 action_payload = parse_action_payload(message)
                 action_result = await handle_devices_action(
-                    self.mass, action_payload, exposed_ids=self._exposed_ids
+                    self.mass,
+                    action_payload,
+                    exposed_ids=self._exposed_ids,
+                    playlist_uris=self._exposed_playlists,
                 )
                 return build_response(request_id, asdict(action_result))
 
@@ -288,30 +370,3 @@ class YandexSmartHomePlugin(PluginProvider):
         except Exception:
             self.logger.exception("Error handling cloud request: %s", action)
             return build_response(request_id, {})
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        is_removed will be set to True when the provider is removed from the configuration.
-        """
-        self.logger.info("Yandex Smart Home plugin unloading (removed=%s)", is_removed)
-
-        if self._state_notifier:
-            await self._state_notifier.stop()
-            self._state_notifier = None
-
-        if self._direct_handler:
-            self._direct_handler.unregister_routes()
-            self._direct_handler = None
-
-        if self._cloud_manager:
-            await self._cloud_manager.disconnect()
-            self._cloud_manager = None
-
-        if self._cloud_task:
-            cloud_task = self._cloud_task
-            self._cloud_task = None
-            if not cloud_task.done():
-                cloud_task.cancel()

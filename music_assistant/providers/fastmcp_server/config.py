@@ -35,6 +35,7 @@ from .constants import (
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
     CONF_LEAN_ADMIN_SCHEMA,
+    CONF_META_TOOL_DISCOVERY,
     CONF_MOUNT_PATH,
     CONF_QUERY_LIBRARY,
     CONF_QUERY_METADATA,
@@ -153,6 +154,14 @@ def build_config_entries(
         ),
         ConfigEntry(
             key=CONF_TRUST_FORWARDED_PROTO,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            category="server",
+            advanced=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_META_TOOL_DISCOVERY,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
             category="server",
