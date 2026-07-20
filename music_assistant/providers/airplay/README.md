@@ -461,9 +461,8 @@ The provider creates players with different types based on whether the device is
 ### General
 - **`password`**: Device password if required (RAOP)
 - **`ignore_volume`**: Ignore device volume reports (default: false)
-- **`airplay_latency`**: Advanced playback lead/buffer override in milliseconds (default 0 = automatic: the binary's 2000 ms AirPlay-standard default, clamped to the device-reported window)
 - **`hires_playback`**: Advanced per-player opt-in for 24-bit playback over native AirPlay 2 (default: off; only shown for AirPlay 2-capable devices - some devices accept 24-bit and play silence, hence opt-in)
-- **`sync_adjust`**: Per-player timing adjustment in milliseconds (default: 0)
+- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary and is no longer user-configurable.
 
 ### Pairing (Apple devices only)
 - **`raop_credentials`**: Stored RAOP pairing credentials (hidden)

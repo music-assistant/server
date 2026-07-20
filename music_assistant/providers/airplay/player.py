@@ -28,8 +28,6 @@ from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_HIRES_SAMPLE_RATES,
-    AIRPLAY_LATENCY_AUTO,
-    AIRPLAY_LATENCY_MAX_MS,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_RAOP_SETUP_LEAD_MS,
     BASE_PLAYER_FEATURES,
@@ -47,7 +45,6 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
-    CONF_RAOP_LATENCY,
     CONF_STORED_VOLUME,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
@@ -212,11 +209,6 @@ class AirPlayPlayer(Player):
         }
 
     @property
-    def latency_override_ms(self) -> int:
-        """Get the user-configured playback lead/buffer override (0 = automatic)."""
-        return cast("int", self.config.get_value(CONF_RAOP_LATENCY, AIRPLAY_LATENCY_AUTO))
-
-    @property
     def wait_start(self) -> int:
         """Get the lead time in ms between starting the stream and the audible start."""
         # the binary owns all lead/buffer handling from the chosen start instant;
@@ -284,14 +276,6 @@ class AirPlayPlayer(Player):
                 key=CONF_IGNORE_VOLUME,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                category="protocol_generic",
-                advanced=True,
-            ),
-            ConfigEntry(
-                key=CONF_RAOP_LATENCY,
-                type=ConfigEntryType.INTEGER,
-                default_value=AIRPLAY_LATENCY_AUTO,
-                range=(AIRPLAY_LATENCY_AUTO, AIRPLAY_LATENCY_MAX_MS),
                 category="protocol_generic",
                 advanced=True,
             ),

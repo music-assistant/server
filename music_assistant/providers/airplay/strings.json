@@ -15,10 +15,6 @@
       "label": "Ignore volume reports sent by the device itself",
       "description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports."
     },
-    "airplay_latency": {
-      "label": "Playback lead/buffer override (milliseconds)",
-      "description": "Override the playback lead (buffer) used by the streaming engine. \nLeave at 0 for automatic: the AirPlay-standard 2000 ms, clamped to the buffering window the device reports. \nOnly set a value if playback on this device is unreliable."
-    },
     "hires_playback": {
       "label": "Enable hi-res (24-bit) playback",
       "description": "Stream 24-bit audio (44.1/48 kHz) to this device using the native AirPlay 2 flow. \nOnly enable if the device actually renders 24-bit — some devices accept the stream and then play silence. \nKnown to work on Apple TV and HomePod."

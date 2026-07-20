@@ -252,10 +252,8 @@ class AirPlayStream:
             str(self.pcm_format.bit_depth),
         ]
 
-        # Playback lead/buffer: the binary's default (2000 ms, clamped to the
-        # device-reported window) is used unless the user explicitly overrides it.
-        if latency_override := self.player.latency_override_ms:
-            args += ["--latency", str(latency_override)]
+        # The binary owns the playback lead/buffer (2000 ms default, clamped to
+        # the device-reported window); there is no user override for it.
 
         airplay_info = self.player.airplay_discovery_info
         raop_info = self.player.raop_discovery_info

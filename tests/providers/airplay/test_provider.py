@@ -268,7 +268,6 @@ def _stream_player(*, ptp_daemon_running: bool) -> MagicMock:
     player.address = "192.168.1.50"
     player.protocol = StreamingProtocol.AIRPLAY2
     player.protocol_override = None
-    player.latency_override_ms = 0
     player.volume_level = 40
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"

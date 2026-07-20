@@ -49,11 +49,6 @@ AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
 # Late joiners keep a more conservative headroom: besides connecting, their
 # pipeline must also be primed from the session's history buffer.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
-# The --latency override is only passed to the binary when the user explicitly
-# configured it; 0 means automatic (the binary's AirPlay-standard 2000 ms
-# default, clamped to the device-reported buffering window).
-AIRPLAY_LATENCY_AUTO: Final[int] = 0
-AIRPLAY_LATENCY_MAX_MS: Final[int] = 5000
 
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
@@ -75,9 +70,6 @@ CONF_SYNC_ADJUST_RESET_MARKER: Final[str] = "unified_binary_sync_adjust_reset"
 # receiver / amplifier that adds its own audio delay. The AirPlay-scoped strings
 # spell out the sign; the shared entry stays advanced for other providers.
 CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
-
-# Some RAOP models require a higher than default 1000ms buffer to prevent stuttering
-CONF_RAOP_LATENCY: Final[str] = "airplay_latency"
 
 # Pairing action keys
 CONF_ACTION_START_PAIRING: Final[str] = "start_pairing"

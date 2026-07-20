@@ -22,7 +22,6 @@ def _make_player() -> MagicMock:
     player.address = "192.168.1.50"
     player.protocol = StreamingProtocol.AIRPLAY2
     player.protocol_override = None
-    player.latency_override_ms = 0
     player.volume_level = 40
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
@@ -138,12 +137,11 @@ async def test_cli_args_no_ptp_shared_without_daemon() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_latency_override() -> None:
-    """An explicitly configured latency override is passed to the binary."""
+async def test_cli_args_no_latency_override() -> None:
+    """The playback lead/buffer is binary-managed; MA never passes --latency."""
     player = _make_player()
-    player.latency_override_ms = 3000
     args = await _build_args(player)
-    assert _arg_value(args, "--latency") == "3000"
+    assert "--latency" not in args
 
 
 @pytest.mark.asyncio

@@ -792,8 +792,6 @@
   "provider.acoustid_lookup.config_entries.write_tags_back.label": "Write AcoustID/MusicBrainz tags back to files",
   "provider.acoustid_lookup.manifest.description": "Identifies local audio files using AcoustID/Chromaprint fingerprinting and fills in their MusicBrainz recording ID for subsequent metadata enrichment.",
   "provider.airplay.config_entries.BROKEN_AIRPLAY.label": "This player is known to have broken AirPlay support. Playback may fail or simply be silent. There is no workaround for this issue at the moment. \nIf you already enforced AirPlay 2 on the player and it remains silent, this is one of the known broken models. Only remedy is to nag the manufacturer for a fix.",
-  "provider.airplay.config_entries.airplay_latency.description": "Override the playback lead (buffer) used by the streaming engine. \nLeave at 0 for automatic: the AirPlay-standard 2000 ms, clamped to the buffering window the device reports. \nOnly set a value if playback on this device is unreliable.",
-  "provider.airplay.config_entries.airplay_latency.label": "Playback lead/buffer override (milliseconds)",
   "provider.airplay.config_entries.finish_pairing_password.label": "Complete {0} pairing with the password",
   "provider.airplay.config_entries.finish_pairing_pin.label": "Complete {0} pairing with the PIN",
   "provider.airplay.config_entries.force_raop.description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP.",
