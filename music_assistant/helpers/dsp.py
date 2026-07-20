@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CrossfeedFilter,
     DSPFilter,
     GainFilter,
     HighLowPassFilter,
     HighLowPassMode,
     ParametricEQBandType,
     ParametricEQFilter,
+    StereoWidthFilter,
     ToneControlFilter,
     TransposeFilter,
 )
@@ -197,6 +199,20 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
             q = 1 / (2 * math.cos(math.pi * (2 * section + 1) / (2 * order)))
             alpha = sin_w0 / (2 * q)
             filter_params.append(_pass_biquad_params(high_pass=high_pass, w_0=w_0, alpha=alpha))
+
+    if isinstance(dsp_filter, StereoWidthFilter) and dsp_filter.width != 1.0:
+        # width scales the side (L-R) signal; a non-stereo source has no side
+        # component, so only apply it to stereo streams
+        if input_format.channels == 2:
+            filter_params.append(f"extrastereo=m={dsp_filter.width}")
+
+    if isinstance(dsp_filter, CrossfeedFilter):
+        # crossfeed blends the left and right channels for headphone listening
+        # and is only meaningful on stereo streams
+        if input_format.channels == 2:
+            filter_params.append(
+                f"crossfeed=strength={dsp_filter.strength}:range={dsp_filter.soundstage}"
+            )
 
     return filter_params
 

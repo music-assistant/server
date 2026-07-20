@@ -5,6 +5,7 @@ import math
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CrossfeedFilter,
     GainFilter,
     HighLowPassFilter,
     HighLowPassMode,
@@ -12,6 +13,7 @@ from music_assistant_models.dsp import (
     ParametricEQBand,
     ParametricEQBandType,
     ParametricEQFilter,
+    StereoWidthFilter,
     ToneControlFilter,
     TransposeFilter,
 )
@@ -91,6 +93,46 @@ def test_transpose_filter_zero_is_passthrough() -> None:
     """Test that a transpose filter of 0 semitones emits no ffmpeg filter."""
     dsp_filter = TransposeFilter(enabled=True, semitones=0.0)
     assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == []
+
+
+def test_stereo_width_filter_wide() -> None:
+    """Test that a widened stereo width maps to an extrastereo filter."""
+    dsp_filter = StereoWidthFilter(enabled=True, width=1.5)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == ["extrastereo=m=1.5"]
+
+
+def test_stereo_width_filter_mono() -> None:
+    """Test that zero width collapses the side signal to mono."""
+    dsp_filter = StereoWidthFilter(enabled=True, width=0.0)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == ["extrastereo=m=0.0"]
+
+
+def test_stereo_width_filter_neutral_is_passthrough() -> None:
+    """Test that a unity stereo width emits no ffmpeg filter."""
+    dsp_filter = StereoWidthFilter(enabled=True, width=1.0)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == []
+
+
+def test_stereo_width_filter_mono_is_skipped() -> None:
+    """Test that stereo width is skipped on a mono source (stereo-only operation)."""
+    dsp_filter = StereoWidthFilter(enabled=True, width=1.5)
+    mono_format = AudioFormat(sample_rate=48000, channels=1)
+    assert filter_to_ffmpeg_params(dsp_filter, mono_format) == []
+
+
+def test_crossfeed_filter() -> None:
+    """Test that a crossfeed filter maps to an ffmpeg crossfeed filter."""
+    dsp_filter = CrossfeedFilter(enabled=True, strength=0.35, soundstage=0.6)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == [
+        "crossfeed=strength=0.35:range=0.6"
+    ]
+
+
+def test_crossfeed_filter_mono_is_skipped() -> None:
+    """Test that crossfeed is skipped on a mono source (stereo-only operation)."""
+    dsp_filter = CrossfeedFilter(enabled=True, strength=0.2, soundstage=0.5)
+    mono_format = AudioFormat(sample_rate=48000, channels=1)
+    assert filter_to_ffmpeg_params(dsp_filter, mono_format) == []
 
 
 def test_tone_control_filter() -> None:
