@@ -93,3 +93,25 @@ def test_parse_playlist(
     is_mix = "mix" in example.name
     parsed = parse_playlist(provider_mock, data, is_mix=is_mix).to_dict()
     assert snapshot == parsed
+
+
+def test_parse_track_partial_album(provider_mock: Mock) -> None:
+    """Test track parsing tolerates partial album objects."""
+    track_obj = {
+        "id": 123,
+        "title": "Test Track",
+        "duration": 100,
+        "artists": [{"id": 1, "name": "Test Artist", "picture": None}],
+        "album": {"id": 456},  # No title or cover
+    }
+
+    track = parse_track(provider_mock, track_obj)
+
+    assert track.album is not None
+    assert track.album.item_id == "456"
+    assert track.album.name == ""
+
+    # An album without an id is useless: no mapping should be created
+    track_obj["album"] = {"title": "Test Album"}
+    track = parse_track(provider_mock, track_obj)
+    assert track.album is None

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import (
     ItemMapping,
     RecommendationFolder,
@@ -196,7 +197,7 @@ async def test_manager_builds_payload_folders(
     """The manager merges page modules into folders with items and stable item_ids."""
     # Mock get_page_content to return a mock parser
     mock_parser = Mock()
-    mock_parser._module_map = [{"title": "Test Module"}]
+    mock_parser.modules = [{"title": "Test Module"}]
     mock_parser.get_module_items.return_value = (
         [Mock(item_id="rec_1", name="Recommendation 1")],
         MediaType.PLAYLIST,
@@ -233,14 +234,14 @@ async def test_manager_strips_at_symbol_when_multiple_instances(
     )
 
     parser_with_module = Mock()
-    parser_with_module._module_map = [{"title": "Test Module"}]
+    parser_with_module.modules = [{"title": "Test Module"}]
     parser_with_module.get_module_items.return_value = (
         [Mock(item_id="rec_1", name="Recommendation 1")],
         MediaType.PLAYLIST,
     )
 
     parser_empty = Mock()
-    parser_empty._module_map = []
+    parser_empty.modules = []
     parser_empty.get_module_items = Mock()
 
     with patch.object(
@@ -269,13 +270,13 @@ async def test_get_page_content(
 
         # Configure parser instance
         mock_parser_instance = mock_parser_cls.return_value
-        mock_parser_instance._module_map = []
-        mock_parser_instance._content_map = {}
-        mock_parser_instance._parsed_at = 1234567890
         mock_parser_instance.parse_page_structure = Mock()  # Ensure it's a synchronous mock
+        mock_parser_instance.to_cache = Mock(
+            return_value={"module_map": [], "content_map": {}, "parsed_at": 1234567890}
+        )
 
         # Mock API response
-        provider_mock.api.get.return_value = ({"rows": []}, "etag")
+        provider_mock.api.get.return_value = {"rows": []}
 
         parser = await recommendation_manager.get_page_content("pages/home")
 
@@ -292,3 +293,19 @@ async def test_get_page_content(
 
         # Should cache result
         provider_mock.mass.cache.set.assert_called()
+
+
+async def test_get_page_content_propagates_api_errors(
+    recommendation_manager: TidalRecommendationManager, provider_mock: Mock
+) -> None:
+    """Test API failures propagate so an empty result is never cached."""
+    with patch(
+        "music_assistant.providers.tidal.recommendations.TidalPageParser"
+    ) as mock_parser_cls:
+        mock_parser_cls.from_cache = AsyncMock(return_value=None)
+        provider_mock.api.get.side_effect = ResourceTemporarilyUnavailable("API error")
+
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await recommendation_manager.get_page_content("pages/home")
+
+        provider_mock.mass.cache.set.assert_not_called()

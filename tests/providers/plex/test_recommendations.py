@@ -62,6 +62,7 @@ def _make_provider(hubs: list[_FakeHub]) -> tuple[Any, list[asyncio.Future[Any]]
         "log_level": "INFO",
         "token": "local_auth",
         "hub_items_limit": 10,
+        "extended_recommendations": False,
     }
     mock_config.get_value = lambda key: config_values.get(key)
     mock_manifest = MagicMock()
@@ -133,7 +134,7 @@ async def test_get_recommendations_returns_hub_rows_without_items() -> None:
     assert all(row.icon == "mdi-music" for row in rows)
     assert all(len(row.items) == 0 for row in rows)
     provider._plex_library.fetchItems.assert_called_once_with(
-        "/hubs/sections/10?includeStations=1&count=10"
+        "/hubs/sections/10?count=10&includeStations=1"
     )
 
 

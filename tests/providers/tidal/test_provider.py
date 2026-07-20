@@ -80,7 +80,7 @@ async def test_handle_async_init_success(provider: TidalProvider) -> None:
         patch.object(provider.auth, "update_user_info", new_callable=AsyncMock),
     ):
         mock_init.return_value = True
-        mock_get.return_value = ({"userId": "12345", "sessionId": "session_123"}, None)
+        mock_get.return_value = {"userId": "12345", "sessionId": "session_123"}
         mock_get_user.return_value = {"id": "12345", "username": "testuser"}
 
         await provider.handle_async_init()
@@ -357,7 +357,7 @@ async def test_remove_playlist_tracks_delegates_to_playlists(provider: TidalProv
 
 async def test_get_user(provider: TidalProvider) -> None:
     """Test get_user fetches user data."""
-    with patch.object(provider.api, "get_data", new_callable=AsyncMock) as mock_get:
+    with patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get:
         mock_get.return_value = {"id": "123", "username": "testuser"}
 
         user = await provider.get_user("123")

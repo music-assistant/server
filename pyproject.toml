@@ -26,8 +26,8 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
+  "music-assistant-frontend==2.17.227",
   "music-assistant-models==1.1.164",
-  "music-assistant-frontend==2.17.226",
   "mutagen==1.47.0",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -67,7 +67,7 @@ test = [
   "pytest-cov==7.0.0",
   "syrupy==5.2.0",
   "tomli==2.4.1",
-  "ruff==0.15.6",
+  "ruff==0.15.22",
   "yappi==1.7.6",
 ]
 
