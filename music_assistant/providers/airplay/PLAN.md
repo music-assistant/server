@@ -170,7 +170,9 @@ Changes to port from the abandoned branch (backed up in `/tmp/airplay-backup/`):
     only. The full `_airplay._tcp` TXT is passed via `--txt` for route selection.
   - Group start switched from MA-side NTP math to `--start-unix-ms` ("first sample
     audible at this instant", same value for every group member). All NTP helpers
-    removed; MA budgets a single fixed `AIRPLAY_SETUP_LEAD_MS` (2500 ms).
+    removed; MA budgets a fixed per-protocol setup lead (`AIRPLAY_RAOP_SETUP_LEAD_MS`
+    1500 ms, `AIRPLAY_AP2_SETUP_LEAD_MS` 2500 ms — native AP2 needs more pre-fill
+    headroom), the group taking the largest member lead.
   - `--latency` is only passed when the user explicitly configured an override
     (0 = automatic: binary default 2000 ms clamped to the device window).
   - One `cliairplay --ptp-daemon` per provider lifetime (spawn at setup, SIGTERM on

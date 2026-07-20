@@ -25,13 +25,14 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, i
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    AIRPLAY_AP2_SETUP_LEAD_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_LATENCY_AUTO,
     AIRPLAY_LATENCY_MAX_MS,
     AIRPLAY_PCM_FORMAT,
-    AIRPLAY_SETUP_LEAD_MS,
+    AIRPLAY_RAOP_SETUP_LEAD_MS,
     BASE_PLAYER_FEATURES,
     BROKEN_AIRPLAY_WARN,
     CONF_ACTION_FINISH_PAIRING,
@@ -220,7 +221,11 @@ class AirPlayPlayer(Player):
         """Get the lead time in ms between starting the stream and the audible start."""
         # the binary owns all lead/buffer handling from the chosen start instant;
         # MA only budgets a fixed setup lead for spawn + connect + session setup
-        return AIRPLAY_SETUP_LEAD_MS
+        # + receiver pre-fill. Native AirPlay 2 needs a larger budget than RAOP
+        # (its pre-fill is paced), otherwise the start clips intermittently.
+        if self.protocol == StreamingProtocol.RAOP:
+            return AIRPLAY_RAOP_SETUP_LEAD_MS
+        return AIRPLAY_AP2_SETUP_LEAD_MS
 
     async def get_config_entries(
         self,

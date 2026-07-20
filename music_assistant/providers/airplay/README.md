@@ -397,10 +397,13 @@ to the binary as plain unix epoch milliseconds (`--start-unix-ms`), meaning
 "**the first sample is audible exactly at this instant**" on every protocol
 path (RAOP, AirPlay 2 RAOP-compat and native).
 
-1. Calculate the start instant: `now + AIRPLAY_SETUP_LEAD_MS` (fixed lead that
-   covers process spawn + connect + session setup)
-2. Pass the **same** value to every member of a sync group (mixed RAOP +
-   AirPlay 2 groups align by construction)
+1. Calculate the start instant: `now + wait_start`, a fixed per-protocol lead
+   (`AIRPLAY_RAOP_SETUP_LEAD_MS` / `AIRPLAY_AP2_SETUP_LEAD_MS`) covering process
+   spawn + connect + session setup + receiver pre-fill; native AirPlay 2 uses
+   the larger budget as its pre-fill is paced
+2. Pass the **same** value to every member of a sync group — the group takes
+   the largest member lead, so mixed RAOP + AirPlay 2 groups align by
+   construction
 3. The binary owns all lead/buffer handling from there: it fills the
    receiver's buffer ahead of the audible start (clamped to the buffering
    window the device reports), so the start cannot underrun

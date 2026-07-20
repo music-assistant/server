@@ -37,11 +37,14 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
 # Fixed lead (ms) between starting the stream and the audible group start
 # (--start-unix-ms means "the first sample is audible exactly at this instant"
-# on every protocol path). Covers process spawn + connect/session setup with
-# margin (a cold native connect measures ~0.4s); the binary fills the
-# receiver's buffer ahead of the audible start automatically, so the start
-# cannot underrun as long as the connect completes within the lead.
-AIRPLAY_SETUP_LEAD_MS: Final[int] = 1500
+# on every protocol path). Covers process spawn + connect/session setup plus
+# the receiver-buffer pre-fill the binary does ahead of the audible start.
+# The effective pre-fill is roughly lead - connect_time; the native AirPlay 2
+# path needs a larger budget than RAOP because its pre-fill is paced (RAOP
+# bursts its backlog and fills faster), so too short a lead intermittently
+# clips the first fraction of a second on native receivers such as Sonos.
+AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
+AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
 # Late joiners keep a more conservative headroom: besides connecting, their
 # pipeline must also be primed from the session's history buffer.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
