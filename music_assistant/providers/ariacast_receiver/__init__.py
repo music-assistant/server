@@ -529,7 +529,9 @@ class AriaCastReceiver(PluginProvider):
 
         if not player or player.state.volume_level is None:
             with suppress(Exception):
-                await ws.send_json({"command": "volume", "action": "volume", "level": -1, "success": False})
+                await ws.send_json(
+                    {"command": "volume", "action": "volume", "level": -1, "success": False}
+                )
             return
 
         try:
