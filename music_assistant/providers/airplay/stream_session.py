@@ -15,6 +15,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
 
+from .constants import AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
 from .helpers import get_final_output_format
 from .stream import AirPlayStream
 
@@ -184,8 +185,13 @@ class AirPlayStreamSession:
             # play at ``start_at``. cliairplay buffers ``wait_start`` seconds of
             # audio before starting playback, so we keep ``start_at`` at least
             # that far in the future (using the larger of the session's
-            # existing wait_start and the late joiner's own).
-            min_headroom = max(self.wait_start, airplay_player.wait_start / 1000)
+            # existing wait_start, the late joiner's own and the late-join
+            # floor, which is more conservative than the plain session lead).
+            min_headroom = max(
+                self.wait_start,
+                airplay_player.wait_start / 1000,
+                AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000,
+            )
             target_start_at = now + min_headroom
             trim_seconds = 0.0
             if start_at < target_start_at:

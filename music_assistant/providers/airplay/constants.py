@@ -38,9 +38,13 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # Fixed lead (ms) between starting the stream and the audible group start
 # (--start-unix-ms means "the first sample is audible exactly at this instant"
 # on every protocol path). Covers process spawn + connect/session setup with
-# margin; the binary fills the receiver's buffer ahead of the audible start
-# automatically, so the start cannot underrun.
-AIRPLAY_SETUP_LEAD_MS: Final[int] = 2500
+# margin (a cold native connect measures ~0.4s); the binary fills the
+# receiver's buffer ahead of the audible start automatically, so the start
+# cannot underrun as long as the connect completes within the lead.
+AIRPLAY_SETUP_LEAD_MS: Final[int] = 1500
+# Late joiners keep a more conservative headroom: besides connecting, their
+# pipeline must also be primed from the session's history buffer.
+AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
 # The --latency override is only passed to the binary when the user explicitly
 # configured it; 0 means automatic (the binary's AirPlay-standard 2000 ms
 # default, clamped to the device-reported buffering window).
