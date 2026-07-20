@@ -1,18 +1,35 @@
 """
-Unit tests for the Sendspin -> AirPlay bridge timing math.
+Unit tests for the Sendspin -> AirPlay bridge timing.
 
-These pin the clock-domain conversion the bridge uses to turn a Sendspin
-audible instant (on Sendspin's own monotonic clock) into the unix epoch
-millisecond the cliairplay binary expects for ``--start-unix-ms``. The
-Sendspin clock is mocked with ``ManualClock`` so the tests are deterministic
-and independent of the host wall-clock.
+Cover three things, with the Sendspin clock mocked via ``ManualClock`` so the
+tests are deterministic and independent of the host wall-clock:
+
+* the clock-domain conversion turning a Sendspin audible instant (Sendspin's own
+  monotonic clock) into the unix epoch ms the binary expects (``--start-unix-ms``);
+* the start anchor: byte 0 is anchored to the first chunk Sendspin delivers, so a
+  fresh track keeps position 0 and a late joiner lands at the group's live position;
+* the write pacing that keeps the device buffered a bounded amount ahead of real
+  time so a late-join catch-up backlog is not dumped into the CLI.
 """
 
+from unittest.mock import MagicMock, patch
+
 from aiosendspin.clock import ManualClock
+from aiosendspin.server.roles import AudioChunk
 
 from music_assistant.providers.airplay.sendspin_bridge import (
+    MAX_DEVICE_BUFFER_SECONDS,
+    SendspinAirPlayBridge,
+    device_buffer_ahead_seconds,
     sendspin_audible_instant_to_unix_ms,
 )
+from music_assistant.providers.sendspin.bridge_role import (
+    BRIDGE_BYTES_PER_SAMPLE,
+    BRIDGE_CHANNELS,
+    BRIDGE_SAMPLE_RATE,
+)
+
+BRIDGE_BYTES_PER_SECOND = BRIDGE_SAMPLE_RATE * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
 
 # A large, arbitrary Sendspin monotonic-clock epoch (microseconds). Real
 # monotonic clocks start from an unspecified point (e.g. host boot), so the
@@ -23,8 +40,8 @@ AP2_LEAD_MS = 2500
 RAOP_LEAD_MS = 1500
 
 
-def _drop_until_us(clock: ManualClock, wait_start_ms: int) -> int:
-    """Replicate the bridge's first-chunk anchor: now + wait_start on the Sendspin clock."""
+def _audible_instant_us(clock: ManualClock, wait_start_ms: int) -> int:
+    """Return a sample Sendspin audible instant wait_start ahead of now (exercises the mapping)."""
     return clock.now_us() + wait_start_ms * 1_000
 
 
@@ -36,7 +53,7 @@ def _unix_at(sendspin_us: int) -> float:
 def test_maps_future_delta_to_unix_now_plus_lead() -> None:
     """An instant wait_start ahead maps to unix_now + wait_start (in ms)."""
     clock = ManualClock(now_us_value=SENDSPIN_EPOCH_US)
-    drop_until = _drop_until_us(clock, AP2_LEAD_MS)
+    drop_until = _audible_instant_us(clock, AP2_LEAD_MS)
 
     start_unix_ms = sendspin_audible_instant_to_unix_ms(drop_until, clock.now_us(), UNIX_NOW_S)
 
@@ -56,10 +73,10 @@ def test_standing_clock_offset_cancels_out() -> None:
     clock_b = ManualClock(now_us_value=SENDSPIN_EPOCH_US + 987_654_321_000)
 
     result_a = sendspin_audible_instant_to_unix_ms(
-        _drop_until_us(clock_a, AP2_LEAD_MS), clock_a.now_us(), UNIX_NOW_S
+        _audible_instant_us(clock_a, AP2_LEAD_MS), clock_a.now_us(), UNIX_NOW_S
     )
     result_b = sendspin_audible_instant_to_unix_ms(
-        _drop_until_us(clock_b, AP2_LEAD_MS), clock_b.now_us(), UNIX_NOW_S
+        _audible_instant_us(clock_b, AP2_LEAD_MS), clock_b.now_us(), UNIX_NOW_S
     )
 
     assert result_a == result_b
@@ -76,7 +93,7 @@ def test_derived_start_equals_sendspin_audible_instant_in_unix() -> None:
     """
     for wait_start_ms in (RAOP_LEAD_MS, AP2_LEAD_MS):
         clock = ManualClock(now_us_value=SENDSPIN_EPOCH_US)
-        drop_until = _drop_until_us(clock, wait_start_ms)
+        drop_until = _audible_instant_us(clock, wait_start_ms)
         # Some real time passes between setting the anchor and starting the CLI.
         clock.advance_us(40_000)  # 40 ms of setup churn (cleanup, task hop)
         sendspin_now = clock.now_us()
@@ -96,7 +113,7 @@ def test_scheduling_gap_between_reads_shrinks_lead_not_target() -> None:
     (advanced) Sendspin clock and unix reading.
     """
     clock = ManualClock(now_us_value=SENDSPIN_EPOCH_US)
-    drop_until = _drop_until_us(clock, AP2_LEAD_MS)
+    drop_until = _audible_instant_us(clock, AP2_LEAD_MS)
 
     immediate = sendspin_audible_instant_to_unix_ms(drop_until, clock.now_us(), UNIX_NOW_S)
 
@@ -127,3 +144,102 @@ def test_anchor_already_in_the_past_maps_to_a_past_unix_instant() -> None:
 
     assert start_unix_ms == int(UNIX_NOW_S * 1000) - 300
     assert start_unix_ms < int(UNIX_NOW_S * 1000)
+
+
+# --- Start anchor: fresh keeps position 0, late join lands at live position ---
+
+
+def _make_bridge(clock_now_us: int, wait_start_ms: int = AP2_LEAD_MS) -> SendspinAirPlayBridge:
+    """Build a bridge with mocked provider/player/server and a ManualClock."""
+    provider = MagicMock()
+    provider.mass = MagicMock()
+    airplay_player = MagicMock()
+    airplay_player.player_id = "apc43875e9e53a"
+    airplay_player.display_name = "Test Player"
+    airplay_player.wait_start = wait_start_ms
+    sendspin_server = MagicMock()
+    sendspin_server.clock = ManualClock(now_us_value=clock_now_us)
+    bridge = SendspinAirPlayBridge(provider, airplay_player, sendspin_server)
+    bridge._is_streaming = True
+    return bridge
+
+
+def _pcm_chunk(timestamp_us: int, duration_us: int = 100_000) -> AudioChunk:
+    """Build a silent PCM AudioChunk at a Sendspin timestamp."""
+    frames = int(duration_us * BRIDGE_SAMPLE_RATE / 1_000_000)
+    data = b"\x00" * (frames * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE)
+    return AudioChunk(
+        data=data, timestamp_us=timestamp_us, duration_us=duration_us, byte_count=len(data)
+    )
+
+
+def test_fresh_start_anchors_to_first_chunk_and_keeps_intro() -> None:
+    """
+    A fresh track's opening is kept: byte 0 anchors to the first chunk, not now+wait_start.
+
+    Models the clip scenario where the first delivered chunk (file position 0)
+    is scheduled earlier than ``clock.now() + wait_start``. Anchoring to
+    ``now + wait_start`` (the old behaviour) would drop everything before it -- the
+    intro. The chunk timestamp must win, and its audio must be queued, not dropped.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    now_plus_wait_start = SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
+    first_chunk_ts = SENDSPIN_EPOCH_US + 250_000  # position 0, only 250 ms ahead of now
+    assert first_chunk_ts < now_plus_wait_start
+
+    with patch.object(bridge, "_start_protocol_from_chunk", MagicMock()):
+        bridge._on_audio_chunk(_pcm_chunk(first_chunk_ts))
+
+    assert bridge._drop_until_us == first_chunk_ts
+    assert bridge._start_aligned is True
+    assert not bridge._write_queue.empty()  # opening audio queued, not discarded
+
+
+def test_late_join_anchors_to_catchup_target_live_position() -> None:
+    """
+    A late joiner lands at the group's current position, not at track zero.
+
+    After minutes of playback the first delivered chunk is the catch-up target
+    (playhead + wait_start), far from the track start. The anchor must follow that
+    chunk so the joiner maps onto the live timeline instead of restarting at 0.
+    """
+    playhead_us = SENDSPIN_EPOCH_US + 600_000_000  # 600 s into the session
+    bridge = _make_bridge(clock_now_us=playhead_us)
+    catchup_target_ts = playhead_us + AP2_LEAD_MS * 1_000
+
+    with patch.object(bridge, "_start_protocol_from_chunk", MagicMock()):
+        bridge._on_audio_chunk(_pcm_chunk(catchup_target_ts))
+
+    assert bridge._drop_until_us == catchup_target_ts
+    # The anchor tracks the advanced playhead, not a fresh now+wait_start-from-zero.
+    assert bridge._drop_until_us > SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
+
+
+# --- Write pacing: bound the device buffer so a catch-up backlog is not dumped ---
+
+
+def test_device_buffer_ahead_seconds_tracks_write_cursor() -> None:
+    """The buffered-ahead measure follows byte 0 = start anchor, +1 s per second written."""
+    start_unix_ms = 1_784_000_000_000
+    now = start_unix_ms / 1000
+
+    assert device_buffer_ahead_seconds(start_unix_ms, 0, BRIDGE_BYTES_PER_SECOND, now) == 0.0
+    one_second = BRIDGE_BYTES_PER_SECOND
+    ahead = device_buffer_ahead_seconds(start_unix_ms, one_second, BRIDGE_BYTES_PER_SECOND, now)
+    assert abs(ahead - 1.0) < 1e-9
+
+
+def test_late_join_backlog_trips_pacing_bound_but_steady_feed_does_not() -> None:
+    """A ~27 s catch-up backlog exceeds the bound; a few seconds of steady audio stays under it."""
+    start_unix_ms = 1_784_000_000_000
+    now = start_unix_ms / 1000
+
+    backlog_ahead = device_buffer_ahead_seconds(
+        start_unix_ms, 27 * BRIDGE_BYTES_PER_SECOND, BRIDGE_BYTES_PER_SECOND, now
+    )
+    assert backlog_ahead > MAX_DEVICE_BUFFER_SECONDS
+
+    steady_ahead = device_buffer_ahead_seconds(
+        start_unix_ms, 3 * BRIDGE_BYTES_PER_SECOND, BRIDGE_BYTES_PER_SECOND, now
+    )
+    assert steady_ahead < MAX_DEVICE_BUFFER_SECONDS

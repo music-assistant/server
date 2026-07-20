@@ -55,6 +55,15 @@ if TYPE_CHECKING:
     from .provider import AirPlayProvider
 
 
+# Upper bound on how far ahead of the audible position the bridge feeds the CLI.
+# Sendspin can hand a late joiner its whole producer backlog at once (tens of
+# seconds), and dumping that into the binary's stdin ahead of the start anchor
+# desyncs playback. Pace writes to keep the device buffered to at most this many
+# seconds of audio ahead of real time -- comfortably above the binary's own
+# prefill need (~wait_start + its ~2 s buffer) yet far below a whole-track backlog.
+MAX_DEVICE_BUFFER_SECONDS: float = 8.0
+
+
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
     """
     Get the Sendspin bridge client ID for an AirPlay player.
@@ -99,6 +108,31 @@ def sendspin_audible_instant_to_unix_ms(
     return int((unix_now + future_s) * 1000)
 
 
+def device_buffer_ahead_seconds(
+    start_unix_ms: int,
+    bytes_written: int,
+    bytes_per_second: int,
+    unix_now: float,
+) -> float:
+    """
+    Seconds of audio the CLI write cursor is buffered ahead of real time.
+
+    Byte 0 written to the CLI is audible at ``start_unix_ms``; byte N is audible
+    at ``start_unix_ms + N / bytes_per_second``. The write cursor (after
+    ``bytes_written`` bytes) therefore represents that play instant, and this
+    returns how far it sits ahead of ``unix_now``. The writer sleeps on the
+    excess over the buffer bound so a late-join backlog is fed at ~real time
+    instead of dumped into the device ahead of its start anchor.
+
+    :param start_unix_ms: Unix-epoch ms at which byte 0 is audible.
+    :param bytes_written: Bytes already written to the CLI for this stream.
+    :param bytes_per_second: PCM byte rate fed to the CLI.
+    :param unix_now: Current unix time in seconds.
+    """
+    cursor_play_time_s = start_unix_ms / 1000 + bytes_written / bytes_per_second
+    return cursor_play_time_s - unix_now
+
+
 class SendspinAirPlayBridge:
     """
     Manages the Sendspin to AirPlay bridge for a single player.
@@ -136,6 +170,9 @@ class SendspinAirPlayBridge:
         self._next_expected_timestamp_us: int | None = None
         self._drop_until_us: int = 0
         self._start_aligned = False
+        # Unix-epoch ms at which byte 0 written to the CLI is audible (0 = unset).
+        # Used to pace writes so the device buffer stays bounded (see _cli_writer).
+        self._start_unix_ms: int = 0
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._airplay_stream_start_task: asyncio.Task[None] | None = None
@@ -298,6 +335,7 @@ class SendspinAirPlayBridge:
         self._next_expected_timestamp_us = None
         self._drop_until_us = 0
         self._start_aligned = False
+        self._start_unix_ms = 0
 
     def _on_bridge_stream_start(self) -> None:
         """
@@ -329,6 +367,7 @@ class SendspinAirPlayBridge:
         self._next_expected_timestamp_us = None
         self._drop_until_us = 0
         self._start_aligned = False
+        self._start_unix_ms = 0
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
@@ -373,6 +412,8 @@ class SendspinAirPlayBridge:
             sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
             if isinstance(sync_adjust, int) and sync_adjust != 0:
                 start_unix_ms += sync_adjust
+            # Publish the audible anchor so the writer can pace against it.
+            self._start_unix_ms = start_unix_ms
 
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
             # for cleanup. If we assigned it earlier, the new stream would be missed
@@ -519,11 +560,17 @@ class SendspinAirPlayBridge:
                 return
 
         if self._airplay_stream_start_task is None:
-            # Set the audible start instant (wait_start) in the future so the CLI
-            # has enough time to connect and establish the session; the binary
-            # fills the device's buffer ahead of that instant itself.
-            wait_start_us = int(self.airplay_player.wait_start * 1_000)
-            self._drop_until_us = self.sendspin_server.clock.now_us() + wait_start_us
+            # Anchor byte 0 to the instant Sendspin scheduled for the first chunk it
+            # actually delivered -- i.e. trust the shared timeline instead of inventing
+            # our own "now + wait_start" start. Sendspin already schedules the first
+            # sample the AirPlay setup budget ahead because we report
+            # required_lead_time_ms = wait_start at registration:
+            #   * fresh track  -> the first chunk IS file position 0, so the intro is
+            #     kept (the old "now + wait_start" anchor discarded the opening seconds
+            #     whenever Sendspin had scheduled position 0 earlier than that instant);
+            #   * late join     -> the first chunk is the catch-up target, i.e. the
+            #     group's current playback position, so the joiner lands in sync.
+            self._drop_until_us = chunk.timestamp_us
             self._start_aligned = False
             self._airplay_stream_start_task = self.mass.create_task(
                 self._start_protocol_from_chunk()
@@ -603,7 +650,15 @@ class SendspinAirPlayBridge:
         ready before writing. Runs as a single task so writes are serialised
         and ordered. A None sentinel signals end-of-stream: write EOF to
         stdin and exit.
+
+        Writes are paced against the audible anchor so the device is never
+        buffered more than ``MAX_DEVICE_BUFFER_SECONDS`` ahead of real time.
+        Without this, a late joiner's catch-up backlog (Sendspin can deliver
+        its whole producer buffer at once) would be dumped into the CLI far
+        ahead of the start anchor, desynchronising playback.
         """
+        bytes_per_second = BRIDGE_SAMPLE_RATE * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
+        bytes_written = 0
         try:
             # Wait for any pending cleanup from a previous stream to complete
             # so we don't write to a stale/dead protocol.
@@ -633,8 +688,18 @@ class SendspinAirPlayBridge:
                     with suppress(Exception):
                         await self._airplay_stream.write_audio_eof()
                     return
+                # Keep the device buffered at most MAX_DEVICE_BUFFER_SECONDS ahead of
+                # real time so a late joiner's catch-up backlog is fed gradually rather
+                # than dumped into the CLI ahead of its start anchor (which desyncs it).
+                if self._start_unix_ms:
+                    ahead = device_buffer_ahead_seconds(
+                        self._start_unix_ms, bytes_written, bytes_per_second, time.time()
+                    )
+                    if ahead > MAX_DEVICE_BUFFER_SECONDS:
+                        await asyncio.sleep(ahead - MAX_DEVICE_BUFFER_SECONDS)
                 with suppress(Exception):
                     await self._airplay_stream.write_audio(data)
+                bytes_written += len(data)
         finally:
             # Only clear if this writer is still the active one.
             if self._writer_task is asyncio.current_task():
