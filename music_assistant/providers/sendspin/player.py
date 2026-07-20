@@ -597,8 +597,31 @@ class SendspinPlayer(SendspinBasePlayer):
 
     def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
+        if (
+            isinstance(event, GroupStateChangedEvent)
+            and event.state == PlaybackStateType.PLAYING
+            and self._attr_playback_state == PlaybackState.PAUSED
+            and self._attr_current_media is not None
+        ):
+            # Resuming the same track leaves current_media's identity unchanged, so
+            # the debounced media-updated callback won't fire. Refresh the anchor
+            # before update_state() (called by super()) runs, so corrected_elapsed_time
+            # extrapolates from the resume moment instead of through the paused span.
+            self._attr_current_media.elapsed_time_last_updated = time.time()
         super().group_event_cb(group, event)
         match event:
+            case GroupStateChangedEvent(state=state) if self.synced_to is None and state in (
+                PlaybackStateType.PLAYING,
+                PlaybackStateType.PAUSED,
+            ):
+                # Sendspin spec requires progress on every playback-state transition
+                # (play/pause/resume); current_media identity is unchanged across
+                # pause/resume so the media-updated callback alone won't cover it.
+                self.mass.create_task(
+                    self.send_current_media_metadata(),
+                    task_id=f"sendspin_metadata_{self.player_id}",
+                    abort_existing=True,
+                )
             case ControllerEvent() as controller_event:
                 if self.synced_to is None:
                     self.mass.create_task(self._handle_controller_event(controller_event))
