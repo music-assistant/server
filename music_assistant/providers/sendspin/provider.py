@@ -38,7 +38,6 @@ from aiosendspin.server import (
     ClientAddedEvent,
     ClientConnectedEvent,
     ClientDisconnectedEvent,
-    ClientReconnectedEvent,
     ClientRemovedEvent,
     ClientUpdatedEvent,
     SendspinEvent,
@@ -363,8 +362,6 @@ class SendspinProvider(PlayerProvider):
             case ClientUpdatedEvent(client_id):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
-            case ClientReconnectedEvent(client_id):
-                self.mass.create_task(self._handle_client_reconnected(client_id))
             case ClientConnectedEvent(client_id):
                 self.mass.create_task(self._handle_client_connected(client_id))
             case ClientDisconnectedEvent(client_id, goodbye_reason):
@@ -1288,22 +1285,6 @@ class SendspinProvider(PlayerProvider):
             await self.mass.players.register_or_update(existing_player)
         finally:
             self._finish_client_event(client_id)
-
-    async def _handle_client_reconnected(self, client_id: str) -> None:
-        """
-        Handle a client that reconnected after network drop.
-
-        Triggers auto-resume if the player was playing before disconnect.
-        """
-        if self._unloading:
-            return
-        sendspin_client = self.server_api.get_client(client_id)
-        if sendspin_client is None:
-            return
-        existing_player = self.mass.players.get_player(client_id)
-        if not isinstance(existing_player, SendspinBasePlayer):
-            return
-        existing_player._refresh_client_info(sendspin_client)
 
     async def _handle_client_connected(self, client_id: str) -> None:
         """

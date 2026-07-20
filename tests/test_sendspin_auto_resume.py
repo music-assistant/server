@@ -280,7 +280,7 @@ class TestReconnectFlowIntegration:
             await player.stop()
         assert player._was_playing is True
 
-        # Step 4: _refresh_client_info (triggered by ClientReconnectedEvent)
+        # Step 4: _refresh_client_info (triggered by ClientConnectedEvent)
         mock_queue = MagicMock()
         mock_queue.queue_id = "test_iphone"
         mock_provider.mass.player_queues.get_active_queue.return_value = mock_queue
