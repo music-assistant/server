@@ -2538,9 +2538,11 @@ class LocalFileSystemProvider(MusicProvider):
         return data
 
     async def _scandir(self, path: str) -> list[FileSystemItem]:
-        """List directory contents."""
+        """List directory contents in natural sort order."""
+        # raw scandir order depends on the underlying filesystem (e.g. hash order
+        # on ext4) so sort to make browse and folder playback order deterministic
         abs_path = self.get_absolute_path(path)
-        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path)
+        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True)
 
     async def _read_file(self, path: str) -> bytes:
         """Read file contents. Override for network storage."""
