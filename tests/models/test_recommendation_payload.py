@@ -171,6 +171,67 @@ async def test_rows_have_empty_items_but_preserve_identity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refresh_fetches_fresh_and_stores_through_cached_path() -> None:
+    """_refresh_recommendation_payload bypasses the cached read and updates the cache entry."""
+    stale = _make_payload()
+    fetch = AsyncMock(return_value=stale)
+    provider = _PayloadProvider(fetch)
+    # warm the cache with the stale payload
+    await provider._recommendation_payload()
+    await asyncio.gather(*provider.background_tasks)
+    fresh = [
+        RecommendationFolder(
+            item_id=f"{INSTANCE_ID}_fresh",
+            provider=INSTANCE_ID,
+            name="Fresh",
+            items=UniqueList(
+                [
+                    ItemMapping(
+                        media_type=MediaType.TRACK,
+                        item_id="t2",
+                        provider=INSTANCE_ID,
+                        name="Track Two",
+                    )
+                ]
+            ),
+        )
+    ]
+    fetch.return_value = fresh
+
+    result = await provider._refresh_recommendation_payload()
+
+    assert result == fresh
+    assert fetch.await_count == 2
+    # the refresh stored under the same key the @use_cache decorator maintains,
+    # so subsequent cached reads serve the fresh payload without another fetch
+    assert set(provider._cache_store) == {"_cached_recommendation_payload"}
+    assert await provider._recommendation_payload() == fresh
+    assert fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_single_flight_concurrent_calls_fetch_once() -> None:
+    """Concurrent refresh callers share one in-flight backend fetch."""
+    payload = _make_payload()
+    gate = asyncio.Event()
+
+    async def _gated_fetch() -> list[RecommendationFolder]:
+        await gate.wait()
+        return payload
+
+    fetch = AsyncMock(side_effect=_gated_fetch)
+    provider = _PayloadProvider(fetch)
+
+    tasks = [asyncio.create_task(provider._refresh_recommendation_payload()) for _ in range(5)]
+    await asyncio.sleep(0)
+    gate.set()
+    results = await asyncio.gather(*tasks)
+
+    assert fetch.await_count == 1
+    assert all(result == payload for result in results)
+
+
+@pytest.mark.asyncio
 async def test_cancelled_waiter_does_not_cancel_shared_fetch() -> None:
     """
     A timed-out caller is shielded from the shared fetch: other waiters still get the payload.

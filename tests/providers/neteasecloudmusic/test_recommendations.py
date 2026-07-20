@@ -1,4 +1,4 @@
-"""Test NetEase Cloud Music recommendations() row filtering via the `wanted` parameter."""
+"""Test NetEase Cloud Music two-method recommendations contract."""
 
 from __future__ import annotations
 
@@ -55,41 +55,95 @@ def _install_cache_mocks(provider: NeteaseCloudMusicProvider) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_none_fetches_all_rows(
+async def test_get_recommendations_static_rows_without_backend_calls(
     provider: NeteaseCloudMusicProvider,
 ) -> None:
-    """wanted=None (default) fetches and builds all four rows — unchanged behavior."""
-    _install_cache_mocks(provider)
+    """get_recommendations returns all four row descriptors without any backend call."""
     client_mock = _stub_client_get(provider)
 
-    result = await provider.recommendations()
+    result = await provider.get_recommendations()
 
-    called_paths = {call.args[0] for call in client_mock.call_args_list}
-    assert called_paths == {
-        "/personal_fm",
-        "/recommend/songs",
-        "/user/playlist",
-        "/personalized/newsong",
-        "/personalized",
-    }
+    assert client_mock.call_args_list == []
     assert [folder.item_id for folder in result] == [
         "recommended_radios",
         "daily_songs",
         "recommended_new_songs",
         "recommended_playlists",
     ]
+    assert all(not folder.items for folder in result)
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_daily_songs_only_fetches_daily(
+async def test_get_recommendation_items_radios(
     provider: NeteaseCloudMusicProvider,
 ) -> None:
-    """wanted={"daily_songs"} fetches only /recommend/songs and returns only that row."""
+    """recommended_radios builds both dynamic playlists from its dedicated fetches only."""
     _install_cache_mocks(provider)
     client_mock = _stub_client_get(provider)
 
-    result = await provider.recommendations(wanted={"daily_songs"})
+    result = await provider.get_recommendation_items("recommended_radios")
+
+    called_paths = {call.args[0] for call in client_mock.call_args_list}
+    assert called_paths == {"/personal_fm", "/recommend/songs", "/user/playlist"}
+    assert [item.item_id for item in result] == [
+        "personal_fm_dynamic",
+        "heart_mode_dynamic:1001:2002",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_daily_songs(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """daily_songs fetches only /recommend/songs and returns the parsed tracks."""
+    _install_cache_mocks(provider)
+    client_mock = _stub_client_get(provider)
+
+    result = await provider.get_recommendation_items("daily_songs")
 
     called_paths = [call.args[0] for call in client_mock.call_args_list]
     assert called_paths == ["/recommend/songs"]
-    assert [folder.item_id for folder in result] == ["daily_songs"]
+    assert [item.item_id for item in result] == ["1001"]
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_new_songs(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """recommended_new_songs fetches only /personalized/newsong and returns the parsed tracks."""
+    _install_cache_mocks(provider)
+    client_mock = _stub_client_get(provider)
+
+    result = await provider.get_recommendation_items("recommended_new_songs")
+
+    called_paths = [call.args[0] for call in client_mock.call_args_list]
+    assert called_paths == ["/personalized/newsong"]
+    assert [item.item_id for item in result] == ["1002"]
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_playlists(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """recommended_playlists fetches only /personalized and returns the parsed playlists."""
+    _install_cache_mocks(provider)
+    client_mock = _stub_client_get(provider)
+
+    result = await provider.get_recommendation_items("recommended_playlists")
+
+    called_paths = [call.args[0] for call in client_mock.call_args_list]
+    assert called_paths == ["/personalized"]
+    assert [item.item_id for item in result] == ["3003"]
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_unknown_id_returns_empty(
+    provider: NeteaseCloudMusicProvider,
+) -> None:
+    """An unknown row item_id returns an empty result without any backend call."""
+    client_mock = _stub_client_get(provider)
+
+    result = await provider.get_recommendation_items("no_such_row")
+
+    assert client_mock.call_args_list == []
+    assert not result

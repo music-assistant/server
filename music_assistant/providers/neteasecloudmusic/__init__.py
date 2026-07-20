@@ -75,6 +75,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.media_items import BrowseFolder, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -1849,15 +1850,112 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 result.append(self._parse_track(song_obj))
         return filter_tracks(result)
 
-    async def _build_dynamic_radio_folder(self) -> RecommendationFolder | None:
-        """Build recommendation folder with dynamic playlist items."""
-        folder = RecommendationFolder(
-            item_id="recommended_radios",
-            provider=self.instance_id,
-            name="Personal Radio",
-            translation_key="personal_radio",
-            icon="mdi:radio",
-        )
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id="recommended_radios",
+                provider=self.instance_id,
+                name="Personal Radio",
+                translation_key="personal_radio",
+                icon="mdi:radio",
+            ),
+            RecommendationFolder(
+                item_id="daily_songs",
+                provider=self.instance_id,
+                name="Recommended tracks",
+                translation_key="recommended_tracks",
+                icon="mdi:star",
+            ),
+            RecommendationFolder(
+                item_id="recommended_new_songs",
+                provider=self.instance_id,
+                name="Recommended new tracks",
+                translation_key="recommended_new_tracks",
+                icon="mdi:music-note",
+            ),
+            RecommendationFolder(
+                item_id="recommended_playlists",
+                provider=self.instance_id,
+                name="Recommended playlists",
+                translation_key="recommended_playlists",
+                icon="mdi:playlist-music",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+
+        if item_id == "recommended_radios":
+            return await self._build_radio_items()
+
+        if item_id == "daily_songs":
+            daily_payload = await self._get_recommend_payload_cached(
+                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs"
+            )
+            daily_data = _extract_data(daily_payload)
+            daily_songs = daily_data.get("dailySongs")
+            if isinstance(daily_songs, list):
+                for song_obj in daily_songs:
+                    if not isinstance(song_obj, dict):
+                        continue
+                    with suppress(InvalidDataError):
+                        items.append(self._parse_track(song_obj))
+                daily_tracks = [item for item in items if isinstance(item, Track)]
+                await self._fill_track_durations(daily_tracks)
+            return items
+
+        if item_id == "recommended_new_songs":
+            new_song_payload = await self._get_recommend_payload_cached(
+                "recommended_newsong",
+                _RECOMMEND_NEWSONG_TTL,
+                "/personalized/newsong",
+                {"limit": 50},
+            )
+            new_song_data = _extract_data(new_song_payload)
+            raw_new_songs = new_song_data.get("result")
+            if isinstance(raw_new_songs, list):
+                for item in raw_new_songs:
+                    if not isinstance(item, dict):
+                        continue
+                    song_obj = item.get("song") if isinstance(item.get("song"), dict) else item
+                    if not isinstance(song_obj, dict):
+                        continue
+                    with suppress(InvalidDataError):
+                        items.append(self._parse_track(song_obj))
+                new_tracks = [item for item in items if isinstance(item, Track)]
+                await self._fill_track_durations(new_tracks)
+            return items
+
+        if item_id == "recommended_playlists":
+            playlist_payload = await self._get_recommend_payload_cached(
+                "recommended_playlists",
+                _RECOMMEND_PLAYLIST_TTL,
+                "/personalized",
+                {"limit": 25},
+            )
+            playlist_data = _extract_data(playlist_payload)
+            raw_playlists = playlist_data.get("result")
+            if isinstance(raw_playlists, list):
+                for playlist_obj in raw_playlists:
+                    if not isinstance(playlist_obj, dict):
+                        continue
+                    with suppress(InvalidDataError):
+                        items.append(self._parse_playlist(playlist_obj))
+            return items
+
+        return items
+
+    async def _build_radio_items(self) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """Build the dynamic radio playlist items for the recommended_radios row."""
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
         personal_fm_image_url: str | None = None
         with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
             fm_payload = await self._get_recommend_payload_cached(
@@ -1883,7 +1981,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 daily_rows = daily_data.get("dailySongs")
                 if isinstance(daily_rows, list) and daily_rows and isinstance(daily_rows[0], dict):
                     personal_fm_image_url = _extract_song_image_url(daily_rows[0])
-        folder.items.append(
+        items.append(
             self._build_dynamic_playlist(
                 _PLAYLIST_PERSONAL_FM_ID,
                 "Personal FM",
@@ -1892,104 +1990,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
             )
         )
         if heart_playlist := await self._build_heart_mode_dynamic_playlist():
-            folder.items.append(heart_playlist)
-        return folder if folder.items else None
-
-    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
-        """
-        Get recommendation folders.
-
-        :param wanted: optional set of row item_ids to build; when None, all rows are built.
-        """
-
-        def want(item_id: str) -> bool:
-            return wanted is None or item_id in wanted
-
-        folders: list[RecommendationFolder] = []
-
-        if want("recommended_radios") and (folder := await self._build_dynamic_radio_folder()):
-            folders.append(folder)
-
-        if want("daily_songs"):
-            daily_payload = await self._get_recommend_payload_cached(
-                "daily_songs", _RECOMMEND_DAILY_TTL, "/recommend/songs"
-            )
-            daily_data = _extract_data(daily_payload)
-            daily_songs = daily_data.get("dailySongs")
-            if isinstance(daily_songs, list) and daily_songs:
-                folder = RecommendationFolder(
-                    item_id="daily_songs",
-                    provider=self.instance_id,
-                    name="Recommended tracks",
-                    translation_key="recommended_tracks",
-                    icon="mdi:star",
-                )
-                for song_obj in daily_songs:
-                    if not isinstance(song_obj, dict):
-                        continue
-                    with suppress(InvalidDataError):
-                        folder.items.append(self._parse_track(song_obj))
-                daily_tracks = [item for item in folder.items if isinstance(item, Track)]
-                await self._fill_track_durations(daily_tracks)
-                if folder.items:
-                    folders.append(folder)
-
-        if want("recommended_new_songs"):
-            new_song_payload = await self._get_recommend_payload_cached(
-                "recommended_newsong",
-                _RECOMMEND_NEWSONG_TTL,
-                "/personalized/newsong",
-                {"limit": 50},
-            )
-            new_song_data = _extract_data(new_song_payload)
-            raw_new_songs = new_song_data.get("result")
-            if isinstance(raw_new_songs, list) and raw_new_songs:
-                folder = RecommendationFolder(
-                    item_id="recommended_new_songs",
-                    provider=self.instance_id,
-                    name="Recommended new tracks",
-                    translation_key="recommended_new_tracks",
-                    icon="mdi:music-note",
-                )
-                for item in raw_new_songs:
-                    if not isinstance(item, dict):
-                        continue
-                    song_obj = item.get("song") if isinstance(item.get("song"), dict) else item
-                    if not isinstance(song_obj, dict):
-                        continue
-                    with suppress(InvalidDataError):
-                        folder.items.append(self._parse_track(song_obj))
-                new_tracks = [item for item in folder.items if isinstance(item, Track)]
-                await self._fill_track_durations(new_tracks)
-                if folder.items:
-                    folders.append(folder)
-
-        if want("recommended_playlists"):
-            playlist_payload = await self._get_recommend_payload_cached(
-                "recommended_playlists",
-                _RECOMMEND_PLAYLIST_TTL,
-                "/personalized",
-                {"limit": 25},
-            )
-            playlist_data = _extract_data(playlist_payload)
-            raw_playlists = playlist_data.get("result")
-            if isinstance(raw_playlists, list) and raw_playlists:
-                folder = RecommendationFolder(
-                    item_id="recommended_playlists",
-                    provider=self.instance_id,
-                    name="Recommended playlists",
-                    translation_key="recommended_playlists",
-                    icon="mdi:playlist-music",
-                )
-                for playlist_obj in raw_playlists:
-                    if not isinstance(playlist_obj, dict):
-                        continue
-                    with suppress(InvalidDataError):
-                        folder.items.append(self._parse_playlist(playlist_obj))
-                if folder.items:
-                    folders.append(folder)
-
-        return folders
+            items.append(heart_playlist)
+        return items
 
     def _quality_candidates(self) -> list[str]:
         """Return ordered quality levels based on config."""

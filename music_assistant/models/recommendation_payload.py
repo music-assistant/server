@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from music_assistant_models.media_items import RecommendationFolder
 from music_assistant_models.unique_list import UniqueList
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.json import SerializableType
 
     class _RecommendationPayloadHost(Protocol):
         """Requirements a provider must fulfil to use RecommendationPayloadMixin."""
@@ -37,6 +38,13 @@ if TYPE_CHECKING:
 else:
     _MixinBase = object
 
+# Cache settings of the payload entry, shared between the @use_cache decorator on
+# _cached_recommendation_payload and the explicit store in _refresh_recommendation_payload.
+# The key mirrors use_cache's key construction: the wrapped function's __name__, with no
+# further arguments appended as that method takes none.
+_PAYLOAD_CACHE_KEY = "_cached_recommendation_payload"
+_PAYLOAD_CACHE_EXPIRATION = 3600
+
 
 class RecommendationPayloadMixin(_MixinBase):
     """
@@ -49,6 +57,7 @@ class RecommendationPayloadMixin(_MixinBase):
     """
 
     _recommendation_payload_task: asyncio.Task[list[RecommendationFolder]] | None = None
+    _recommendation_refresh_task: asyncio.Task[list[RecommendationFolder]] | None = None
 
     async def _recommendation_rows_from_payload(self) -> list[RecommendationFolder]:
         """Return all payload folders as rows, without items."""
@@ -90,8 +99,43 @@ class RecommendationPayloadMixin(_MixinBase):
         # the other waiters (and the fetch must still complete to warm the cache)
         return await asyncio.shield(task)
 
+    async def _refresh_recommendation_payload(self) -> list[RecommendationFolder]:
+        """
+        Force-fetch a fresh payload and store it back into the payload cache.
+
+        Unlike _recommendation_payload, this never serves cached data: use it when the
+        cached payload is known to be outdated (e.g. after detecting rotated backend ids).
+        Subsequent _recommendation_payload calls serve the refreshed payload.
+        """
+        task = self._recommendation_refresh_task
+        if task is None or task.done():
+            # single-flight: share one in-flight refresh between concurrent callers
+            task = asyncio.create_task(self._fetch_and_store_recommendation_payload())
+            self._recommendation_refresh_task = task
+        # shield: see _recommendation_payload
+        return await asyncio.shield(task)
+
+    async def _fetch_and_store_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the payload from the backend and store it under the payload cache entry."""
+        # The @use_cache decorator on _cached_recommendation_payload cannot be bypassed
+        # (persistent=True forces allow_bypass=False), so fetch directly and store
+        # explicitly with the same cache settings the decorator uses.
+        payload = await self._fetch_recommendation_payload()
+        await self.mass.cache.set(
+            key=_PAYLOAD_CACHE_KEY,
+            data=cast("SerializableType", payload),
+            expiration=_PAYLOAD_CACHE_EXPIRATION,
+            provider=self.instance_id,
+            persistent=True,
+            allow_expired_cache=True,
+        )
+        return payload
+
     @use_cache(
-        expiration=3600, persistent=True, allow_expired_cache=True, base_class=RecommendationFolder
+        expiration=_PAYLOAD_CACHE_EXPIRATION,
+        persistent=True,
+        allow_expired_cache=True,
+        base_class=RecommendationFolder,
     )
     async def _cached_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch the recommendations payload through the persistent cache."""

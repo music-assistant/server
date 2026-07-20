@@ -1,4 +1,4 @@
-"""Test Bandcamp recommendations() row filtering via the `wanted` parameter."""
+"""Test Bandcamp's two-method recommendations contract."""
 
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -48,56 +48,75 @@ def config_mock() -> Mock:
 
 @pytest.fixture
 async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> BandcampProvider:
-    """Return a BandcampProvider instance."""
+    """Return a BandcampProvider instance with a reset (call-free) mock client."""
     provider = BandcampProvider(mass_mock, manifest_mock, config_mock, SUPPORTED_FEATURES)
 
     with patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
         mock_client_class.return_value = AsyncMock()
         await provider.handle_async_init()
 
+    # Discard the login-validation call from init so tests can assert zero backend calls,
+    # and use a real string for identity so the auth gate does not register a mock call.
+    provider._client.reset_mock()
+    provider._client.identity = "mock_identity_token"
     return provider
 
 
-async def test_recommendations_wanted_none_fetches_all_rows(provider: BandcampProvider) -> None:
-    """wanted=None (default) fetches and builds both rows — unchanged behavior."""
+async def test_get_recommendations_static_rows_without_backend_calls(
+    provider: BandcampProvider,
+) -> None:
+    """get_recommendations returns the feed and wishlist rows without items or backend I/O."""
+    with (
+        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
+        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
+    ):
+        rows = await provider.get_recommendations()
+
+        mock_feed.assert_not_called()
+        mock_wishlist.assert_not_called()
+    assert provider._client.mock_calls == []
+    assert [f.item_id for f in rows] == ["feed", "wishlist"]
+    feed, wishlist = rows
+    assert feed.name == "Bandcamp Feed"
+    assert feed.translation_key == "feed"
+    assert feed.icon == "mdi-rss"
+    assert wishlist.name == "Wishlist"
+    assert wishlist.translation_key == "wishlist"
+    assert wishlist.icon == "mdi-heart"
+    assert all(f.provider == "bandcamp_test" for f in rows)
+    assert all(f.is_playable for f in rows)
+    assert all(not f.items for f in rows)
+
+
+async def test_get_recommendations_no_identity(provider: BandcampProvider) -> None:
+    """get_recommendations returns no rows without an identity token."""
+    provider._client.identity = None
+    assert await provider.get_recommendations() == []
+
+
+async def test_get_recommendation_items_feed_fetches_only_feed(
+    provider: BandcampProvider,
+) -> None:
+    """Items for the feed row trigger only the feed fetch."""
     feed_track = Mock()
-    wishlist_album = Mock()
 
     with (
         patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
         patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
     ):
         mock_feed.return_value = [feed_track]
-        mock_wishlist.return_value = [wishlist_album]
 
-        result = await provider.recommendations()
-
-        mock_feed.assert_awaited_once_with()
-        mock_wishlist.assert_awaited_once_with(None, CollectionType.WISHLIST)
-        assert [f.item_id for f in result] == ["feed", "wishlist"]
-
-
-async def test_recommendations_wanted_feed_only_fetches_feed(provider: BandcampProvider) -> None:
-    """wanted={"feed"} fetches only the feed and returns only the feed folder."""
-    feed_track = Mock()
-
-    with (
-        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
-        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
-    ):
-        mock_feed.return_value = [feed_track]
-
-        result = await provider.recommendations(wanted={"feed"})
+        result = await provider.get_recommendation_items("feed")
 
         mock_feed.assert_awaited_once_with()
         mock_wishlist.assert_not_called()
-        assert [f.item_id for f in result] == ["feed"]
+        assert list(result) == [feed_track]
 
 
-async def test_recommendations_wanted_wishlist_only_fetches_wishlist(
+async def test_get_recommendation_items_wishlist_fetches_only_wishlist(
     provider: BandcampProvider,
 ) -> None:
-    """wanted={"wishlist"} fetches only the wishlist and returns only the wishlist folder."""
+    """Items for the wishlist row trigger only the wishlist fetch."""
     wishlist_album = Mock()
 
     with (
@@ -106,8 +125,34 @@ async def test_recommendations_wanted_wishlist_only_fetches_wishlist(
     ):
         mock_wishlist.return_value = [wishlist_album]
 
-        result = await provider.recommendations(wanted={"wishlist"})
+        result = await provider.get_recommendation_items("wishlist")
 
         mock_feed.assert_not_called()
         mock_wishlist.assert_awaited_once_with(None, CollectionType.WISHLIST)
-        assert [f.item_id for f in result] == ["wishlist"]
+        assert list(result) == [wishlist_album]
+
+
+async def test_get_recommendation_items_unknown_id_returns_empty(
+    provider: BandcampProvider,
+) -> None:
+    """An unknown row item_id returns an empty list without any fetch."""
+    with (
+        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
+        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
+    ):
+        result = await provider.get_recommendation_items("unknown")
+
+        mock_feed.assert_not_called()
+        mock_wishlist.assert_not_called()
+        assert list(result) == []
+
+
+async def test_get_recommendation_items_no_identity(provider: BandcampProvider) -> None:
+    """Items return empty without an identity token, without any fetch."""
+    provider._client.identity = None
+
+    with patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed:
+        result = await provider.get_recommendation_items("feed")
+
+        mock_feed.assert_not_called()
+        assert list(result) == []

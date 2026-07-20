@@ -1,4 +1,4 @@
-"""Test KION Music recommendations() row filtering via the `wanted` parameter."""
+"""Test KION Music two-method recommendations: static rows + per-row item fetches."""
 
 from __future__ import annotations
 
@@ -34,7 +34,8 @@ CLIENT_METHODS = (
     "get_landing_tags",
 )
 
-ALL_ITEM_IDS = {
+# Expected row ids in the order get_recommendations() returns them.
+ROW_IDS = [
     MY_WAVE_PLAYLIST_ID,
     "feed",
     "chart",
@@ -44,7 +45,7 @@ ALL_ITEM_IDS = {
     "mood_mix",
     "activity_mix",
     "seasonal_mix",
-}
+]
 
 
 def _load_fixture(relpath: str) -> dict[str, Any]:
@@ -114,37 +115,63 @@ def provider() -> KionMusicProvider:
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_none_fetches_all_rows(provider: KionMusicProvider) -> None:
-    """wanted=None (default) fetches and builds all nine rows — unchanged behavior."""
-    _install_cache_mocks(provider)
+async def test_get_recommendations_returns_static_rows_without_backend_calls(
+    provider: KionMusicProvider,
+) -> None:
+    """get_recommendations() returns all nine row descriptors with zero backend I/O."""
     client = cast("Mock", provider.client)
 
-    result = await provider.recommendations()
+    result = await provider.get_recommendations()
 
-    assert _awaited_methods(client) == set(CLIENT_METHODS)
-    assert {f.item_id for f in result} == ALL_ITEM_IDS
+    assert [f.item_id for f in result] == ROW_IDS
+    assert _awaited_methods(client) == set()
+    assert all(not f.items for f in result)
+    # Mood/Activity row titles are static; the rotating tag is only picked at items time.
+    by_id = {f.item_id: f for f in result}
+    assert by_id["mood_mix"].name == "Mood Mix"
+    assert by_id["mood_mix"].translation_key == "mood_mix"
+    assert by_id["activity_mix"].name == "Activity Mix"
+    assert by_id["activity_mix"].translation_key == "activity_mix"
+    assert by_id["seasonal_mix"].name.startswith("Seasonal: ")
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_feed_only_fetches_feed(provider: KionMusicProvider) -> None:
-    """wanted={'feed'} issues only the feed backend fetch and returns only that row."""
+@pytest.mark.parametrize(
+    ("item_id", "expected_backend_calls"),
+    [
+        (MY_WAVE_PLAYLIST_ID, {"get_my_wave_tracks"}),
+        ("feed", {"get_feed"}),
+        ("chart", {"get_chart"}),
+        ("new_releases", {"get_new_releases", "get_albums"}),
+        ("new_playlists", {"get_new_playlists", "get_playlists"}),
+        ("top_picks", {"get_tag_playlists"}),
+        ("mood_mix", {"get_landing_tags", "get_tag_playlists"}),
+        ("activity_mix", {"get_landing_tags", "get_tag_playlists"}),
+        ("seasonal_mix", {"get_tag_playlists"}),
+    ],
+)
+async def test_get_recommendation_items_triggers_only_that_rows_fetches(
+    provider: KionMusicProvider, item_id: str, expected_backend_calls: set[str]
+) -> None:
+    """get_recommendation_items(row) issues only that row's backend fetches and returns items."""
     _install_cache_mocks(provider)
     client = cast("Mock", provider.client)
 
-    result = await provider.recommendations(wanted={"feed"})
+    result = await provider.get_recommendation_items(item_id)
 
-    client.get_feed.assert_awaited_once()
-    assert _awaited_methods(client) == {"get_feed"}
-    assert [f.item_id for f in result] == ["feed"]
+    assert _awaited_methods(client) == expected_backend_calls
+    assert len(result) > 0
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_my_wave_uses_constant(provider: KionMusicProvider) -> None:
-    """wanted={MY_WAVE_PLAYLIST_ID} issues only the My Mix fetch and returns only that row."""
+async def test_get_recommendation_items_unknown_id_returns_empty(
+    provider: KionMusicProvider,
+) -> None:
+    """An unknown row item_id returns an empty list without any backend calls."""
     _install_cache_mocks(provider)
     client = cast("Mock", provider.client)
 
-    result = await provider.recommendations(wanted={MY_WAVE_PLAYLIST_ID})
+    result = await provider.get_recommendation_items("no_such_row")
 
-    assert _awaited_methods(client) == {"get_my_wave_tracks"}
-    assert [f.item_id for f in result] == [MY_WAVE_PLAYLIST_ID]
+    assert list(result) == []
+    assert _awaited_methods(client) == set()

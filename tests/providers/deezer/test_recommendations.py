@@ -1,18 +1,21 @@
-"""Test Deezer recommendations() row filtering via the `wanted` parameter."""
+"""Test Deezer's two-method recommendations contract (rows + per-row items)."""
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from deezer_python_gql.generated.get_recently_played import (
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow,
 )
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.deezer.provider import DeezerProvider
 
-ALL_ROW_IDS = {
+ALL_ROW_IDS = [
     "made_for_you",
     "recommended_playlists",
     "recommended_artist_playlists",
@@ -21,7 +24,7 @@ ALL_ROW_IDS = {
     "mood_flows",
     "genre_flows",
     "recently_played",
-}
+]
 
 
 def _playlist_node(node_id: str, title: str) -> SimpleNamespace:
@@ -109,76 +112,144 @@ def _install_cache_mocks(provider: DeezerProvider) -> None:
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
 
 
+class _FakeCache:
+    """Dict-backed stand-in for the mass cache, so a second call is a cache hit."""
+
+    def __init__(self, provider: DeezerProvider) -> None:
+        self._store: dict[str, Any] = {}
+        self.background_tasks: list[asyncio.Future[Any]] = []
+        provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+            side_effect=self._get
+        )
+        provider.mass.cache.set = AsyncMock(side_effect=self._set)  # type: ignore[method-assign]
+        provider.mass.create_task = Mock(  # type: ignore[method-assign]
+            side_effect=self._create_task
+        )
+
+    async def _get(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        if key in self._store:
+            return self._store[key], True, True
+        return None, False, False
+
+    async def _set(self, key: str, data: Any, **kwargs: Any) -> None:
+        self._store[key] = data
+
+    def _create_task(self, target: Any, *args: Any, **kwargs: Any) -> asyncio.Future[Any]:
+        task: asyncio.Future[Any] = asyncio.ensure_future(target)
+        self.background_tasks.append(task)
+        return task
+
+    async def flush(self) -> None:
+        """Let pending background cache-store tasks complete."""
+        await asyncio.gather(*self.background_tasks)
+        self.background_tasks.clear()
+
+
 @pytest.mark.asyncio
-async def test_recommendations_wanted_none_fetches_all_rows(provider: DeezerProvider) -> None:
-    """wanted=None (default) issues every backend fetch and builds all rows."""
+async def test_get_recommendations_static_rows_zero_backend_calls(
+    provider: DeezerProvider,
+) -> None:
+    """get_recommendations returns the static row descriptors without any backend fetch."""
+    gql = _stub_gql_client(provider)
+
+    rows = await provider.get_recommendations()
+
+    assert [row.item_id for row in rows] == ALL_ROW_IDS
+    assert [row.translation_key for row in rows] == ALL_ROW_IDS
+    assert all(row.provider == provider.instance_id for row in rows)
+    assert all(len(row.items) == 0 for row in rows)
+    gql.get_recommendations.assert_not_awaited()
+    gql.get_flow_config_tracks.assert_not_awaited()
+    gql.get_made_for_me.assert_not_awaited()
+    gql.get_flow_configs.assert_not_awaited()
+    gql.get_recently_played.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_items_made_for_you(provider: DeezerProvider) -> None:
+    """made_for_you items trigger only the Flow cover and made-for-me fetches."""
     _install_cache_mocks(provider)
     gql = _stub_gql_client(provider)
 
-    result = await provider.recommendations()
+    items = await provider.get_recommendation_items("made_for_you")
 
-    gql.get_recommendations.assert_awaited_once()
     gql.get_flow_config_tracks.assert_awaited_once()
     gql.get_made_for_me.assert_awaited_once()
-    gql.get_flow_configs.assert_awaited_once()
-    gql.get_recently_played.assert_awaited_once()
-    assert {f.item_id for f in result} == ALL_ROW_IDS
+    gql.get_recommendations.assert_not_awaited()
+    gql.get_flow_configs.assert_not_awaited()
+    gql.get_recently_played.assert_not_awaited()
+    assert [item.name for item in items] == ["Flow"]
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_recently_played_only(provider: DeezerProvider) -> None:
-    """wanted={recently_played} issues only that row's fetch and returns only that row."""
+async def test_items_recently_played(provider: DeezerProvider) -> None:
+    """recently_played items trigger only the recently-played fetch."""
     _install_cache_mocks(provider)
     gql = _stub_gql_client(provider)
 
-    result = await provider.recommendations(wanted={"recently_played"})
+    items = await provider.get_recommendation_items("recently_played")
 
     gql.get_recently_played.assert_awaited_once()
     gql.get_recommendations.assert_not_awaited()
     gql.get_flow_config_tracks.assert_not_awaited()
     gql.get_made_for_me.assert_not_awaited()
     gql.get_flow_configs.assert_not_awaited()
-    assert [f.item_id for f in result] == ["recently_played"]
+    assert [item.name for item in items] == ["My Flow"]
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_new_releases_issues_shared_fetch(
-    provider: DeezerProvider,
-) -> None:
-    """wanted={new_releases} still issues the shared get_recommendations fetch."""
-    _install_cache_mocks(provider)
+async def test_items_payload_rows_share_one_gql_fetch(provider: DeezerProvider) -> None:
+    """The four gql-backed rows are all served from one cached get_recommendations fetch."""
+    cache = _FakeCache(provider)
     gql = _stub_gql_client(provider)
 
-    result = await provider.recommendations(wanted={"new_releases"})
+    playlists = await provider.get_recommendation_items("recommended_playlists")
+    await cache.flush()
+    artist_playlists = await provider.get_recommendation_items("recommended_artist_playlists")
+    tracks = await provider.get_recommendation_items("recommended_tracks")
+    albums = await provider.get_recommendation_items("new_releases")
 
     gql.get_recommendations.assert_awaited_once()
+    assert [item.name for item in playlists] == ["Editorial"]
+    assert [item.name for item in artist_playlists] == ["Artist Mix"]
+    assert [item.name for item in tracks] == ["Hot Song"]
+    assert [item.name for item in albums] == ["New Album"]
     gql.get_flow_config_tracks.assert_not_awaited()
     gql.get_made_for_me.assert_not_awaited()
     gql.get_flow_configs.assert_not_awaited()
     gql.get_recently_played.assert_not_awaited()
-    # the shared fetch feeds all four rows; the controller filters to the wanted ones
-    assert {f.item_id for f in result} == {
-        "recommended_playlists",
-        "recommended_artist_playlists",
-        "recommended_tracks",
-        "new_releases",
-    }
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_genre_flows_issues_flow_configs_fetch(
-    provider: DeezerProvider,
-) -> None:
-    """wanted={genre_flows} still issues the get_flow_configs fetch shared with mood_flows."""
-    _install_cache_mocks(provider)
+async def test_items_flow_rows_share_one_fetch(provider: DeezerProvider) -> None:
+    """mood_flows and genre_flows are both served from one cached get_flow_configs fetch."""
+    cache = _FakeCache(provider)
     gql = _stub_gql_client(provider)
 
-    result = await provider.recommendations(wanted={"genre_flows"})
+    mood_items = await provider.get_recommendation_items("mood_flows")
+    await cache.flush()
+    genre_items = await provider.get_recommendation_items("genre_flows")
 
     gql.get_flow_configs.assert_awaited_once()
+    assert [item.name for item in mood_items] == ["Flow: Chill"]
+    assert [item.name for item in genre_items] == ["Flow: Rock"]
     gql.get_recommendations.assert_not_awaited()
     gql.get_flow_config_tracks.assert_not_awaited()
     gql.get_made_for_me.assert_not_awaited()
     gql.get_recently_played.assert_not_awaited()
-    # one fetch feeds both flow rows; the controller filters to the wanted one
-    assert {f.item_id for f in result} == {"mood_flows", "genre_flows"}
+
+
+@pytest.mark.asyncio
+async def test_items_unknown_id_returns_empty(provider: DeezerProvider) -> None:
+    """An unknown row item_id yields an empty result without any backend fetch."""
+    gql = _stub_gql_client(provider)
+
+    result = await provider.get_recommendation_items("bogus_row")
+
+    assert isinstance(result, UniqueList)
+    assert len(result) == 0
+    gql.get_recommendations.assert_not_awaited()
+    gql.get_flow_config_tracks.assert_not_awaited()
+    gql.get_made_for_me.assert_not_awaited()
+    gql.get_flow_configs.assert_not_awaited()
+    gql.get_recently_played.assert_not_awaited()

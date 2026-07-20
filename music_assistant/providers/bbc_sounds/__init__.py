@@ -54,6 +54,7 @@ from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
 from music_assistant.providers.bbc_sounds.constants import _Constants
 from music_assistant.providers.bbc_sounds.metadata import _find_segment, _segment_to_metadata
@@ -130,7 +131,7 @@ async def get_config_entries(
     )
 
 
-class BBCSoundsProvider(MusicProvider):
+class BBCSoundsProvider(MusicProvider, RecommendationPayloadMixin):
     """A MusicProvider class to interact with the BBC Sounds API via auntie-sounds."""
 
     client: SoundsClient
@@ -659,29 +660,40 @@ class BBCSoundsProvider(MusicProvider):
 
         return results
 
-    @use_cache(expiration=_Constants.SHORT_EXPIRATION)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get available recommendations."""
-        # NOTE: one experience-menu call returns every row, so opting in to the controller's
-        # `wanted` row filter would not save any backend I/O today. Worth revisiting if the
-        # menu can be fetched per row.
-        folders = []
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        if not self.logged_in:
+            return []
+        return await self._recommendation_rows_from_payload()
 
-        if self.logged_in:
-            recommendations = await self.client.personal.get_experience_menu(
-                recommendations=MenuRecommendationOptions.ONLY
-            )
-            self.logger.debug("Getting recommendations from API")
-            if recommendations.sub_items:
-                for recommendation in recommendations.sub_items:
-                    # recommendation is a RecommendedMenuItem
-                    folder = await self.adaptor.new_object(
-                        recommendation, force_type=RecommendationFolder
-                    )
-                    if isinstance(folder, RecommendationFolder):
-                        folders.append(folder)
-            return folders
-        return []
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if not self.logged_in:
+            return UniqueList()
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the experience-menu recommendation folders, with items."""
+        self.logger.debug("Getting recommendations from API")
+        folders: list[RecommendationFolder] = []
+        recommendations = await self.client.personal.get_experience_menu(
+            recommendations=MenuRecommendationOptions.ONLY
+        )
+        if recommendations.sub_items:
+            for recommendation in recommendations.sub_items:
+                # recommendation is a RecommendedMenuItem
+                folder = await self.adaptor.new_object(
+                    recommendation, force_type=RecommendationFolder
+                )
+                if isinstance(folder, RecommendationFolder):
+                    folders.append(folder)
+        return folders
 
     async def on_played(
         self,

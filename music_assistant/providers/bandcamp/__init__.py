@@ -494,46 +494,44 @@ class BandcampProvider(MusicProvider):
 
         return tracks[: self.top_tracks_limit]
 
-    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
-        """
-        Surface Bandcamp's personalised feed and wishlist as recommendations.
-
-        :param wanted: optional set of row item_ids to build; when None, all rows are built.
-        """
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
         if not self._client.identity:
             return []
+        return [
+            RecommendationFolder(
+                item_id="feed",
+                provider=self.instance_id,
+                name="Bandcamp Feed",
+                translation_key="feed",
+                icon="mdi-rss",
+                is_playable=True,
+            ),
+            RecommendationFolder(
+                item_id="wishlist",
+                provider=self.instance_id,
+                name="Wishlist",
+                translation_key="wishlist",
+                icon="mdi-heart",
+                is_playable=True,
+            ),
+        ]
 
-        def want(item_id: str) -> bool:
-            return wanted is None or item_id in wanted
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
 
-        folders: list[RecommendationFolder] = []
-        if want("feed") and (feed_tracks := await self._get_feed_tracks()):
-            folders.append(
-                RecommendationFolder(
-                    item_id="feed",
-                    provider=self.instance_id,
-                    name="Bandcamp Feed",
-                    translation_key="feed",
-                    icon="mdi-rss",
-                    is_playable=True,
-                    items=UniqueList(feed_tracks),
-                )
-            )
-        if want("wishlist") and (
-            wishlist := await self._browse_person_content(None, CollectionType.WISHLIST)
-        ):
-            folders.append(
-                RecommendationFolder(
-                    item_id="wishlist",
-                    provider=self.instance_id,
-                    name="Wishlist",
-                    translation_key="wishlist",
-                    icon="mdi-heart",
-                    is_playable=True,
-                    items=UniqueList(wishlist),
-                )
-            )
-        return folders
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if not self._client.identity:
+            return UniqueList()
+        if item_id == "feed":
+            return UniqueList(await self._get_feed_tracks())
+        if item_id == "wishlist":
+            return UniqueList(await self._browse_person_content(None, CollectionType.WISHLIST))
+        return UniqueList()
 
     @throttle_with_retries
     async def _fetch_feed(self) -> FeedResponse:

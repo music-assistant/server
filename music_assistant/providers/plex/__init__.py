@@ -38,6 +38,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItem,
     MediaItemChapter,
@@ -66,6 +67,7 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.plex.constants import (
     AUTH_TOKEN_UNAUTH,
     COLLECTION_ID_PREFIX,
@@ -493,7 +495,7 @@ PlexObjectT = TypeVar("PlexObjectT", bound=PlexObject)
 MediaItemT = TypeVar("MediaItemT", bound=MediaItem)
 
 
-class PlexProvider(MusicProvider):
+class PlexProvider(MusicProvider, RecommendationPayloadMixin):
     """Provider for a plex music library."""
 
     _plex_server: PlexServer = None
@@ -1219,12 +1221,22 @@ class PlexProvider(MusicProvider):
             self.logger.warning("Error getting similar tracks for %s: %s", prov_track_id, err)
         return []
 
-    @use_cache(3600 * 3, cache_checksum="v2")  # Cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations from Plex hubs."""
-        # NOTE: one hubs fetch returns every row (hub), so opting in to the controller's
-        # `wanted` row filter would not save any backend I/O today. Worth revisiting if
-        # hubs can be fetched individually.
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the full recommendations payload (folders with items) from the Plex hubs."""
         try:
             # Get the configured limit for items per hub
             limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)

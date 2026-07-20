@@ -1,4 +1,4 @@
-"""The demo music provider's recommendations() implementation."""
+"""The demo music provider's recommendations implementation."""
 
 from __future__ import annotations
 
@@ -27,8 +27,15 @@ def demo_music_provider() -> MyDemoMusicprovider:
     return MyDemoMusicprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def test_recommendations_returns_empty_list(
+async def test_get_recommendations_returns_empty_list(
     demo_music_provider: MyDemoMusicprovider,
 ) -> None:
-    """The demo provider's recommendations() returns an empty list."""
-    assert await demo_music_provider.recommendations() == []
+    """The demo provider's get_recommendations() returns an empty list."""
+    assert await demo_music_provider.get_recommendations() == []
+
+
+async def test_get_recommendation_items_returns_empty_list(
+    demo_music_provider: MyDemoMusicprovider,
+) -> None:
+    """The demo provider's get_recommendation_items() returns an empty list for any id."""
+    assert await demo_music_provider.get_recommendation_items("any_row") == []

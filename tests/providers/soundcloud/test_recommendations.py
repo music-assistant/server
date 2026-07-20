@@ -1,10 +1,13 @@
-"""Test Soundcloud recommendations() row filtering via the `wanted` parameter."""
+"""Tests for the Soundcloud two-method recommendations contract."""
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.soundcloud import SoundcloudMusicProvider
 
@@ -48,57 +51,122 @@ def _stub_api(provider: SoundcloudMusicProvider) -> Mock:
     return api
 
 
-def _install_cache_mocks(provider: SoundcloudMusicProvider) -> None:
-    """Make the @use_cache decorator treat every call as a cache miss."""
+def _install_fake_cache(provider: SoundcloudMusicProvider) -> list[asyncio.Future[Any]]:
+    """Back @use_cache with a dict store; return the background store tasks."""
+    store: dict[str, Any] = {}
+    background_tasks: list[asyncio.Future[Any]] = []
+
+    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        if key in store:
+            return store[key], True, True
+        return None, False, False
+
+    async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
+        store[key] = data
+
+    def _create_task(target: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
+        task: asyncio.Future[Any] = asyncio.ensure_future(target)
+        background_tasks.append(task)
+        return task
+
     provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
-        return_value=(None, False, False)
+        side_effect=_cache_get
     )
-    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    provider.mass.cache.set = AsyncMock(side_effect=_cache_set)  # type: ignore[method-assign]
+    provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
+    return background_tasks
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_none_fetches_all_rows(
+async def test_get_recommendations_returns_rows_without_items(
     provider: SoundcloudMusicProvider,
 ) -> None:
-    """wanted=None (default) fetches mixed selections and the feed — unchanged behavior."""
-    _install_cache_mocks(provider)
+    """get_recommendations returns payload rows plus the static feed row, all without items."""
+    background_tasks = _install_fake_cache(provider)
     api = _stub_api(provider)
 
-    result = await provider.recommendations()
-
-    api.get_mixed_selection.assert_awaited_once_with(40)
-    api.get_subscribe_feed.assert_awaited_once_with(40)
-    assert {f.item_id for f in result} == {
-        f"{provider.instance_id}_trending-music",
-        f"{provider.instance_id}_sc_subscribed_feed",
-    }
-
-
-@pytest.mark.asyncio
-async def test_recommendations_wanted_feed_only_skips_mixed_selection(
-    provider: SoundcloudMusicProvider,
-) -> None:
-    """wanted={<instance>_sc_subscribed_feed} only fetches the subscribed feed."""
-    _install_cache_mocks(provider)
-    api = _stub_api(provider)
-
-    result = await provider.recommendations(wanted={f"{provider.instance_id}_sc_subscribed_feed"})
-
-    api.get_mixed_selection.assert_not_awaited()
-    api.get_subscribe_feed.assert_awaited_once_with(40)
-    assert [f.item_id for f in result] == [f"{provider.instance_id}_sc_subscribed_feed"]
-
-
-@pytest.mark.asyncio
-async def test_recommendations_wanted_collection_only_skips_feed(
-    provider: SoundcloudMusicProvider,
-) -> None:
-    """wanted={<instance>_trending-music} fetches the mixed selections but not the feed."""
-    _install_cache_mocks(provider)
-    api = _stub_api(provider)
-
-    result = await provider.recommendations(wanted={f"{provider.instance_id}_trending-music"})
+    rows = await provider.get_recommendations()
 
     api.get_mixed_selection.assert_awaited_once_with(40)
     api.get_subscribe_feed.assert_not_awaited()
-    assert [f.item_id for f in result] == [f"{provider.instance_id}_trending-music"]
+    assert [row.item_id for row in rows] == [
+        f"{provider.instance_id}_trending-music",
+        f"{provider.instance_id}_sc_subscribed_feed",
+    ]
+    assert all(len(row.items) == 0 for row in rows)
+    trending, feed = rows
+    assert trending.name == "Trending"
+    assert trending.icon == "mdi-playlist-music"
+    assert trending.provider == provider.instance_id
+    assert feed.name == "SoundCloud Feed"
+    assert feed.translation_key == "soundcloud_feed"
+    assert feed.icon == "mdi-rss"
+    assert feed.provider == provider.instance_id
+    await asyncio.gather(*background_tasks)
+
+
+@pytest.mark.asyncio
+async def test_rows_and_items_share_one_payload_fetch(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """A rows call followed by an items call is served from one cached payload fetch."""
+    background_tasks = _install_fake_cache(provider)
+    api = _stub_api(provider)
+
+    await provider.get_recommendations()
+    # let the background cache-store task complete before the items call
+    await asyncio.gather(*background_tasks)
+    items = await provider.get_recommendation_items(f"{provider.instance_id}_trending-music")
+
+    api.get_mixed_selection.assert_awaited_once_with(40)
+    assert [item.item_id for item in items] == ["sp1"]
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_collection_row(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """Items for a mixed-selection row trigger only the payload fetch, not the feed."""
+    background_tasks = _install_fake_cache(provider)
+    api = _stub_api(provider)
+
+    items = await provider.get_recommendation_items(f"{provider.instance_id}_trending-music")
+
+    api.get_mixed_selection.assert_awaited_once_with(40)
+    api.get_subscribe_feed.assert_not_awaited()
+    assert [item.item_id for item in items] == ["sp1"]
+    assert items[0].name == "Daily Mix"
+    await asyncio.gather(*background_tasks)
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_feed_row(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """Items for the feed row trigger only the subscribed-feed fetch, not the payload."""
+    background_tasks = _install_fake_cache(provider)
+    api = _stub_api(provider)
+
+    items = await provider.get_recommendation_items(f"{provider.instance_id}_sc_subscribed_feed")
+
+    api.get_subscribe_feed.assert_awaited_once_with(40)
+    api.get_mixed_selection.assert_not_awaited()
+    assert isinstance(items, UniqueList)
+    assert [item.item_id for item in items] == ["111"]
+    assert items[0].name == "Feed Track"
+    await asyncio.gather(*background_tasks)
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_unknown_id_returns_empty(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """An unknown item_id yields an empty result."""
+    background_tasks = _install_fake_cache(provider)
+    _stub_api(provider)
+
+    result = await provider.get_recommendation_items("bogus_row")
+
+    assert isinstance(result, UniqueList)
+    assert len(result) == 0
+    await asyncio.gather(*background_tasks)

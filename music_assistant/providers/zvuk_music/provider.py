@@ -26,6 +26,7 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -457,52 +458,45 @@ class ZvukMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing editorial playlist: %s", err)
         return result
 
-    async def recommendations(self, wanted: set[str] | None = None) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Return personalized and editorial playlist recommendations.
+        Return the available recommendation rows, without items.
 
-        Returns two folders:
-        - "Made for you": Zvuk's AI-generated personalized playlists.
-        - "Collections": Editorial genre-themed curated playlists.
-
-        :param wanted: optional set of row item_ids to build; when None, all rows are built.
+        Two rows:
+        - "for_you" ("Made for you"): Zvuk's AI-generated personalized playlists.
+        - "editorial" ("Collections"): Editorial genre-themed curated playlists.
         """
+        return [
+            RecommendationFolder(
+                item_id="for_you",
+                provider=self.instance_id,
+                name="Made for you",
+                translation_key="made_for_you",
+                icon="mdi-playlist-music",
+            ),
+            RecommendationFolder(
+                item_id="editorial",
+                provider=self.instance_id,
+                name="Collections",
+                subtitle="Editorial playlists from Zvuk by genre",
+                translation_key="editorial",
+                icon="mdi-music-box-multiple",
+            ),
+        ]
 
-        def want(item_id: str) -> bool:
-            return wanted is None or item_id in wanted
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return the items for a single recommendation row.
 
-        folders: list[RecommendationFolder] = []
-
-        # Folder 1: Personalized synthesis playlists ("Made for you")
-        for_you_items = await self._get_for_you_playlists() if want("for_you") else []
-        if for_you_items:
-            folders.append(
-                RecommendationFolder(
-                    item_id="for_you",
-                    provider=self.instance_id,
-                    name="Made for you",
-                    translation_key="made_for_you",
-                    icon="mdi-playlist-music",
-                    items=for_you_items,  # type: ignore[arg-type]
-                )
-            )
-
-        # Folder 2: Editorial curated playlists ("Collections")
-        editorial_items = await self._get_editorial_playlists() if want("editorial") else []
-        if editorial_items:
-            folders.append(
-                RecommendationFolder(
-                    item_id="editorial",
-                    provider=self.instance_id,
-                    name="Collections",
-                    subtitle="Editorial playlists from Zvuk by genre",
-                    translation_key="editorial",
-                    icon="mdi-music-box-multiple",
-                    items=editorial_items,  # type: ignore[arg-type]
-                )
-            )
-
-        return folders
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == "for_you":
+            return UniqueList(await self._get_for_you_playlists())
+        if item_id == "editorial":
+            return UniqueList(await self._get_editorial_playlists())
+        return UniqueList()
 
     async def browse(self, path: str) -> list[MediaItemType | ItemMapping | BrowseFolder]:
         """

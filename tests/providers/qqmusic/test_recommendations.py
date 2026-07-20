@@ -1,4 +1,4 @@
-"""Test QQ Music recommendations() row filtering via the `wanted` parameter."""
+"""Test QQ Music two-method recommendations: static rows + per-row item fetches."""
 
 # mypy: ignore-errors
 
@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.qqmusic import QQMusicProvider
 
@@ -45,50 +46,118 @@ def _make_provider() -> QQMusicProvider:
     return provider
 
 
+def _assert_no_backend_calls(provider: QQMusicProvider) -> None:
+    """Assert none of the stubbed recommendation endpoints were awaited."""
+    provider._qq_recommend.get_guess_recommend.assert_not_awaited()
+    provider._qq_recommend.get_radar_recommend.assert_not_awaited()
+    provider._qq_recommend.get_recommend_newsong.assert_not_awaited()
+    provider._qq_recommend.get_recommend_songlist.assert_not_awaited()
+
+
 @pytest.mark.asyncio
-async def test_recommendations_wanted_none_fetches_all_rows() -> None:
-    """wanted=None (default) fetches and builds all three rows — unchanged behavior."""
+async def test_get_recommendations_static_rows_zero_backend_calls() -> None:
+    """get_recommendations returns the three static rows without any backend I/O."""
     provider = _make_provider()
 
-    result = await provider.recommendations()
+    rows = await provider.get_recommendations()
 
-    provider._qq_recommend.get_guess_recommend.assert_awaited_once()
-    provider._qq_recommend.get_radar_recommend.assert_not_awaited()
-    provider._qq_recommend.get_recommend_newsong.assert_awaited_once()
-    provider._qq_recommend.get_recommend_songlist.assert_awaited_once()
-    assert [folder.item_id for folder in result] == [
+    _assert_no_backend_calls(provider)
+    assert [row.item_id for row in rows] == [
         "guess_recommend",
         "new_songs",
         "recommended_playlists",
     ]
+    assert all(row.provider == "qqmusic_instance" for row in rows)
+    assert all(len(row.items) == 0 for row in rows)
+    assert [row.translation_key for row in rows] == [
+        "recommended_tracks",
+        "recommended_new_tracks",
+        "recommended_playlists",
+    ]
+    assert [row.icon for row in rows] == [
+        "mdi-lightbulb-on-outline",
+        "mdi-music-note-plus",
+        "mdi-playlist-music",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_new_songs_only_fetches_new_songs() -> None:
-    """wanted={new_songs} issues only the newsong fetch and returns only that row."""
+async def test_get_recommendation_items_guess_recommend() -> None:
+    """guess_recommend triggers only the guess fetch and returns its tracks."""
     provider = _make_provider()
 
-    result = await provider.recommendations(wanted={"new_songs"})
+    items = await provider.get_recommendation_items("guess_recommend")
 
-    provider._qq_recommend.get_guess_recommend.assert_not_awaited()
+    provider._qq_recommend.get_guess_recommend.assert_awaited_once()
     provider._qq_recommend.get_radar_recommend.assert_not_awaited()
+    provider._qq_recommend.get_recommend_newsong.assert_not_awaited()
     provider._qq_recommend.get_recommend_songlist.assert_not_awaited()
-    provider._qq_recommend.get_recommend_newsong.assert_awaited_once()
-    assert len(result) == 1
-    assert result[0].item_id == "new_songs"
+    assert [item.item_id for item in items] == ["t1"]
 
 
 @pytest.mark.asyncio
-async def test_recommendations_wanted_guess_gates_radar_fallback_together() -> None:
-    """wanted={guess_recommend} with empty guess payload still runs the radar fallback."""
+async def test_get_recommendation_items_guess_falls_back_to_radar() -> None:
+    """An empty guess payload falls back to the radar fetch within the same row."""
     provider = _make_provider()
     provider._qq_recommend.get_guess_recommend.return_value = {"songs": []}
 
-    result = await provider.recommendations(wanted={"guess_recommend"})
+    items = await provider.get_recommendation_items("guess_recommend")
 
     provider._qq_recommend.get_guess_recommend.assert_awaited_once()
     provider._qq_recommend.get_radar_recommend.assert_awaited_once()
     provider._qq_recommend.get_recommend_newsong.assert_not_awaited()
     provider._qq_recommend.get_recommend_songlist.assert_not_awaited()
-    assert len(result) == 1
-    assert result[0].item_id == "guess_recommend"
+    assert [item.item_id for item in items] == ["t2"]
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_new_songs() -> None:
+    """new_songs triggers only the newsong fetch and returns its tracks."""
+    provider = _make_provider()
+
+    items = await provider.get_recommendation_items("new_songs")
+
+    provider._qq_recommend.get_recommend_newsong.assert_awaited_once()
+    provider._qq_recommend.get_guess_recommend.assert_not_awaited()
+    provider._qq_recommend.get_radar_recommend.assert_not_awaited()
+    provider._qq_recommend.get_recommend_songlist.assert_not_awaited()
+    assert [item.item_id for item in items] == ["t3"]
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_recommended_playlists() -> None:
+    """recommended_playlists triggers only the songlist fetch and returns its playlists."""
+    provider = _make_provider()
+
+    items = await provider.get_recommendation_items("recommended_playlists")
+
+    provider._qq_recommend.get_recommend_songlist.assert_awaited_once()
+    provider._qq_recommend.get_guess_recommend.assert_not_awaited()
+    provider._qq_recommend.get_radar_recommend.assert_not_awaited()
+    provider._qq_recommend.get_recommend_newsong.assert_not_awaited()
+    assert len(items) == 1
+    assert items[0].name == "Recommended List"
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_unknown_id_returns_empty() -> None:
+    """An unknown row item_id returns an empty UniqueList without backend calls."""
+    provider = _make_provider()
+
+    items = await provider.get_recommendation_items("bogus_row")
+
+    _assert_no_backend_calls(provider)
+    assert isinstance(items, UniqueList)
+    assert len(items) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_recommendation_items_uses_payload_cache() -> None:
+    """A repeated items call within the TTL is served from the payload cache."""
+    provider = _make_provider()
+
+    first = await provider.get_recommendation_items("new_songs")
+    second = await provider.get_recommendation_items("new_songs")
+
+    provider._qq_recommend.get_recommend_newsong.assert_awaited_once()
+    assert [item.item_id for item in first] == [item.item_id for item in second] == ["t3"]

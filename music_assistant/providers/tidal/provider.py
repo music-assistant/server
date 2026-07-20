@@ -11,21 +11,23 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    BrowseFolder,
     ItemMapping,
     MediaItemType,
     Playlist,
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .api_client import TidalAPIClient
 from .auth_manager import TidalAuthManager
 from .constants import (
-    CACHE_CATEGORY_RECOMMENDATIONS,
     CONF_AUTH_TOKEN,
     CONF_EXPIRY_TIME,
     CONF_REFRESH_TOKEN,
@@ -68,7 +70,7 @@ SUPPORTED_FEATURES = {
 }
 
 
-class TidalProvider(MusicProvider):
+class TidalProvider(MusicProvider, RecommendationPayloadMixin):
     """Implementation of a Tidal MusicProvider."""
 
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):
@@ -239,7 +241,20 @@ class TidalProvider(MusicProvider):
         """Remove track(s) from playlist."""
         await self.playlists.remove_tracks(prov_playlist_id, positions_to_remove)
 
-    @use_cache(expiration=3600, category=CACHE_CATEGORY_RECOMMENDATIONS)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's recommendations organized into folders."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders WITH items)."""
         return await self.recommendations_manager.get_recommendations()

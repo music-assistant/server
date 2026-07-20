@@ -18,7 +18,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import RecommendationFolder, Track, UniqueList
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
@@ -43,7 +43,12 @@ from music_assistant.providers.lastfm_recommendations.recommendations import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import Artist, RecommendationFolder
+    from music_assistant_models.media_items import (
+        Artist,
+        BrowseFolder,
+        ItemMapping,
+        MediaItemType,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -190,9 +195,34 @@ class LastFMRecommendationsProvider(MetadataProvider):
         except MusicAssistantError as err:
             self.logger.warning("Failed to build recommendations: %s", err)
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Return this provider's recommendation folders."""
-        return self._recommendation_folders
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        # rows come from the precomputed in-memory folders: no backend I/O
+        return [
+            RecommendationFolder(
+                item_id=folder.item_id,
+                provider=folder.provider,
+                name=folder.name,
+                translation_key=folder.translation_key,
+                translation_params=folder.translation_params,
+                icon=folder.icon,
+                subtitle=folder.subtitle,
+            )
+            for folder in self._recommendation_folders
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        for folder in self._recommendation_folders:
+            if folder.item_id == item_id:
+                return folder.items
+        return UniqueList()
 
     async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
         """

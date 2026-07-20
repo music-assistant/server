@@ -107,12 +107,8 @@ class AppleMusicRecommendationManager:
         except MediaNotFoundError, KeyError, IndexError:
             return parse_station_as_playlist(self.provider, {"id": station_id})
 
-    @use_cache(3600)
     async def get_personal_recommendations(self) -> list[RecommendationFolder]:
         """Fetch personal recommendations grouped into folders by section title."""
-        # NOTE: one me/recommendations call returns every row (section), so opting in to the
-        # controller's `wanted` row filter would not save any backend I/O today. Worth
-        # revisiting if sections can be fetched individually.
         response = await self.api.get_data(
             "me/recommendations?include[personal-recommendation]=contents"
         )
@@ -158,6 +154,22 @@ class AppleMusicRecommendationManager:
                 folders[title].items.append(playlist)
         return list(folders.values())
 
+    def _populate_station_maps(self, folders: list[RecommendationFolder]) -> None:
+        """
+        Populate the station name maps from payload folders, if they are empty.
+
+        After a process restart the payload may be served from the persistent cache
+        without running get_personal_recommendations, leaving the maps empty; the
+        folder items (stations parsed as playlists) carry the id/name pairs.
+        """
+        if self._station_id_to_name:
+            return
+        for folder in folders:
+            for item in folder.items:
+                if item.name and item.name != item.item_id:
+                    self._station_id_to_name[item.item_id] = item.name
+                    self._station_name_to_id[item.name] = item.item_id
+
     async def resolve_station_id(self, stale_id: str) -> str | None:
         """
         Return the current station ID for a stale one.
@@ -166,18 +178,23 @@ class AppleMusicRecommendationManager:
         """
         station_name = self._station_id_to_name.get(stale_id)
         if not station_name:
-            # Map may be empty after a process restart; populate from the cache first.
-            await self.get_personal_recommendations()
+            # Maps may be empty after a process restart; populate from the cached payload first.
+            self._populate_station_maps(await self.provider._recommendation_payload())
             station_name = self._station_id_to_name.get(stale_id)
             if not station_name:
                 return None
-        async with self.mass.cache.handle_refresh(True):
-            await self.get_personal_recommendations()
+        # Apple rotates station ids: refresh through the mixin cache so the fresh payload
+        # (which rebuilds the maps) is also what rows/items serve afterwards.
+        await self.provider._refresh_recommendation_payload()
         return self._station_name_to_id.get(station_name)
 
     async def browse_stations(self) -> list[ItemMapping | Playlist]:
         """Return recommended radio stations from personal recommendations."""
         return cast(
             "list[ItemMapping | Playlist]",
-            [item for folder in await self.get_personal_recommendations() for item in folder.items],
+            [
+                item
+                for folder in await self.provider._recommendation_payload()
+                for item in folder.items
+            ],
         )
