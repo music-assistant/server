@@ -9,7 +9,7 @@ import socket
 import time
 from contextlib import suppress
 from ipaddress import ip_address
-from typing import cast
+from typing import Final, cast
 
 from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
@@ -46,6 +46,17 @@ from .sendspin_bridge import SendspinBridgeManager
 # This allows for getting state/metadata changes from the device,
 # even if we are not actively streaming to it.
 
+# Marker the `cliairplay --ptp-daemon` process prints once it has bound the
+# privileged PTP ports (UDP 319/320) and opened its control channel. Until this
+# line is seen the daemon is spawned but not yet able to serve shared-clock
+# streams, so a group start before it would race the daemon's readiness.
+PTP_DAEMON_READY_MARKER: Final[str] = "[PTP] daemon up"
+# Bounded wait for the daemon to report readiness before a stream session
+# decides its timing source. Once ready the check returns immediately; only a
+# session that starts while the daemon is still coming up (or never binds) pays
+# any of this, and only up to the moment readiness is signalled.
+PTP_DAEMON_READY_TIMEOUT: Final[float] = 3.0
+
 
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
@@ -58,6 +69,10 @@ class AirPlayProvider(PlayerProvider):
     _ptp_daemon_started: float = 0.0
     _ptp_daemon_restarted: bool = False
     _ptp_daemon_stop_requested: bool = False
+    # Set once the running daemon reports it has bound 319/320 and opened its
+    # control channel; created/cleared per daemon start so a crash+restart
+    # re-gates readiness. None until the daemon is first started.
+    _ptp_daemon_ready: asyncio.Event | None = None
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
@@ -66,12 +81,47 @@ class AirPlayProvider(PlayerProvider):
 
     @property
     def ptp_daemon_running(self) -> bool:
-        """Return if the shared PTP clock daemon is running."""
+        """
+        Return if the shared PTP clock daemon process is alive.
+
+        This reflects process liveness only (spawned, not closed, still
+        running) for status/diagnostics. The streaming timing decision must use
+        :meth:`wait_ptp_daemon_ready`, which also waits for the daemon to have
+        actually bound its ports and opened its control channel.
+        """
         return (
             self._ptp_daemon is not None
             and not self._ptp_daemon.closed
             and self._ptp_daemon.returncode is None
         )
+
+    async def wait_ptp_daemon_ready(self, timeout: float = PTP_DAEMON_READY_TIMEOUT) -> bool:
+        """
+        Wait until the shared PTP clock daemon is ready to serve streams.
+
+        Readiness means the daemon has bound the privileged PTP ports (UDP
+        319/320) and opened its control channel - not merely that the process is
+        alive. A stream session gates its group-wide timing decision on this so
+        it never attaches members to a clock that is not yet serving.
+
+        :param timeout: Maximum seconds to wait for the readiness signal.
+        :return: True if the daemon has signalled readiness, False otherwise
+            (never started, failed to bind, or not ready within the timeout).
+        """
+        event = self._ptp_daemon_ready
+        if event is None:
+            return False
+        if event.is_set():
+            return True
+        # No live daemon process to become ready (failed to bind or crashed
+        # without a restart) - don't burn the whole timeout waiting.
+        if self._ptp_daemon is None:
+            return False
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -156,6 +206,8 @@ class AirPlayProvider(PlayerProvider):
             await bridge_manager.close()
         # terminate the shared PTP clock daemon
         self._ptp_daemon_stop_requested = True
+        if self._ptp_daemon_ready is not None:
+            self._ptp_daemon_ready.clear()
         if self._ptp_daemon_stdout_task and not self._ptp_daemon_stdout_task.done():
             self._ptp_daemon_stdout_task.cancel()
         if self._ptp_daemon and not self._ptp_daemon.closed:
@@ -335,6 +387,12 @@ class AirPlayProvider(PlayerProvider):
         if bind_ip not in ("0.0.0.0", "::", ""):
             args += ["--if", bind_ip]
         daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
+        # (Re)gate readiness for this daemon instance: not ready until a reader
+        # sees the "daemon up" line (a restart clears any previous readiness).
+        if self._ptp_daemon_ready is None:
+            self._ptp_daemon_ready = asyncio.Event()
+        else:
+            self._ptp_daemon_ready.clear()
         await daemon.start()
         self._ptp_daemon = daemon
         self._ptp_daemon_started = time.monotonic()
@@ -345,7 +403,7 @@ class AirPlayProvider(PlayerProvider):
     async def _ptp_daemon_stderr_reader(self, daemon: AsyncProcess) -> None:
         """Forward PTP daemon stderr output to the debug log."""
         async for line in daemon.iter_stderr():
-            self.logger.debug("PTP daemon: %s", line)
+            self._handle_ptp_daemon_line(line)
 
     async def _ptp_daemon_stdout_reader(self, daemon: AsyncProcess) -> None:
         """Drain (and debug-log) the PTP daemon stdout pipe."""
@@ -355,7 +413,21 @@ class AirPlayProvider(PlayerProvider):
             while b"\n" in buffer:
                 raw_line, buffer = buffer.split(b"\n", 1)
                 if line := raw_line.decode("utf-8", errors="ignore").strip():
-                    self.logger.debug("PTP daemon: %s", line)
+                    self._handle_ptp_daemon_line(line)
+
+    def _handle_ptp_daemon_line(self, line: str) -> None:
+        """Debug-log a PTP daemon output line and detect its readiness signal."""
+        self.logger.debug("PTP daemon: %s", line)
+        # The readiness marker is matched on either pipe: the daemon's diagnostic
+        # output is not contractually stdout-vs-stderr, so both readers feed this
+        # handler and setting the event is idempotent.
+        if (
+            (event := self._ptp_daemon_ready) is not None
+            and not event.is_set()
+            and PTP_DAEMON_READY_MARKER in line
+        ):
+            self.logger.debug("Shared PTP clock daemon reported ready")
+            event.set()
 
     async def _ptp_daemon_monitor(self, daemon: AsyncProcess) -> None:
         """Watch the PTP daemon process and restart it once if it crashes."""
@@ -363,6 +435,11 @@ class AirPlayProvider(PlayerProvider):
         if self._ptp_daemon_stop_requested or self._ptp_daemon is not daemon:
             return
         self._ptp_daemon = None
+        # Crash detected: drop readiness immediately so a session starting during
+        # the restart window degrades consistently instead of attaching to a dead
+        # clock (a restart re-sets it once the new daemon reports ready).
+        if self._ptp_daemon_ready is not None:
+            self._ptp_daemon_ready.clear()
         runtime = time.monotonic() - self._ptp_daemon_started
         if runtime < 5:
             # immediate exit: UDP 319/320 already taken or missing privileges

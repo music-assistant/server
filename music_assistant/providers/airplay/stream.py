@@ -97,15 +97,20 @@ class AirPlayStream:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
 
-    async def start(self, start_unix_ms: int) -> None:
+    async def start(self, start_unix_ms: int, use_shared_ptp: bool | None = None) -> None:
         """
         Start cliairplay process.
 
         :param start_unix_ms: The instant the first sample must be audible,
             as unix epoch milliseconds. All members of a sync group must
             receive the same value.
+        :param use_shared_ptp: Session-wide decision on whether native AirPlay 2
+            members attach to the shared PTP clock daemon. The stream session
+            passes the same value to every member so a group never mixes PTP and
+            NTP timing. None (single-stream callers) falls back to the daemon's
+            live state.
         """
-        args = await self._build_cli_args(start_unix_ms)
+        args = await self._build_cli_args(start_unix_ms, use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
         await self._cli_proc.start()
@@ -208,8 +213,18 @@ class AirPlayStream:
             self._last_progress_sent = progress
             await self.send_cli_command(f"PROGRESS={progress}")
 
-    async def _build_cli_args(self, start_unix_ms: int) -> list[str]:  # noqa: PLR0915
-        """Assemble the cliairplay argument list for this stream."""
+    async def _build_cli_args(  # noqa: PLR0915
+        self, start_unix_ms: int, use_shared_ptp: bool | None = None
+    ) -> list[str]:
+        """
+        Assemble the cliairplay argument list for this stream.
+
+        :param start_unix_ms: The audible-start instant in unix epoch ms.
+        :param use_shared_ptp: Whether a native AirPlay 2 stream attaches to the
+            shared PTP clock daemon. The stream session passes an explicit
+            group-wide decision so members never mix PTP and NTP timing; None
+            (single-stream callers) falls back to the daemon's live state.
+        """
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
         # The "force RAOP" escape hatch is the only override; everything else lets
@@ -286,9 +301,15 @@ class AirPlayStream:
         if password := self.player.config.get_value(CONF_PASSWORD):
             args += ["--password", str(password)]
 
-        # Shared PTP daemon clock (multi-room sync for native AP2 streams)
-        if protocol_arg != "raop" and prov.ptp_daemon_running:
-            args += ["--ptp-shared"]
+        # Shared PTP daemon clock (multi-room sync for native AP2 streams). The
+        # decision is made once per session and passed in, so every native AP2
+        # member of a sync group uses the same timing source and cannot drift.
+        # A single-stream caller (use_shared_ptp is None) falls back to the
+        # daemon's live state.
+        if protocol_arg != "raop":
+            shared_ptp = prov.ptp_daemon_running if use_shared_ptp is None else use_shared_ptp
+            if shared_ptp:
+                args += ["--ptp-shared"]
 
         # Local interface binding
         if_arg: str | None = None
