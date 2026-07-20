@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1
+#
+# Local development image: builds Music Assistant straight from this checkout
+# (including any uncommitted local changes, e.g. custom providers) instead of
+# from a released wheel. Reuses the official prebuilt base image so we don't
+# have to compile ffmpeg/PyAV ourselves.
+#
+# Build:  docker build -f Dockerfile.dev -t music-assistant-dev .
+# Run:    docker run -p 8095:8095 -v mass-data:/data music-assistant-dev
+#
+ARG BASE_IMAGE_VERSION=latest
+FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV VIRTUAL_ENV=/app/venv
+RUN uv venv $VIRTUAL_ENV
+
+WORKDIR /build
+
+# pre-install requirements first so this layer is cached across source-only edits
+ENV URLLIB3_NO_OVERRIDE=1
+COPY requirements_all.txt .
+RUN uv pip install \
+    --index-strategy unsafe-best-match \
+    --no-binary urllib3-future \
+    -r requirements_all.txt
+
+# Install PyAV from the pre-built wheel bundled in the base image (must match
+# the version requirements_all.txt resolved to, same check the release build does)
+RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; print(importlib.metadata.version('av'))") && \
+    WHEEL_VERSION=$(ls /usr/local/share/pyav-wheels/av*.whl | grep -oP 'av-\K[0-9.]+') && \
+    if [ "$REQUIRED_VERSION" != "$WHEEL_VERSION" ]; then \
+      echo "ERROR: PyAV version mismatch! Requirements need $REQUIRED_VERSION but base image has $WHEEL_VERSION" && \
+      echo "Please rebuild/pull a matching base image." && \
+      exit 1; \
+    fi && \
+    uv pip install --force-reinstall --no-deps /usr/local/share/pyav-wheels/av*.whl
+
+# Now bring in the actual source and install it (this is the layer that
+# changes every time you edit code)
+COPY pyproject.toml MANIFEST.in README.md NOTICE ./
+COPY music_assistant music_assistant
+RUN uv pip install --no-cache-dir --no-deps .
+
+RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
+
+RUN chmod -R 777 /app
+
+##################################################################################################
+
+FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
+
+ENV VIRTUAL_ENV=/app/venv
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+COPY --from=builder /app /app
+RUN chmod 777 /app
+
+LABEL \
+    org.opencontainers.image.title="Music Assistant Server (local dev build)" \
+    org.opencontainers.image.description="Locally built from source, not an official release image."
+
+VOLUME [ "/data" ]
+EXPOSE 8095
+
+WORKDIR $VIRTUAL_ENV
+
+RUN printf '#!/bin/sh\n\
+for path in /usr/lib/*/libjemalloc.so.2; do\n\
+    [ -f "$path" ] && export LD_PRELOAD="$path" MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000" && break\n\
+done\n\
+exec mass "$@"\n' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]
