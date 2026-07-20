@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
@@ -19,6 +19,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
+from .dsp import ComplexFilter
 from .process import AsyncProcess, check_output
 from .util import close_async_generator
 
@@ -82,7 +83,7 @@ class FFMpeg(AsyncProcess):
         audio_input: AsyncGenerator[bytes] | str | int,
         input_format: AudioFormat,
         output_format: AudioFormat,
-        filter_params: list[str] | None = None,
+        filter_params: Sequence[str | ComplexFilter] | None = None,
         extra_args: list[str] | None = None,
         extra_input_args: list[str] | None = None,
         extra_output_args: list[str] | None = None,
@@ -359,7 +360,7 @@ async def get_ffmpeg_stream(
     audio_input: AsyncGenerator[bytes] | str,
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str] | None = None,
+    filter_params: Sequence[str | ComplexFilter] | None = None,
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
@@ -461,7 +462,7 @@ async def get_ffmpeg_overlay_stream(
 def get_ffmpeg_resample_filter(
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str],
+    filter_params: Sequence[str | ComplexFilter],
 ) -> str | None:
     """
     Return the resampling and dithering filter required for a format conversion.
@@ -476,7 +477,9 @@ def get_ffmpeg_resample_filter(
         return None
     libsoxr_support = get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT)
     # loudnorm and libsoxr cannot be combined due to https://trac.ffmpeg.org/ticket/11323
-    if libsoxr_support and not any("loudnorm" in value for value in filter_params):
+    if libsoxr_support and not any(
+        "loudnorm" in value for value in filter_params if isinstance(value, str)
+    ):
         resample_filter = "aresample=resampler=soxr:precision=30"
     else:
         resample_filter = "aresample=resampler=swr"
@@ -490,7 +493,7 @@ def get_ffmpeg_resample_filter(
 def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str],
+    filter_params: Sequence[str | ComplexFilter],
     extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
@@ -654,9 +657,61 @@ def get_ffmpeg_args(
         filter_params.append(resample_filter)
 
     if filter_params and "-filter_complex" not in extra_args:
-        extra_args += ["-af", ",".join(filter_params)]
+        extra_args += _build_filtergraph_args(filter_params)
 
     return generic_args + input_args + extra_args + output_args
+
+
+def _build_filtergraph_args(filter_params: list[str | ComplexFilter]) -> list[str]:
+    """
+    Render a DSP filter chain to FFmpeg command-line arguments.
+
+    :param filter_params: Ordered chain of plain filter strings and/or complex
+        fragments that need extra source inputs.
+    """
+    if not any(isinstance(item, ComplexFilter) for item in filter_params):
+        simple = [item for item in filter_params if isinstance(item, str) and item]
+        return ["-af", ",".join(simple)] if simple else []
+
+    parts: list[str] = []
+    pending: list[str] = []
+    current = "0:a"
+    counter = 0
+
+    def next_label() -> str:
+        nonlocal counter
+        counter += 1
+        return f"dsp{counter}"
+
+    def flush_pending() -> None:
+        nonlocal current
+        if not pending:
+            return
+        label = next_label()
+        parts.append(f"[{current}]{','.join(pending)}[{label}]")
+        current = label
+        pending.clear()
+
+    for item in filter_params:
+        if isinstance(item, str):
+            if item:
+                pending.append(item)
+            continue
+        # a complex fragment closes the current simple run, pulls its own source
+        # inputs into the graph, then consumes the main pad plus those sources
+        flush_pending()
+        source_labels: list[str] = []
+        for source in item.sources:
+            label = next_label()
+            parts.append(f"{source}[{label}]")
+            source_labels.append(label)
+        label = next_label()
+        inputs = f"[{current}]" + "".join(f"[{sl}]" for sl in source_labels)
+        parts.append(f"{inputs}{item.body}[{label}]")
+        current = label
+    flush_pending()
+
+    return ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]
 
 
 async def check_ffmpeg_version() -> None:
