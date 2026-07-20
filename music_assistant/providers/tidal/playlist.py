@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
@@ -59,6 +59,10 @@ class TidalPlaylistManager:
             result = await self.api.write_jsonapi(
                 "POST", f"playlists/{prov_playlist_id}/relationships/items", body
             )
+            if "data" not in result:
+                # No per-item feedback (e.g. a 204 response): the write succeeded
+                # and there's nothing to diff against.
+                return
             added = {d["id"] for d in result.get("data", [])}
             stale_originals = [
                 str(orig) for orig, s in zip(prov_track_ids, sent, strict=True) if s not in added
@@ -78,12 +82,17 @@ class TidalPlaylistManager:
 
     async def remove_tracks(self, prov_playlist_id: str, positions: tuple[int, ...]) -> None:
         """Remove tracks from playlist."""
+        if not positions:
+            return
         try:
-            entries = []
+            max_needed = max(positions)
+            entries: list[dict[str, Any]] = []
             async for doc in self.api.paginate_jsonapi(
                 f"playlists/{prov_playlist_id}/relationships/items"
             ):
                 entries.extend(doc.data_list)
+                if len(entries) >= max_needed:
+                    break
 
             # The official DELETE requires the per-occurrence meta.itemId (a UUID),
             # not just the track id, since the same track can appear at multiple

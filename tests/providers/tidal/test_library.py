@@ -218,6 +218,19 @@ async def test_add_item_track_stale_id_heals(
     )
 
 
+async def test_add_item_track_no_data_in_response(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test a 204-style response without a "data" key skips healing entirely."""
+    provider_mock.api.write_jsonapi.return_value = {"success": True}
+    item = Mock(item_id="123", media_type=MediaType.TRACK)
+
+    assert await library_manager.add_item(item) is True
+
+    provider_mock.resolve_live_track_id.assert_not_called()
+    assert provider_mock.api.write_jsonapi.call_count == 1
+
+
 async def test_add_item_track_stale_id_unresolvable(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:

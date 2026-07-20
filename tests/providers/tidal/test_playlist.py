@@ -152,6 +152,18 @@ async def test_add_playlist_tracks_stale_id_unresolvable(
     assert provider_mock.api.write_jsonapi.call_count == 1
 
 
+async def test_add_playlist_tracks_no_data_in_response(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test a 204-style response without a "data" key skips healing entirely."""
+    provider_mock.api.write_jsonapi.return_value = {"success": True}
+
+    await playlist_manager.add_tracks("1", ["track_1", "track_2"])
+
+    provider_mock.resolve_live_track_id.assert_not_called()
+    assert provider_mock.api.write_jsonapi.call_count == 1
+
+
 async def test_add_playlist_tracks_preemptive_redirect(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
@@ -271,3 +283,45 @@ async def test_remove_playlist_tracks_failure(
 
     with pytest.raises(ResourceTemporarilyUnavailable):
         await playlist_manager.remove_tracks("1", (1,))
+
+
+async def test_remove_playlist_tracks_empty_positions_skips_pagination(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test remove_tracks with no positions returns before paginating or writing."""
+    provider_mock.api.paginate_jsonapi = Mock(side_effect=AssertionError("should not paginate"))
+
+    await playlist_manager.remove_tracks("1", ())
+
+    provider_mock.api.write_jsonapi.assert_not_called()
+
+
+async def test_remove_playlist_tracks_bounded_pagination(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test remove_tracks stops paginating once enough entries are collected."""
+    page_1 = [
+        {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}},
+        {"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}},
+    ]
+    page_2 = [
+        {"type": "tracks", "id": "track_3", "meta": {"itemId": "uuid-3"}},
+    ]
+    consumed_pages: list[int] = []
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        consumed_pages.append(1)
+        yield Mock(data_list=page_1)
+        consumed_pages.append(2)
+        yield Mock(data_list=page_2)
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    await playlist_manager.remove_tracks("1", (2,))
+
+    assert consumed_pages == [1]
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "DELETE",
+        "playlists/1/relationships/items",
+        {"data": [{"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}}]},
+    )

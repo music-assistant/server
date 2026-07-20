@@ -135,6 +135,10 @@ class TidalLibraryManager:
         result = await self.api.write_jsonapi(
             "POST", f"{resource_name}/me/relationships/items", body
         )
+        if "data" not in result:
+            # No per-item feedback (e.g. a 204 response): the write succeeded
+            # and there's nothing to diff against.
+            return True
         added = {d["id"] for d in result.get("data", [])}
         if send_id not in added:
             live = await self.provider.resolve_live_track_id(original_id)
