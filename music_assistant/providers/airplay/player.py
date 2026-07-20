@@ -189,14 +189,14 @@ class AirPlayPlayer(Player):
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of this player."""
-        features = set(BASE_PLAYER_FEATURES)
-        if not (self.group_members or self.synced_to):
-            # we only support pause when the player is not synced,
-            # because we don't want to deal with the complexity of pausing a group of players
-            # so in this case stop will be used to pause the stream instead of pausing it,
-            # which is a common approach for AirPlay players
-            features.add(PlayerFeature.PAUSE)
-        return features
+        # PAUSE is always advertised, including while synced. This keeps the AirPlay
+        # player itself as the pause control target so pause() can decide what to do:
+        # a true pause for a single player, or a full session stop for a sync group
+        # (see pause()). If PAUSE were dropped while grouped, the players controller
+        # could fall through to a linked native player's pause (e.g. a Sonos acting as
+        # an AirPlay receiver), which only pauses the sync leader while the other
+        # members keep playing.
+        return {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
 
     @property
     def can_group_with(self) -> set[str]:
@@ -340,9 +340,13 @@ class AirPlayPlayer(Player):
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
-        if self.group_members:
-            # pause is not supported while synced, use stop instead
-            self.logger.debug("Player is synced, using STOP instead of PAUSE")
+        if self.group_members or self.synced_to:
+            # Each member of a sync group is an independent cliairplay process anchored
+            # to a shared start instant; a broadcast pause/resume cannot keep the members
+            # sample-aligned on resume. So grouped/synced playback is paused by stopping
+            # the whole session and letting the queue controller resume it from the saved
+            # position with a fresh shared anchor.
+            self.logger.debug("Player is part of a sync group, using STOP instead of PAUSE")
             await self.stop()
             return
 

@@ -1,11 +1,11 @@
 """Unit tests for AirPlay player."""
 
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.airplay.constants import (
@@ -503,3 +503,65 @@ def test_sync_volume_level_uses_parent_volume_without_native_parent(
         42,
     )
     mock_update.assert_called_once()
+
+
+# --- Pause / stop dispatch tests ---
+
+
+def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer) -> None:
+    """
+    PAUSE stays advertised whether or not the player is grouped.
+
+    Keeping PAUSE keeps the AirPlay player itself as the pause control target, so a
+    grouped pause maps to a full session stop (see pause()) instead of the players
+    controller falling through to a linked native player's pause - which would only
+    pause the sync leader while the other members keep playing.
+    """
+    airplay_player._attr_group_members = []
+    assert PlayerFeature.PAUSE in airplay_player.supported_features
+    # sync leader: still advertises PAUSE
+    airplay_player._attr_group_members = ["test_player", "child"]
+    assert PlayerFeature.PAUSE in airplay_player.supported_features
+
+
+@pytest.mark.asyncio
+async def test_single_player_pause_sends_action_pause(airplay_player: AirPlayPlayer) -> None:
+    """An unsynced player pauses the stream in place with ACTION=PAUSE."""
+    airplay_player._attr_group_members = []
+    airplay_player.mass.players.all_players.return_value = []  # type: ignore[attr-defined]
+    send_cmd = _setup_running_stream(airplay_player)
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.pause()
+
+    send_cmd.assert_called_once_with("ACTION=PAUSE")
+    mock_stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_grouped_leader_pause_stops_session(airplay_player: AirPlayPlayer) -> None:
+    """A sync leader pauses by stopping the whole session, never sending ACTION=PAUSE."""
+    airplay_player._attr_group_members = ["test_player", "child"]
+    send_cmd = _setup_running_stream(airplay_player)
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
+        await airplay_player.pause()
+
+    mock_stop.assert_called_once()
+    send_cmd.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_synced_child_pause_stops_session(airplay_player: AirPlayPlayer) -> None:
+    """A synced child also pauses by stopping the shared session, never ACTION=PAUSE."""
+    airplay_player._attr_group_members = []
+    send_cmd = _setup_running_stream(airplay_player)
+
+    with (
+        patch.object(AirPlayPlayer, "synced_to", new_callable=PropertyMock, return_value="parent"),
+        patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop,
+    ):
+        await airplay_player.pause()
+
+    mock_stop.assert_called_once()
+    send_cmd.assert_not_called()
