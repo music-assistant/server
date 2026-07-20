@@ -22,11 +22,15 @@ class MultiClientStream:
         self,
         audio_source: AsyncGenerator[bytes],
         audio_format: AudioFormat,
+        queue_id: str | None,
+        session_id: str | None,
         expected_clients: int = 0,
     ) -> None:
         """Initialize MultiClientStream."""
         self.audio_source = audio_source
         self.audio_format = audio_format
+        self.queue_id = queue_id
+        self.session_id = session_id
         self.subscribers: list[asyncio.Queue[bytes]] = []
         self.expected_clients = expected_clients
         self.task = asyncio.create_task(self._runner())

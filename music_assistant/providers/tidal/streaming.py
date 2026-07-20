@@ -55,7 +55,7 @@ class TidalStreamingManager:
 
         # 3. Get playback info
         async with self.api.throttler.bypass():
-            api_result = await self.api.get(
+            stream_data = await self.api.get(
                 f"tracks/{track.item_id}/playbackinfopostpaywall",
                 params={
                     "playbackmode": "STREAM",
@@ -63,8 +63,6 @@ class TidalStreamingManager:
                     "audioquality": quality,
                 },
             )
-
-        stream_data = api_result[0] if isinstance(api_result, tuple) else api_result
 
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
@@ -230,10 +228,7 @@ class TidalStreamingManager:
             return None
 
         # Lookup by ISRC
-        api_result = await self.api.get(
-            "tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL
-        )
-        data = api_result[0] if isinstance(api_result, tuple) else api_result
+        data = await self.api.get("tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL)
 
         data_items = data.get("data", [])
         if not data_items:

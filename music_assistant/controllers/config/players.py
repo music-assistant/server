@@ -735,7 +735,9 @@ class PlayerConfigMixin:
             ConfigValueOption(PLAYER_CONTROL_NONE),
         ]
         mute_options.append(ConfigValueOption(PLAYER_CONTROL_NONE))
-        if player.supports_feature(PlayerFeature.VOLUME_SET):
+        # fake mute drives the volume control, so offer it when the player has any
+        # usable volume path (native or via a linked protocol player)
+        if player.supports_feature(PlayerFeature.VOLUME_SET) or auto_option in volume_options:
             mute_options.append(ConfigValueOption(PLAYER_CONTROL_FAKE))
 
         # return final config entries for all options

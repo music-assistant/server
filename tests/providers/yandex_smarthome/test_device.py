@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
 
 # Use the PlaybackState from conftest's mock enums
 from music_assistant_models.enums import PlaybackState
+
+if TYPE_CHECKING:
+    from music_assistant_models.player import Player
 
 from music_assistant.providers.yandex_smarthome.constants import (
     INSTANCE_CHANNEL,
@@ -72,6 +76,11 @@ class MockPlayer:
     group_volume_muted: bool | None = None
 
 
+def _player(**kwargs: Any) -> Player:
+    """Build a MockPlayer viewed through the real Player type."""
+    return cast("Player", MockPlayer(**kwargs))
+
+
 class MockPlayers:
     """Mock of mass.players controller."""
 
@@ -88,11 +97,19 @@ class MockPlayers:
         self.cmd_next_track = AsyncMock()
         self.cmd_previous_track = AsyncMock()
         self.select_source = AsyncMock()
-        self._players: dict[str, MockPlayer] = {}
+        self._players: dict[str, Player] = {}
 
-    def get_player(self, player_id: str) -> MockPlayer | None:
+    def get_player(self, player_id: str) -> Player | None:
         """Return player by ID."""
         return self._players.get(player_id)
+
+
+class MockPlayerQueues:
+    """Mock of mass.player_queues controller."""
+
+    def __init__(self) -> None:
+        """Initialize mock player_queues controller."""
+        self.play_media = AsyncMock()
 
 
 @dataclass
@@ -100,6 +117,7 @@ class MockMass:
     """Mock MusicAssistant for testing."""
 
     players: MockPlayers = field(default_factory=MockPlayers)
+    player_queues: MockPlayerQueues = field(default_factory=MockPlayerQueues)
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +130,8 @@ class TestGetDeviceDescription:
 
     def test_basic_description(self) -> None:
         """Test basic description without mute support."""
-        player = MockPlayer()
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player()
+        desc = get_device_description(player)
         assert desc.id == "test_player_1"
         assert desc.name == "Living Room Speaker"
         assert desc.type == YANDEX_DEVICE_TYPE_MEDIA
@@ -124,24 +142,24 @@ class TestGetDeviceDescription:
 
     def test_description_with_mute(self) -> None:
         """Test description includes mute toggle when VOLUME_MUTE feature is set."""
-        player = MockPlayer(supported_features={"volume_mute"})
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player(supported_features={"volume_mute"})
+        desc = get_device_description(player)
         assert len(desc.capabilities) == 5
         instances = {c.parameters.instance for c in desc.capabilities if c.parameters}
         assert INSTANCE_MUTE in instances
 
     def test_description_group_has_mute(self) -> None:
         """Group players always get mute toggle even without VOLUME_MUTE feature."""
-        player = MockPlayer(group_members=["child1", "child2"])
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player(group_members=["child1", "child2"])
+        desc = get_device_description(player)
         assert len(desc.capabilities) == 5
         instances = {c.parameters.instance for c in desc.capabilities if c.parameters}
         assert INSTANCE_MUTE in instances
 
     def test_capability_types(self) -> None:
         """Test capability types."""
-        player = MockPlayer()
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player()
+        desc = get_device_description(player)
         types = [c.type for c in desc.capabilities]
         assert YandexCapabilityType.ON_OFF in types
         assert YandexCapabilityType.RANGE in types
@@ -149,8 +167,8 @@ class TestGetDeviceDescription:
 
     def test_volume_range_params(self) -> None:
         """Test volume range params."""
-        player = MockPlayer()
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player()
+        desc = get_device_description(player)
         range_cap = next(c for c in desc.capabilities if c.type == YandexCapabilityType.RANGE)
         assert range_cap.parameters is not None
         assert range_cap.parameters.instance == "volume"
@@ -160,22 +178,22 @@ class TestGetDeviceDescription:
 
     def test_device_info_model(self) -> None:
         """Test device info model."""
-        player = MockPlayer(device_info=MockDeviceInfo(model="KEF LS50"))
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player(device_info=MockDeviceInfo(model="KEF LS50"))
+        desc = get_device_description(player)
         assert desc.device_info is not None
         assert desc.device_info.model == "KEF LS50"
 
     def test_device_info_default(self) -> None:
         """Test device info default."""
-        player = MockPlayer()
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player()
+        desc = get_device_description(player)
         assert desc.device_info is not None
         assert desc.device_info.model == "MA Player"
 
     def test_name_normalized(self) -> None:
         """Test that device name is normalized for Yandex."""
-        player = MockPlayer(name="KEF-LS50 (Kitchen)")
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player(name="KEF-LS50 (Kitchen)")
+        desc = get_device_description(player)
         assert desc.name == "KEF LS 50 Kitchen"
 
 
@@ -230,8 +248,8 @@ class TestGetDeviceState:
 
     def test_idle_state(self) -> None:
         """Test idle state without mute support."""
-        player = MockPlayer(playback_state=PlaybackState.IDLE, volume_level=30, volume_muted=False)
-        state = get_device_state(player)  # type: ignore[arg-type]
+        player = _player(playback_state=PlaybackState.IDLE, volume_level=30, volume_muted=False)
+        state = get_device_state(player)
         assert state.id == "test_player_1"
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
@@ -242,21 +260,21 @@ class TestGetDeviceState:
 
     def test_idle_state_with_mute(self) -> None:
         """Test idle state with mute support."""
-        player = MockPlayer(
+        player = _player(
             playback_state=PlaybackState.IDLE,
             volume_level=30,
             volume_muted=False,
             supported_features={"volume_mute"},
         )
-        state = get_device_state(player)  # type: ignore[arg-type]
+        state = get_device_state(player)
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
         assert by_instance[INSTANCE_MUTE] is False
 
     def test_playing_state(self) -> None:
         """Test playing state."""
-        player = MockPlayer(playback_state=PlaybackState.PLAYING, volume_level=75)
-        state = get_device_state(player)  # type: ignore[arg-type]
+        player = _player(playback_state=PlaybackState.PLAYING, volume_level=75)
+        state = get_device_state(player)
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
         assert by_instance[INSTANCE_ON] is True
@@ -265,8 +283,8 @@ class TestGetDeviceState:
 
     def test_paused_state(self) -> None:
         """Test paused state."""
-        player = MockPlayer(playback_state=PlaybackState.PAUSED, volume_level=50)
-        state = get_device_state(player)  # type: ignore[arg-type]
+        player = _player(playback_state=PlaybackState.PAUSED, volume_level=50)
+        state = get_device_state(player)
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
         assert by_instance[INSTANCE_ON] is True  # paused is still "on"
@@ -274,10 +292,8 @@ class TestGetDeviceState:
 
     def test_none_volume(self) -> None:
         """Test none volume."""
-        player = MockPlayer(
-            volume_level=None, volume_muted=None, supported_features={"volume_mute"}
-        )
-        state = get_device_state(player)  # type: ignore[arg-type]
+        player = _player(volume_level=None, volume_muted=None, supported_features={"volume_mute"})
+        state = get_device_state(player)
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
         assert by_instance[INSTANCE_VOLUME] == 0
@@ -285,7 +301,7 @@ class TestGetDeviceState:
 
     def test_group_state_includes_mute(self) -> None:
         """Group players should include mute state using group_volume_muted."""
-        player = MockPlayer(
+        player = _player(
             playback_state=PlaybackState.PLAYING,
             volume_level=40,
             volume_muted=False,
@@ -293,7 +309,7 @@ class TestGetDeviceState:
             group_volume=75,
             group_volume_muted=True,
         )
-        state = get_device_state(player)  # type: ignore[arg-type]
+        state = get_device_state(player)
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
         assert by_instance[INSTANCE_VOLUME] == 75
@@ -312,7 +328,7 @@ class TestExecuteCapabilityAction:
     async def test_on_off_true_plays(self) -> None:
         """Test on off true plays."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
             state=CapabilityActionState(instance="on", value=True),
@@ -326,7 +342,7 @@ class TestExecuteCapabilityAction:
     async def test_on_off_false_stops(self) -> None:
         """Test on off false stops."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
             state=CapabilityActionState(instance="on", value=False),
@@ -340,7 +356,7 @@ class TestExecuteCapabilityAction:
     async def test_on_powers_on_when_supported(self) -> None:
         """ON with power feature should power on then play."""
         mass = MockMass()
-        player = MockPlayer(player_id="p1", supported_features={"power"})
+        player = _player(player_id="p1", supported_features={"power"})
         mass.players._players["p1"] = player
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
@@ -355,7 +371,7 @@ class TestExecuteCapabilityAction:
     async def test_off_powers_off_when_supported(self) -> None:
         """OFF with power feature should stop then power off."""
         mass = MockMass()
-        player = MockPlayer(player_id="p1", supported_features={"power"})
+        player = _player(player_id="p1", supported_features={"power"})
         mass.players._players["p1"] = player
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
@@ -370,7 +386,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_absolute(self) -> None:
         """Test volume absolute."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=65),
@@ -383,7 +399,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_relative_up(self) -> None:
         """Test volume relative up."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=10, relative=True),
@@ -396,7 +412,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_relative_clamp_max(self) -> None:
         """Test volume relative clamp max."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=20, relative=True),
@@ -409,7 +425,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_relative_clamp_min(self) -> None:
         """Test volume relative clamp min."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=-20, relative=True),
@@ -422,7 +438,7 @@ class TestExecuteCapabilityAction:
     async def test_mute_toggle(self) -> None:
         """Test mute toggle."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
             state=CapabilityActionState(instance="mute", value=True),
@@ -435,7 +451,7 @@ class TestExecuteCapabilityAction:
     async def test_mute_toggle_group(self) -> None:
         """Group mute should use cmd_group_volume_mute."""
         mass = MockMass()
-        group = MockPlayer(player_id="grp", group_members=["c1", "c2"])
+        group = _player(player_id="grp", group_members=["c1", "c2"])
         mass.players._players["grp"] = group
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
@@ -449,7 +465,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_set_group(self) -> None:
         """Group volume should use cmd_group_volume."""
         mass = MockMass()
-        group = MockPlayer(player_id="grp", group_members=["c1", "c2"])
+        group = _player(player_id="grp", group_members=["c1", "c2"])
         mass.players._players["grp"] = group
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
@@ -464,7 +480,7 @@ class TestExecuteCapabilityAction:
     async def test_pause_true(self) -> None:
         """Test pause true."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
             state=CapabilityActionState(instance="pause", value=True),
@@ -477,7 +493,7 @@ class TestExecuteCapabilityAction:
     async def test_pause_false_plays(self) -> None:
         """Test pause false plays."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
             state=CapabilityActionState(instance="pause", value=False),
@@ -489,7 +505,7 @@ class TestExecuteCapabilityAction:
     async def test_unknown_capability_returns_error(self) -> None:
         """Test unknown capability returns error."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type="devices.capabilities.unknown",
             state=CapabilityActionState(instance="foo", value=42),
@@ -502,7 +518,7 @@ class TestExecuteCapabilityAction:
     async def test_command_exception_returns_error(self) -> None:
         """Test command exception returns error."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         mass.players.cmd_play.side_effect = RuntimeError("Connection lost")
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
@@ -516,7 +532,7 @@ class TestExecuteCapabilityAction:
     async def test_on_off_non_bool_value_returns_invalid_action(self) -> None:
         """ON_OFF with non-bool value (e.g. string 'false') must not power on."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
             state=CapabilityActionState(instance="on", value="false"),
@@ -531,7 +547,7 @@ class TestExecuteCapabilityAction:
     async def test_mute_non_bool_value_returns_invalid_action(self) -> None:
         """Mute toggle with non-bool value must not call cmd_volume_mute."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
             state=CapabilityActionState(instance="mute", value="false"),
@@ -545,7 +561,7 @@ class TestExecuteCapabilityAction:
     async def test_pause_non_bool_value_returns_invalid_action(self) -> None:
         """Pause toggle with non-bool value must not call cmd_pause/cmd_play."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
             state=CapabilityActionState(instance="pause", value="true"),
@@ -560,7 +576,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_range_bool_value_returns_invalid_action(self) -> None:
         """Volume RANGE with bool value must not silently set volume to 0/1."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1", volume_level=50)
+        mass.players._players["p1"] = _player(player_id="p1", volume_level=50)
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=True),
@@ -575,7 +591,7 @@ class TestExecuteCapabilityAction:
     async def test_channel_range_bool_value_returns_invalid_action(self) -> None:
         """Channel RANGE with bool value must not silently skip tracks."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="channel", value=True, relative=True),
@@ -609,19 +625,19 @@ class TestIsPlayerExposable:
 
     def test_normal_player(self) -> None:
         """Test normal player."""
-        assert is_player_exposable(MockPlayer()) is True  # type: ignore[arg-type]
+        assert is_player_exposable(_player()) is True
 
     def test_unavailable(self) -> None:
         """Test unavailable."""
-        assert is_player_exposable(MockPlayer(available=False)) is False  # type: ignore[arg-type]
+        assert is_player_exposable(_player(available=False)) is False
 
     def test_disabled(self) -> None:
         """Test disabled."""
-        assert is_player_exposable(MockPlayer(enabled=False)) is False  # type: ignore[arg-type]
+        assert is_player_exposable(_player(enabled=False)) is False
 
     def test_synced_to_another(self) -> None:
         """Test synced to another."""
-        assert is_player_exposable(MockPlayer(synced_to="other_player")) is False  # type: ignore[arg-type]
+        assert is_player_exposable(_player(synced_to="other_player")) is False
 
 
 # ---------------------------------------------------------------------------
@@ -667,8 +683,8 @@ class TestChannelCapability:
 
     def test_channel_in_description(self) -> None:
         """Channel capability should always be present in device description."""
-        player = MockPlayer()
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player()
+        desc = get_device_description(player)
         channel_caps = [
             c
             for c in desc.capabilities
@@ -677,16 +693,17 @@ class TestChannelCapability:
             and c.parameters.instance == INSTANCE_CHANNEL
         ]
         assert len(channel_caps) == 1
-        cap = channel_caps[0]
-        assert cap.parameters.random_access is False  # type: ignore[union-attr]
-        assert cap.parameters.range is not None  # type: ignore[union-attr]
-        assert cap.parameters.range.min == 0  # type: ignore[union-attr]
-        assert cap.parameters.range.max == 999  # type: ignore[union-attr]
+        params = channel_caps[0].parameters
+        assert params is not None
+        assert params.random_access is False
+        assert params.range is not None
+        assert params.range.min == 0
+        assert params.range.max == 999
 
     def test_channel_state_always_zero(self) -> None:
         """Channel state should always report value 0."""
-        player = MockPlayer(playback_state=PlaybackState.PLAYING)
-        state = get_device_state(player)  # type: ignore[arg-type]
+        player = _player(playback_state=PlaybackState.PLAYING)
+        state = get_device_state(player)
         channel_states = [c for c in state.capabilities if c.state.instance == INSTANCE_CHANNEL]
         assert len(channel_states) == 1
         assert channel_states[0].state.value == 0
@@ -695,7 +712,7 @@ class TestChannelCapability:
     async def test_channel_relative_positive_next_track(self) -> None:
         """Relative +1 channel → cmd_next_track."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="channel", value=1, relative=True),
@@ -708,7 +725,7 @@ class TestChannelCapability:
     async def test_channel_relative_negative_prev_track(self) -> None:
         """Relative -1 channel → cmd_previous_track."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="channel", value=-1, relative=True),
@@ -721,7 +738,7 @@ class TestChannelCapability:
     async def test_channel_non_relative_ignored(self) -> None:
         """Non-relative channel set is a no-op (returns DONE)."""
         mass = MockMass()
-        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        mass.players._players["p1"] = _player(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="channel", value=5, relative=False),
@@ -742,8 +759,8 @@ class TestInputSourceCapability:
 
     def test_no_source_list_no_mode_cap(self) -> None:
         """Player without source_list should not have mode capability."""
-        player = MockPlayer(source_list=[])
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player(source_list=[])
+        desc = get_device_description(player)
         mode_caps = [c for c in desc.capabilities if c.type == YandexCapabilityType.MODE]
         assert len(mode_caps) == 0
 
@@ -753,24 +770,28 @@ class TestInputSourceCapability:
             MockPlayerSource(id="hdmi1", name="HDMI 1"),
             MockPlayerSource(id="optical", name="Optical"),
         ]
-        player = MockPlayer(source_list=sources, supported_features={"select_source"})
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player(source_list=sources, supported_features={"select_source"})
+        desc = get_device_description(player)
         mode_caps = [c for c in desc.capabilities if c.type == YandexCapabilityType.MODE]
         assert len(mode_caps) == 1
-        cap = mode_caps[0]
-        assert cap.parameters.instance == INSTANCE_INPUT_SOURCE  # type: ignore[union-attr]
-        assert cap.parameters.modes is not None  # type: ignore[union-attr]
-        assert len(cap.parameters.modes) == 2  # type: ignore[union-attr]
-        assert cap.parameters.modes[0].value == "one"  # type: ignore[union-attr]
-        assert cap.parameters.modes[1].value == "two"  # type: ignore[union-attr]
+        params = mode_caps[0].parameters
+        assert params is not None
+        assert params.instance == INSTANCE_INPUT_SOURCE
+        assert params.modes is not None
+        assert len(params.modes) == 2
+        assert params.modes[0].value == "one"
+        assert params.modes[1].value == "two"
 
     def test_max_10_sources(self) -> None:
         """Only the first 10 sources should be mapped."""
         sources = [MockPlayerSource(id=f"s{i}", name=f"Source {i}") for i in range(15)]
-        player = MockPlayer(source_list=sources, supported_features={"select_source"})
-        desc = get_device_description(player)  # type: ignore[arg-type]
+        player = _player(source_list=sources, supported_features={"select_source"})
+        desc = get_device_description(player)
         mode_caps = [c for c in desc.capabilities if c.type == YandexCapabilityType.MODE]
-        assert len(mode_caps[0].parameters.modes) == 10  # type: ignore[arg-type,union-attr]
+        params = mode_caps[0].parameters
+        assert params is not None
+        assert params.modes is not None
+        assert len(params.modes) == 10
 
     def test_state_with_active_source(self) -> None:
         """State should report current source as mode value."""
@@ -778,13 +799,13 @@ class TestInputSourceCapability:
             MockPlayerSource(id="hdmi1", name="HDMI 1"),
             MockPlayerSource(id="optical", name="Optical"),
         ]
-        player = MockPlayer(
+        player = _player(
             source_list=sources,
             active_source="Optical",
             playback_state=PlaybackState.PLAYING,
             supported_features={"select_source"},
         )
-        state = get_device_state(player)  # type: ignore[arg-type]
+        state = get_device_state(player)
         mode_states = [c for c in state.capabilities if c.state.instance == INSTANCE_INPUT_SOURCE]
         assert len(mode_states) == 1
         assert mode_states[0].state.value == "two"  # index 1 → "two"
@@ -792,10 +813,10 @@ class TestInputSourceCapability:
     def test_state_no_active_source(self) -> None:
         """No active source → no input_source state reported."""
         sources = [MockPlayerSource(id="hdmi1", name="HDMI 1")]
-        player = MockPlayer(
+        player = _player(
             source_list=sources, active_source=None, supported_features={"select_source"}
         )
-        state = get_device_state(player)  # type: ignore[arg-type]
+        state = get_device_state(player)
         mode_states = [c for c in state.capabilities if c.state.instance == INSTANCE_INPUT_SOURCE]
         assert len(mode_states) == 0
 
@@ -806,9 +827,7 @@ class TestInputSourceCapability:
             MockPlayerSource(id="hdmi1", name="HDMI 1"),
             MockPlayerSource(id="optical", name="Optical"),
         ]
-        player = MockPlayer(
-            player_id="p1", source_list=sources, supported_features={"select_source"}
-        )
+        player = _player(player_id="p1", source_list=sources, supported_features={"select_source"})
         mass = MockMass()
         mass.players._players["p1"] = player
 
@@ -823,7 +842,7 @@ class TestInputSourceCapability:
     @pytest.mark.asyncio
     async def test_unknown_source_mode_returns_error(self) -> None:
         """Invalid mode value should return INVALID_ACTION error."""
-        player = MockPlayer(player_id="p1", source_list=[])
+        player = _player(player_id="p1", source_list=[])
         mass = MockMass()
         mass.players._players["p1"] = player
 
@@ -832,6 +851,174 @@ class TestInputSourceCapability:
             state=CapabilityActionState(instance="input_source", value="five"),
         )
         result = await execute_capability_action(mass, "p1", action)
+        assert result.state.action_result.status == "ERROR"
+        assert result.state.action_result.error_code == "INVALID_ACTION"
+
+
+# ---------------------------------------------------------------------------
+# Tests: input_source playlist sources (mode/input_source backed by playlists)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaylistInputSources:
+    """Tests for playlist-backed input_source modes."""
+
+    def test_playlists_only_register_mode_cap(self) -> None:
+        """Player with no native sources but configured playlists gets mode cap."""
+        player = _player(source_list=[])
+        playlist_uris = ["library://playlist/1", "library://playlist/2", "library://playlist/3"]
+        desc = get_device_description(player, playlist_uris=playlist_uris)
+        mode_caps = [c for c in desc.capabilities if c.type == YandexCapabilityType.MODE]
+        assert len(mode_caps) == 1
+        params = mode_caps[0].parameters
+        assert params is not None
+        modes = params.modes
+        assert modes is not None
+        assert [m.value for m in modes] == ["one", "two", "three"]
+
+    def test_native_then_playlists_capped_at_10(self) -> None:
+        """5 native sources + 7 playlists → 10 combined modes, native first."""
+        sources = [MockPlayerSource(id=f"s{i}", name=f"Source {i}") for i in range(5)]
+        playlist_uris = [f"library://playlist/{i}" for i in range(7)]
+        player = _player(source_list=sources, supported_features={"select_source"})
+        desc = get_device_description(player, playlist_uris=playlist_uris)
+        mode_caps = [c for c in desc.capabilities if c.type == YandexCapabilityType.MODE]
+        assert len(mode_caps) == 1
+        params = mode_caps[0].parameters
+        assert params is not None
+        assert params.modes is not None
+        assert len(params.modes) == 10
+
+    def test_native_full_ignores_playlists(self) -> None:
+        """If native sources already fill all 10 slots, playlists are ignored."""
+        sources = [MockPlayerSource(id=f"s{i}", name=f"Source {i}") for i in range(10)]
+        playlist_uris = ["library://playlist/extra"]
+        player = _player(source_list=sources, supported_features={"select_source"})
+        desc = get_device_description(player, playlist_uris=playlist_uris)
+        mode_caps = [c for c in desc.capabilities if c.type == YandexCapabilityType.MODE]
+        assert len(mode_caps) == 1
+        params = mode_caps[0].parameters
+        assert params is not None
+        assert params.modes is not None
+        assert len(params.modes) == 10
+
+    def test_state_with_native_active_in_combined_mode(self) -> None:
+        """Native active source still reports correct state when playlists also configured."""
+        sources = [
+            MockPlayerSource(id="hdmi1", name="HDMI 1"),
+            MockPlayerSource(id="optical", name="Optical"),
+        ]
+        player = _player(
+            source_list=sources,
+            active_source="Optical",
+            playback_state=PlaybackState.PLAYING,
+            supported_features={"select_source"},
+        )
+        state = get_device_state(player, playlist_uris=["library://playlist/x"])
+        mode_states = [c for c in state.capabilities if c.state.instance == INSTANCE_INPUT_SOURCE]
+        assert len(mode_states) == 1
+        assert mode_states[0].state.value == "two"
+
+    @pytest.mark.asyncio
+    async def test_native_action_routes_to_select_source(self) -> None:
+        """Native slot value resolves to mass.players.select_source, not play_media."""
+        sources = [MockPlayerSource(id="hdmi1", name="HDMI 1")]
+        player = _player(player_id="p1", source_list=sources, supported_features={"select_source"})
+        mass = MockMass()
+        mass.players._players["p1"] = player
+
+        action = CapabilityAction(
+            type=YandexCapabilityType.MODE,
+            state=CapabilityActionState(instance="input_source", value="one"),
+        )
+        result = await execute_capability_action(
+            mass, "p1", action, playlist_uris=["library://playlist/x"]
+        )
+        mass.players.select_source.assert_awaited_once_with("p1", "hdmi1")
+        mass.player_queues.play_media.assert_not_awaited()
+        assert result.state.action_result.status == "DONE"
+
+    @pytest.mark.asyncio
+    async def test_playlist_action_calls_play_media(self) -> None:
+        """Playlist slot triggers player_queues.play_media with URI."""
+        player = _player(player_id="p1", source_list=[], powered=True)
+        mass = MockMass()
+        mass.players._players["p1"] = player
+        uris = ["library://playlist/jazz", "library://playlist/rock"]
+
+        action = CapabilityAction(
+            type=YandexCapabilityType.MODE,
+            state=CapabilityActionState(instance="input_source", value="two"),
+        )
+        result = await execute_capability_action(mass, "p1", action, playlist_uris=uris)
+        mass.player_queues.play_media.assert_awaited_once_with(
+            queue_id="p1", media="library://playlist/rock"
+        )
+        mass.players.select_source.assert_not_awaited()
+        assert result.state.action_result.status == "DONE"
+
+    @pytest.mark.asyncio
+    async def test_playlist_action_powers_on_if_off(self) -> None:
+        """Player with power feature off should be powered on before playback."""
+        player = _player(
+            player_id="p1",
+            source_list=[],
+            powered=False,
+            supported_features={"power"},
+        )
+        mass = MockMass()
+        mass.players._players["p1"] = player
+
+        action = CapabilityAction(
+            type=YandexCapabilityType.MODE,
+            state=CapabilityActionState(instance="input_source", value="one"),
+        )
+        result = await execute_capability_action(
+            mass, "p1", action, playlist_uris=["library://playlist/jazz"]
+        )
+        mass.players.cmd_power.assert_awaited_once_with("p1", True)
+        mass.player_queues.play_media.assert_awaited_once_with(
+            queue_id="p1", media="library://playlist/jazz"
+        )
+        assert result.state.action_result.status == "DONE"
+
+    @pytest.mark.asyncio
+    async def test_playlist_action_skips_power_when_already_on(self) -> None:
+        """Powered player skips cmd_power but still plays media."""
+        player = _player(
+            player_id="p1",
+            source_list=[],
+            powered=True,
+            supported_features={"power"},
+        )
+        mass = MockMass()
+        mass.players._players["p1"] = player
+
+        action = CapabilityAction(
+            type=YandexCapabilityType.MODE,
+            state=CapabilityActionState(instance="input_source", value="one"),
+        )
+        await execute_capability_action(
+            mass, "p1", action, playlist_uris=["library://playlist/jazz"]
+        )
+        mass.players.cmd_power.assert_not_awaited()
+        mass.player_queues.play_media.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_slot_past_combined_returns_error(self) -> None:
+        """Mode value beyond combined native+playlists → INVALID_ACTION."""
+        player = _player(player_id="p1", source_list=[])
+        mass = MockMass()
+        mass.players._players["p1"] = player
+
+        action = CapabilityAction(
+            type=YandexCapabilityType.MODE,
+            state=CapabilityActionState(instance="input_source", value="three"),
+        )
+        result = await execute_capability_action(
+            mass, "p1", action, playlist_uris=["library://playlist/jazz"]
+        )
+        mass.player_queues.play_media.assert_not_awaited()
         assert result.state.action_result.status == "ERROR"
         assert result.state.action_result.error_code == "INVALID_ACTION"
 
@@ -846,23 +1033,23 @@ class TestPlayerFilter:
 
     def test_no_filter_exposes_all(self) -> None:
         """Without exposed_ids, all valid players are exposed."""
-        assert is_player_exposable(MockPlayer()) is True  # type: ignore[arg-type]
+        assert is_player_exposable(_player()) is True
 
     def test_filter_includes_player(self) -> None:
         """Player in the filter set is exposed."""
-        assert is_player_exposable(MockPlayer(player_id="p1"), exposed_ids={"p1", "p2"}) is True  # type: ignore[arg-type]
+        assert is_player_exposable(_player(player_id="p1"), exposed_ids={"p1", "p2"}) is True
 
     def test_filter_excludes_player(self) -> None:
         """Player not in the filter set is NOT exposed."""
-        assert is_player_exposable(MockPlayer(player_id="p3"), exposed_ids={"p1", "p2"}) is False  # type: ignore[arg-type]
+        assert is_player_exposable(_player(player_id="p3"), exposed_ids={"p1", "p2"}) is False
 
     def test_empty_filter_exposes_all(self) -> None:
         """Empty set filter should expose all players (same as None)."""
-        assert is_player_exposable(MockPlayer(player_id="p1"), exposed_ids=set()) is True  # type: ignore[arg-type]
+        assert is_player_exposable(_player(player_id="p1"), exposed_ids=set()) is True
 
     def test_filter_still_checks_available(self) -> None:
         """Even in filter, unavailable players are not exposed."""
         assert (
-            is_player_exposable(MockPlayer(player_id="p1", available=False), exposed_ids={"p1"})  # type: ignore[arg-type]
+            is_player_exposable(_player(player_id="p1", available=False), exposed_ids={"p1"})
             is False
         )

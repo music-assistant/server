@@ -12,6 +12,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import StreamingProtocol
@@ -21,6 +22,8 @@ from .protocols.raop import RaopStream
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
+
+    from music_assistant.models.player import PlayerMedia
 
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
@@ -34,6 +37,7 @@ class AirPlayStreamSession:
         airplay_provider: AirPlayProvider,
         sync_clients: list[AirPlayPlayer],
         pcm_format: AudioFormat,
+        media: PlayerMedia,
     ) -> None:
         """
         Initialize AirPlayStreamSession.
@@ -41,11 +45,13 @@ class AirPlayStreamSession:
         :param airplay_provider: The AirPlay provider instance.
         :param sync_clients: List of AirPlay players to stream to.
         :param pcm_format: PCM format of the input stream.
+        :param media: Queue media that owns the stream session.
         """
         assert sync_clients
         self.prov = airplay_provider
         self.mass = airplay_provider.mass
         self.pcm_format = pcm_format
+        self.media = media
         self.sync_clients = sync_clients
         self._audio_source_task: asyncio.Task[None] | None = None
         self._player_ffmpeg: dict[str, FFMpeg] = {}
@@ -408,10 +414,14 @@ class AirPlayStreamSession:
         # Start ffmpeg to feed audio to CLI stdin
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.close()
-        filter_params = self.mass.streams.audio.get_player_filter_params(
+        handoff_format = airplay_player.stream.pcm_format
+        output_plan = self.mass.streams.audio.get_player_output_plan(
             airplay_player.player_id,
             input_format=self.pcm_format,
-            output_format=get_final_output_format(airplay_player.stream.pcm_format, airplay_player),
+            output_format=get_final_output_format(handoff_format, airplay_player),
+            handoff_format=handoff_format,
+            queue_id=self.media.source_id,
+            session_id=get_media_session_id(self.media),
         )
         cli_proc = airplay_player.stream._cli_proc
         assert cli_proc
@@ -422,8 +432,8 @@ class AirPlayStreamSession:
         ffmpeg = FFMpeg(
             audio_input="-",
             input_format=self.pcm_format,
-            output_format=airplay_player.stream.pcm_format,
-            filter_params=filter_params,
+            output_format=handoff_format,
+            filter_params=output_plan.filter_params,
             audio_output=audio_output,
         )
         await ffmpeg.start()

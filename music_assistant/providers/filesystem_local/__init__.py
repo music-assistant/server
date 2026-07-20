@@ -128,6 +128,7 @@ from .helpers import (
     recursive_iter,
     sorted_scandir,
 )
+from .parsers import parse_album_nfo
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -403,6 +404,23 @@ class LocalFileSystemProvider(MusicProvider):
                         name=item.filename,
                     )
                 )
+        if self.media_content_type == "music":
+            track_indexes = [
+                index
+                for index, item in enumerate(items)
+                if isinstance(item, ItemMapping) and item.media_type == MediaType.TRACK
+            ]
+            library_tracks = await asyncio.gather(
+                *(
+                    self.mass.music.tracks.get_library_item_by_prov_id(
+                        items[index].item_id, self.instance_id
+                    )
+                    for index in track_indexes
+                )
+            )
+            for index, library_track in zip(track_indexes, library_tracks, strict=True):
+                if library_track:
+                    items[index] = library_track
         return items
 
     async def sync_library(self, media_type: MediaType) -> None:
@@ -2151,37 +2169,21 @@ class LocalFileSystemProvider(MusicProvider):
                 try:
                     data = (await self._read_file(nfo_file)).decode("utf-8")
                     info = await asyncio.to_thread(xmltodict.parse, data)
-                    info = info["album"]
-                    album.name = info.get("title", info.get("name", name))
-                    if sort_name := info.get("sortname"):
-                        album.sort_name = sort_name
-                    if releasegroup_id := info.get("musicbrainzreleasegroupid"):
-                        album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_id)
-                    if album_id := info.get("musicbrainzalbumid"):
-                        album.add_external_id(ExternalID.MB_ALBUM, album_id)
-                    if mb_artist_id := info.get("musicbrainzalbumartistid"):
-                        if album.artists and not album.artists[0].mbid:
-                            album.artists[0].mbid = mb_artist_id
-                    if description := info.get("review"):
-                        album.metadata.description = description
-                    if year := info.get("year"):
-                        album.year = int(year)
-                    if genre := info.get("genre"):
-                        album.metadata.genres = set(split_items(genre))
+                    parse_album_nfo(album, info["album"])
                 except (ExpatError, KeyError) as err:
                     self.logger.warning(
                         "Failed to parse album NFO file %s: %s",
                         nfo_file,
                         str(err),
                     )
-            # parse name/version
-            album.name, album.version = parse_title_and_version(album.name)
+
             # find local images
             if images := await self._get_local_images(folder_path, extra_thumb_names=("album",)):
                 if album.metadata.images is None:
                     album.metadata.images = UniqueList(images)
                 else:
                     album.metadata.images += images
+
         await self.cache.set(
             key=album_dir,
             data=album.to_dict(),
@@ -2536,9 +2538,11 @@ class LocalFileSystemProvider(MusicProvider):
         return data
 
     async def _scandir(self, path: str) -> list[FileSystemItem]:
-        """List directory contents."""
+        """List directory contents in natural sort order."""
+        # raw scandir order depends on the underlying filesystem (e.g. hash order
+        # on ext4) so sort to make browse and folder playback order deterministic
         abs_path = self.get_absolute_path(path)
-        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path)
+        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True)
 
     async def _read_file(self, path: str) -> bytes:
         """Read file contents. Override for network storage."""

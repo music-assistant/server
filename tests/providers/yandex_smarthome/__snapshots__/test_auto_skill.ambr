@@ -52,7 +52,7 @@
     'backendSettings': dict({
       'backendType': 'webhook',
       'functionId': '',
-      'uri': 'https://ma.example.com/api/yandex_smarthome/v1.0',
+      'uri': 'https://ma.example.com/api/yandex_smarthome',
     }),
     'channel': 'smartHome',
     'enableAllAvailableRegions': True,
