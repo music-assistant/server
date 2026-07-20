@@ -129,17 +129,6 @@ async def test_cli_args_raop_override() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_airplay2_override() -> None:
-    """A forced AirPlay 2 protocol targets the AirPlay service."""
-    player = _make_player()
-    player.protocol_override = StreamingProtocol.AIRPLAY2
-    args = await _build_args(player)
-
-    assert _arg_value(args, "--protocol") == "airplay2"
-    assert _arg_value(args, "--port") == "7000"
-
-
-@pytest.mark.asyncio
 async def test_cli_args_no_ptp_shared_without_daemon() -> None:
     """--ptp-shared is only passed while the provider's PTP daemon is running."""
     player = _make_player()

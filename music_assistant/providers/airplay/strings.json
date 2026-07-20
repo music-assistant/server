@@ -3,18 +3,9 @@
     "BROKEN_AIRPLAY": {
       "label": "This player is known to have broken AirPlay support. Playback may fail or simply be silent. There is no workaround for this issue at the moment. \nIf you already enforced AirPlay 2 on the player and it remains silent, this is one of the known broken models. Only remedy is to nag the manufacturer for a fix."
     },
-    "airplay_protocol": {
-      "label": "AirPlay protocol version to use for streaming",
-      "description": "AirPlay version 1 protocol uses RAOP.\nAirPlay version 2 is an extension of RAOP.\nSome newer devices do not fully support RAOP and will only work with AirPlay version 2, while older devices may only support RAOP.\n\nIn most cases the default automatic selection will work fine.",
-      "options": {
-        "0": "Automatically select",
-        "1": "Prefer AirPlay 1 (RAOP)",
-        "2": "Prefer AirPlay 2"
-      },
-      "disabled_reasons": {
-        "1": "This device does not advertise AirPlay 1 (RAOP) support.",
-        "2": "This device does not advertise AirPlay 2 support."
-      }
+    "force_raop": {
+      "label": "Force RAOP protocol",
+      "description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP."
     },
     "password": {
       "label": "Device password",

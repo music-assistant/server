@@ -212,15 +212,10 @@ class AirPlayStream:
         """Assemble the cliairplay argument list for this stream."""
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
-        # The user-configured protocol acts as an override only; the default is
-        # to let the binary resolve the route from the mDNS TXT (--txt).
-        protocol_override = self.player.protocol_override
-        if protocol_override == StreamingProtocol.RAOP:
-            protocol_arg = "raop"
-        elif protocol_override == StreamingProtocol.AIRPLAY2:
-            protocol_arg = "airplay2"
-        else:
-            protocol_arg = "auto"
+        # The "force RAOP" escape hatch is the only override; everything else lets
+        # the binary resolve the route from the mDNS TXT (--txt). We never pass
+        # "airplay2" explicitly: the binary's auto route selection is authoritative.
+        protocol_arg = "raop" if self.player.protocol_override == StreamingProtocol.RAOP else "auto"
 
         args: list[str] = [
             cli_binary,

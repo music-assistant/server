@@ -25,7 +25,9 @@ CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
 CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
-CONF_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
+# Advanced per-device escape hatch: force the legacy RAOP protocol on an
+# AirPlay-2-capable receiver whose AirPlay 2 implementation misbehaves.
+CONF_FORCE_RAOP: Final[str] = "force_raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
 CONF_HIRES_PLAYBACK: Final[str] = "hires_playback"
 

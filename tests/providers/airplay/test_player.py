@@ -5,13 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import ContentType, PlayerFeature
+from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
-    CONF_AIRPLAY_PROTOCOL,
+    CONF_FORCE_RAOP,
     CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
     CONF_RAOP_CREDENTIALS,
@@ -19,6 +19,9 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
+
+# _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
+AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
 
 
 @pytest.fixture
@@ -160,52 +163,100 @@ async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlaye
     assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
 
 
-def _set_discovery_info(player: AirPlayPlayer, *, raop: bool, airplay: bool) -> None:
-    """Attach (empty-property) discovery mocks so the device advertises the given protocols."""
-    for enabled, attr in ((raop, "raop_discovery_info"), (airplay, "airplay_discovery_info")):
-        if enabled:
-            info = MagicMock()
-            info.properties = {}
-            info.decoded_properties = {}
-            setattr(player, attr, info)
-        else:
-            setattr(player, attr, None)
+def _set_discovery_info(
+    player: AirPlayPlayer,
+    *,
+    raop: bool,
+    airplay: bool,
+    airplay_features: str | None = None,
+) -> None:
+    """
+    Attach discovery mocks so the device advertises the given protocols.
+
+    :param airplay_features: When set, the _airplay service advertises this
+        ``features`` bitmask (e.g. to mark the device AirPlay 2 capable).
+    """
+    if raop:
+        raop_info = MagicMock()
+        raop_info.properties = {}
+        raop_info.decoded_properties = {}
+        player.raop_discovery_info = raop_info
+    else:
+        player.raop_discovery_info = None
+    if airplay:
+        airplay_info = MagicMock()
+        airplay_info.properties = {}
+        airplay_info.decoded_properties = {"features": airplay_features} if airplay_features else {}
+        player.airplay_discovery_info = airplay_info
+    else:
+        player.airplay_discovery_info = None
+
+
+def _make_apple_player() -> AirPlayPlayer:
+    """Create an AirPlayPlayer that identifies as a genuine Apple device."""
+    return AirPlayPlayer(
+        provider=MagicMock(),
+        player_id="test_player",
+        display_name="Test Apple TV",
+        address="127.0.0.1",
+        manufacturer="Apple",
+        model="Apple TV 4K",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+
+
+# --- Force-RAOP escape hatch: toggle visibility ---
 
 
 @pytest.mark.asyncio
-async def test_airplay_protocol_options_disabled_when_not_advertised(
+async def test_force_raop_toggle_offered_for_non_apple_airplay2(
     airplay_player: AirPlayPlayer,
 ) -> None:
-    """A protocol the device does not advertise is offered but disabled, never omitted."""
-    _set_discovery_info(airplay_player, raop=False, airplay=False)
+    """A non-Apple AirPlay 2 device that also speaks RAOP gets the force-RAOP escape hatch."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     entries = await airplay_player.get_config_entries()
-    entry = next(entry for entry in entries if entry.key == CONF_AIRPLAY_PROTOCOL)
-    options = {option.value: option for option in entry.options}
-    assert options[StreamingProtocol.RAOP.value].disabled is True
-    assert options[StreamingProtocol.AIRPLAY2.value].disabled is True
-    # the automatic option stays enabled and remains the (safe) default
-    assert options[0].disabled is False
-    assert entry.default_value == 0
+    entry = next((entry for entry in entries if entry.key == CONF_FORCE_RAOP), None)
+    assert entry is not None
+    assert entry.type == ConfigEntryType.BOOLEAN
+    assert entry.default_value is False
+    # advanced-only: it is a workaround, not a routine protocol choice
+    assert entry.advanced is True
 
 
 @pytest.mark.asyncio
-async def test_airplay_protocol_option_enabled_when_advertised(
-    airplay_player: AirPlayPlayer,
-) -> None:
-    """An advertised protocol is offered as a selectable (enabled) option."""
-    _set_discovery_info(airplay_player, raop=True, airplay=True)
+async def test_force_raop_toggle_hidden_for_apple_airplay2() -> None:
+    """Genuine Apple AirPlay 2 devices are always AirPlay 2, so no force-RAOP toggle is offered."""
+    player = _make_apple_player()
+    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    entries = await player.get_config_entries()
+    assert all(entry.key != CONF_FORCE_RAOP for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_force_raop_toggle_hidden_for_raop_only(airplay_player: AirPlayPlayer) -> None:
+    """A RAOP-only device has nothing to force, so no toggle is offered."""
+    _set_discovery_info(airplay_player, raop=True, airplay=False)
     entries = await airplay_player.get_config_entries()
-    entry = next(entry for entry in entries if entry.key == CONF_AIRPLAY_PROTOCOL)
-    options = {option.value: option for option in entry.options}
-    assert options[StreamingProtocol.RAOP.value].disabled is False
-    assert options[StreamingProtocol.AIRPLAY2.value].disabled is False
+    assert all(entry.key != CONF_FORCE_RAOP for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_force_raop_toggle_hidden_for_airplay2_only(airplay_player: AirPlayPlayer) -> None:
+    """An AirPlay-2-only device (no RAOP service) has nothing to fall back to: no toggle."""
+    _set_discovery_info(airplay_player, raop=False, airplay=True, airplay_features=AP2_FEATURES)
+    entries = await airplay_player.get_config_entries()
+    assert all(entry.key != CONF_FORCE_RAOP for entry in entries)
+
+
+# --- Protocol resolution ---
 
 
 @pytest.mark.parametrize(
     ("airplay_props", "raop_props", "expected"),
     [
         # devices advertising the AirPlay 2 feature bits get AirPlay 2
-        ({"features": "0x4A7FDFD5,0x3C177FDE"}, {}, StreamingProtocol.AIRPLAY2),
+        ({"features": AP2_FEATURES}, {}, StreamingProtocol.AIRPLAY2),
         # the _raop ft field is used as fallback when _airplay lacks features
         ({}, {"ft": "0x445F8A00,0x1C340"}, StreamingProtocol.AIRPLAY2),
         # legacy receivers without the AirPlay 2 feature bits stay on RAOP
@@ -214,10 +265,10 @@ async def test_airplay_protocol_option_enabled_when_advertised(
         ({}, {}, StreamingProtocol.RAOP),
     ],
 )
-def test_auto_protocol_selection(
+def test_protocol_resolution_follows_capability(
     airplay_props: dict[str, str], raop_props: dict[str, str], expected: StreamingProtocol
 ) -> None:
-    """Automatic protocol selection follows the advertised AirPlay 2 feature bits."""
+    """Without the force toggle, protocol resolution follows the advertised AirPlay 2 bits."""
     raop_info = MagicMock()
     raop_info.decoded_properties = raop_props
     airplay_info = MagicMock()
@@ -232,11 +283,12 @@ def test_auto_protocol_selection(
         raop_discovery_info=raop_info,
         airplay_discovery_info=airplay_info,
     )
-    assert player._get_protocol_for_config_value(0) == expected
+    _configure_player(player, {CONF_FORCE_RAOP: False})
+    assert player.protocol == expected
 
 
-def test_auto_protocol_selection_airplay_service_only() -> None:
-    """A device advertising only the _airplay service gets AirPlay 2 even without features."""
+def test_protocol_resolution_airplay_service_only() -> None:
+    """A device advertising only the _airplay service is AirPlay 2 even without features."""
     airplay_info = MagicMock()
     airplay_info.decoded_properties = {}
     player = AirPlayPlayer(
@@ -249,7 +301,25 @@ def test_auto_protocol_selection_airplay_service_only() -> None:
         raop_discovery_info=None,
         airplay_discovery_info=airplay_info,
     )
-    assert player._get_protocol_for_config_value(0) == StreamingProtocol.AIRPLAY2
+    _configure_player(player, {CONF_FORCE_RAOP: False})
+    assert player.protocol == StreamingProtocol.AIRPLAY2
+
+
+def test_force_raop_resolves_to_raop_on_non_apple_airplay2(airplay_player: AirPlayPlayer) -> None:
+    """Enabling the toggle on an eligible device forces RAOP for both resolution and stream args."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: True})
+    assert airplay_player.protocol == StreamingProtocol.RAOP
+    assert airplay_player.protocol_override == StreamingProtocol.RAOP
+
+
+def test_force_raop_ignored_on_apple_airplay2() -> None:
+    """A stray persisted force_raop is ignored on Apple AirPlay 2 devices (never eligible)."""
+    player = _make_apple_player()
+    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    _configure_player(player, {CONF_FORCE_RAOP: True})
+    assert player.protocol == StreamingProtocol.AIRPLAY2
+    assert player.protocol_override is None
 
 
 @pytest.mark.parametrize(
@@ -288,32 +358,32 @@ def _configure_player(player: AirPlayPlayer, values: dict[str, object]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("hires_enabled", "protocol_conf", "has_airplay_info", "expected"),
+    ("hires_enabled", "force_raop", "has_airplay_info", "expected"),
     [
         # hi-res on an AirPlay 2 capable device advertises the 24-bit rates
-        (True, 0, True, [(44100, 24), (48000, 24)]),
+        (True, False, True, [(44100, 24), (48000, 24)]),
         # forced RAOP cannot do 24-bit: falls back to the 16-bit base
-        (True, StreamingProtocol.RAOP.value, True, [(44100, 16)]),
-        # forced AirPlay 2 keeps hi-res
-        (True, StreamingProtocol.AIRPLAY2.value, True, [(44100, 24), (48000, 24)]),
+        (True, True, True, [(44100, 16)]),
         # no _airplay._tcp service: hi-res not possible
-        (True, 0, False, [(44100, 16)]),
+        (True, False, False, [(44100, 16)]),
         # option disabled: the 16-bit default
-        (False, 0, True, [(44100, 16)]),
+        (False, False, True, [(44100, 16)]),
     ],
 )
 def test_hires_supported_sample_rates(
     airplay_player: AirPlayPlayer,
     hires_enabled: bool,
-    protocol_conf: int,
+    force_raop: bool,
     has_airplay_info: bool,
     expected: list[tuple[int, int]],
 ) -> None:
-    """The hi-res toggle drives the advertised sample rates (AirPlay 2 only)."""
-    _set_discovery_info(airplay_player, raop=True, airplay=has_airplay_info)
+    """The hi-res toggle drives the advertised sample rates (AirPlay 2, not forced to RAOP)."""
+    _set_discovery_info(
+        airplay_player, raop=True, airplay=has_airplay_info, airplay_features=AP2_FEATURES
+    )
     _configure_player(
         airplay_player,
-        {CONF_HIRES_PLAYBACK: hires_enabled, CONF_AIRPLAY_PROTOCOL: protocol_conf},
+        {CONF_HIRES_PLAYBACK: hires_enabled, CONF_FORCE_RAOP: force_raop},
     )
     assert airplay_player.supported_sample_rates == expected
 
@@ -321,7 +391,7 @@ def test_hires_supported_sample_rates(
 def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
     """With hi-res enabled the stream format is 24-bit in a s32le container."""
     _set_discovery_info(airplay_player, raop=True, airplay=True)
-    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: True, CONF_AIRPLAY_PROTOCOL: 0})
+    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: True, CONF_FORCE_RAOP: False})
 
     session_format = AudioFormat(
         content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
@@ -344,7 +414,7 @@ def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
 def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
     """Without hi-res the stream format is the 44.1/16 default."""
     _set_discovery_info(airplay_player, raop=True, airplay=True)
-    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: False, CONF_AIRPLAY_PROTOCOL: 0})
+    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: False, CONF_FORCE_RAOP: False})
     session_format = AudioFormat(
         content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
     )

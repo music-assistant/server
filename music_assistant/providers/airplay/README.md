@@ -95,18 +95,27 @@ airplay/
 
 ### Automatic Selection
 
-When protocol is set to "Automatically select" (default), the provider passes
+Route selection is automatic; there is no protocol picker. The provider passes
 `--protocol auto` together with the device's full `_airplay._tcp` TXT records
 (`--txt`). The **binary** then resolves the route from the advertised feature
 bits: RAOP vs AirPlay 2, native vs RAOP-compatible flow, transient pairing vs
 stored-credential pair-verify, and PTP vs NTP timing.
 
-The per-player protocol setting acts as an override only (an escape hatch for
-devices with a broken implementation of one of the protocols): forcing RAOP or
-AirPlay 2 passes that protocol verbatim. For MA-side planning decisions (which
-pairing flow to run, which service/port to target) the same feature-bit test
-the binary uses is mirrored in `supports_airplay2()`: any device advertising
-AirPlay 2 gets AirPlay 2, RAOP is only used for devices that do not support it.
+For MA-side planning decisions (which pairing flavor to run, which service/port
+to target) the same feature-bit test the binary uses is mirrored in
+`supports_airplay2()`: any device advertising AirPlay 2 gets AirPlay 2, RAOP is
+only used for devices that do not support it.
+
+### Force RAOP (escape hatch)
+
+The only user override is the advanced per-player `force_raop` boolean. It is
+offered **only** for AirPlay-2-capable non-Apple receivers that also advertise a
+RAOP service — an escape hatch for a device whose AirPlay 2 implementation
+misbehaves. When enabled, the stream is sent with `--protocol raop`.
+
+The toggle is deliberately not offered where it would be meaningless: genuine
+Apple devices (HomePod / Apple TV) are always AirPlay 2 (a stray persisted value
+is ignored), and RAOP-only / AirPlay-2-only devices have nothing to force.
 
 ## Discovery and Player Setup
 
@@ -444,7 +453,7 @@ The provider creates players with different types based on whether the device is
 ## Configuration Options
 
 ### Protocol Selection
-- **`airplay_protocol`**: Choose RAOP, AirPlay 2, or automatic (default: automatic; automatic lets the binary resolve the route from the mDNS TXT)
+- **`force_raop`**: Advanced per-player escape hatch to force the legacy RAOP protocol (default: off). Only offered for AirPlay 2-capable non-Apple devices that also advertise RAOP; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT)
 
 ### General
 - **`password`**: Device password if required (RAOP)
