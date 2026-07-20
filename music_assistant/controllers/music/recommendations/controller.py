@@ -102,6 +102,10 @@ class RecommendationsController:
             # can not fetch items from a music provider an admin has restricted them from
             if prov is None or not self.mass.music._apply_user_provider_filter([prov]):
                 return UniqueList()
+            if ProviderFeature.RECOMMENDATIONS not in prov.supported_features:
+                # keep the base-model guarantee that this method is only called for
+                # providers declaring the feature, matching the rows listing
+                return UniqueList()
             async with asyncio.timeout(RECOMMENDATIONS_PROVIDER_TIMEOUT):
                 return await cast(
                     "MusicProvider | MetadataProvider | PluginProvider", prov

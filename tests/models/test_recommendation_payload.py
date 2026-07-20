@@ -17,6 +17,19 @@ from music_assistant.models.recommendation_payload import RecommendationPayloadM
 INSTANCE_ID = "test_payload--instance1"
 
 
+def _payload_dicts(payload: list[RecommendationFolder]) -> list[dict[str, Any]]:
+    """
+    Serialize folders to dicts for equality checks across distinct instances.
+
+    RecommendationFolder inherits an __eq__ that only accepts MediaItem/ItemMapping
+    instances (BrowseFolder, its own base, is neither), so two structurally-identical
+    but distinct RecommendationFolder objects always compare unequal - only the exact
+    same object survives `==`. Comparing to_dict() output instead asserts the fields
+    actually match, which is what a warm-cache round trip (a fresh reconstruction) needs.
+    """
+    return [folder.to_dict() for folder in payload]
+
+
 class _PayloadProvider(RecommendationPayloadMixin):
     """Minimal host implementing the mixin's requirements, with a dict-backed fake cache."""
 
@@ -38,12 +51,27 @@ class _PayloadProvider(RecommendationPayloadMixin):
         return result
 
     async def _cache_get(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
-        if key in self._cache_store:
-            return self._cache_store[key], True, True
-        return None, False, False
+        if key not in self._cache_store:
+            return None, False, False
+        data = self._cache_store[key]
+        base_class = kwargs.get("base_class")
+        if base_class is not None and data is not None:
+            # mirrors production get_with_freshness: a list of dicts reconstructs as a
+            # list of base_class instances, a single dict as one base_class instance
+            if isinstance(data, list):
+                return [base_class.from_dict(item) for item in data], True, True
+            return base_class.from_dict(data), True, True
+        return data, True, True
 
     async def _cache_set(self, key: str, data: Any, **kwargs: Any) -> None:
-        self._cache_store[key] = data
+        # mirrors production: entries are stored serialized (to_dict), reconstructed
+        # via base_class.from_dict above on a hit
+        if isinstance(data, list):
+            self._cache_store[key] = [item.to_dict() for item in data]
+        elif data is not None:
+            self._cache_store[key] = data.to_dict()
+        else:
+            self._cache_store[key] = None
 
     def _create_task(self, target: Any, *args: Any, **kwargs: Any) -> asyncio.Future[Any]:
         task: asyncio.Future[Any] = asyncio.ensure_future(target)
@@ -111,6 +139,15 @@ async def test_rows_and_items_share_one_payload_fetch() -> None:
     ]
     assert items_editorial == payload[0].items
     assert items_charts == payload[1].items
+    # the round trip through to_dict/from_dict reconstructed fresh objects, not the
+    # same live items the fetch returned - a fidelity regression would still pass
+    # this equality check if the cache handed back the original in-memory objects
+    assert items_editorial is not payload[0].items
+    assert items_charts is not payload[1].items
+    assert isinstance(items_editorial[0], ItemMapping)
+    assert items_editorial[0].item_id == "t1"
+    assert isinstance(items_charts[0], ItemMapping)
+    assert items_charts[0].item_id == "p1"
 
 
 @pytest.mark.asyncio
@@ -205,8 +242,60 @@ async def test_refresh_fetches_fresh_and_stores_through_cached_path() -> None:
     # the refresh stored under the same key the @use_cache decorator maintains,
     # so subsequent cached reads serve the fresh payload without another fetch
     assert set(provider._cache_store) == {"_cached_recommendation_payload"}
-    assert await provider._recommendation_payload() == fresh
+    # this read is a genuine warm-cache hit (reconstructed via from_dict), so folder
+    # equality is compared structurally - see _payload_dicts
+    assert _payload_dicts(await provider._recommendation_payload()) == _payload_dicts(fresh)
     assert fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_raising_fetch_does_not_store_and_does_not_poison_retry() -> None:
+    """A raising refresh propagates without storing; a stale cache still serves, and retries."""
+    stale = _make_payload()
+    fetch = AsyncMock(return_value=stale)
+    provider = _PayloadProvider(fetch)
+    # warm the cache with the stale payload
+    await provider._recommendation_payload()
+    await asyncio.gather(*provider.background_tasks)
+    provider.mass.cache.set.reset_mock()
+
+    fetch.side_effect = RuntimeError("backend down")
+
+    with pytest.raises(RuntimeError, match="backend down"):
+        await provider._refresh_recommendation_payload()
+
+    provider.mass.cache.set.assert_not_awaited()
+    # the previously cached (stale) payload still serves; this is a genuine
+    # warm-cache hit (reconstructed via from_dict), so compare structurally
+    assert _payload_dicts(await provider._recommendation_payload()) == _payload_dicts(stale)
+    assert fetch.await_count == 2
+
+    fresh = [
+        RecommendationFolder(
+            item_id=f"{INSTANCE_ID}_fresh",
+            provider=INSTANCE_ID,
+            name="Fresh",
+            items=UniqueList(
+                [
+                    ItemMapping(
+                        media_type=MediaType.TRACK,
+                        item_id="t2",
+                        provider=INSTANCE_ID,
+                        name="Track Two",
+                    )
+                ]
+            ),
+        )
+    ]
+    fetch.side_effect = None
+    fetch.return_value = fresh
+
+    result = await provider._refresh_recommendation_payload()
+
+    assert result == fresh
+    provider.mass.cache.set.assert_awaited_once()
+    assert _payload_dicts(await provider._recommendation_payload()) == _payload_dicts(fresh)
+    assert fetch.await_count == 3
 
 
 @pytest.mark.asyncio

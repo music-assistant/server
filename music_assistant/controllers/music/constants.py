@@ -34,8 +34,8 @@ SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER: Final[int] = 900
 # how long to cache combined search results (fast path for repeated searches)
 SEARCH_CACHE_EXPIRATION_COMBINED: Final[int] = 600
 
-# max time to wait for a single provider's recommendations before skipping it,
-# so one slow provider can never block the whole discover page
+# max time to wait for a single recommendation row's item fetch before skipping
+# the row, so one slow provider row can never block an items request
 RECOMMENDATIONS_PROVIDER_TIMEOUT: Final[int] = 30
 
 # max time to wait for a single provider's recommendation rows; rows are

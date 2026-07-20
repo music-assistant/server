@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-from music_assistant_models.enums import MediaType, ProviderType
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.media_items import ItemMapping, RecommendationFolder, UniqueList
 
 from music_assistant.mass import MusicAssistant
@@ -49,6 +49,37 @@ class _RowsProvider(MusicProvider):
         )
 
 
+class _FourRowsProvider(MusicProvider):
+    """A fake provider exposing four recommendation rows."""
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        return [
+            RecommendationFolder(
+                item_id=f"four_row_{i}",
+                provider=self.instance_id,
+                name=f"Four Row {i}",
+                translation_key=f"four_row_{i}_key",
+                icon="mdi-four",
+            )
+            for i in range(4)
+        ]
+
+
+class _OneRowProvider(MusicProvider):
+    """A fake provider exposing a single recommendation row."""
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        return [
+            RecommendationFolder(
+                item_id="one_row_0",
+                provider=self.instance_id,
+                name="One Row 0",
+                translation_key="one_row_0_key",
+                icon="mdi-one",
+            )
+        ]
+
+
 def _build(provider_cls: type[MusicProvider], instance_id: str = "fake_instance") -> MusicProvider:
     """Construct a minimal provider with stubbed mass/manifest/config."""
     mass = MagicMock()
@@ -59,7 +90,9 @@ def _build(provider_cls: type[MusicProvider], instance_id: str = "fake_instance"
     config.name = "Fake Provider"
     config.instance_id = instance_id
     config.get_value = MagicMock(return_value="GLOBAL")
-    return provider_cls(mass, manifest, config, supported_features=set())
+    return provider_cls(
+        mass, manifest, config, supported_features={ProviderFeature.RECOMMENDATIONS}
+    )
 
 
 async def test_rows_interleaved_builtin_first(
@@ -74,6 +107,29 @@ async def test_rows_interleaved_builtin_first(
     folders = await mass.music.recommendations.get_recommendations()
     assert [f.provider for f in folders[:3]] == ["library", "prov_a", "prov_b"]
     assert all(f.provider == "library" for f in folders[3:])
+
+
+async def test_rows_interleave_uneven_provider_lengths_no_tail_dropped(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Providers with fewer rows than the builtin sources still contribute all their rows."""
+    four = _build(_FourRowsProvider, instance_id="four")
+    one = _build(_OneRowProvider, instance_id="one")
+    monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [four, one])
+
+    folders = await mass.music.recommendations.get_recommendations()
+
+    builtin_ids = [source.item_id for source in mass.music.recommendations.sources]
+    expected: list[tuple[str, str]] = []
+    for i, builtin_id in enumerate(builtin_ids):
+        expected.append(("library", builtin_id))
+        if i < 4:
+            expected.append(("four", f"four_row_{i}"))
+        if i < 1:
+            expected.append(("one", "one_row_0"))
+
+    assert [(f.provider, f.item_id) for f in folders] == expected
+    assert len(folders) == len(builtin_ids) + 4 + 1
 
 
 async def test_items_routed_to_provider(
@@ -116,3 +172,15 @@ async def test_items_restricted_provider_returns_empty(
     items = await mass.music.recommendations.get_recommendation_items("restricted_instance", "row1")
     assert items == []
     provider.get_recommendation_items.assert_not_awaited()
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_rows_restricted_provider_returns_no_rows(
+    mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user's provider filter excludes a restricted music provider's rows from the listing."""
+    mock_get_user.return_value = Mock(provider_filter=["allowed_instance"])
+    restricted = _build(_RowsProvider, instance_id="restricted_instance")
+    monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [restricted])
+    folders = await mass.music.recommendations.get_recommendations()
+    assert not any(f.provider == "restricted_instance" for f in folders)

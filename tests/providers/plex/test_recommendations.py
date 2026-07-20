@@ -195,12 +195,16 @@ async def test_hub_without_parseable_items_is_skipped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_backend_error_yields_no_rows() -> None:
-    """A failing hubs fetch is isolated and results in zero rows."""
+async def test_backend_error_propagates() -> None:
+    """
+    A failing hubs fetch raises so the mixin/controller can serve stale data instead.
+
+    Returning [] here would be cached persistently as a valid empty payload; the
+    error must propagate for the stale-while-revalidate fallback to work.
+    """
     provider, background_tasks = _make_provider([])
     provider._plex_library.fetchItems = Mock(side_effect=RuntimeError("plex down"))
 
-    rows = await provider.get_recommendations()
-    await asyncio.gather(*background_tasks)
-
-    assert rows == []
+    with pytest.raises(RuntimeError, match="plex down"):
+        await provider.get_recommendations()
+    await asyncio.gather(*background_tasks, return_exceptions=True)

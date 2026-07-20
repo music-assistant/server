@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.media_items import ProviderMapping, Track
 
 from tests.providers.sonic_similarity.conftest import make_item_mapping, make_track
 
@@ -35,16 +36,20 @@ async def test_get_recommendation_items_warm_cache_hit_serves_stored_items(
     cache_store: dict[str, Any] = {}
     background_tasks: list[asyncio.Future[Any]] = []
 
-    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
-        # production get_with_freshness reconstructs a base_class entry via
-        # from_dict before handing it to the decorator; the dict-backed fake
-        # returns what cache.set stored, which is the same shape
-        if key in cache_store:
-            return cache_store[key], True, True
-        return None, False, False
+    async def _cache_get(key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        # mirrors production: entries are stored serialized (to_dict) and, since the
+        # caller passes base_class=RecommendationFolder, reconstructed via from_dict
+        # before being handed back to the decorator
+        if key not in cache_store:
+            return None, False, False
+        data = cache_store[key]
+        base_class = kwargs.get("base_class")
+        if base_class is not None and data is not None:
+            return base_class.from_dict(data), True, True
+        return data, True, True
 
     async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
-        cache_store[key] = data
+        cache_store[key] = data.to_dict() if data is not None else None
 
     def _create_task(target: Any, **_kwargs: Any) -> asyncio.Future[Any]:
         task: asyncio.Future[Any] = asyncio.ensure_future(target)
@@ -57,10 +62,21 @@ async def test_get_recommendation_items_warm_cache_hit_serves_stored_items(
 
     plugin = make_plugin(signatures={("spotify", "seed1"): [0.1] * 18})
     mock_mass.music.recently_played = AsyncMock(return_value=[make_item_mapping("recent1")])
+    # the seed track is only walked structurally (never cached), so the make_track
+    # MagicMock double is fine here; the resolved candidate ends up in folder.items
+    # and must survive a real to_dict/from_dict round trip, so it needs to be a
+    # genuine Track instance rather than a MagicMock double
     recent_track = make_track("seed1", provider="spotify")
-    resolved = make_track("r1")
+    resolved = Track(
+        item_id="r1",
+        provider="spotify",
+        name="Track r1",
+        provider_mappings={
+            ProviderMapping(item_id="r1", provider_domain="spotify", provider_instance="spotify")
+        },
+    )
 
-    async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock:
+    async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock | Track:
         return recent_track if item_id == "recent1" else resolved
 
     mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)

@@ -149,13 +149,19 @@ async def test_get_recommendation_items_warm_cache_hit_skips_second_fetch(
     cache_store: dict[str, Any] = {}
     background_tasks: list[asyncio.Future[Any]] = []
 
-    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
-        if key in cache_store:
-            return cache_store[key], True, True
-        return None, False, False
+    async def _cache_get(key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        if key not in cache_store:
+            return None, False, False
+        data = cache_store[key]
+        base_class = kwargs.get("base_class")
+        if base_class is not None and data is not None:
+            return base_class.from_dict(data), True, True
+        return data, True, True
 
     async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
-        cache_store[key] = data
+        # mirrors production: entries are stored serialized (to_dict) and, since the
+        # caller passes base_class=RecommendationFolder, reconstructed via from_dict above
+        cache_store[key] = data.to_dict() if data is not None else None
 
     def _create_task(target: Any, **_kwargs: Any) -> asyncio.Future[Any]:
         task: asyncio.Future[Any] = asyncio.ensure_future(target)

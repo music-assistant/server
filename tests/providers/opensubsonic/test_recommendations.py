@@ -83,21 +83,25 @@ def _install_dict_backed_cache(provider: OpenSonicProvider) -> list[asyncio.Futu
     """
     Back the @use_cache decorator with a real dict store.
 
-    get_with_freshness returns exactly what set() stored (a fresh hit), mimicking the
-    production base_class=RecommendationFolder path where the cache controller hands
-    the reconstructed folder back to the decorator. Returns the list of background
+    Mirrors production: set() stores the serialized (to_dict) folder and, since the
+    caller passes base_class=RecommendationFolder, get_with_freshness reconstructs it
+    via RecommendationFolder.from_dict on a hit. Returns the list of background
     cache-store tasks so tests can await them before the warm call.
     """
     store: dict[str, Any] = {}
     tasks: list[asyncio.Future[Any]] = []
 
-    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
-        if key in store:
-            return store[key], True, True
-        return None, False, False
+    async def _cache_get(key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        if key not in store:
+            return None, False, False
+        data = store[key]
+        base_class = kwargs.get("base_class")
+        if base_class is not None and data is not None:
+            return base_class.from_dict(data), True, True
+        return data, True, True
 
     async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
-        store[key] = data
+        store[key] = data.to_dict() if data is not None else None
 
     def _create_task(target: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
         task: asyncio.Future[Any] = asyncio.ensure_future(target)

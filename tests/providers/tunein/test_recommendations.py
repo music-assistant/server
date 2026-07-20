@@ -41,17 +41,27 @@ def _install_cache_mocks(provider: TuneInProvider) -> None:
 
 
 def _install_fake_cache(provider: TuneInProvider) -> list[asyncio.Future[Any]]:
-    """Back the real @use_cache decorator with a dict-backed fake cache."""
+    """
+    Back the real @use_cache decorator with a dict-backed fake cache.
+
+    Mirrors production: set() stores the serialized (to_dict) folder and, since the
+    caller passes base_class=RecommendationFolder, get_with_freshness reconstructs it
+    via RecommendationFolder.from_dict on a hit.
+    """
     store: dict[str, Any] = {}
     background_tasks: list[asyncio.Future[Any]] = []
 
-    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
-        if key in store:
-            return store[key], True, True
-        return None, False, False
+    async def _cache_get(key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        if key not in store:
+            return None, False, False
+        data = store[key]
+        base_class = kwargs.get("base_class")
+        if base_class is not None and data is not None:
+            return base_class.from_dict(data), True, True
+        return data, True, True
 
     async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
-        store[key] = data
+        store[key] = data.to_dict() if data is not None else None
 
     def _create_task(target: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
         task: asyncio.Future[Any] = asyncio.ensure_future(target)

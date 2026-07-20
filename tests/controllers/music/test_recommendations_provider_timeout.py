@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import ProviderType
 from music_assistant_models.media_items import RecommendationFolder, UniqueList
@@ -12,8 +12,11 @@ from music_assistant_models.media_items import RecommendationFolder, UniqueList
 import music_assistant.controllers.music.recommendations.controller as rec_controller
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 if TYPE_CHECKING:
+    from typing import Any
+
     import pytest
     from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
 
@@ -55,6 +58,22 @@ class _RaisingItemsProvider(MusicProvider):
         self, item_id: str
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         raise RuntimeError("provider boom")
+
+
+class _PayloadRowsProvider(MusicProvider, RecommendationPayloadMixin):
+    """A fake provider serving rows via RecommendationPayloadMixin, fetch gated by an event."""
+
+    gate: asyncio.Event
+    payload: list[RecommendationFolder]
+    fetch_count: int = 0
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        return await self._recommendation_rows_from_payload()
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        self.fetch_count += 1
+        await self.gate.wait()
+        return self.payload
 
 
 def _build(provider_cls: type[MusicProvider], instance_id: str = "fake_instance") -> MusicProvider:
@@ -117,3 +136,69 @@ async def test_provider_items_error_returns_empty(
     monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: raising)
     items = await mass.music.recommendations.get_recommendation_items("fake_instance", "row1")
     assert items == []
+
+
+async def test_payload_mixin_rows_timeout_does_not_cancel_shared_fetch(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The controller's rows timeout degrades gracefully without killing the shielded fetch.
+
+    A RecommendationPayloadMixin provider's shared payload fetch outlives the controller's
+    own RECOMMENDATIONS_ROWS_TIMEOUT: the timed-out rows call returns without this provider's
+    rows, but the fetch keeps running in the background, warms the cache, and a later rows
+    call serves it without hitting the backend again (pins shield-vs-controller-timeout).
+    """
+    monkeypatch.setattr(rec_controller, "RECOMMENDATIONS_ROWS_TIMEOUT", 0.05)
+    gate = asyncio.Event()
+    provider = _build(_PayloadRowsProvider, instance_id="payload_prov")
+    assert isinstance(provider, _PayloadRowsProvider)
+    provider.gate = gate
+    provider.payload = [
+        RecommendationFolder(
+            item_id="payload_row",
+            provider="payload_prov",
+            name="Payload Row",
+            translation_key="payload_row_key",
+            icon="mdi-payload",
+        )
+    ]
+
+    cache_store: dict[str, Any] = {}
+
+    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        if key in cache_store:
+            return cache_store[key], True, True
+        return None, False, False
+
+    async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
+        cache_store[key] = data
+
+    background_tasks: list[asyncio.Future[Any]] = []
+
+    def _create_task(target: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
+        task: asyncio.Future[Any] = asyncio.ensure_future(target)
+        background_tasks.append(task)
+        return task
+
+    provider.mass.cache.get_with_freshness = AsyncMock(side_effect=_cache_get)  # type: ignore[method-assign]
+    provider.mass.cache.set = AsyncMock(side_effect=_cache_set)  # type: ignore[method-assign]
+    provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
+    monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [provider])
+
+    folders = await mass.music.recommendations.get_recommendations()
+    assert not any(f.provider == "payload_prov" for f in folders)
+    assert any(f.provider == "library" for f in folders)  # other rows unaffected
+    assert provider.fetch_count == 1  # the fetch started but did not finish in time
+
+    # release the gate: the shielded fetch, still running in the background, completes
+    gate.set()
+    payload_task = provider._recommendation_payload_task
+    assert payload_task is not None
+    await payload_task
+    await asyncio.gather(*background_tasks)  # let the cache-store task land
+
+    # cache is warmed; a later rows call serves it without re-fetching the backend
+    folders_after = await mass.music.recommendations.get_recommendations()
+    assert any(f.provider == "payload_prov" and f.item_id == "payload_row" for f in folders_after)
+    assert provider.fetch_count == 1
