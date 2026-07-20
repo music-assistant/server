@@ -70,7 +70,7 @@ def send_show_dashboard(
         msg = f"Timed out launching app on {chromecast.name}"
         raise TimeoutError(msg)
     if not launch_success:
-        msg = f"Failed to launch app on {chromecast.name}"
+        msg = f"Launching app on {chromecast.name} failed"
         raise TimeoutError(msg)
 
     # tiny race: the namespace only appears once the socket client has processed

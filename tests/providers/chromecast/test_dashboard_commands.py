@@ -139,10 +139,49 @@ async def test_hide_dashboard_delegates_to_helper() -> None:
     mock_send_hide_dashboard.assert_called_once_with(connected_chromecast)
 
 
-async def test_hide_dashboard_raises_for_unknown_device() -> None:
-    """An unknown device_id (not in the browser's discovered devices) is rejected."""
+async def test_hide_dashboard_no_op_for_device_without_existing_connection() -> None:
+    """Hiding on a device with no registered player and no cached connection is a no-op."""
     provider = _make_provider()
     provider.browser = MagicMock(devices={})
 
-    with pytest.raises(PlayerUnavailableError):
+    with patch(
+        "music_assistant.providers.chromecast.provider.send_hide_dashboard"
+    ) as mock_send_hide_dashboard:
         await provider.hide_dashboard(str(uuid4()))
+
+    mock_send_hide_dashboard.assert_not_called()
+
+
+async def test_hide_dashboard_evicts_on_demand_connection() -> None:
+    """Hiding disconnects and drops an on-demand connection cached for the device."""
+    provider = _make_provider()
+
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    provider._dashboard_connections = {str(device_uuid): connected_chromecast}
+
+    with patch("music_assistant.providers.chromecast.provider.send_hide_dashboard"):
+        await provider.hide_dashboard(str(device_uuid))
+
+    connected_chromecast.disconnect.assert_called_once_with(10)
+    assert str(device_uuid) not in provider._dashboard_connections
+
+
+async def test_hide_dashboard_logs_debug_when_nothing_was_showing() -> None:
+    """A False result from send_hide_dashboard is logged at debug, not raised."""
+    provider = _make_provider()
+
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    provider._dashboard_connections = {str(device_uuid): connected_chromecast}
+    provider.logger = MagicMock()
+
+    with patch(
+        "music_assistant.providers.chromecast.provider.send_hide_dashboard",
+        return_value=False,
+    ):
+        await provider.hide_dashboard(str(device_uuid))
+
+    provider.logger.debug.assert_called_once()

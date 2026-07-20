@@ -198,8 +198,18 @@ class ChromecastProvider(PlayerProvider):
 
         :param device_id: Device ID as returned by `get_dashboard_devices`.
         """
-        chromecast = await self._get_or_create_chromecast(device_id)
-        await self.mass.loop.run_in_executor(None, send_hide_dashboard, chromecast)
+        chromecast = self._get_existing_chromecast(device_id)
+        if chromecast is None:
+            # nothing connected to this device: it can't be showing a dashboard
+            return
+
+        hidden = await self.mass.loop.run_in_executor(None, send_hide_dashboard, chromecast)
+        if not hidden:
+            self.logger.debug("No dashboard was showing on %s", chromecast.name)
+
+        if device_id in self._dashboard_connections:
+            del self._dashboard_connections[device_id]
+            await self.mass.loop.run_in_executor(None, chromecast.disconnect, 10)
 
     ### Discovery callbacks
 
@@ -381,3 +391,16 @@ class ChromecastProvider(PlayerProvider):
         chromecast = await self.mass.loop.run_in_executor(None, _connect)
         self._dashboard_connections[device_id] = chromecast
         return chromecast
+
+    def _get_existing_chromecast(self, device_id: str) -> pychromecast.Chromecast | None:
+        """Return an already-connected Chromecast for device_id, without opening a new one."""
+        castplayer = self.mass.players.get_player(device_id)
+        if isinstance(castplayer, ChromecastPlayer) and castplayer.cc.socket_client.is_connected:
+            return castplayer.cc
+
+        if (chromecast := self._dashboard_connections.get(device_id)) is not None:
+            if chromecast.socket_client.is_connected:
+                return chromecast
+            del self._dashboard_connections[device_id]
+
+        return None

@@ -14,7 +14,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.guest_access import get_or_create_guest_user, get_or_create_join_code
+from music_assistant.helpers.guest_access import get_or_create_guest_user
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -38,6 +38,7 @@ class DashboardController(CoreController):
         super().__init__(mass)
         self.manifest.name = "Dashboard"
         self.manifest.description = "Casts Music Assistant dashboards to display devices."
+        # in-memory only: not reconciled after a server restart
         self._sessions: dict[tuple[str, str], DashboardSession] = {}
 
     @api_command("dashboard/devices")
@@ -56,7 +57,7 @@ class DashboardController(CoreController):
         """Return all active dashboard cast sessions."""
         return list(self._sessions.values())
 
-    @api_command("dashboard/show", required_scope=Scope.PLAYERS_CONTROL)
+    @api_command("dashboard/show", required_scope=Scope.USERS_INVITE)
     async def show_dashboard(self, provider_instance: str, device_id: str, path: str) -> None:
         """
         Show a Music Assistant dashboard on a display device.
@@ -87,12 +88,17 @@ class DashboardController(CoreController):
             remote_id=remote_access.remote_id,
             dashboard_code=dashboard_code,
         )
+        device_name = device_id
+        for device in await provider.get_dashboard_devices():
+            if device.device_id == device_id:
+                device_name = device.name
+                break
         self._sessions[(provider_instance, device_id)] = DashboardSession(
-            device_id=device_id, provider_instance=provider_instance, path=path
+            device_id=device_id, provider_instance=provider_instance, name=device_name, path=path
         )
         self._signal_sessions_updated()
 
-    @api_command("dashboard/hide", required_scope=Scope.PLAYERS_CONTROL)
+    @api_command("dashboard/hide", required_scope=Scope.USERS_INVITE)
     async def hide_dashboard(self, provider_instance: str, device_id: str) -> None:
         """
         Hide a Music Assistant dashboard from a display device.
@@ -121,17 +127,18 @@ class DashboardController(CoreController):
         self._signal_sessions_updated()
 
     async def _get_dashboard_code(self) -> str:
-        """Mint a one-time code a cast receiver can exchange for a viewer token."""
+        """Mint a fresh one-time code a cast receiver can exchange for a viewer token."""
+        # exchanged viewer tokens are fixed-lifetime guest tokens; a re-cast mints a fresh code
         user = await get_or_create_guest_user(
             self.mass, DASHBOARD_VIEWER_USERNAME, DASHBOARD_VIEWER_DISPLAY_NAME
         )
-        return await get_or_create_join_code(
-            self.mass,
+        code, _expires_at = await self.mass.webserver.auth.generate_join_code(
             user,
             expires_in_hours=DASHBOARD_CODE_EXPIRY_HOURS,
             max_uses=1,
             device_name="Dashboard Receiver",
         )
+        return code
 
     def _signal_sessions_updated(self) -> None:
         """Signal the current list of dashboard cast sessions to subscribers."""
