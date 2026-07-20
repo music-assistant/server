@@ -117,10 +117,21 @@ class AirPlayStream:
         if not self._cli_proc:
             return
         await asyncio.wait_for(self._connected.wait(), timeout=10)
+        # Send the mute-aware volume right away — audio can start within a
+        # second now that metadata goes out immediately — and repeat it after
+        # 2 seconds because some players ignore the first volume command
+        # (https://github.com/music-assistant/support/issues/3330).
         volume = 0 if self.player.volume_muted else self.player.volume_level
+        await self.send_cli_command(f"VOLUME={volume}")
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
         self._metadata_checksum = ""
-        self.mass.call_later(2, self.player._on_player_media_updated)
+        # Push track metadata immediately on connect. Some receivers (notably
+        # Sonos) hold back audio rendering until they receive track metadata
+        # anchored to the stream timeline; the binary anchors that timeline the
+        # instant it reports connected, so a metadata command issued now lands
+        # with a valid anchor. Deferring it kept those devices silent past the
+        # scheduled start, clipping the first seconds of the stream.
+        self.player._on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
         """

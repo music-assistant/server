@@ -204,3 +204,35 @@ def test_parse_latency_status() -> None:
     assert stream.latency_lead_ms == 1750
     assert stream.device_min_frames == 11025
     assert stream.device_max_frames == 88200
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_pushes_metadata_immediately() -> None:
+    """
+    Track metadata is pushed the instant the device connects.
+
+    Receivers that gate audio rendering on receiving timeline-anchored metadata
+    (e.g. Sonos over native AirPlay 2) must not be left silent while a deferred
+    push is pending, so the metadata callback runs synchronously on connect
+    while only the volume resend stays on the delayed path.
+    """
+    player = _make_player()
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()  # connection already established
+    player.provider.mass.call_later = MagicMock()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
+        patch.object(stream, "send_cli_command", return_value=None),  # avoid a real coroutine
+    ):
+        await stream.wait_for_connection()
+
+    # Metadata pushed synchronously on connect...
+    player._on_player_media_updated.assert_called_once_with()
+    # ...and never routed through the delayed call_later path.
+    deferred_callables = [call.args[1] for call in player.provider.mass.call_later.call_args_list]
+    assert player._on_player_media_updated not in deferred_callables
+    # The volume resend is still deferred (existing behavior preserved).
+    assert player.provider.mass.call_later.call_count == 1
+    assert player.provider.mass.call_later.call_args_list[0].args[0] == 2
