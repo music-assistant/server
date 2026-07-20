@@ -9,6 +9,9 @@ build/
 dist/
 venv/
 
+# Provider binaries downloaded for local development must not ship in source packages.
+music_assistant/providers/airplay/bin/cliairplay-*
+
 # Bundled app credentials - injected at build time, or a maintainer's local copy. Never commit.
 music_assistant/helpers/app_secrets.json
 app_vars.json

@@ -492,7 +492,8 @@ class AirPlayProvider(PlayerProvider):
             self.logger.warning(
                 "PTP clock daemon could not start (exit code %s) - PTP timing is degraded. "
                 "Multi-room sync of native AirPlay 2 players may drift; ensure UDP ports "
-                "319/320 are free and the server may bind them.",
+                "319/320 are free and run the server as root or grant cliairplay "
+                "CAP_NET_BIND_SERVICE.",
                 returncode,
             )
             return
