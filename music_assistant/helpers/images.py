@@ -47,11 +47,11 @@ _ALLOWED_THUMB_FORMATS: frozenset[str] = frozenset({"PNG", "JPEG"})
 # transparent logos) aren't served from a colliding filename after upgrade.
 _THUMB_CACHE_VERSION = 2
 
-# By construction the filename is
-# `<sha256>_<int>_v<int>[_flat][_b<int>].(jpg|png)`; the regex is an explicit
-# sanitizer that also lets CodeQL prove the value is safe to join into a
-# filesystem path. The optional markers separate encoding variants.
-_THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+_v\d+(?:_flat)?(?:_b\d+)?\.(?:jpg|png)$")
+# By construction the filename is `<sha256>_<int>_v<int>[_flat].(jpg|png)`; the
+# regex is an explicit sanitizer that also lets CodeQL prove the value is safe
+# to join into a filesystem path. The `_flat` marker separates the flattened
+# and transparency-preserving cache variants.
+_THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+_v\d+(?:_flat)?\.(?:jpg|png)$")
 
 _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
 
@@ -75,10 +75,6 @@ _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
 # Leading magic bytes used to sniff raster image formats from their content.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8\xff"
-
-
-class ImageThumbnailTooLargeError(MusicAssistantError):
-    """Raised when a JPEG thumbnail cannot fit within its requested byte limit."""
 
 
 def is_svg_data(data: bytes) -> bool:
@@ -120,15 +116,12 @@ def _thumb_cache_filename(
     size: int | None,
     image_format: str,
     flatten_transparency: bool = False,
-    max_bytes: int | None = None,
 ) -> str:
     """Build the cache filename for a thumbnail."""
     ext = image_format.lower()
     if ext == "jpeg":
         ext = "jpg"
     suffix = "_flat" if flatten_transparency else ""
-    if max_bytes is not None:
-        suffix += f"_b{max_bytes}"
     return f"{thumb_hash}_{size or 0}_v{_THUMB_CACHE_VERSION}{suffix}.{ext}"
 
 
@@ -466,7 +459,6 @@ async def get_image_thumb(
     provider: str,
     image_format: str = "PNG",
     flatten_transparency: bool = False,
-    max_bytes: int | None = None,
 ) -> bytes:
     """
     Get (optimized) thumbnail from image url.
@@ -483,8 +475,6 @@ async def get_image_thumb(
     :param image_format: Output format (PNG or JPEG/JPG).
     :param flatten_transparency: When True, alpha is composited onto white and
         kept as JPEG; when False, transparent sources are emitted as PNG.
-    :param max_bytes: Optional maximum JPEG byte length. This requires a flattened
-        JPEG and adaptively adjusts quality and dimensions to meet the limit.
     """
     thumb_data, _cache_filepath = await _get_image_thumb(
         mass,
@@ -493,7 +483,6 @@ async def get_image_thumb(
         provider,
         image_format,
         flatten_transparency,
-        max_bytes,
     )
     return thumb_data
 
@@ -505,7 +494,6 @@ async def get_image_thumb_path(
     provider: str,
     image_format: str = "PNG",
     flatten_transparency: bool = False,
-    max_bytes: int | None = None,
 ) -> str:
     """
     Get the absolute on-disk cache path for a thumbnail.
@@ -520,8 +508,6 @@ async def get_image_thumb_path(
     :param image_format: Output format (PNG or JPEG/JPG).
     :param flatten_transparency: When True, alpha is composited onto white and
         kept as JPEG; when False, transparent sources are emitted as PNG.
-    :param max_bytes: Optional maximum JPEG byte length. This requires a flattened
-        JPEG and adaptively adjusts quality and dimensions to meet the limit.
     """
     thumb_data, cache_filepath = await _get_image_thumb(
         mass,
@@ -530,7 +516,6 @@ async def get_image_thumb_path(
         provider,
         image_format,
         flatten_transparency,
-        max_bytes,
     )
     await _ensure_thumb_on_disk(mass, cache_filepath, thumb_data)
     return cache_filepath
@@ -543,7 +528,6 @@ async def _get_image_thumb(
     provider: str,
     image_format: str,
     flatten_transparency: bool,
-    max_bytes: int | None,
 ) -> tuple[bytes, str]:
     """
     Resolve thumbnail bytes and their validated cache path.
@@ -554,7 +538,6 @@ async def _get_image_thumb(
     :param provider: Provider identifier for the image source.
     :param image_format: Output format (PNG or JPEG/JPG).
     :param flatten_transparency: Whether to flatten alpha onto white for JPEG output.
-    :param max_bytes: Optional maximum JPEG byte length.
     """
     image_format = image_format.upper()
     if image_format == "JPG":
@@ -562,18 +545,9 @@ async def _get_image_thumb(
     if image_format not in _ALLOWED_THUMB_FORMATS:
         msg = f"Unsupported thumbnail format: {image_format}"
         raise ValueError(msg)
-    if max_bytes is not None:
-        if max_bytes <= 0:
-            msg = "JPEG thumbnail byte limit must be greater than zero"
-            raise ValueError(msg)
-        if image_format != "JPEG" or not flatten_transparency:
-            msg = "JPEG thumbnail byte limit requires a flattened JPEG"
-            raise ValueError(msg)
 
     thumb_hash = create_thumb_hash(provider, path_or_url)
-    cache_filename = _thumb_cache_filename(
-        thumb_hash, size, image_format, flatten_transparency, max_bytes
-    )
+    cache_filename = _thumb_cache_filename(thumb_hash, size, image_format, flatten_transparency)
     if not _THUMB_FILENAME_RE.fullmatch(cache_filename):
         # cache_filename is built from a sha256 + int + fixed extension, so this
         # is unreachable in practice — it is here so a future change to either
@@ -585,9 +559,7 @@ async def _get_image_thumb(
 
     # 1. Check in-memory FIFO cache
     if (cached := _get_from_memory_cache(cache_filename)) is not None:
-        if max_bytes is None or len(cached) <= max_bytes:
-            return cached, cache_filepath
-        _thumb_memory_cache.pop(cache_filename, None)
+        return cached, cache_filepath
 
     # 2. Check on-disk cache
     if await asyncio.to_thread(os.path.isfile, cache_filepath):
@@ -597,9 +569,8 @@ async def _get_image_thumb(
         except FileNotFoundError:
             pass
         else:
-            if max_bytes is None or len(thumb_data) <= max_bytes:
-                _put_in_memory_cache(cache_filename, thumb_data)
-                return thumb_data, cache_filepath
+            _put_in_memory_cache(cache_filename, thumb_data)
+            return thumb_data, cache_filepath
 
     # 3. Generate thumbnail (de-duplicated across concurrent requests)
     task: asyncio.Task[bytes] = mass.create_task(
@@ -611,7 +582,6 @@ async def _get_image_thumb(
         image_format,
         cache_filepath,
         flatten_transparency,
-        max_bytes,
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
     )
@@ -628,7 +598,6 @@ async def _generate_and_cache_thumb(
     image_format: str,
     cache_filepath: str,
     flatten_transparency: bool = False,
-    max_bytes: int | None = None,
 ) -> bytes:
     """
     Generate a thumbnail, persist it on disk, and return the bytes.
@@ -641,19 +610,15 @@ async def _generate_and_cache_thumb(
     :param cache_filepath: Absolute path where the thumbnail will be stored.
     :param flatten_transparency: When True, alpha is composited onto white and
         kept as JPEG; when False, transparent sources are emitted as PNG.
-    :param max_bytes: Optional maximum JPEG byte length.
     """
     img_data = await get_image_data(mass, path_or_url, provider)
     if not img_data or not isinstance(img_data, bytes):
         raise FileNotFoundError(f"Image not found: {path_or_url}")
 
     if is_svg_data(img_data):
-        if max_bytes is not None:
-            msg = f"Cannot create a bounded JPEG thumbnail from SVG image: {path_or_url}"
-            raise FileNotFoundError(msg)
         # Pillow can't decode SVG; pass it through unchanged.
         thumb_data = img_data
-    elif max_bytes is None and not size and image_format.encode() in img_data:
+    elif not size and image_format.encode() in img_data:
         thumb_data = img_data
     else:
 
@@ -676,8 +641,6 @@ async def _generate_and_cache_thumb(
                     target_format = "PNG"
             mode = "RGBA" if target_format == "PNG" else "RGB"
             converted = img.convert(mode)
-            if max_bytes is not None:
-                return _encode_bounded_jpeg(converted, max_bytes)
             if target_format == "JPEG":
                 converted.save(data, target_format, quality=95, optimize=False)
             else:
@@ -896,81 +859,3 @@ async def _write_thumb_to_disk(
     finally:
         with contextlib.suppress(OSError):
             await asyncio.to_thread(Path(temp_filepath).unlink)
-
-
-def _encode_bounded_jpeg(image: ImageClass, max_bytes: int) -> bytes:
-    """
-    Encode an RGB image as a baseline JPEG within a byte limit.
-
-    :param image: RGB image at no more than the requested thumbnail dimensions.
-    :param max_bytes: Maximum allowed encoded byte length.
-    """
-    working_image = image.convert("RGB")
-    while True:
-        encoded, lowest_quality_data = _fit_jpeg_quality(working_image, max_bytes, min_quality=50)
-        if encoded is not None:
-            return encoded
-
-        longest_edge = max(working_image.size)
-        if longest_edge == 1:
-            encoded, lowest_quality_data = _fit_jpeg_quality(
-                working_image, max_bytes, min_quality=1
-            )
-            if encoded is not None:
-                return encoded
-            msg = (
-                f"Could not encode a baseline JPEG within {max_bytes} bytes; "
-                f"minimum encoded size is {len(lowest_quality_data)} bytes"
-            )
-            raise ImageThumbnailTooLargeError(msg)
-
-        scale = min(0.9, (max_bytes / len(lowest_quality_data)) ** 0.5 * 0.95)
-        next_longest_edge = max(1, min(longest_edge - 1, int(longest_edge * scale)))
-        working_image.thumbnail((next_longest_edge, next_longest_edge), Image.Resampling.LANCZOS)
-
-
-def _fit_jpeg_quality(
-    image: ImageClass, max_bytes: int, min_quality: int
-) -> tuple[bytes | None, bytes]:
-    """
-    Return the highest fitting JPEG quality and the minimum-quality encoding.
-
-    :param image: RGB image to encode.
-    :param max_bytes: Maximum allowed encoded byte length.
-    :param min_quality: Lowest quality considered for this image size.
-    """
-    minimum_data = _encode_jpeg(image, min_quality)
-    if len(minimum_data) > max_bytes:
-        return None, minimum_data
-
-    best_data = minimum_data
-    low = min_quality + 1
-    high = 95
-    while low <= high:
-        quality = (low + high) // 2
-        candidate = _encode_jpeg(image, quality)
-        if len(candidate) <= max_bytes:
-            best_data = candidate
-            low = quality + 1
-        else:
-            high = quality - 1
-    return best_data, minimum_data
-
-
-def _encode_jpeg(image: ImageClass, quality: int) -> bytes:
-    """
-    Encode an RGB image as a non-progressive baseline JPEG.
-
-    :param image: RGB image to encode.
-    :param quality: Pillow JPEG quality value.
-    """
-    data = BytesIO()
-    image.save(
-        data,
-        "JPEG",
-        quality=quality,
-        optimize=True,
-        progressive=False,
-        subsampling=2,
-    )
-    return data.getvalue()

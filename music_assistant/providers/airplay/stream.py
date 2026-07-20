@@ -23,7 +23,6 @@ from music_assistant.helpers.images import get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
-    AIRPLAY_ARTWORK_MAX_BYTES,
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
@@ -635,11 +634,11 @@ class AirPlayStream:
 
     async def _prepare_artwork(self, image_url: str, _generation: int) -> str | None:
         """
-        Return a compatible cached JPEG path for the binary to embed.
+        Return a cached JPEG path for the binary to embed.
 
         The binary consumes artwork as a local file only; it does not fetch
-        URLs. The image is flattened to a size-bounded JPEG that is compatible
-        with both legacy AirPlay receivers and Apple TV MediaRemote.
+        URLs. The image is flattened to JPEG and stored in the shared thumbnail
+        cache.
 
         :param image_url: The (imageproxy or remote) cover-art URL.
         :param _generation: Metadata generation associated with the render request.
@@ -652,7 +651,6 @@ class AirPlayStream:
                 "",
                 image_format="JPEG",
                 flatten_transparency=True,
-                max_bytes=AIRPLAY_ARTWORK_MAX_BYTES,
             )
         except Exception as err:
             self.player.logger.debug("Could not prepare artwork: %s", err)

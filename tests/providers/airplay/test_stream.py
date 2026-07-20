@@ -11,7 +11,6 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.airplay.constants import (
-    AIRPLAY_ARTWORK_MAX_BYTES,
     AIRPLAY_ARTWORK_SIZE,
     CONF_ENCRYPTION,
     StreamingProtocol,
@@ -416,12 +415,12 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prepare_artwork_returns_bounded_cache_path() -> None:
+async def test_prepare_artwork_returns_cache_path() -> None:
     """Artwork preparation returns the shared cache path without a per-player copy."""
     player = _make_player()
     stream = AirPlayStream(player)
     image_url = "https://example.com/artwork.png"
-    cached_path = "/cache/thumbnails/artwork_flat_b65536.jpg"
+    cached_path = "/cache/thumbnails/artwork_flat.jpg"
 
     with patch(
         "music_assistant.providers.airplay.stream.get_image_thumb_path",
@@ -438,7 +437,6 @@ async def test_prepare_artwork_returns_bounded_cache_path() -> None:
         "",
         image_format="JPEG",
         flatten_transparency=True,
-        max_bytes=AIRPLAY_ARTWORK_MAX_BYTES,
     )
 
 
@@ -801,7 +799,7 @@ async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
         album="Album",
         image_url="https://example.com/artwork.png",
     )
-    cached_path = "/cache/thumbnails/artwork_flat_b65536.jpg"
+    cached_path = "/cache/thumbnails/artwork_flat.jpg"
     send_command = AsyncMock()
 
     with (

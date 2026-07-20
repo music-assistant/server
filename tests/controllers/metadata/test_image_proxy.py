@@ -494,12 +494,6 @@ def test_thumb_cache_filename_separates_flatten_variants() -> None:
     # png requests keep their own extension/bucket
     png_name = _thumb_cache_filename(thumb_hash, 0, "png")
     assert png_name == f"{thumb_hash}_0_v{_THUMB_CACHE_VERSION}.png"
-    bounded = _thumb_cache_filename(
-        thumb_hash, 512, "jpeg", flatten_transparency=True, max_bytes=65_536
-    )
-    assert bounded == f"{thumb_hash}_512_v{_THUMB_CACHE_VERSION}_flat_b65536.jpg"
-    assert bounded != flat
-    assert _THUMB_FILENAME_RE.fullmatch(bounded)
 
 
 def test_has_alpha() -> None:
