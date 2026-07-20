@@ -54,6 +54,8 @@ AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.
 AIRPLAY_ARTWORK_SIZE: Final[int] = 512
+# Apple TV MediaRemote rejects artwork payloads larger than 64 KiB.
+AIRPLAY_ARTWORK_MAX_BYTES: Final[int] = 65_536
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"

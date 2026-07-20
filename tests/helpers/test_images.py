@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import subprocess
 import time
 from base64 import b64encode
@@ -20,9 +21,11 @@ from PIL import Image
 from music_assistant.helpers import images
 from music_assistant.helpers.images import (
     _SOURCE_CACHE_TTL,
+    ImageThumbnailTooLargeError,
     create_thumb_hash,
     get_image_data,
     get_image_thumb,
+    get_image_thumb_path,
     invalidate_cached_image,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
@@ -74,6 +77,15 @@ def _make_png_file(tmp_path: Path, name: str = "art.png") -> str:
     return str(filepath)
 
 
+def _make_noise_png_file(tmp_path: Path, name: str = "noise.png") -> str:
+    """Create a deterministic high-entropy PNG file."""
+    size = (900, 600)
+    pixels = random.Random(42).randbytes(size[0] * size[1] * 3)
+    filepath = tmp_path / name
+    Image.frombytes("RGB", size, pixels).save(filepath, "PNG")
+    return str(filepath)
+
+
 async def test_multiple_thumb_sizes_fetch_source_once(
     mass_minimal: MusicAssistant, tmp_path: Path, fetch_calls: list[tuple[str, str]]
 ) -> None:
@@ -88,6 +100,126 @@ async def test_multiple_thumb_sizes_fetch_source_once(
     assert thumb_256
     assert jpeg_flat
     assert fetch_calls == [("builtin", image_path)]
+
+
+async def test_bounded_jpeg_is_baseline_rgb_within_limit(
+    mass_minimal: MusicAssistant, tmp_path: Path
+) -> None:
+    """A high-entropy source produces a compatible JPEG within the exact byte limit."""
+    image_path = _make_noise_png_file(tmp_path)
+    max_bytes = 65_536
+
+    ordinary = await get_image_thumb(
+        mass_minimal,
+        image_path,
+        512,
+        "builtin",
+        image_format="JPEG",
+        flatten_transparency=True,
+    )
+    bounded_path = await get_image_thumb_path(
+        mass_minimal,
+        image_path,
+        512,
+        "builtin",
+        image_format="JPEG",
+        flatten_transparency=True,
+        max_bytes=max_bytes,
+    )
+    bounded = Path(bounded_path).read_bytes()
+
+    assert len(ordinary) > max_bytes
+    assert len(bounded) <= max_bytes
+    assert bounded.startswith(b"\xff\xd8\xff")
+    assert b"\xff\xc2" not in bounded
+    sof0_offset = bounded.index(b"\xff\xc0")
+    assert bounded[sof0_offset + 4] == 8
+    encoded_height = int.from_bytes(bounded[sof0_offset + 5 : sof0_offset + 7])
+    encoded_width = int.from_bytes(bounded[sof0_offset + 7 : sof0_offset + 9])
+    assert bounded[sof0_offset + 9] == 3
+
+    with Image.open(BytesIO(bounded)) as image:
+        image.load()
+        assert image.format == "JPEG"
+        assert image.mode == "RGB"
+        assert image.size == (encoded_width, encoded_height)
+        assert 1 <= image.width <= 512
+        assert 1 <= image.height <= 512
+        assert image.width / image.height == pytest.approx(1.5, abs=0.01)
+
+
+async def test_thumb_path_reuses_existing_cache_file(
+    mass_minimal: MusicAssistant, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeated path lookup returns the same existing file without rewriting it."""
+    image_path = _make_png_file(tmp_path)
+    first_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    async def unexpected_write(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("existing thumbnail was rewritten")
+
+    monkeypatch.setattr(images, "_write_thumb_to_disk", unexpected_write)
+    second_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    assert second_path == first_path
+    assert Path(second_path).is_file()
+
+
+async def test_thumb_path_restores_missing_disk_file_from_memory(
+    mass_minimal: MusicAssistant, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A memory hit recreates its missing disk file without regenerating the thumbnail."""
+    image_path = _make_png_file(tmp_path)
+    thumb_data = await get_image_thumb(mass_minimal, image_path, 256, "builtin")
+    thumb_hash = create_thumb_hash("builtin", image_path)
+    cache_filename = images._thumb_cache_filename(thumb_hash, 256, "PNG")
+    cache_path = Path(mass_minimal.cache_path, "thumbnails", cache_filename)
+    cache_path.unlink()
+
+    async def unexpected_generate(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("memory-cached thumbnail was regenerated")
+
+    monkeypatch.setattr(images, "_generate_and_cache_thumb", unexpected_generate)
+    restored_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    assert restored_path == str(cache_path.resolve())
+    assert cache_path.read_bytes() == thumb_data
+
+
+async def test_thumb_path_surfaces_cache_write_error(
+    mass_minimal: MusicAssistant, tmp_path: Path
+) -> None:
+    """A path request raises when the thumbnail cache cannot be persisted."""
+    invalid_cache_path = tmp_path / "not-a-directory"
+    invalid_cache_path.write_text("file")
+    mass_minimal.cache_path = str(invalid_cache_path)
+    image_data = b64encode(_make_png_bytes()).decode()
+
+    with pytest.raises(NotADirectoryError, match="not-a-directory"):
+        await get_image_thumb_path(
+            mass_minimal,
+            f"data:image/png;base64,{image_data}",
+            256,
+            "builtin",
+        )
+
+
+async def test_impossible_jpeg_byte_limit_raises_specific_error(
+    mass_minimal: MusicAssistant, tmp_path: Path
+) -> None:
+    """A byte limit below baseline JPEG overhead raises the dedicated error."""
+    image_path = _make_png_file(tmp_path)
+
+    with pytest.raises(ImageThumbnailTooLargeError):
+        await get_image_thumb(
+            mass_minimal,
+            image_path,
+            512,
+            "builtin",
+            image_format="JPEG",
+            flatten_transparency=True,
+            max_bytes=1,
+        )
 
 
 async def test_concurrent_requests_share_one_fetch(
@@ -234,13 +366,22 @@ async def test_invalidate_cached_image_clears_all_tiers(
     for path in (image_path, other_path):
         await get_image_thumb(mass_minimal, path, 80, "builtin")
         await get_image_thumb(mass_minimal, path, 256, "builtin")
+    await get_image_thumb(
+        mass_minimal,
+        image_path,
+        512,
+        "builtin",
+        image_format="JPEG",
+        flatten_transparency=True,
+        max_bytes=65_536,
+    )
     assert len(fetch_calls) == 2
 
     thumb_dir = Path(mass_minimal.cache_path, "thumbnails")
     target_hash = create_thumb_hash("builtin", image_path)
     other_hash = create_thumb_hash("builtin", other_path)
-    # two thumb variants plus the source entry per image
-    assert len([f for f in thumb_dir.iterdir() if f.name.startswith(target_hash)]) == 3
+    # all target variants plus the source entry are independently cached
+    assert len([f for f in thumb_dir.iterdir() if f.name.startswith(target_hash)]) == 4
 
     await invalidate_cached_image(mass_minimal, "builtin", image_path)
 
