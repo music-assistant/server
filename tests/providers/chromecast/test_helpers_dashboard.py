@@ -33,7 +33,7 @@ def test_send_show_dashboard_happy_path() -> None:
         {
             "type": "show_dashboard",
             "remoteId": "remote123",
-            "castCode": "code456",
+            "dashboardCode": "code456",
             "path": "/party",
             "serverVersion": "2.17.150",
         },

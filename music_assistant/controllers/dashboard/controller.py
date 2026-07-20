@@ -23,9 +23,9 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
 
-CAST_VIEWER_USERNAME = "cast_viewer"
-CAST_VIEWER_DISPLAY_NAME = "Dashboard Cast Viewer"
-CAST_CODE_EXPIRY_HOURS = 1
+DASHBOARD_VIEWER_USERNAME = "dashboard_viewer"
+DASHBOARD_VIEWER_DISPLAY_NAME = "Dashboard Viewer"
+DASHBOARD_CODE_EXPIRY_HOURS = 1
 
 
 class DashboardController(CoreController):
@@ -80,12 +80,12 @@ class DashboardController(CoreController):
                 translation_owner=self.translation_owner,
             )
 
-        cast_code = await self._get_cast_code()
+        dashboard_code = await self._get_dashboard_code()
         await provider.show_dashboard(
             device_id=device_id,
             path=path,
             remote_id=remote_access.remote_id,
-            cast_code=cast_code,
+            dashboard_code=dashboard_code,
         )
         self._sessions[(provider_instance, device_id)] = DashboardSession(
             device_id=device_id, provider_instance=provider_instance, path=path
@@ -120,17 +120,17 @@ class DashboardController(CoreController):
         self._sessions.pop((provider_instance, device_id), None)
         self._signal_sessions_updated()
 
-    async def _get_cast_code(self) -> str:
+    async def _get_dashboard_code(self) -> str:
         """Mint a one-time code a cast receiver can exchange for a viewer token."""
         user = await get_or_create_guest_user(
-            self.mass, CAST_VIEWER_USERNAME, CAST_VIEWER_DISPLAY_NAME
+            self.mass, DASHBOARD_VIEWER_USERNAME, DASHBOARD_VIEWER_DISPLAY_NAME
         )
         return await get_or_create_join_code(
             self.mass,
             user,
-            expires_in_hours=CAST_CODE_EXPIRY_HOURS,
+            expires_in_hours=DASHBOARD_CODE_EXPIRY_HOURS,
             max_uses=1,
-            device_name="Cast Receiver",
+            device_name="Dashboard Receiver",
         )
 
     def _signal_sessions_updated(self) -> None:

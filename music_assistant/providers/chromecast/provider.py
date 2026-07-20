@@ -162,7 +162,7 @@ class ChromecastProvider(PlayerProvider):
         ]
 
     async def show_dashboard(
-        self, device_id: str, path: str, remote_id: str, cast_code: str
+        self, device_id: str, path: str, remote_id: str, dashboard_code: str
     ) -> None:
         """
         Show a Music Assistant dashboard on a Cast display device.
@@ -170,7 +170,7 @@ class ChromecastProvider(PlayerProvider):
         :param device_id: Device ID as returned by `get_dashboard_devices`.
         :param path: Frontend route to show on the display (e.g. "/party").
         :param remote_id: Remote access ID the receiver connects to.
-        :param cast_code: One-time code the receiver exchanges for a viewer token.
+        :param dashboard_code: One-time code the receiver exchanges for a viewer token.
         """
         chromecast = await self._get_or_create_chromecast(device_id)
         try:
@@ -179,7 +179,7 @@ class ChromecastProvider(PlayerProvider):
                 send_show_dashboard,
                 chromecast,
                 remote_id,
-                cast_code,
+                dashboard_code,
                 path,
                 str(self.mass.version),
             )

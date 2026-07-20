@@ -79,7 +79,7 @@ class PlayerProvider(Provider):
         raise NotImplementedError
 
     async def show_dashboard(
-        self, device_id: str, path: str, remote_id: str, cast_code: str
+        self, device_id: str, path: str, remote_id: str, dashboard_code: str
     ) -> None:
         """
         Show a Music Assistant dashboard on a display device.
@@ -89,7 +89,7 @@ class PlayerProvider(Provider):
         :param device_id: Provider-scoped device ID, as returned by `get_dashboard_devices`.
         :param path: Frontend route to show on the display (e.g. "/party").
         :param remote_id: Remote access ID the receiver connects to.
-        :param cast_code: One-time code the receiver exchanges for a viewer token.
+        :param dashboard_code: One-time code the receiver exchanges for a viewer token.
         """
         raise NotImplementedError
 

@@ -16,7 +16,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.dashboard import DashboardController
-from music_assistant.controllers.dashboard.controller import CAST_VIEWER_USERNAME
+from music_assistant.controllers.dashboard.controller import DASHBOARD_VIEWER_USERNAME
 from music_assistant.mass import MusicAssistant
 
 
@@ -59,9 +59,9 @@ def _make_provider(*, supports_dashboard: bool) -> MagicMock:
     return provider
 
 
-async def test_get_cast_code_creates_viewer_user_and_code(mass: MusicAssistant) -> None:
-    """A cast code can be exchanged for a token belonging to the cast viewer user."""
-    code = await mass.dashboard._get_cast_code()
+async def test_get_dashboard_code_creates_viewer_user_and_code(mass: MusicAssistant) -> None:
+    """A dashboard code can be exchanged for a token belonging to the cast viewer user."""
+    code = await mass.dashboard._get_dashboard_code()
 
     assert code
     result = await mass.webserver.auth.exchange_join_code(code)
@@ -69,7 +69,7 @@ async def test_get_cast_code_creates_viewer_user_and_code(mass: MusicAssistant) 
     assert result["success"] is True
     user = await mass.webserver.auth.authenticate_with_token(result["access_token"])
     assert user is not None
-    assert user.username == CAST_VIEWER_USERNAME
+    assert user.username == DASHBOARD_VIEWER_USERNAME
 
 
 async def test_show_dashboard_rejects_unknown_provider() -> None:
@@ -108,18 +108,20 @@ async def test_show_dashboard_raises_when_remote_access_disabled() -> None:
 
 
 async def test_show_dashboard_happy_path() -> None:
-    """A cast code is minted and delegated to the resolved provider's transport."""
+    """A dashboard code is minted and delegated to the resolved provider's transport."""
     controller = _make_controller()
     provider = _make_provider(supports_dashboard=True)
     controller.mass.get_provider.return_value = provider  # type: ignore[attr-defined]
     controller.mass.webserver.remote_access.is_enabled = True  # type: ignore[misc]
     controller.mass.webserver.remote_access.remote_id = "remote123"  # type: ignore[misc]
 
-    with patch.object(DashboardController, "_get_cast_code", AsyncMock(return_value="code456")):
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
         await controller.show_dashboard("chromecast", "device1", "/party")
 
     provider.show_dashboard.assert_awaited_once_with(
-        device_id="device1", path="/party", remote_id="remote123", cast_code="code456"
+        device_id="device1", path="/party", remote_id="remote123", dashboard_code="code456"
     )
 
 
@@ -131,7 +133,9 @@ async def test_show_dashboard_stores_session_and_signals_event() -> None:
     controller.mass.webserver.remote_access.is_enabled = True  # type: ignore[misc]
     controller.mass.webserver.remote_access.remote_id = "remote123"  # type: ignore[misc]
 
-    with patch.object(DashboardController, "_get_cast_code", AsyncMock(return_value="code456")):
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
         await controller.show_dashboard("chromecast", "device1", "/party")
 
     session = DashboardSession(device_id="device1", provider_instance="chromecast", path="/party")
@@ -149,7 +153,9 @@ async def test_show_dashboard_replaces_existing_session_for_same_device() -> Non
     controller.mass.webserver.remote_access.is_enabled = True  # type: ignore[misc]
     controller.mass.webserver.remote_access.remote_id = "remote123"  # type: ignore[misc]
 
-    with patch.object(DashboardController, "_get_cast_code", AsyncMock(return_value="code456")):
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
         await controller.show_dashboard("chromecast", "device1", "/party")
         await controller.show_dashboard("chromecast", "device1", "/queue")
 
