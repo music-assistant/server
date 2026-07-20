@@ -325,13 +325,13 @@ Handled in `_handle_dacp_request()` in [provider.py](provider.py):
 | `/ctrl-int/1/volumeup` | Increase volume |
 | `/ctrl-int/1/volumedown` | Decrease volume |
 | `/ctrl-int/1/shuffle_songs` | Toggle shuffle |
-| `dmcp.device-volume=X` | Volume changed by device (RAOP only) |
+| `dmcp.device-volume=X` | Volume changed at the device |
 | `device-prevent-playback=1` | Device switched to another source or powered off |
 | `device-prevent-playback=0` | Device ready for playback again |
 
 ### Volume Feedback
 
-Both **RAOP** and **AirPlay 2** protocols support devices reporting their volume level via DACP.
+Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
 
 **Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
 - Useful when device volume reports are unreliable
@@ -463,7 +463,7 @@ The provider creates players with different types based on whether the device is
 - **`password`**: Device password if required (RAOP)
 - **`ignore_volume`**: Ignore device volume reports (default: false)
 - **`hires_playback`**: Advanced per-player opt-in for 24-bit playback over native AirPlay 2 (default: off; only shown for AirPlay 2-capable devices - some devices accept 24-bit and play silence, hence opt-in)
-- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary and is no longer user-configurable.
+- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary.
 
 ### Pairing (Apple devices only)
 - **`raop_credentials`**: Stored RAOP pairing credentials (hidden)

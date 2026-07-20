@@ -65,10 +65,11 @@ CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
 CONF_SYNC_ADJUST_RESET_MARKER: Final[str] = "unified_binary_sync_adjust_reset"
 
 # AirPlay serves the shared sync-adjust control as a non-advanced (always visible)
-# setting: with the unified binary no longer auto-applying device-reported render
-# latency, this is now the primary way to compensate a device wired to a TV / AV
-# receiver / amplifier that adds its own audio delay. The AirPlay-scoped strings
-# spell out the sign; the shared entry stays advanced for other providers.
+# setting: the binary handles lead/buffer automatically and does not apply
+# device-reported render latency, so sync_adjust is the primary way to compensate
+# a device wired to a TV / AV receiver / amplifier that adds its own audio delay.
+# The AirPlay-scoped strings spell out the sign; the shared entry stays advanced
+# for other providers.
 CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
 
 # Pairing action keys
