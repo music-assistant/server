@@ -112,6 +112,8 @@ CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_PLAYER_DSP_IRS: Final[str] = "player_dsp_irs"
+# subdirectory under the storage path holding convolution impulse response files
+DSP_IRS_DIRNAME: Final[str] = "dsp_irs"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"

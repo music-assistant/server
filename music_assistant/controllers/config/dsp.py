@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Final
 import aiofiles
 import shortuuid
 from music_assistant_models.auth import Scope
-from music_assistant_models.dsp import DSPConfig, DSPConfigPreset
+from music_assistant_models.dsp import ConvolutionFilter, DSPConfig, DSPConfigPreset
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError
 
@@ -22,6 +22,7 @@ from music_assistant.constants import (
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_IRS,
     CONF_PLAYER_DSP_PRESETS,
+    DSP_IRS_DIRNAME,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.process import check_output
@@ -30,9 +31,6 @@ from music_assistant.helpers.tags import async_parse_tags
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
-
-# subdirectory under the storage path holding convolution impulse response files
-DSP_IRS_DIRNAME = "dsp_irs"
 # impulse response ids are lowercased shortuuids, so plain lowercase alphanumerics;
 # validating against this keeps a caller-supplied id from escaping the storage dir
 _IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
@@ -233,6 +231,7 @@ class DSPConfigMixin:
         if stored.pop(ir_id, None) is not None:
             self.set(CONF_PLAYER_DSP_IRS, stored)
         await self._remove_file(ir_path)
+        self._clear_dsp_ir_assignments(ir_id)
 
         self.mass.signal_event(
             EventType.DSP_IRS_UPDATED,
@@ -282,6 +281,26 @@ class DSPConfigMixin:
                 data=config,
             )
 
+    def _clear_dsp_ir_assignments(self, ir_id: str) -> None:
+        """Blank a removed impulse response from any player config or preset using it."""
+        raw_configs: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP, {})
+        for player_id, raw_config in tuple(raw_configs.items()):
+            config = DSPConfig.from_dict(raw_config)
+            if not _blank_convolution_ir(config, ir_id):
+                continue
+            self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
+            self.mass.signal_event(
+                EventType.PLAYER_DSP_CONFIG_UPDATED,
+                object_id=player_id,
+                data=config,
+            )
+        raw_presets: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP_PRESETS, {})
+        for preset_key, raw_preset in tuple(raw_presets.items()):
+            preset = DSPConfigPreset.from_dict(raw_preset)
+            if not _blank_convolution_ir(preset.config, ir_id):
+                continue
+            self.set(f"{CONF_PLAYER_DSP_PRESETS}/{preset_key}", preset.to_dict())
+
     def _dsp_irs_dir(self) -> str:
         """Return the directory holding convolution impulse response files."""
         return os.path.join(self.mass.storage_path, DSP_IRS_DIRNAME)
@@ -302,3 +321,19 @@ class DSPConfigMixin:
         """Delete a file if it exists, ignoring a missing file."""
         with suppress(FileNotFoundError):
             await asyncio.to_thread(os.remove, path)
+
+
+def _blank_convolution_ir(config: DSPConfig, ir_id: str) -> bool:
+    """
+    Blank any convolution filter in the config that references ir_id, in place.
+
+    :param config: The DSP configuration to update.
+    :param ir_id: The impulse response identifier to clear.
+    :return: True if the config was changed.
+    """
+    cleared = False
+    for dsp_filter in config.filters:
+        if isinstance(dsp_filter, ConvolutionFilter) and dsp_filter.ir_id == ir_id:
+            dsp_filter.ir_id = ""
+            cleared = True
+    return cleared

@@ -572,7 +572,9 @@ def test_player_output_plan_excludes_neutral_filters() -> None:
     )
 
     assert plan.output_details.dsp.filters == []
-    assert not any(param.startswith("equalizer=") for param in plan.filter_params)
+    assert not any(
+        isinstance(param, str) and param.startswith("equalizer=") for param in plan.filter_params
+    )
 
 
 def test_player_output_plan_prefers_rendering_player_channels() -> None:

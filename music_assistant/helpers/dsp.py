@@ -1,12 +1,14 @@
 """Helper functions for DSP filters."""
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    ConvolutionFilter,
     CrossfeedFilter,
     DSPFilter,
     GainFilter,
@@ -44,18 +46,22 @@ class ComplexFilter:
     sources: list[str] = field(default_factory=list)
 
 
-def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) -> list[str]:
+def filter_to_ffmpeg_params(
+    dsp_filter: DSPFilter, input_format: AudioFormat, ir_dir: str | None = None
+) -> list[str | ComplexFilter]:
     """
     Convert a DSP filter model to FFmpeg filter parameters.
 
     Args:
         dsp_filter: DSP filter configuration
         input_format: Audio format containing sample rate
+        ir_dir: Directory holding convolution impulse response files, required to
+            resolve a ConvolutionFilter's ir_id to a file path
 
     Returns:
         List of FFmpeg filter parameter strings
     """
-    filter_params = []
+    filter_params: list[str | ComplexFilter] = []
 
     if isinstance(dsp_filter, ParametricEQFilter):
         has_per_channel_preamp = any(value != 0 for value in dsp_filter.per_channel_preamp.values())
@@ -218,6 +224,19 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
             filter_params.append(
                 f"crossfeed=strength={dsp_filter.strength}:range={dsp_filter.soundstage}:level_in=1"
             )
+
+    # ir_id is a validated alphanumeric token; isalnum() also skips the empty
+    # "no impulse response selected" case and blocks any path traversal attempt
+    if isinstance(dsp_filter, ConvolutionFilter) and ir_dir and dsp_filter.ir_id.isalnum():
+        ir_path = os.path.join(ir_dir, f"{dsp_filter.ir_id}.wav")
+        escaped = ir_path.replace("'", "'\\''")
+        # afir needs the impulse response as a second input; amovie pulls it into
+        # the graph and aresample matches it to the stream rate, gtype=gn keeps
+        # the convolution at unity gain
+        source = f"amovie='{escaped}',aresample={input_format.sample_rate}"
+        filter_params.append(ComplexFilter(body="afir=gtype=gn", sources=[source]))
+        if dsp_filter.gain != 0:
+            filter_params.append(f"volume={dsp_filter.gain}dB")
 
     return filter_params
 

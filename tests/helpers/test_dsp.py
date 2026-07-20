@@ -5,6 +5,7 @@ import math
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    ConvolutionFilter,
     CrossfeedFilter,
     GainFilter,
     HighLowPassFilter,
@@ -19,7 +20,7 @@ from music_assistant_models.dsp import (
 )
 from music_assistant_models.media_items.audio_format import AudioFormat
 
-from music_assistant.helpers.dsp import filter_to_ffmpeg_params
+from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 
 INPUT_FORMAT = AudioFormat(sample_rate=48000)
 
@@ -258,7 +259,7 @@ def test_high_low_pass_48db_has_four_sections() -> None:
     )
     params = filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT)
     assert len(params) == 4
-    assert all(p.startswith("biquad=") for p in params)
+    assert all(isinstance(p, str) and p.startswith("biquad=") for p in params)
 
 
 def test_high_low_pass_mode_changes_coefficients() -> None:
@@ -270,3 +271,44 @@ def test_high_low_pass_mode_changes_coefficients() -> None:
         enabled=True, mode=HighLowPassMode.LOW_PASS, frequency=1000.0, slope=HighLowPassSlope.DB12
     )
     assert filter_to_ffmpeg_params(high, INPUT_FORMAT) != filter_to_ffmpeg_params(low, INPUT_FORMAT)
+
+
+def test_convolution_filter() -> None:
+    """Test that a convolution filter maps to an afir fragment pulling in the IR."""
+    dsp_filter = ConvolutionFilter(enabled=True, ir_id="abc123")
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir="/irs") == [
+        ComplexFilter(
+            body="afir=gtype=gn",
+            sources=["amovie='/irs/abc123.wav',aresample=48000"],
+        )
+    ]
+
+
+def test_convolution_filter_with_gain() -> None:
+    """Test that a non-zero convolution gain appends a trailing volume filter."""
+    dsp_filter = ConvolutionFilter(enabled=True, ir_id="abc123", gain=3.0)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir="/irs") == [
+        ComplexFilter(
+            body="afir=gtype=gn",
+            sources=["amovie='/irs/abc123.wav',aresample=48000"],
+        ),
+        "volume=3.0dB",
+    ]
+
+
+def test_convolution_filter_without_ir_dir_skipped() -> None:
+    """Test that a convolution filter is a no-op when no IR directory is provided."""
+    dsp_filter = ConvolutionFilter(enabled=True, ir_id="abc123")
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == []
+
+
+def test_convolution_filter_empty_ir_id_skipped() -> None:
+    """Test that a convolution filter with no impulse response selected is a no-op."""
+    dsp_filter = ConvolutionFilter(enabled=True, ir_id="")
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir="/irs") == []
+
+
+def test_convolution_filter_unsafe_ir_id_skipped() -> None:
+    """Test that a non-alphanumeric ir_id (path traversal attempt) is skipped."""
+    dsp_filter = ConvolutionFilter(enabled=True, ir_id="../../etc/passwd")
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir="/irs") == []

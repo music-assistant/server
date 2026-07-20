@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
+from music_assistant_models.dsp import (
+    ConvolutionFilter,
+    DSPConfig,
+    DSPConfigPreset,
+    ToneControlFilter,
+)
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError
 
@@ -269,3 +274,36 @@ async def test_upload_ir_rejects_oversized_file(tmp_path: Path) -> None:
         await config.upload_dsp_ir("too big", oversized)
 
     assert config.get_dsp_irs() == []
+
+
+async def test_remove_ir_clears_references(tmp_path: Path) -> None:
+    """Removing an IR blanks its id from any player config or preset that used it."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+    await config.save_dsp_config(
+        "player-1",
+        DSPConfig(
+            enabled=True,
+            filters=[ConvolutionFilter(enabled=True, ir_id="abc123", gain=2.0)],
+        ),
+    )
+    await config.save_dsp_presets(
+        DSPConfigPreset(
+            name="Room",
+            preset_id="room",
+            config=DSPConfig(
+                enabled=True,
+                filters=[ConvolutionFilter(enabled=True, ir_id="abc123")],
+            ),
+        )
+    )
+
+    await config.remove_dsp_ir("abc123")
+
+    player_filter = config.get_player_dsp_config("player-1").filters[0]
+    assert isinstance(player_filter, ConvolutionFilter)
+    assert player_filter.ir_id == ""
+    assert player_filter.gain == 2.0
+    preset_filter = (await config.get_dsp_presets())[0].config.filters[0]
+    assert isinstance(preset_filter, ConvolutionFilter)
+    assert preset_filter.ir_id == ""

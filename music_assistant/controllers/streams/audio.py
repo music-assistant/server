@@ -68,6 +68,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DSP_IRS_DIRNAME,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -113,7 +114,7 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
     resolve_output_player_ids,
 )
-from music_assistant.helpers.dsp import filter_to_ffmpeg_params
+from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
     get_ffmpeg_overlay_stream,
@@ -1150,7 +1151,7 @@ class StreamsAudio:
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
         """
-        filter_params: list[str] = []
+        filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_player(player_id)
         destination_player_id = (
             player.protocol_parent_id if player and player.protocol_parent_id else player_id
@@ -1181,8 +1182,9 @@ class StreamsAudio:
         if dsp.enabled:
             if dsp.input_gain != 0:
                 filter_params.append(f"volume={dsp.input_gain}dB")
+            ir_dir = os.path.join(self.mass.storage_path, DSP_IRS_DIRNAME)
             for dsp_filter in enabled_filters:
-                params = filter_to_ffmpeg_params(dsp_filter, input_format)
+                params = filter_to_ffmpeg_params(dsp_filter, input_format, ir_dir=ir_dir)
                 if not params:
                     continue
                 filter_params.extend(params)
