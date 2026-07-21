@@ -16,6 +16,7 @@ from functools import partial
 from typing import TYPE_CHECKING, cast
 
 import shortuuid
+from aiohttp import ClientError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import (
@@ -524,14 +525,27 @@ class HomeAssistantProvider(PluginProvider):
         semaphore = asyncio.Semaphore(STATE_FETCH_CONCURRENCY)
 
         async def _fetch_state(entity_id: str) -> State | None:
-            async with (
-                semaphore,
-                http_session.get(f"{ha_url}/api/states/{entity_id}", headers=headers) as response,
-            ):
-                if response.status != 200:
-                    # entity currently has no state (e.g. not available)
-                    return None
-                return cast("State", await response.json())
+            try:
+                async with (
+                    semaphore,
+                    http_session.get(
+                        f"{ha_url}/api/states/{entity_id}", headers=headers
+                    ) as response,
+                ):
+                    if response.status == 404:
+                        # entity currently has no state (e.g. not available)
+                        return None
+                    if response.status != 200:
+                        self.logger.warning(
+                            "Unexpected status %s fetching state for %s",
+                            response.status,
+                            entity_id,
+                        )
+                        return None
+                    return cast("State", await response.json())
+            except ClientError as err:
+                self.logger.warning("Failed to fetch state for %s: %s", entity_id, err)
+                return None
 
         async with asyncio.timeout(STATE_FETCH_TIMEOUT):
             states = await asyncio.gather(*(_fetch_state(entity_id) for entity_id in ids))
