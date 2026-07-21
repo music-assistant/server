@@ -155,15 +155,6 @@ class ChromecastProvider(PlayerProvider):
             if castplayer:
                 assert isinstance(castplayer, ChromecastPlayer)  # for type checking
                 castplayer.cast_info.update(disc_info)
-                # Re-link the running socket client to the browser's current
-                # mDNS services. If the device dropped off the network entirely
-                # and re-announced (e.g. a cast group whose leadership moved to
-                # another speaker, which changes the mDNS instance name), the
-                # CastBrowser has created a fresh services set for this uuid;
-                # the long-lived SocketClient still iterates its original,
-                # now-orphaned set and retries the dead host/port forever.
-                # SocketClient explicitly supports in-place modification of the
-                # set and picks up changes on the next reconnect attempt.
                 socket_client = castplayer.cc.socket_client
                 if socket_client.services != disc_info.services:
                     socket_client.services.clear()
