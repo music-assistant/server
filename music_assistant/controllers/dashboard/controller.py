@@ -77,8 +77,9 @@ class DashboardController(CoreController):
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
         """
         provider = self.mass.get_provider(provider_instance, provider_type=PlayerProvider)
-        if provider is None:
-            msg = f"Provider not found: {provider_instance}"
+        # get_provider's provider_type is only a type hint, so guard at runtime
+        if provider is None or provider.type != ProviderType.PLAYER:
+            msg = f"Player provider not found: {provider_instance}"
             raise ProviderUnavailableError(msg)
         provider.check_feature(ProviderFeature.SHOW_DASHBOARD)
 
@@ -108,8 +109,9 @@ class DashboardController(CoreController):
         :param device_id: Provider-scoped device ID, as returned by `dashboard/devices`.
         """
         provider = self.mass.get_provider(provider_instance, provider_type=PlayerProvider)
-        if provider is None:
-            msg = f"Provider not found: {provider_instance}"
+        # get_provider's provider_type is only a type hint, so guard at runtime
+        if provider is None or provider.type != ProviderType.PLAYER:
+            msg = f"Player provider not found: {provider_instance}"
             raise ProviderUnavailableError(msg)
         provider.check_feature(ProviderFeature.SHOW_DASHBOARD)
 

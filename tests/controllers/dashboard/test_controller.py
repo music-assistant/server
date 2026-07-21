@@ -8,7 +8,12 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from music_assistant_models.dashboard import DashboardDevice, DashboardSession
-from music_assistant_models.enums import DashboardType, EventType, ProviderFeature
+from music_assistant_models.enums import (
+    DashboardType,
+    EventType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidCommand,
@@ -55,6 +60,7 @@ def _make_controller() -> DashboardController:
 def _make_provider(*, supports_dashboard: bool) -> MagicMock:
     """Build a mock player provider, optionally declaring the SHOW_DASHBOARD feature."""
     provider = MagicMock()
+    provider.type = ProviderType.PLAYER
     provider.supported_features = {ProviderFeature.SHOW_DASHBOARD} if supports_dashboard else set()
     if not supports_dashboard:
         provider.check_feature.side_effect = UnsupportedFeaturedException(
@@ -171,6 +177,19 @@ async def test_show_dashboard_rejects_unknown_provider() -> None:
 
     with pytest.raises(ProviderUnavailableError):
         await controller.show_dashboard("unknown", "device1", DashboardType.PARTY)
+
+
+async def test_show_dashboard_rejects_non_player_provider() -> None:
+    """Casting fails cleanly when the instance id resolves to a non-player provider."""
+    controller = _make_controller()
+    provider = _make_provider(supports_dashboard=True)
+    provider.type = ProviderType.MUSIC
+    controller.mass.get_provider.return_value = provider  # type: ignore[attr-defined]
+
+    with pytest.raises(ProviderUnavailableError):
+        await controller.show_dashboard("spotify", "device1", DashboardType.PARTY)
+
+    provider.show_dashboard.assert_not_awaited()
 
 
 async def test_show_dashboard_rejects_provider_without_feature() -> None:

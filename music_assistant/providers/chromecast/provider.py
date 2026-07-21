@@ -30,6 +30,9 @@ from .helpers import ChromecastInfo, send_hide_dashboard, send_show_dashboard
 from .player import ChromecastPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
+# Seconds to wait for an on-demand dashboard cast connection before giving up.
+DASHBOARD_CONNECT_TIMEOUT = 10.0
+
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
@@ -373,7 +376,11 @@ class ChromecastProvider(PlayerProvider):
             chromecast = pychromecast.get_chromecast_from_cast_info(
                 disc_info, self.mass.discovery.aiozc.zeroconf
             )
-            chromecast.wait()
+            chromecast.wait(timeout=DASHBOARD_CONNECT_TIMEOUT)
+            if not chromecast.socket_client.is_connected:
+                chromecast.disconnect(0)
+                msg = f"Timed out connecting to Cast device: {disc_info.friendly_name}"
+                raise PlayerUnavailableError(msg)
             return chromecast
 
         chromecast = await self.mass.loop.run_in_executor(None, _connect)
