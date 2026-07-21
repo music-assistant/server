@@ -223,8 +223,11 @@ class AirPlayProvider(PlayerProvider):
         self._ptp_daemon_stop_requested = True
         if self._ptp_daemon_ready is not None:
             self._ptp_daemon_ready.clear()
-        if self._ptp_daemon_stdout_task and not self._ptp_daemon_stdout_task.done():
-            self._ptp_daemon_stdout_task.cancel()
+        ptp_stdout_task = self._ptp_daemon_stdout_task
+        if ptp_stdout_task and not ptp_stdout_task.done():
+            ptp_stdout_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ptp_stdout_task
         if self._ptp_daemon and not self._ptp_daemon.closed:
             await self._ptp_daemon.close()
         self._ptp_daemon = None

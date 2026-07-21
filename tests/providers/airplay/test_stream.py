@@ -330,6 +330,35 @@ async def test_stop_cleans_up_when_stop_command_fails() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stop_awaits_cancelled_stdout_reader() -> None:
+    """Stream teardown waits for the stdout reader to release process resources."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.closed = False
+    process.kill = AsyncMock()
+    stream._cli_proc = process
+    reader_started = asyncio.Event()
+
+    async def _stdout_reader() -> None:
+        reader_started.set()
+        await asyncio.Event().wait()
+
+    reader_task = asyncio.create_task(_stdout_reader())
+    stream._stdout_reader_task = reader_task
+    await reader_started.wait()
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream.stop(force=True)
+
+    assert reader_task.cancelled()
+    process.kill.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_force_stop_does_not_wait_for_artwork_render() -> None:
     """Force-stop tears down immediately while remote artwork rendering finishes."""
     player = _make_player()

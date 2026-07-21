@@ -180,8 +180,11 @@ class AirPlayStream:
                         await self.commands_pipe.remove()
                     finally:
                         # stop the stdout reader first so process close can drain the pipe
-                        if self._stdout_reader_task and not self._stdout_reader_task.done():
-                            self._stdout_reader_task.cancel()
+                        stdout_reader_task = self._stdout_reader_task
+                        if stdout_reader_task and not stdout_reader_task.done():
+                            stdout_reader_task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await stdout_reader_task
                         try:
                             if force:
                                 if self._cli_proc and not self._cli_proc.closed:

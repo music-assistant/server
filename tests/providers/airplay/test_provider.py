@@ -151,6 +151,31 @@ def test_protocol_migration_runs_only_once() -> None:
     cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_not_called()
 
 
+async def test_unload_awaits_cancelled_ptp_stdout_reader() -> None:
+    """Provider unload waits for its cancelled PTP stdout reader before process cleanup."""
+    prov = AirPlayProvider.__new__(AirPlayProvider)
+    prov.mass = MagicMock()
+    prov._ptp_daemon_ready = None
+    prov._ptp_daemon = None
+    prov._dacp_server = MagicMock()
+    prov._dacp_server.__bool__.return_value = False
+    prov._dacp_info = MagicMock()
+    prov._dacp_info.__bool__.return_value = False
+    reader_started = asyncio.Event()
+
+    async def _stdout_reader() -> None:
+        reader_started.set()
+        await asyncio.Event().wait()
+
+    reader_task = asyncio.create_task(_stdout_reader())
+    prov._ptp_daemon_stdout_task = reader_task
+    await reader_started.wait()
+
+    await prov.unload()
+
+    assert reader_task.cancelled()
+
+
 # --- Shared PTP clock daemon: readiness signal ---------------------------------
 
 
