@@ -51,6 +51,7 @@ async def test_create_playlist(playlist_manager: TidalPlaylistManager, provider_
     assert playlist.item_id == "pl1"
     assert playlist.is_editable is True
     assert playlist.owner == "Some User"
+    assert next(iter(playlist.provider_mappings)).is_unique is True
     provider_mock.api.write_jsonapi.assert_called_with(
         "POST",
         "playlists",

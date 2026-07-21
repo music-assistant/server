@@ -24,6 +24,9 @@ _COLLECTIONS = {
     MediaType.PLAYLIST: ("userCollectionPlaylists", "playlists"),
 }
 
+# Errors treated as a failed (best-effort) collection write.
+_WRITE_ERRORS = (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable)
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -123,7 +126,7 @@ class TidalLibraryManager:
             body = {"data": [{"type": resource_type, "id": item_id}]}
             await self.api.write_jsonapi(method, f"{resource_name}/me/relationships/items", body)
             return True
-        except ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable:
+        except _WRITE_ERRORS:
             return False
 
     async def _add_track_with_healing(

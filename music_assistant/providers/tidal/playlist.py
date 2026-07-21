@@ -47,6 +47,8 @@ class TidalPlaylistManager:
                 or self.provider.auth.user.user_name
                 or str(self.provider.auth.user_id)
             )
+            for mapping in playlist.provider_mappings:
+                mapping.is_unique = True
             return playlist
         except ClientError as err:
             raise ResourceTemporarilyUnavailable("Failed to create playlist") from err
