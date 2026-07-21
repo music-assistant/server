@@ -20,18 +20,16 @@ from music_assistant_models.background_task import (
     TaskMetadataValue,
     TaskSchedule,
 )
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, EventType, TaskStatus
+from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import CONF_ENTRY_MAX_CONCURRENT_TASKS, CONF_MAX_CONCURRENT_TASKS
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.models.core_controller import CoreController
-
-from music_assistant.constants import CONF_MAX_CONCURRENT_TASKS, CONF_ENTRY_MAX_CONCURRENT_TASKS
 
 from .constants import (
     ACTIVE_TASK_ID,
@@ -61,11 +59,7 @@ from .helpers import (
 from .models import ManagedTask
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigEntryType,
-    CoreConfig,
-)
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, CoreConfig
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
