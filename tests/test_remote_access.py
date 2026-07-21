@@ -937,6 +937,58 @@ async def test_http_proxy_request_does_not_block_receive_loop(mock_certificate: 
         forward_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await forward_task
-        for task in list(gateway._background_tasks):
+        for task in list(session.proxy_tasks):
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+
+async def test_close_data_channel_bridge_cancels_pending_proxy_tasks(
+    mock_certificate: Mock,
+) -> None:
+    """Closing a session's bridge must cancel its still-running proxy fetches."""
+    mock_session = Mock()
+    release = asyncio.Event()
+
+    def fake_request(_method: str, _url: str, **_kwargs: object) -> AsyncMock:
+        async def blocking_aenter(*_args: object) -> AsyncMock:
+            await release.wait()
+            return AsyncMock()
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = blocking_aenter
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        local_ws_url="ws://localhost:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", peer_connection=Mock())
+    session.local_ws = Mock()
+    session.local_ws.closed = False
+    session.local_ws.close = AsyncMock()
+    session.data_channel = Mock()
+    session.data_channel.readyState = "open"
+
+    session.message_queue.put_nowait(
+        json.dumps({"type": "http-proxy-request", "id": "1", "method": "GET", "path": "/img"})
+    )
+    session.forward_to_local_task = asyncio.create_task(gateway._forward_to_local(session))
+
+    try:
+        for _ in range(20):
+            if session.proxy_tasks:
+                break
+            await asyncio.sleep(0.05)
+        proxy_task = next(iter(session.proxy_tasks))
+
+        await gateway._close_data_channel_bridge(session)
+
+        assert proxy_task.cancelled()
+        assert not session.proxy_tasks
+    finally:
+        release.set()

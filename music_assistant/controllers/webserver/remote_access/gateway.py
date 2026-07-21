@@ -50,6 +50,7 @@ class WebRTCSession:
     data_channel_setup_task: asyncio.Task[None] | None = None
     forward_to_local_task: asyncio.Task[None] | None = None
     forward_from_local_task: asyncio.Task[None] | None = None
+    proxy_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     data_channel_active: bool = False
     # Sendspin channel - bridges to internal sendspin server
     sendspin_channel: Any = None
@@ -650,10 +651,12 @@ class WebRTCGateway:
             )
             if task is not None and task is not current_task
         ]
+        tasks += [task for task in session.proxy_tasks if task is not current_task]
         local_ws = session.local_ws
         session.data_channel_setup_task = None
         session.forward_to_local_task = None
         session.forward_from_local_task = None
+        session.proxy_tasks = set()
         session.local_ws = None
         session.message_queue = asyncio.Queue()
 
@@ -684,8 +687,8 @@ class WebRTCGateway:
                         task = asyncio.create_task(
                             self._handle_http_proxy_request(session, msg_data)
                         )
-                        self._background_tasks.add(task)
-                        task.add_done_callback(self._background_tasks.discard)
+                        session.proxy_tasks.add(task)
+                        task.add_done_callback(session.proxy_tasks.discard)
                         continue
                 except json.JSONDecodeError, ValueError:
                     pass
