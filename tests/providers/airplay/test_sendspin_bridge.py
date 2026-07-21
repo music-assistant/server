@@ -12,7 +12,7 @@ tests are deterministic and independent of the host wall-clock:
   time so a late-join catch-up backlog is not dumped into the CLI.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
@@ -243,3 +243,26 @@ def test_late_join_backlog_trips_pacing_bound_but_steady_feed_does_not() -> None
         start_unix_ms, 3 * BRIDGE_BYTES_PER_SECOND, BRIDGE_BYTES_PER_SECOND, now
     )
     assert steady_ahead < MAX_DEVICE_BUFFER_SECONDS
+
+
+async def test_failed_cli_write_does_not_advance_pacing_cursor() -> None:
+    """A dropped write cannot move the pacing cursor past audio the CLI never received."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = MagicMock()
+    stream.write_audio = AsyncMock(side_effect=[OSError("write failed"), None])
+    stream.write_audio_eof = AsyncMock()
+    bridge._airplay_stream = stream
+    bridge._airplay_stream_ready.set()
+    bridge._start_unix_ms = int(UNIX_NOW_S * 1000)
+    bridge._write_queue.put_nowait(b"first")
+    bridge._write_queue.put_nowait(b"second")
+    bridge._write_queue.put_nowait(None)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.device_buffer_ahead_seconds",
+        return_value=0.0,
+    ) as buffer_ahead:
+        await bridge._cli_writer()
+
+    assert [call.args[1] for call in buffer_ahead.call_args_list] == [0, 0]
+    assert stream.write_audio.await_count == 2

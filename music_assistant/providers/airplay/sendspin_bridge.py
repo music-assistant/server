@@ -699,7 +699,7 @@ class SendspinAirPlayBridge:
                         await asyncio.sleep(ahead - MAX_DEVICE_BUFFER_SECONDS)
                 with suppress(Exception):
                     await self._airplay_stream.write_audio(data)
-                bytes_written += len(data)
+                    bytes_written += len(data)
         finally:
             # Only clear if this writer is still the active one.
             if self._writer_task is asyncio.current_task():
