@@ -69,8 +69,9 @@ airplay/
 ├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
 ├── constants.py         # Constants and enums
 ├── stream.py            # Unified AirPlayStream (RAOP + AirPlay 2) driving cliairplay
-└── bin/                 # Platform-specific CLI binaries
-    └── cliairplay-*     # Unified RAOP + AirPlay 2 streaming binary
+└── bin/                 # Binary documentation and downloaded local artifacts
+    ├── README.md
+    └── cliairplay-*     # Downloaded during container build or local setup; not tracked
 ```
 
 ## Protocol Selection: RAOP vs AirPlay 2

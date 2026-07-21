@@ -25,7 +25,9 @@ echo "Activating virtual environment..."
 source "$env_name/bin/activate"
 
 echo "Preparing AirPlay development binary..."
-python -m scripts.fetch_airplay_cli
+if ! python -m scripts.fetch_airplay_cli; then
+  echo "⚠️ AirPlay binary unavailable; continuing without local AirPlay support." >&2
+fi
 
 echo "Installing development dependencies..."
 uv pip install -e "."
