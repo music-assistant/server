@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
+
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.music.recommendations.library import (
-    LIBRARY_RECOMMENDATIONS,
-    LibraryRecommendation,
+    library_items,
+    library_rows,
 )
 from music_assistant.mass import MusicAssistant
+
+if TYPE_CHECKING:
+    import pytest
+    from music_assistant_models.media_items import ItemMapping
 
 EXPECTED_DEFAULT_ORDER = [
     "in_progress",
@@ -44,24 +50,18 @@ async def test_recommendations_rows_have_no_items(mass: MusicAssistant) -> None:
     assert all(folder.items == [] for folder in folders)
 
 
-async def test_library_recommendation_folder_fields() -> None:
-    """A library row's folder() carries the row identity fields without items."""
-    rec = LibraryRecommendation(
-        item_id="x",
-        name="X",
-        translation_key="x_key",
-        icon="mdi-x",
-        get_items=lambda _mass: _async_return(_fake_items()),
-        enabled_by_default=False,
-    )
-    folder = rec.folder()
-    assert folder.item_id == "x"
-    assert folder.provider == "library"
-    assert folder.name == "X"
-    assert folder.translation_key == "x_key"
-    assert folder.icon == "mdi-x"
-    assert folder.enabled_by_default is False
-    assert folder.items == []
+async def test_library_rows_have_descriptor_fields() -> None:
+    """Library rows carry their identity fields, correct defaults, and no items."""
+    rows = library_rows()
+    in_progress = next(f for f in rows if f.item_id == "in_progress")
+    assert in_progress.provider == "library"
+    assert in_progress.name == "In progress"
+    assert in_progress.translation_key == "in_progress_items"
+    assert in_progress.icon == "mdi-motion-play"
+    assert in_progress.enabled_by_default is True
+    random_artists = next(f for f in rows if f.item_id == "random_artists")
+    assert random_artists.enabled_by_default is False
+    assert all(folder.items == [] for folder in rows)
 
 
 async def test_recently_played_rolls_up_to_container(mass: MusicAssistant) -> None:
@@ -178,26 +178,25 @@ async def test_recently_played_always_include_media_types_query(mass: MusicAssis
     assert "track-q" not in result_ids, "non-user-initiated track should be excluded"
 
 
-async def test_library_rows_match_table(mass: MusicAssistant) -> None:
-    """Every LIBRARY_RECOMMENDATIONS entry appears in the rows listing and is routable."""
+async def test_every_library_row_dispatches_a_query() -> None:
+    """
+    Every id listed by library_rows() reaches a real query branch in library_items().
+
+    The rows listing and the items dispatch live in two separate functions; this
+    pins that no listed row silently falls through to the empty default arm.
+    """
+    mass = AsyncMock()
+    for folder in library_rows():
+        mass.reset_mock()
+        await library_items(mass, folder.item_id)
+        assert mass.method_calls, f"row {folder.item_id!r} did not dispatch a library query"
+
+
+async def test_library_rows_listed_by_controller(mass: MusicAssistant) -> None:
+    """Every library row appears in the controller's rows listing."""
     folders = await mass.music.recommendations.get_recommendations()
     listed = {f.item_id for f in folders if f.provider == "library"}
-    assert {rec.item_id for rec in LIBRARY_RECOMMENDATIONS} <= listed
-
-
-async def test_library_row_items_served_from_table(mass: MusicAssistant) -> None:
-    """Items for a library row are served through the row's get_items query."""
-    rec = LibraryRecommendation(
-        item_id="custom_test_row",
-        name="Custom Test Row",
-        translation_key="custom_test_key",
-        icon="mdi-custom",
-        get_items=lambda _mass: _async_return(_fake_items()),
-    )
-    mass.music.recommendations._library_rows_by_id["custom_test_row"] = rec
-
-    items = await mass.music.recommendations.get_recommendation_items("library", "custom_test_row")
-    assert [item.item_id for item in items] == ["a"]
+    assert {f.item_id for f in library_rows()} <= listed
 
 
 async def test_unknown_library_row_returns_empty(mass: MusicAssistant) -> None:
@@ -206,38 +205,17 @@ async def test_unknown_library_row_returns_empty(mass: MusicAssistant) -> None:
     assert items == []
 
 
-async def test_failing_library_row_items_isolated(mass: MusicAssistant) -> None:
+async def test_failing_library_row_items_isolated(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A library row whose items query raises returns an empty list, not an error."""
 
-    async def _boom(_mass: MusicAssistant) -> list[ItemMapping]:
+    async def _boom(**_kwargs: object) -> list[ItemMapping]:
         raise RuntimeError("row boom")
 
-    mass.music.recommendations._library_rows_by_id["boom_row"] = LibraryRecommendation(
-        item_id="boom_row",
-        name="Boom Row",
-        translation_key="boom_key",
-        icon="mdi-boom",
-        get_items=_boom,
-    )
-    items = await mass.music.recommendations.get_recommendation_items("library", "boom_row")
+    monkeypatch.setattr(mass.music, "in_progress_items", _boom)
+    items = await mass.music.recommendations.get_recommendation_items("library", "in_progress")
     assert items == []
-
-
-def _fake_items() -> list[ItemMapping]:
-    return [
-        ItemMapping.from_dict(
-            {
-                "item_id": "a",
-                "provider": "library",
-                "media_type": MediaType.TRACK.value,
-                "name": "Track A",
-            }
-        )
-    ]
-
-
-async def _async_return(value: list[ItemMapping]) -> list[ItemMapping]:
-    return value
 
 
 async def _add_playlog_row(

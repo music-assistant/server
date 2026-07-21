@@ -17,7 +17,7 @@ from music_assistant.controllers.music.constants import (
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
 
-from .library import LIBRARY_RECOMMENDATIONS
+from .library import library_items, library_rows
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import (
@@ -40,7 +40,6 @@ class RecommendationsController:
         """Initialize the controller and register its api commands."""
         self.mass = mass
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.recommendations")
-        self._library_rows_by_id = {rec.item_id: rec for rec in LIBRARY_RECOMMENDATIONS}
         self.mass.register_api_command(
             "music/recommendations",
             self.get_recommendations,
@@ -58,7 +57,7 @@ class RecommendationsController:
             self.mass.get_providers_supporting_feature(ProviderFeature.RECOMMENDATIONS)
         )
         rows_per_source: list[list[RecommendationFolder]] = [
-            [rec.folder() for rec in LIBRARY_RECOMMENDATIONS],
+            library_rows(),
             *await asyncio.gather(
                 *[
                     self._provider_rows(
@@ -82,10 +81,7 @@ class RecommendationsController:
         """
         try:
             if provider == "library":
-                library_row = self._library_rows_by_id.get(item_id)
-                if library_row is None:
-                    return UniqueList()
-                return UniqueList(await library_row.get_items(self.mass))
+                return UniqueList(await library_items(self.mass, item_id))
             prov = self.mass.get_provider(provider)
             # re-apply the user provider filter the rows listing applies, so a user
             # can not fetch items from a music provider an admin has restricted them from
