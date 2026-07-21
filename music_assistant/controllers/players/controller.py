@@ -3489,6 +3489,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 filtered_native_remove,
             )
             if filtered_native_add or filtered_native_remove:
+                if PlayerFeature.SET_MEMBERS not in parent_player.state.supported_features:
+                    # Players whose group membership is managed externally
+                    # (e.g. Google Cast groups, defined in the Google Home app)
+                    # do not implement set_members. Skip instead of hitting the
+                    # base model's NotImplementedError, which aborts callers
+                    # such as _cleanup_player_memberships mid-flight.
+                    self.logger.debug(
+                        "Not calling set_members on native player %s: "
+                        "player does not support SET_MEMBERS",
+                        parent_player.state.name,
+                    )
+                    return
                 self.logger.info(
                     "Calling set_members on native player %s with add=%s, remove=%s",
                     parent_player.state.name,

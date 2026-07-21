@@ -159,6 +159,42 @@ class TestCacheInvalidationAfterGrouping:
         # In a real scenario, this would clear all players' caches
 
 
+class TestNativeSetMembersGuard:
+    """Test the SET_MEMBERS feature guard on native set_members forwarding."""
+
+    async def test_native_set_members_skipped_without_feature(self, mock_mass: MagicMock) -> None:
+        """
+        Test that set_members is not called on a player without SET_MEMBERS support.
+
+        Regression test for: NotImplementedError raised from
+        _cleanup_player_memberships when removing a member from a native player
+        whose group membership is managed externally (e.g. a Google Cast group,
+        which never advertises SET_MEMBERS).
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        # a native group-like player WITHOUT SET_MEMBERS in supported_features,
+        # whose set_members behaves like the Player base class (raises)
+        parent = MockPlayer(provider, "cast_group", "Cast Group")
+        parent._attr_group_members = ["cast_group", "member"]
+        parent.set_members = AsyncMock(  # type: ignore[method-assign]
+            side_effect=NotImplementedError(
+                "set_members needs to be implemented when PlayerFeature.SET_MEMBERS is set"
+            )
+        )
+        member = MockPlayer(provider, "member", "Member")
+
+        controller._players = {"cast_group": parent, "member": member}
+        mock_mass.players = controller
+
+        # must complete without raising NotImplementedError
+        await controller._handle_set_members_with_protocols(
+            parent, player_ids_to_add=[], player_ids_to_remove=["member"]
+        )
+        parent.set_members.assert_not_called()
+
+
 class TestGroupUngroup:
     """Test group and ungroup commands."""
 
