@@ -161,28 +161,16 @@ class ChromecastProvider(PlayerProvider):
             if cast_info.cast_type == CAST_TYPE_CHROMECAST
         ]
 
-    async def show_dashboard(
-        self, device_id: str, path: str, remote_id: str, dashboard_code: str
-    ) -> None:
+    async def show_dashboard(self, device_id: str, url: str) -> None:
         """
         Show a Music Assistant dashboard on a Cast display device.
 
         :param device_id: Device ID as returned by `get_dashboard_devices`.
-        :param path: Frontend route to show on the display (e.g. "/party").
-        :param remote_id: Remote access ID the receiver connects to.
-        :param dashboard_code: One-time code the receiver exchanges for a viewer token.
+        :param url: Fully-qualified dashboard URL for the receiver to load.
         """
         chromecast = await self._get_or_create_chromecast(device_id)
         try:
-            await self.mass.loop.run_in_executor(
-                None,
-                send_show_dashboard,
-                chromecast,
-                remote_id,
-                dashboard_code,
-                path,
-                str(self.mass.version),
-            )
+            await self.mass.loop.run_in_executor(None, send_show_dashboard, chromecast, url)
         except TimeoutError as err:
             msg = f"Timed out launching app on {chromecast.name}"
             raise PlayerUnavailableError(

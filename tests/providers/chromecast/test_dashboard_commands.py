@@ -78,27 +78,25 @@ async def test_show_dashboard_raises_for_unknown_device() -> None:
     provider.browser = MagicMock(devices={})
 
     with pytest.raises(PlayerUnavailableError):
-        await provider.show_dashboard(str(uuid4()), "/party", "remote123", "code456")
+        await provider.show_dashboard(str(uuid4()), "https://mass.example.com?path=%2Fparty")
 
 
 async def test_show_dashboard_delegates_to_helper() -> None:
-    """The resolved chromecast is passed to the helper with the remote id, code and path."""
+    """The resolved chromecast and url are forwarded to the helper transport."""
     provider = _make_provider()
 
     device_uuid = uuid4()
     connected_chromecast = MagicMock()
     connected_chromecast.socket_client.is_connected = True
     provider._dashboard_connections = {str(device_uuid): connected_chromecast}
-    provider.mass.version = "2.17.150"
+    url = "https://mass.example.com?path=%2Fparty"
 
     with patch(
         "music_assistant.providers.chromecast.provider.send_show_dashboard"
     ) as mock_send_show_dashboard:
-        await provider.show_dashboard(str(device_uuid), "/party", "remote123", "code456")
+        await provider.show_dashboard(str(device_uuid), url)
 
-    mock_send_show_dashboard.assert_called_once_with(
-        connected_chromecast, "remote123", "code456", "/party", "2.17.150"
-    )
+    mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url)
 
 
 async def test_show_dashboard_wraps_timeout_error() -> None:
@@ -110,7 +108,6 @@ async def test_show_dashboard_wraps_timeout_error() -> None:
     connected_chromecast.socket_client.is_connected = True
     connected_chromecast.name = "Living Room TV"
     provider._dashboard_connections = {str(device_uuid): connected_chromecast}
-    provider.mass.version = "2.17.150"
 
     with (
         patch(
@@ -119,7 +116,7 @@ async def test_show_dashboard_wraps_timeout_error() -> None:
         ),
         pytest.raises(PlayerUnavailableError),
     ):
-        await provider.show_dashboard(str(device_uuid), "/party", "remote123", "code456")
+        await provider.show_dashboard(str(device_uuid), "https://mass.example.com?path=%2Fparty")
 
 
 async def test_hide_dashboard_delegates_to_helper() -> None:

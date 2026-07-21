@@ -26,17 +26,11 @@ def test_send_show_dashboard_happy_path() -> None:
 
     chromecast.socket_client.receiver_controller.launch_app.side_effect = _launch_app
 
-    send_show_dashboard(chromecast, "remote123", "code456", "/party", "2.17.150")
+    send_show_dashboard(chromecast, "https://mass.example.com?path=%2Fparty")
 
     chromecast.socket_client.send_app_message.assert_called_once_with(
         DASHBOARD_NAMESPACE,
-        {
-            "type": "show_dashboard",
-            "remoteId": "remote123",
-            "dashboardCode": "code456",
-            "path": "/party",
-            "serverVersion": "2.17.150",
-        },
+        {"type": "show_dashboard", "url": "https://mass.example.com?path=%2Fparty"},
     )
 
 
@@ -53,7 +47,7 @@ def test_send_show_dashboard_launch_failure_raises() -> None:
     chromecast.socket_client.receiver_controller.launch_app.side_effect = _launch_app
 
     with pytest.raises(TimeoutError):
-        send_show_dashboard(chromecast, "remote123", "code456", "/party", "2.17.150")
+        send_show_dashboard(chromecast, "https://mass.example.com?path=%2Fparty")
 
     chromecast.socket_client.send_app_message.assert_not_called()
 
@@ -87,7 +81,7 @@ def test_send_show_dashboard_namespace_never_appears_raises(
     monkeypatch.setattr("music_assistant.providers.chromecast.helpers.time.sleep", lambda _s: None)
 
     with pytest.raises(TimeoutError):
-        send_show_dashboard(chromecast, "remote123", "code456", "/party", "2.17.150", timeout=5.0)
+        send_show_dashboard(chromecast, "https://mass.example.com?path=%2Fparty", timeout=5.0)
 
     chromecast.socket_client.send_app_message.assert_not_called()
 

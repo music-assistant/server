@@ -34,10 +34,7 @@ DASHBOARD_NAMESPACE_POLL_INTERVAL = 0.1
 
 def send_show_dashboard(
     chromecast: Chromecast,
-    remote_id: str,
-    dashboard_code: str,
-    path: str,
-    server_version: str,
+    url: str,
     timeout: float = 30.0,
 ) -> None:
     """
@@ -46,10 +43,7 @@ def send_show_dashboard(
     Blocking call, run from an executor.
 
     :param chromecast: Connected Chromecast to show the dashboard on.
-    :param remote_id: Remote access ID the receiver connects to.
-    :param dashboard_code: One-time code the receiver exchanges for a viewer token.
-    :param path: Frontend route to show (e.g. "/party").
-    :param server_version: MA server version; the receiver picks the frontend channel from it.
+    :param url: Fully-qualified dashboard URL for the receiver to load.
     :param timeout: Seconds to wait for the app launch and the dashboard namespace.
     :raises TimeoutError: If the receiver app did not launch (in time), or the
         dashboard namespace never became available.
@@ -82,14 +76,7 @@ def send_show_dashboard(
         time.sleep(DASHBOARD_NAMESPACE_POLL_INTERVAL)
 
     chromecast.socket_client.send_app_message(
-        DASHBOARD_NAMESPACE,
-        {
-            "type": "show_dashboard",
-            "remoteId": remote_id,
-            "dashboardCode": dashboard_code,
-            "path": path,
-            "serverVersion": server_version,
-        },
+        DASHBOARD_NAMESPACE, {"type": "show_dashboard", "url": url}
     )
 
 
