@@ -1,17 +1,20 @@
 """Unit tests for the AirPlay stream CLI argument assembly."""
 
+import asyncio
 import logging
+from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.providers.airplay.constants import StreamingProtocol
+from music_assistant.providers.airplay.constants import CONF_ENCRYPTION, StreamingProtocol
 from music_assistant.providers.airplay.stream import AirPlayStream
 
 START_UNIX_MS = 1_750_000_000_000
+AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
 
 
 def _make_player() -> MagicMock:
@@ -26,7 +29,7 @@ def _make_player() -> MagicMock:
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
     player.logger = logging.getLogger("test.airplay.player")
-    player.config.get_value = MagicMock(return_value=None)
+    player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
 
     airplay_info = MagicMock()
     airplay_info.port = 7000
@@ -125,6 +128,21 @@ async def test_cli_args_raop_override() -> None:
     assert "--name" not in args
     assert "--hostname" not in args
     assert "--ptp-shared" not in args
+    assert "--encrypt" in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_raop_encryption_can_be_disabled() -> None:
+    """The legacy encryption preference remains available for incompatible receivers."""
+    player = _make_player()
+    player.protocol_override = StreamingProtocol.RAOP
+    player.config.get_value = MagicMock(
+        side_effect=lambda key, default=None: False if key == CONF_ENCRYPTION else default
+    )
+
+    args = await _build_args(player)
+
+    assert "--encrypt" not in args
 
 
 @pytest.mark.asyncio
@@ -173,12 +191,55 @@ async def test_cli_args_raop_only_device() -> None:
     """A device without an _airplay._tcp service targets the RAOP service, no --txt."""
     player = _make_player()
     player.airplay_discovery_info = None
+    player.protocol = StreamingProtocol.RAOP
     args = await _build_args(player)
 
     assert _arg_value(args, "--protocol") == "auto"
     assert _arg_value(args, "--port") == "5000"
     assert "--txt" not in args
     assert "--name" not in args
+    assert "--encrypt" in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_auto_raop_uses_raop_service_port() -> None:
+    """Auto-selected legacy RAOP targets the RAOP service rather than the AP2 service."""
+    player = _make_player()
+    player.protocol = StreamingProtocol.RAOP
+    player.airplay_discovery_info.decoded_properties["features"] = "0x0"
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--protocol") == "auto"
+    assert _arg_value(args, "--port") == "5000"
+    assert "--name" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_pass_raop_feature_fallback_to_auto_router() -> None:
+    """AP2 bits advertised only on _raop.ft still reach the binary route resolver."""
+    player = _make_player()
+    player.airplay_discovery_info.decoded_properties.pop("features")
+    player.raop_discovery_info.decoded_properties["ft"] = AP2_FEATURES
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--protocol") == "auto"
+    assert _arg_value(args, "--port") == "7000"
+    assert f"ft={AP2_FEATURES}" in _arg_value(args, "--txt")
+
+
+@pytest.mark.asyncio
+async def test_cli_args_featureless_ap2_only_device_forces_airplay2() -> None:
+    """An AP2-only receiver without feature bits cannot fall through to legacy RAOP."""
+    player = _make_player()
+    player.raop_discovery_info = None
+    player.airplay_discovery_info.decoded_properties = {}
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--protocol") == "airplay2"
+    assert _arg_value(args, "--port") == "7000"
 
 
 def test_parse_latency_status() -> None:
@@ -191,6 +252,16 @@ def test_parse_latency_status() -> None:
     assert stream.latency_lead_ms == 1750
     assert stream.device_min_frames == 11025
     assert stream.device_max_frames == 88200
+
+
+def test_temporary_paths_are_unique_per_stream() -> None:
+    """A stopped stream cannot remove replacement stream pipes or artwork."""
+    player = _make_player()
+    first_stream = AirPlayStream(player)
+    second_stream = AirPlayStream(player)
+
+    assert first_stream.commands_pipe.path != second_stream.commands_pipe.path
+    assert first_stream._get_artwork_path(1) != second_stream._get_artwork_path(1)
 
 
 @pytest.mark.asyncio
@@ -223,3 +294,372 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     # The volume resend is still deferred (existing behavior preserved).
     assert player.provider.mass.call_later.call_count == 1
     assert player.provider.mass.call_later.call_args_list[0].args[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_stop_cleans_up_when_stop_command_fails() -> None:
+    """A command-pipe failure cannot skip process and stream cleanup."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.closed = False
+    process.kill = AsyncMock()
+    stream._cli_proc = process
+
+    with (
+        patch.object(
+            stream.commands_pipe,
+            "write",
+            new_callable=AsyncMock,
+            side_effect=OSError("command pipe failed"),
+        ),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
+        pytest.raises(OSError, match="command pipe failed"),
+    ):
+        await stream.stop(force=True)
+
+    assert stream._stopped is True
+    assert stream._cleanup_complete is True
+    remove_pipe.assert_awaited_once()
+    process.kill.assert_awaited_once()
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE,
+        elapsed_time=0,
+        stream=stream,
+    )
+
+
+@pytest.mark.asyncio
+async def test_force_stop_does_not_wait_for_artwork_render() -> None:
+    """Force-stop tears down immediately while remote artwork rendering finishes."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.closed = False
+    process.kill = AsyncMock()
+    stream._cli_proc = process
+    metadata = MagicMock(
+        title="Track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="slow-image",
+    )
+    artwork_started = asyncio.Event()
+    release_artwork = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        artwork_started.set()
+        await release_artwork.wait()
+        return "late.jpg"
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            side_effect=_prepare_artwork,
+        ),
+        patch.object(stream, "_remove_artwork", new_callable=AsyncMock) as remove_artwork,
+    ):
+        metadata_task = asyncio.create_task(stream.send_metadata(0, metadata))
+        await artwork_started.wait()
+        await asyncio.wait_for(stream.stop(force=True), timeout=0.5)
+        release_artwork.set()
+        await metadata_task
+
+    assert stream._cleanup_complete is True
+    process.kill.assert_awaited_once()
+    remove_artwork.assert_awaited_once_with("late.jpg")
+
+
+@pytest.mark.asyncio
+async def test_artwork_removal_is_idempotent() -> None:
+    """Concurrent teardown and render cleanup remove an owned path only once."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    artwork_path = "artwork.jpg"
+    stream._artwork_paths.add(artwork_path)
+    stream._current_artwork_path = artwork_path
+    removal_started = asyncio.Event()
+    release_removal = asyncio.Event()
+
+    async def _remove_file(_artwork_path: str) -> None:
+        removal_started.set()
+        await release_removal.wait()
+
+    with patch(
+        "music_assistant.providers.airplay.stream.remove_file",
+        new_callable=AsyncMock,
+        side_effect=_remove_file,
+    ) as remove_file_mock:
+        first_removal = asyncio.create_task(stream._remove_artwork(artwork_path))
+        await removal_started.wait()
+        await stream._remove_artwork(artwork_path)
+        release_removal.set()
+        await first_removal
+
+    remove_file_mock.assert_awaited_once_with(artwork_path)
+    assert stream._current_artwork_path is None
+
+
+@pytest.mark.asyncio
+async def test_process_eof_cleans_up_artwork() -> None:
+    """A naturally ended CLI stream removes its unique artwork files."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    stream._cli_proc = process
+    artwork_path = "artwork.jpg"
+    stream._artwork_paths.add(artwork_path)
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "[STATUS] eof"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
+        patch(
+            "music_assistant.providers.airplay.stream.remove_file",
+            new_callable=AsyncMock,
+        ) as remove_file_mock,
+    ):
+        await stream._stderr_reader()
+
+    assert stream._stopped is True
+    remove_pipe.assert_awaited_once()
+    remove_file_mock.assert_awaited_once_with(artwork_path)
+
+
+@pytest.mark.asyncio
+async def test_process_eof_during_render_does_not_create_artwork() -> None:
+    """A renderer finishing after EOF cannot recreate an already released path."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    render_started = asyncio.Event()
+    release_render = asyncio.Event()
+
+    async def _get_image_thumb(*_args: Any, **_kwargs: Any) -> bytes:
+        render_started.set()
+        await release_render.wait()
+        return b"jpeg"
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream.get_image_thumb",
+            new_callable=AsyncMock,
+            side_effect=_get_image_thumb,
+        ),
+        patch("music_assistant.providers.airplay.stream.aiofiles.open") as open_file,
+        patch(
+            "music_assistant.providers.airplay.stream.remove_file",
+            new_callable=AsyncMock,
+        ),
+    ):
+        render_task = asyncio.create_task(stream._prepare_artwork("image", 1))
+        await render_started.wait()
+        stream._stopped = True
+        await stream._cleanup_artwork()
+        release_render.set()
+        assert await render_task is None
+
+    open_file.assert_not_called()
+    assert not stream._artwork_paths
+
+
+@pytest.mark.asyncio
+async def test_concurrent_metadata_updates_only_send_latest_artwork() -> None:
+    """An older slow artwork render cannot overwrite a newer track update."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.closed = False
+    stream._cli_proc = process
+    first_render_started = asyncio.Event()
+    release_first_render = asyncio.Event()
+
+    old_metadata = MagicMock(
+        title="Old track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="old-image",
+    )
+    new_metadata = MagicMock(
+        title="New track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="new-image",
+    )
+
+    async def _prepare_artwork(image_url: str, _generation: int) -> str:
+        if image_url == "old-image":
+            first_render_started.set()
+            await release_first_render.wait()
+            return "old.jpg"
+        return "new.jpg"
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            side_effect=_prepare_artwork,
+        ),
+        patch.object(stream, "_remove_artwork", new_callable=AsyncMock) as remove_artwork,
+    ):
+        old_task = asyncio.create_task(stream.send_metadata(0, old_metadata))
+        await first_render_started.wait()
+        new_task = asyncio.create_task(stream.send_metadata(0, new_metadata))
+        await asyncio.sleep(0)
+        assert stream._metadata_generation == 2
+        release_first_render.set()
+        await asyncio.gather(old_task, new_task)
+
+    commands = [call.args[0].decode() for call in write_command.await_args_list]
+    assert any("TITLE=New track" in command for command in commands)
+    assert not any("ARTWORK=old.jpg" in command for command in commands)
+    assert commands[-1] == "ARTWORK=new.jpg\n"
+    remove_artwork.assert_awaited_once_with("old.jpg")
+
+
+@pytest.mark.asyncio
+async def test_metadata_revert_resends_text_after_superseded_artwork() -> None:
+    """Reverting while artwork renders restores the previously displayed track text."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.closed = False
+    stream._cli_proc = process
+    first_metadata = MagicMock(
+        title="First track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url=None,
+    )
+    second_metadata = MagicMock(
+        title="Second track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="second-image",
+    )
+    first_checksum = "First track|Artist|Album|180|None"
+    stream._metadata_checksum = first_checksum
+    stream._metadata_text_checksum = first_checksum
+    stream._pending_metadata_checksum = first_checksum
+    artwork_started = asyncio.Event()
+    release_artwork = asyncio.Event()
+
+    async def _prepare_artwork(_image_url: str, _generation: int) -> str:
+        artwork_started.set()
+        await release_artwork.wait()
+        return "second.jpg"
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            side_effect=_prepare_artwork,
+        ),
+        patch.object(stream, "_remove_artwork", new_callable=AsyncMock),
+    ):
+        second_task = asyncio.create_task(stream.send_metadata(0, second_metadata))
+        await artwork_started.wait()
+        revert_task = asyncio.create_task(stream.send_metadata(0, first_metadata))
+        await asyncio.sleep(0)
+        release_artwork.set()
+        await asyncio.gather(second_task, revert_task)
+
+    metadata_commands = [
+        call.args[0].decode()
+        for call in write_command.await_args_list
+        if "ACTION=SENDMETA" in call.args[0].decode()
+    ]
+    assert "TITLE=Second track" in metadata_commands[0]
+    assert "TITLE=First track" in metadata_commands[-1]
+
+
+@pytest.mark.asyncio
+async def test_repeated_metadata_retries_superseded_artwork() -> None:
+    """A B-to-C-to-B update sequence still applies B artwork after supersession."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.closed = False
+    stream._cli_proc = process
+    initial_checksum = "Initial|Artist|Album|180|initial-image"
+    stream._metadata_checksum = initial_checksum
+    stream._metadata_text_checksum = initial_checksum
+    stream._pending_metadata_checksum = initial_checksum
+    metadata_b = MagicMock(
+        title="Track B",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="b-image",
+    )
+    metadata_c = MagicMock(
+        title="Track C",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="c-image",
+    )
+    first_artwork_started = asyncio.Event()
+    release_first_artwork = asyncio.Event()
+    c_artwork_started = asyncio.Event()
+    release_c_artwork = asyncio.Event()
+    b_render_count = 0
+
+    async def _prepare_artwork(image_url: str, _generation: int) -> str:
+        nonlocal b_render_count
+        if image_url == "b-image":
+            b_render_count += 1
+            if b_render_count == 1:
+                first_artwork_started.set()
+                await release_first_artwork.wait()
+                return "b-stale.jpg"
+            return "b-final.jpg"
+        c_artwork_started.set()
+        await release_c_artwork.wait()
+        return "c.jpg"
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            side_effect=_prepare_artwork,
+        ) as prepare_artwork,
+        patch.object(stream, "_remove_artwork", new_callable=AsyncMock) as remove_artwork,
+    ):
+        first_b_task = asyncio.create_task(stream.send_metadata(0, metadata_b))
+        await first_artwork_started.wait()
+        c_task = asyncio.create_task(stream.send_metadata(0, metadata_c))
+        await c_artwork_started.wait()
+        final_b_task = asyncio.create_task(stream.send_metadata(0, metadata_b))
+        await final_b_task
+        release_first_artwork.set()
+        release_c_artwork.set()
+        await asyncio.gather(first_b_task, c_task)
+
+    rendered_images = [args.args[0] for args in prepare_artwork.await_args_list]
+    commands = [args.args[0].decode() for args in write_command.await_args_list]
+    assert rendered_images == ["b-image", "c-image", "b-image"]
+    assert "ARTWORK=b-stale.jpg\n" not in commands
+    assert "ARTWORK=c.jpg\n" not in commands
+    assert commands[-1] == "ARTWORK=b-final.jpg\n"
+    assert stream._metadata_checksum == "Track B|Artist|Album|180|b-image"
+    remove_artwork.assert_has_awaits(
+        [call("b-stale.jpg"), call("c.jpg")],
+        any_order=True,
+    )

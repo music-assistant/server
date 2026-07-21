@@ -6,12 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_ENCRYPTION,
     CONF_FORCE_RAOP,
     CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
@@ -158,10 +160,89 @@ async def test_start_pairing__pin_decision(flags: bytes, pin_call_expected: bool
 
 
 @pytest.mark.asyncio
+async def test_airplay2_pairing_uses_discovered_ipv4_address() -> None:
+    """HAP pairing falls back to a discovered IPv4 address when playback uses IPv6."""
+    provider = MagicMock()
+    provider.dacp_id = "test_dacp"
+    airplay_info = MagicMock()
+    airplay_info.properties = {b"flags": b"0x80"}
+    airplay_info.port = 7000
+    player = AirPlayPlayer(
+        provider=provider,
+        player_id="test_player",
+        display_name="Test Player",
+        address="2001:db8::10",
+        manufacturer="Apple",
+        model="AppleTV",
+        raop_discovery_info=None,
+        airplay_discovery_info=airplay_info,
+    )
+    pairing_instance = AsyncMock()
+    pairing_instance.start_pairing_session = AsyncMock()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.player.get_primary_ip_address_from_zeroconf",
+            return_value="192.168.1.50",
+        ),
+        patch(
+            "music_assistant.providers.airplay.pairing.AirPlayPairing",
+            return_value=pairing_instance,
+        ) as pairing_cls,
+    ):
+        await player._start_pairing(StreamingProtocol.AIRPLAY2, "AirPlay")
+
+    assert pairing_cls.call_args.kwargs["address"] == "192.168.1.50"
+    pairing_instance.start_pairing_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_airplay2_pairing_fails_without_ipv4_address() -> None:
+    """HAP pairing reports an actionable error when discovery has no IPv4 address."""
+    provider = MagicMock()
+    provider.dacp_id = "test_dacp"
+    airplay_info = MagicMock()
+    airplay_info.properties = {b"flags": b"0x80"}
+    airplay_info.port = 7000
+    player = AirPlayPlayer(
+        provider=provider,
+        player_id="test_player",
+        display_name="Test Player",
+        address="2001:db8::10",
+        manufacturer="Apple",
+        model="AppleTV",
+        raop_discovery_info=None,
+        airplay_discovery_info=airplay_info,
+    )
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.player.get_primary_ip_address_from_zeroconf",
+            return_value="2001:db8::20",
+        ),
+        pytest.raises(PlayerCommandFailed, match="requires an IPv4"),
+    ):
+        await player._start_pairing(StreamingProtocol.AIRPLAY2, "AirPlay")
+
+
+@pytest.mark.asyncio
 async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlayer) -> None:
     """The ignore_volume setting must be offered in the player config entries."""
     entries = await airplay_player.get_config_entries()
     assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_config_entries_preserve_raop_encryption_setting(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """RAOP keeps its advanced encryption toggle with the secure default enabled."""
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_ENCRYPTION)
+
+    assert entry.default_value is True
+    assert entry.hidden is False
+    assert entry.advanced is True
 
 
 @pytest.mark.asyncio
@@ -332,6 +413,25 @@ def test_force_raop_ignored_on_apple_airplay2() -> None:
     _configure_player(player, {CONF_FORCE_RAOP: True})
     assert player.protocol == StreamingProtocol.AIRPLAY2
     assert player.protocol_override is None
+
+
+def test_migrated_force_raop_is_preserved_on_apple_airplay2() -> None:
+    """A migrated legacy RAOP preference remains effective without exposing the toggle."""
+    player = _make_apple_player()
+    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    _configure_player(
+        player,
+        {
+            CONF_FORCE_RAOP: True,
+        },
+    )
+    with patch.object(
+        player.provider.mass.config,
+        "get_raw_player_config_value",
+        return_value=True,
+    ):
+        assert player.protocol == StreamingProtocol.RAOP
+        assert player.protocol_override == StreamingProtocol.RAOP
 
 
 @pytest.mark.parametrize(

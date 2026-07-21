@@ -55,6 +55,7 @@ class AirPlayStreamSession:
         self._audio_source_task: asyncio.Task[None] | None = None
         self._player_ffmpeg: dict[str, FFMpeg] = {}
         self._lock = asyncio.Lock()
+        self._ptp_lock = asyncio.Lock()
         self.start_unix_ms: int = 0
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
@@ -63,6 +64,8 @@ class AirPlayStreamSession:
         # identically to every native AirPlay 2 member (and any late joiner) so a
         # sync group can never mix shared-PTP and NTP members.
         self.use_shared_ptp: bool = False
+        self._shared_ptp_resolved = False
+        self._ptp_degraded_warning_logged = False
         # Raw PCM ring buffer for late joiners. When a late joiner arrives we
         # send this buffer to prime its pipeline so it starts playing quickly
         # instead of waiting for the full pipeline to fill from scratch.
@@ -74,6 +77,12 @@ class AirPlayStreamSession:
 
     async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
         """Initialize stream session for all players."""
+        ap2_members = sum(1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2)
+        if ap2_members:
+            # Resolve the timing source before calculating the audible anchor so
+            # a bounded daemon-readiness wait cannot consume the setup lead.
+            self.use_shared_ptp = await self._resolve_shared_ptp(ap2_members)
+            self._shared_ptp_resolved = True
         cur_time = time.time()
         wait_start = max(p.wait_start for p in self.sync_clients)
         wait_start_seconds = wait_start / 1000
@@ -82,10 +91,6 @@ class AirPlayStreamSession:
         # group start as plain unix epoch milliseconds: every member of the
         # sync group receives the exact same value (--start-unix-ms)
         self.start_unix_ms = int(self.start_time * 1000)
-        # Decide the PTP timing source ONCE for the whole session and apply it to
-        # every member below, so a native AirPlay 2 group never mixes shared-PTP
-        # and NTP members (which drift audibly against each other).
-        self.use_shared_ptp = await self._resolve_shared_ptp()
         await asyncio.gather(
             *[
                 self._start_client(p, self.start_unix_ms, self.use_shared_ptp)
@@ -155,8 +160,9 @@ class AirPlayStreamSession:
         Add a sync client to the session as a late joiner.
 
         Uses the PCM ring buffer to prime the late joiner's pipeline so it
-        starts playing quickly. All work happens under the lock to ensure
-        ``seconds_streamed`` and the buffer are consistent.
+        starts playing quickly. Timing-source readiness is resolved before the
+        session lock; buffer calculations and writes stay under the lock so
+        ``seconds_streamed`` and the buffer remain consistent.
 
         Devices generally cannot honour a start anchor that is in the
         past — they just play whatever the pipe gives them, trailing the
@@ -175,6 +181,7 @@ class AirPlayStreamSession:
            to prime the pipe while cliairplay is still connecting, then add to
            sync_clients so the audio streamer continues seamlessly.
         """
+        await self._resolve_late_joiner_ptp(airplay_player)
         async with self._lock:
             if not self.sync_clients:
                 return
@@ -266,6 +273,13 @@ class AirPlayStreamSession:
             # continues exactly from seconds_streamed where the buffer ended.
             if airplay_player not in self.sync_clients:
                 self.sync_clients.append(airplay_player)
+            if airplay_player.protocol == StreamingProtocol.AIRPLAY2 and not self.use_shared_ptp:
+                ap2_members = sum(
+                    1
+                    for player in self.sync_clients
+                    if player.protocol == StreamingProtocol.AIRPLAY2
+                )
+                self._warn_degraded_shared_ptp(ap2_members)
 
         # Wait for device connection outside the lock.
         if airplay_player.stream:
@@ -284,7 +298,7 @@ class AirPlayStreamSession:
                 )
                 await self.remove_client(airplay_player, reason="late joiner connection timeout")
 
-    async def _resolve_shared_ptp(self) -> bool:
+    async def _resolve_shared_ptp(self, ap2_members: int | None = None) -> bool:
         """
         Decide, once per session, whether members attach to the shared PTP daemon.
 
@@ -292,26 +306,55 @@ class AirPlayStreamSession:
         (bound to 319/320 with its control channel open), not merely spawned, so a
         group start cannot race the daemon and end up mixing PTP and NTP members.
 
+        :param ap2_members: Number of native AirPlay 2 members that will use the
+            decision. Defaults to the current session members.
         :return: True if every native AirPlay 2 member should use the shared PTP
             clock; False to degrade the whole session consistently (no member
             attaches to the daemon).
         """
+        if ap2_members is None:
+            ap2_members = sum(
+                1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2
+            )
+        if not ap2_members:
+            return False
         if await self.prov.wait_ptp_daemon_ready():
             return True
         # Daemon not ready: keep the group coherent by attaching no one to the
         # shared clock. A lone native AP2 player can still self-bind its own PTP
         # with no partner to drift against; only a real multi-room group loses
         # tight sync, so warn just for that case.
-        ap2_members = sum(1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2)
-        if ap2_members > 1:
-            self.prov.logger.warning(
-                "Shared PTP clock daemon not ready - native AirPlay 2 multi-room sync "
-                "for this group of %d players is degraded and members may drift. The "
-                "server likely cannot bind the privileged PTP ports (UDP 319/320); "
-                "running without root or CAP_NET_BIND_SERVICE is the common cause.",
-                ap2_members,
-            )
+        self._warn_degraded_shared_ptp(ap2_members)
         return False
+
+    async def _resolve_late_joiner_ptp(self, airplay_player: AirPlayPlayer) -> None:
+        """Resolve the session timing source before its first late AirPlay 2 join."""
+        if airplay_player.protocol != StreamingProtocol.AIRPLAY2:
+            return
+        async with self._ptp_lock:
+            if self._shared_ptp_resolved:
+                return
+            async with self._lock:
+                ap2_members = sum(
+                    1
+                    for player in self.sync_clients
+                    if player.protocol == StreamingProtocol.AIRPLAY2
+                ) + (airplay_player not in self.sync_clients)
+            self.use_shared_ptp = await self._resolve_shared_ptp(ap2_members)
+            self._shared_ptp_resolved = True
+
+    def _warn_degraded_shared_ptp(self, ap2_members: int) -> None:
+        """Warn once when multiple AirPlay 2 members cannot share the PTP clock."""
+        if ap2_members <= 1 or self._ptp_degraded_warning_logged:
+            return
+        self._ptp_degraded_warning_logged = True
+        self.prov.logger.warning(
+            "Shared PTP clock daemon not ready - native AirPlay 2 multi-room sync "
+            "for this group of %d players is degraded and members may drift. The "
+            "server likely cannot bind the privileged PTP ports (UDP 319/320); "
+            "running without root or CAP_NET_BIND_SERVICE is the common cause.",
+            ap2_members,
+        )
 
     async def _cleanup_after_removal(
         self, airplay_player: AirPlayPlayer, reason: str = "client removed"

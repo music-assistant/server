@@ -26,6 +26,7 @@ CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
 CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
+CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device escape hatch: force the legacy RAOP protocol on an
 # AirPlay-2-capable receiver whose AirPlay 2 implementation misbehaves.
 CONF_FORCE_RAOP: Final[str] = "force_raop"
@@ -63,6 +64,10 @@ CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
 # values from before the unified cliairplay binary, whose different timing model
 # invalidates offsets calibrated against the old implementation.
 CONF_SYNC_ADJUST_RESET_MARKER: Final[str] = "unified_binary_sync_adjust_reset"
+# Legacy protocol preference used only to migrate explicit RAOP selections.
+CONF_LEGACY_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
+CONF_LEGACY_FORCE_RAOP: Final[str] = "legacy_force_raop"
+CONF_PROTOCOL_MIGRATION_MARKER: Final[str] = "unified_binary_protocol_migration"
 
 # AirPlay serves the shared sync-adjust control as a non-advanced (always visible)
 # setting: the binary handles lead/buffer automatically and does not apply

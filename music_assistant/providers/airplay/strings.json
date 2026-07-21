@@ -7,6 +7,10 @@
       "label": "Force RAOP protocol",
       "description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP."
     },
+    "encryption": {
+      "label": "Enable encryption",
+      "description": "Enable encrypted communication with the player, some (3rd party) players require this to be disabled."
+    },
     "password": {
       "label": "Device password",
       "description": "Some devices require a password to connect/play."

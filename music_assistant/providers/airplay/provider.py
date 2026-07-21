@@ -29,7 +29,11 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
+    CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
+    CONF_LEGACY_AIRPLAY_PROTOCOL,
+    CONF_LEGACY_FORCE_RAOP,
+    CONF_PROTOCOL_MIGRATION_MARKER,
     CONF_STORED_VOLUME,
     CONF_SYNC_ADJUST_RESET_MARKER,
     DACP_DISCOVERY_TYPE,
@@ -109,19 +113,31 @@ class AirPlayProvider(PlayerProvider):
             (never started, failed to bind, or not ready within the timeout).
         """
         event = self._ptp_daemon_ready
-        if event is None:
+        daemon = self._ptp_daemon
+        if event is None or daemon is None or daemon.closed or daemon.returncode is not None:
             return False
         if event.is_set():
             return True
-        # No live daemon process to become ready (failed to bind or crashed
-        # without a restart) - don't burn the whole timeout waiting.
-        if self._ptp_daemon is None:
-            return False
+
+        ready_task = asyncio.create_task(event.wait())
+        exit_task = asyncio.create_task(daemon.wait())
         try:
-            await asyncio.wait_for(event.wait(), timeout)
-        except TimeoutError:
-            return False
-        return True
+            done, _ = await asyncio.wait(
+                (ready_task, exit_task),
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            return (
+                ready_task in done
+                and event.is_set()
+                and self._ptp_daemon is daemon
+                and not daemon.closed
+                and daemon.returncode is None
+            )
+        finally:
+            ready_task.cancel()
+            exit_task.cancel()
+            await asyncio.gather(ready_task, exit_task, return_exceptions=True)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -152,8 +168,7 @@ class AirPlayProvider(PlayerProvider):
         )
         await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
 
-        # One-time reset of sync_adjust values calibrated against the old
-        # (pre-unified-binary) AirPlay implementation.
+        self._migrate_protocol_preferences()
         self._migrate_sync_adjust()
 
         # Run one shared PTP clock daemon for the provider lifetime: all native
@@ -369,6 +384,32 @@ class AirPlayProvider(PlayerProvider):
             self.mass.config.set_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
         self.mass.config.set_raw_provider_config_value(
             self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, True
+        )
+
+    def _migrate_protocol_preferences(self) -> None:
+        """Preserve explicit RAOP selections from the legacy protocol setting."""
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, False
+        ):
+            return
+        for raw_conf in list(self.mass.config.get(CONF_PLAYERS, {}).values()):
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not (player_id := raw_conf.get("player_id")):
+                continue
+            legacy_protocol = self.mass.config.get_raw_player_config_value(
+                player_id, CONF_LEGACY_AIRPLAY_PROTOCOL, 0
+            )
+            force_raop = self.mass.config.get_raw_player_config_value(
+                player_id, CONF_FORCE_RAOP, None
+            )
+            if legacy_protocol == StreamingProtocol.RAOP and force_raop is None:
+                self.mass.config.set_raw_player_config_value(player_id, CONF_FORCE_RAOP, True)
+                self.mass.config.set_raw_player_config_value(
+                    player_id, CONF_LEGACY_FORCE_RAOP, True
+                )
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, True
         )
 
     async def _start_ptp_daemon(self) -> None:
