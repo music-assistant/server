@@ -18,7 +18,11 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
+from music_assistant_models.constants import (
+    PLAYER_CONTROL_FAKE,
+    PLAYER_CONTROL_NATIVE,
+    PLAYER_CONTROL_NONE,
+)
 from music_assistant_models.enums import EventType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -27,6 +31,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.player import PlayerSource
 
+from music_assistant.constants import ATTR_PREVIOUS_VOLUME, CONF_MUTE_CONTROL
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
 
@@ -1054,6 +1059,84 @@ class TestVolumeScalingOnRedirect:
             await controller._handle_cmd_volume_set("user_player", 100)
 
         control.volume_set.assert_awaited_once_with(50)
+
+
+class TestFakeMuteControl:
+    """Fake mute must report the muted state and restore the volume on unmute."""
+
+    def _make_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, AsyncMock]:
+        """Build a controller with a single player using fake mute control."""
+
+        def _conf(_player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            if key == CONF_MUTE_CONTROL:
+                return PLAYER_CONTROL_FAKE
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        player.set_initialized()
+        player._attr_volume_level = 40
+        # let the mocked native volume control behave like a real device
+        volume_set = AsyncMock(
+            side_effect=lambda volume: setattr(player, "_attr_volume_level", volume)
+        )
+        player.volume_set = volume_set  # type: ignore[method-assign]
+        player.update_state(signal_event=False)
+        return controller, player, volume_set
+
+    async def test_mute_then_unmute_restores_volume(self, mock_mass: MagicMock) -> None:
+        """Muting reports volume_muted=True and unmuting restores the previous volume."""
+        controller, player, volume_set = self._make_player(mock_mass)
+
+        await controller.cmd_volume_mute("player_1", True)
+        muted_state = player.state
+        assert muted_state.volume_muted is True
+        assert muted_state.volume_level == 0
+        assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
+
+        await controller.cmd_volume_mute("player_1", False)
+        volume_set.assert_awaited_with(40)
+        # simulate the device reporting back its state after the volume command
+        player.update_state()
+        unmuted_state = player.state
+        assert unmuted_state.volume_muted is False
+        assert unmuted_state.volume_level == 40
+
+    async def test_repeated_mute_keeps_previous_volume(self, mock_mass: MagicMock) -> None:
+        """A repeated mute command must not overwrite the stored volume with 0."""
+        controller, player, volume_set = self._make_player(mock_mass)
+
+        await controller.cmd_volume_mute("player_1", True)
+        await controller.cmd_volume_mute("player_1", True)
+        assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
+        assert player.state.volume_muted is True
+
+        await controller.cmd_volume_mute("player_1", False)
+        volume_set.assert_awaited_with(40)
+
+    async def test_volume_set_clears_fake_mute(self, mock_mass: MagicMock) -> None:
+        """A regular volume change while fake muted implies an unmute."""
+        controller, player, _volume_set = self._make_player(mock_mass)
+
+        await controller.cmd_volume_mute("player_1", True)
+        muted_state = player.state
+        assert muted_state.volume_muted is True
+
+        await controller.cmd_volume_set("player_1", 25)
+        # simulate the device reporting back its state after the volume command
+        player.update_state()
+        unmuted_state = player.state
+        assert unmuted_state.volume_muted is False
+        assert unmuted_state.volume_level == 25
 
 
 class TestCurrentMediaTimeUpdates:

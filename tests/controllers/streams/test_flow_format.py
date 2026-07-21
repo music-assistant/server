@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, VolumeNormalizationMode
+from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -211,6 +211,30 @@ async def test_select_flow_pcm_format_uses_f32_when_overlay_active() -> None:
         player, start_streamdetails=streamdetails, overlay_active=True
     )
     assert fmt.bit_depth == 32
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_uses_stereo_f32_for_radio_overlay() -> None:
+    """A mixed radio overlay gets float headroom and a stereo pivot."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=44100, bit_depth=16)
+    streamdetails.media_type = MediaType.RADIO
+    streamdetails.audio_format.channels = 1
+
+    fmt = await audio.select_pcm_format(
+        player,
+        streamdetails,
+        crossfade_enabled=False,
+        overlay_active=True,
+    )
+
+    assert fmt.content_type == ContentType.PCM_F32LE
+    assert fmt.bit_depth == 32
+    assert fmt.channels == 2
 
 
 @pytest.mark.asyncio
