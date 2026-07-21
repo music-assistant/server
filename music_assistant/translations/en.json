@@ -592,7 +592,7 @@
   "core.cache.config_entries.clear_cache_result.label": "The cache has been cleared",
   "core.cache.manifest.description": "Configuration of the core module that handles caching of data across the application",
   "core.cache.manifest.name": "Cache",
-  "core.dashboard.errors.remote_access_required": "Remote access or an https base url is required to cast dashboards",
+  "core.dashboard.errors.remote_access_required": "Remote access or an HTTPS base URL is required to cast dashboards",
   "core.dashboard.manifest.description": "Casts Music Assistant dashboards to display devices.",
   "core.dashboard.manifest.name": "Dashboard",
   "core.discovery.config_entries.upnp_network_scan.description": "Enable additional broadcast-based SSDP discovery. Use this if some UPnP/DLNA devices do not answer regular discovery.",
