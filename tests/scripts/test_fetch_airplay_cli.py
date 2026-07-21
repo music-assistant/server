@@ -120,6 +120,28 @@ def test_fetch_airplay_cli_rejects_manifest_digest_mismatch(
     assert downloads == [f"{fetch_airplay_cli.RELEASE_BASE_URL}/v0.1.0/SHA256SUMS"]
 
 
+def test_read_docker_arg_reports_missing_file(tmp_path: Path) -> None:
+    """Report an unreadable Dockerfile as a clean setup error."""
+    dockerfile = tmp_path / "Dockerfile"
+
+    with pytest.raises(RuntimeError, match=f"Unable to read {dockerfile}"):
+        fetch_airplay_cli._read_docker_arg(dockerfile, "CLIAIRPLAY_VERSION")
+
+
+def test_main_reports_filesystem_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Return a clean failure instead of a traceback for filesystem errors."""
+    monkeypatch.setattr(
+        fetch_airplay_cli,
+        "fetch_airplay_cli",
+        lambda _root: (_ for _ in ()).throw(PermissionError("read-only filesystem")),
+    )
+
+    assert fetch_airplay_cli.main() == 1
+    assert capsys.readouterr().err == "ERROR: read-only filesystem\n"
+
+
 @pytest.mark.parametrize(
     ("system", "machine", "expected"),
     [

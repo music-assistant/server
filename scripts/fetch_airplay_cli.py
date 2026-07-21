@@ -82,7 +82,7 @@ def main() -> int:
     root = Path(__file__).resolve().parent.parent
     try:
         fetch_airplay_cli(root)
-    except RuntimeError as err:
+    except (OSError, RuntimeError) as err:
         print(f"ERROR: {err}", file=sys.stderr)
         return 1
     return 0
@@ -106,11 +106,12 @@ def _asset_name(system: str, machine: str) -> str | None:
 
 def _read_docker_arg(dockerfile: Path, name: str) -> str:
     """Read a pinned build argument from the Dockerfile."""
-    match = re.search(
-        rf"^ARG\s+{re.escape(name)}=(\S+)\s*$",
-        dockerfile.read_text(encoding="utf-8"),
-        flags=re.MULTILINE,
-    )
+    try:
+        content = dockerfile.read_text(encoding="utf-8")
+    except OSError as err:
+        msg = f"Unable to read {dockerfile}: {err}"
+        raise RuntimeError(msg) from err
+    match = re.search(rf"^ARG\s+{re.escape(name)}=(\S+)\s*$", content, flags=re.MULTILINE)
     if match is None:
         msg = f"Unable to find {name} in {dockerfile}"
         raise RuntimeError(msg)
