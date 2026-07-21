@@ -1194,17 +1194,22 @@ async def test_msx_audio_redirect_mode_falls_back_to_proxy(
         mass_mock.streams = Mock()
         mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=RuntimeError("boom"))
         mass_mock.streams.get_stream = Mock(return_value=_async_iter([b"pcm"]))
+        filter_params = ["volume=0.5"]
+        mass_mock.streams.audio.get_player_output_plan.return_value = Mock(
+            filter_params=filter_params
+        )
 
         with patch(
             "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
             return_value=_async_iter([b"encoded-chunk-1"]),
-        ):
+        ) as ffmpeg_stream:
             resp = await client.get(
                 "/msx/audio/msx_test?uri=library://track/1", allow_redirects=False
             )
             assert resp.status == 200
             body = await resp.read()
             assert b"encoded-chunk-1" in body
+            assert ffmpeg_stream.call_args.kwargs["filter_params"] == filter_params
     finally:
         await client.close()
 

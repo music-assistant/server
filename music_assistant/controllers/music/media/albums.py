@@ -408,7 +408,9 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> UniqueList[Album]:
         """Return all versions of an album we can find on all providers."""
         album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        search_query = f"{album.artists[0].name} - {album.name}" if album.artists else album.name
+        streaming_search_query = (
+            f"{album.artists[0].name} - {album.name}" if album.artists else album.name
+        )
         result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
@@ -416,6 +418,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if not self.mass.music.library_supported(provider, MediaType.ALBUM):
                 continue
+            # TODO: filter by artists in db for non-streaming providers
+            search_query = streaming_search_query if provider.is_streaming_provider else album.name
             result.extend(
                 prov_item
                 for prov_item in await self.search(search_query, provider_id)

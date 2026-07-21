@@ -206,14 +206,17 @@ class SqueezelitePlayerProvider(PlayerProvider):
             content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
             media_type=MediaType.FLOW_STREAM,
         )
+        output_plan = self.mass.streams.audio.get_player_output_plan(
+            child_player_id,
+            stream.audio_format,
+            output_format,
+            queue_id=stream.queue_id,
+            session_id=stream.session_id,
+        )
 
         async for chunk in stream.get_stream(
             output_format=output_format,
-            filter_params=self.mass.streams.audio.get_player_filter_params(
-                child_player_id, stream.audio_format, output_format
-            )
-            if child_player_id
-            else None,
+            filter_params=output_plan.filter_params,
         ):
             try:
                 await resp.write(chunk)

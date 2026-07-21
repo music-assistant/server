@@ -297,19 +297,6 @@ class YnisonClient:
     # Send methods
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _message_meta() -> dict[str, Any]:
-        """
-        Return common envelope fields for state-mutating messages.
-
-        Ynison expects string-typed timestamps; integers cause 500 responses.
-        """
-        return {
-            "rid": str(uuid.uuid4()),
-            "player_action_timestamp_ms": str(int(time.time() * 1000)),
-            "activity_interception_type": "DO_NOT_INTERCEPT_BY_DEFAULT",
-        }
-
     async def update_playing_status(
         self,
         progress_ms: int,
@@ -445,6 +432,19 @@ class YnisonClient:
         }
         self._logger.debug("Sending full state: %s", json.dumps(msg)[:500])
         await self._send(msg)
+
+    @staticmethod
+    def _message_meta() -> dict[str, Any]:
+        """
+        Return common envelope fields for state-mutating messages.
+
+        Ynison expects string-typed timestamps; integers cause 500 responses.
+        """
+        return {
+            "rid": str(uuid.uuid4()),
+            "player_action_timestamp_ms": str(int(time.time() * 1000)),
+            "activity_interception_type": "DO_NOT_INTERCEPT_BY_DEFAULT",
+        }
 
     def _classify_state_as_echo(self, incoming_ps: dict[str, Any]) -> bool:
         """

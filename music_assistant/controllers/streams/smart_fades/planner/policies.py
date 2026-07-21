@@ -118,13 +118,9 @@ class AudibleTrimPolicy(Policy):
         """Judge one candidate against the shared per-transition context."""
         plan = candidate.plan
         trim = candidate.metrics.audible_outgoing_trim
-        # the hard rule is vocal-protection-scoped, like the old planner's:
-        # an energy-only kick anchor legitimately trims a long audible outro
-        if (
-            ctx.vocal_out_scoring is not None
-            and plan.crossfade_duration <= self.short_fade_seconds
-            and trim > plan.crossfade_duration
-        ):
+        # missing vocal data must never disable this guard: a stale
+        # pre-vocal-analysis row would otherwise ship a huge, unprotected cut
+        if plan.crossfade_duration <= self.short_fade_seconds and trim > plan.crossfade_duration:
             return Verdict.reject("audible trim exceeds a short fade's own duration")
         return Verdict.ok(trim * self.trim_penalty_per_second)
 

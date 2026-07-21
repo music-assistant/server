@@ -6,17 +6,19 @@ import asyncio
 import base64
 import json
 import socket
+import time
 from contextlib import suppress
 from ipaddress import ip_address
-from typing import cast
+from typing import Final, cast
 
 from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PLAYERS, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import (
     get_ip_pton,
     get_primary_ip_address_from_zeroconf,
@@ -27,21 +29,37 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
+    CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
+    CONF_LEGACY_AIRPLAY_PROTOCOL,
+    CONF_LEGACY_FORCE_RAOP,
+    CONF_PROTOCOL_MIGRATION_MARKER,
     CONF_STORED_VOLUME,
+    CONF_SYNC_ADJUST_RESET_MARKER,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
+    StreamingProtocol,
 )
-from .helpers import convert_airplay_volume, get_model_info
+from .helpers import convert_airplay_volume, get_cli_binary, get_model_info
 from .player import AirPlayPlayer
-from .protocols.airplay2 import AirPlay2Stream
 from .sendspin_bridge import SendspinBridgeManager
 
 # TODO: AirPlay provider
 # Implement Companion protocol for communicating with original Apple (TV) devices
 # This allows for getting state/metadata changes from the device,
 # even if we are not actively streaming to it.
+
+# Marker the `cliairplay --ptp-daemon` process prints once it has bound the
+# privileged PTP ports (UDP 319/320) and opened its control channel. Until this
+# line is seen the daemon is spawned but not yet able to serve shared-clock
+# streams, so a group start before it would race the daemon's readiness.
+PTP_DAEMON_READY_MARKER: Final[str] = "[PTP] daemon up"
+# Bounded wait for the daemon to report readiness before a stream session
+# decides its timing source. Once ready the check returns immediately; only a
+# session that starts while the daemon is still coming up (or never binds) pays
+# any of this, and only up to the moment readiness is signalled.
+PTP_DAEMON_READY_TIMEOUT: Final[float] = 3.0
 
 
 class AirPlayProvider(PlayerProvider):
@@ -50,11 +68,76 @@ class AirPlayProvider(PlayerProvider):
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
+    _ptp_daemon: AsyncProcess | None = None
+    _ptp_daemon_stdout_task: asyncio.Task[None] | None = None
+    _ptp_daemon_started: float = 0.0
+    _ptp_daemon_restarted: bool = False
+    _ptp_daemon_stop_requested: bool = False
+    # Set once the running daemon reports it has bound 319/320 and opened its
+    # control channel; created/cleared per daemon start so a crash+restart
+    # re-gates readiness. None until the daemon is first started.
+    _ptp_daemon_ready: asyncio.Event | None = None
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
         """Return the Sendspin bridge manager."""
         return self._bridge_manager
+
+    @property
+    def ptp_daemon_running(self) -> bool:
+        """
+        Return if the shared PTP clock daemon process is alive.
+
+        This reflects process liveness only (spawned, not closed, still
+        running) for status/diagnostics. The streaming timing decision must use
+        :meth:`wait_ptp_daemon_ready`, which also waits for the daemon to have
+        actually bound its ports and opened its control channel.
+        """
+        return (
+            self._ptp_daemon is not None
+            and not self._ptp_daemon.closed
+            and self._ptp_daemon.returncode is None
+        )
+
+    async def wait_ptp_daemon_ready(self, timeout: float = PTP_DAEMON_READY_TIMEOUT) -> bool:
+        """
+        Wait until the shared PTP clock daemon is ready to serve streams.
+
+        Readiness means the daemon has bound the privileged PTP ports (UDP
+        319/320) and opened its control channel - not merely that the process is
+        alive. A stream session gates its group-wide timing decision on this so
+        it never attaches members to a clock that is not yet serving.
+
+        :param timeout: Maximum seconds to wait for the readiness signal.
+        :return: True if the daemon has signalled readiness, False otherwise
+            (never started, failed to bind, or not ready within the timeout).
+        """
+        event = self._ptp_daemon_ready
+        daemon = self._ptp_daemon
+        if event is None or daemon is None or daemon.closed or daemon.returncode is not None:
+            return False
+        if event.is_set():
+            return True
+
+        ready_task = asyncio.create_task(event.wait())
+        exit_task = asyncio.create_task(daemon.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (ready_task, exit_task),
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            return (
+                ready_task in done
+                and event.is_set()
+                and self._ptp_daemon is daemon
+                and not daemon.closed
+                and daemon.returncode is None
+            )
+        finally:
+            ready_task.cancel()
+            exit_task.cancel()
+            await asyncio.gather(ready_task, exit_task, return_exceptions=True)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -84,6 +167,14 @@ class AirPlayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
+
+        self._migrate_protocol_preferences()
+        self._migrate_sync_adjust()
+
+        # Run one shared PTP clock daemon for the provider lifetime: all native
+        # AirPlay 2 streams attach to it (--ptp-shared) so multi-room sync groups
+        # lock to a single grandmaster while UDP 319/320 is bound only once.
+        await self._start_ptp_daemon()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -128,6 +219,18 @@ class AirPlayProvider(PlayerProvider):
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
             await bridge_manager.close()
+        # terminate the shared PTP clock daemon
+        self._ptp_daemon_stop_requested = True
+        if self._ptp_daemon_ready is not None:
+            self._ptp_daemon_ready.clear()
+        ptp_stdout_task = self._ptp_daemon_stdout_task
+        if ptp_stdout_task and not ptp_stdout_task.done():
+            ptp_stdout_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ptp_stdout_task
+        if self._ptp_daemon and not self._ptp_daemon.closed:
+            await self._ptp_daemon.close()
+        self._ptp_daemon = None
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
@@ -141,10 +244,11 @@ class AirPlayProvider(PlayerProvider):
         for player in self.get_players():
             if not (player.stream and player.stream.running):
                 continue
-            stream_type = "airplay2" if isinstance(player.stream, AirPlay2Stream) else "raop"
+            stream_type = "airplay2" if player.protocol == StreamingProtocol.AIRPLAY2 else "raop"
             streams_by_type[stream_type] = streams_by_type.get(stream_type, 0) + 1
         return {
             "dacp_server_running": self._dacp_server.is_serving(),
+            "ptp_daemon_running": self.ptp_daemon_running,
             "active_streams": sum(streams_by_type.values()),
             "streams_by_type": streams_by_type,
         }
@@ -254,6 +358,157 @@ class AirPlayProvider(PlayerProvider):
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
+
+    def _migrate_sync_adjust(self) -> None:
+        """One-time reset of persisted sync_adjust values on this provider's players."""
+        # The unified cliairplay binary uses a different timing model than the old
+        # implementation, so offsets calibrated against it would now break sync
+        # instead of fixing it. Reset them once; a provider-level marker prevents
+        # wiping adjustments the user makes after the migration.
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, False
+        ):
+            return
+        for raw_conf in list(self.mass.config.get(CONF_PLAYERS, {}).values()):
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not (player_id := raw_conf.get("player_id")):
+                continue
+            stored = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
+            if not stored:
+                continue
+            self.logger.warning(
+                "Resetting sync_adjust of %sms for player %s: the unified AirPlay engine "
+                "uses a different timing model, so corrections calibrated against the old "
+                "implementation no longer apply",
+                stored,
+                player_id,
+            )
+            self.mass.config.set_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, True
+        )
+
+    def _migrate_protocol_preferences(self) -> None:
+        """Preserve explicit RAOP selections from the legacy protocol setting."""
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, False
+        ):
+            return
+        for raw_conf in list(self.mass.config.get(CONF_PLAYERS, {}).values()):
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not (player_id := raw_conf.get("player_id")):
+                continue
+            legacy_protocol = self.mass.config.get_raw_player_config_value(
+                player_id, CONF_LEGACY_AIRPLAY_PROTOCOL, 0
+            )
+            force_raop = self.mass.config.get_raw_player_config_value(
+                player_id, CONF_FORCE_RAOP, None
+            )
+            if legacy_protocol == StreamingProtocol.RAOP and force_raop is None:
+                self.mass.config.set_raw_player_config_value(player_id, CONF_FORCE_RAOP, True)
+                self.mass.config.set_raw_player_config_value(
+                    player_id, CONF_LEGACY_FORCE_RAOP, True
+                )
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, True
+        )
+
+    async def _start_ptp_daemon(self) -> None:
+        """Spawn the shared PTP clock daemon (cliairplay --ptp-daemon)."""
+        try:
+            cli_binary = await get_cli_binary()
+        except RuntimeError as err:
+            self.logger.warning(
+                "cliairplay binary unavailable (%s) - "
+                "PTP timing is degraded, AirPlay 2 streams fall back to NTP",
+                err,
+            )
+            return
+        args = [cli_binary, "--ptp-daemon"]
+        bind_ip = str(self.mass.streams.bind_ip)
+        if bind_ip not in ("0.0.0.0", "::", ""):
+            args += ["--if", bind_ip]
+        daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
+        # (Re)gate readiness for this daemon instance: not ready until a reader
+        # sees the "daemon up" line (a restart clears any previous readiness).
+        if self._ptp_daemon_ready is None:
+            self._ptp_daemon_ready = asyncio.Event()
+        else:
+            self._ptp_daemon_ready.clear()
+        await daemon.start()
+        self._ptp_daemon = daemon
+        self._ptp_daemon_started = time.monotonic()
+        daemon.attach_stderr_reader(self.mass.create_task(self._ptp_daemon_stderr_reader(daemon)))
+        self._ptp_daemon_stdout_task = self.mass.create_task(self._ptp_daemon_stdout_reader(daemon))
+        self.mass.create_task(self._ptp_daemon_monitor(daemon))
+
+    async def _ptp_daemon_stderr_reader(self, daemon: AsyncProcess) -> None:
+        """Forward PTP daemon stderr output to the debug log."""
+        async for line in daemon.iter_stderr():
+            self._handle_ptp_daemon_line(line)
+
+    async def _ptp_daemon_stdout_reader(self, daemon: AsyncProcess) -> None:
+        """Drain (and debug-log) the PTP daemon stdout pipe."""
+        buffer = b""
+        while chunk := await daemon.read(1024):
+            buffer += chunk
+            while b"\n" in buffer:
+                raw_line, buffer = buffer.split(b"\n", 1)
+                if line := raw_line.decode("utf-8", errors="ignore").strip():
+                    self._handle_ptp_daemon_line(line)
+
+    def _handle_ptp_daemon_line(self, line: str) -> None:
+        """Debug-log a PTP daemon output line and detect its readiness signal."""
+        self.logger.debug("PTP daemon: %s", line)
+        # The readiness marker is matched on either pipe: the daemon's diagnostic
+        # output is not contractually stdout-vs-stderr, so both readers feed this
+        # handler and setting the event is idempotent.
+        if (
+            (event := self._ptp_daemon_ready) is not None
+            and not event.is_set()
+            and PTP_DAEMON_READY_MARKER in line
+        ):
+            self.logger.debug("Shared PTP clock daemon reported ready")
+            event.set()
+
+    async def _ptp_daemon_monitor(self, daemon: AsyncProcess) -> None:
+        """Watch the PTP daemon process and restart it once if it crashes."""
+        returncode = await daemon.wait()
+        if self._ptp_daemon_stop_requested or self._ptp_daemon is not daemon:
+            return
+        self._ptp_daemon = None
+        # Crash detected: drop readiness immediately so a session starting during
+        # the restart window degrades consistently instead of attaching to a dead
+        # clock (a restart re-sets it once the new daemon reports ready).
+        if self._ptp_daemon_ready is not None:
+            self._ptp_daemon_ready.clear()
+        runtime = time.monotonic() - self._ptp_daemon_started
+        if runtime < 5:
+            # immediate exit: UDP 319/320 already taken or missing privileges
+            # (root or CAP_NET_BIND_SERVICE) - streams fall back to their
+            # in-process timing engine, so playback keeps working.
+            self.logger.warning(
+                "PTP clock daemon could not start (exit code %s) - PTP timing is degraded. "
+                "Multi-room sync of native AirPlay 2 players may drift; ensure UDP ports "
+                "319/320 are free and run the server as root or grant cliairplay "
+                "CAP_NET_BIND_SERVICE.",
+                returncode,
+            )
+            return
+        if not self._ptp_daemon_restarted:
+            self._ptp_daemon_restarted = True
+            self.logger.warning(
+                "PTP clock daemon stopped unexpectedly (exit code %s) - restarting", returncode
+            )
+            await self._start_ptp_daemon()
+            return
+        self.logger.warning(
+            "PTP clock daemon stopped again (exit code %s) - giving up. "
+            "PTP timing is degraded until the provider is reloaded.",
+            returncode,
+        )
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

@@ -21,6 +21,7 @@ from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
@@ -1562,11 +1563,26 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             pcm_format,
             force_flow_mode=False,
         )
+        output_plan = self.provider.mass.streams.audio.get_player_output_plan(
+            player_id,
+            pcm_format,
+            out_format,
+            queue_id=getattr(media, "source_id", None),
+            session_id=get_media_session_id(media),
+            queue_item_id=getattr(media, "queue_item_id", None),
+        )
 
         response = web.StreamResponse(status=200, headers=headers)
         stream_task: asyncio.Task[None] = asyncio.create_task(
             self._stream_with_prebuffer(
-                request, response, player, headers, audio_source, pcm_format, out_format
+                request,
+                response,
+                player,
+                headers,
+                audio_source,
+                pcm_format,
+                out_format,
+                output_plan.filter_params,
             )
         )
         transport = getattr(request, "transport", None)
@@ -1617,15 +1633,25 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 pcm_format,
                 force_flow_mode=False,
             )
+            output_plan = self.provider.mass.streams.audio.get_player_output_plan(
+                player_id,
+                pcm_format,
+                out_format,
+                queue_id=getattr(media, "source_id", None),
+                session_id=get_media_session_id(media),
+                queue_item_id=getattr(media, "queue_item_id", None),
+            )
             # Create ffmpeg chunk generator
             audio_chunks = get_ffmpeg_stream(
                 audio_input=audio_source,
                 input_format=pcm_format,
                 output_format=out_format,
+                filter_params=output_plan.filter_params,
             )
             shared_stream = await self.provider.get_or_create_shared_stream(
                 group_id, media_uri, audio_chunks
             )
+            shared_stream.output_plan = output_plan
         else:
             # Member but no existing stream - wait briefly for leader
             logger.info(
@@ -1649,6 +1675,21 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 return await self._serve_independent_stream(
                     request, player, media, pcm_format, out_format, headers
                 )
+
+        queue_id = getattr(media, "source_id", None)
+        session_id = get_media_session_id(media)
+        if (
+            shared_stream.output_plan is not None
+            and queue_id is not None
+            and session_id is not None
+        ):
+            self.provider.mass.streams.audio_processing.update_output(
+                player_id,
+                shared_stream.output_plan,
+                queue_id=queue_id,
+                session_id=session_id,
+                queue_item_id=getattr(media, "queue_item_id", None),
+            )
 
         # Subscribe to shared stream
         response = web.StreamResponse(status=200, headers=headers)
@@ -1697,11 +1738,26 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             pcm_format,
             force_flow_mode=False,
         )
+        output_plan = self.provider.mass.streams.audio.get_player_output_plan(
+            player_id,
+            pcm_format,
+            out_format,
+            queue_id=getattr(media, "source_id", None),
+            session_id=get_media_session_id(media),
+            queue_item_id=getattr(media, "queue_item_id", None),
+        )
 
         response = web.StreamResponse(status=200, headers=headers)
         stream_task: asyncio.Task[None] = asyncio.create_task(
             self._stream_with_prebuffer(
-                request, response, player, headers, audio_source, pcm_format, out_format
+                request,
+                response,
+                player,
+                headers,
+                audio_source,
+                pcm_format,
+                out_format,
+                output_plan.filter_params,
             )
         )
         transport = getattr(request, "transport", None)
@@ -1718,6 +1774,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         audio_source: Any,
         pcm_format: AudioFormat,
         out_format: AudioFormat,
+        filter_params: list[str],
     ) -> None:
         """Pre-buffer audio chunks, then send HTTP headers and stream remaining data."""
         player_id = player.player_id
@@ -1729,6 +1786,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                     audio_input=audio_source,
                     input_format=pcm_format,
                     output_format=out_format,
+                    filter_params=filter_params,
                 ):
                     await chunk_queue.put(chunk)
             finally:

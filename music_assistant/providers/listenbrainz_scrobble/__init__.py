@@ -122,6 +122,14 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         # album artist and track number are not available without an extra API call
         # so they won't be scrobbled
 
+        additional_info = {}
+
+        if report.duration:
+            additional_info["duration"] = report.duration
+
+        if report.seconds_played:
+            additional_info["duration_played"] = report.seconds_played
+
         # https://pylistenbrainz.readthedocs.io/en/latest/api_ref.html#class-listen
         return Listen(
             track_name=self.get_name(report),
@@ -131,6 +139,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
             release_mbid=report.album_mbid,
             recording_mbid=report.mbid,
             listening_from="music-assistant",
+            additional_info=additional_info or None,
         )
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:

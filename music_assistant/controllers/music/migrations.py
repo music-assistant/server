@@ -41,6 +41,7 @@ from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
+from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 
 if TYPE_CHECKING:
     import logging
@@ -854,6 +855,42 @@ async def migrate_database(  # noqa: PLR0915
                     "audio analysis row(s)",
                     result.rowcount,
                 )
+
+    if prev_version <= 53:
+        # normalize stored synced lyrics: strip LRC ID tags and expand multi-timestamp
+        # (repeating) lines into one line per timestamp
+        tracks_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_TRACKS})", limit=0
+            )
+        }
+        repaired_lyrics_rows = 0
+        if "metadata" in tracks_columns:
+            # guard against (test) databases with stand-in tables
+            async for db_row in database.iter_items(DB_TABLE_TRACKS):
+                if not db_row["metadata"] or '"lrc_lyrics"' not in db_row["metadata"]:
+                    continue
+                try:
+                    metadata = json_loads(db_row["metadata"])
+                except ValueError:
+                    # corrupt metadata rows are handled elsewhere (diagnostics), skip here
+                    continue
+                lrc_lyrics = metadata.get("lrc_lyrics")
+                if not isinstance(lrc_lyrics, str):
+                    continue
+                normalized = normalize_lrc_lyrics(lrc_lyrics)
+                if normalized == lrc_lyrics:
+                    continue
+                metadata["lrc_lyrics"] = normalized
+                await database.update(
+                    DB_TABLE_TRACKS,
+                    {"item_id": db_row["item_id"]},
+                    {"metadata": serialize_to_json(metadata)},
+                )
+                repaired_lyrics_rows += 1
+        if repaired_lyrics_rows:
+            logger.info("Normalized synced lyrics of %d track(s)", repaired_lyrics_rows)
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

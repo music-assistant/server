@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.media_items import Album
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -193,6 +194,7 @@ def make_track(
     name: str = "Test Track",
     artists: Iterable[str] = (),
     album_year: int | None = None,
+    genres: Iterable[str] = (),
 ) -> MagicMock:
     """
     Return a Track-like MagicMock with the attributes our code reads.
@@ -210,6 +212,8 @@ def make_track(
         with a ``.name`` attribute.
     :param album_year: When given, attaches an Album mock with this year;
         otherwise ``album`` is None.
+    :param genres: Iterable of genre names exposed via ``metadata.genres``;
+        empty leaves ``metadata.genres`` None (matching _track_genres' empty case).
     """
     track = MagicMock()
     track.item_id = item_id
@@ -217,11 +221,15 @@ def make_track(
     track.name = name
     track.artists = [_artist_mock(a) for a in artists]
     if album_year is not None:
-        album = MagicMock()
+        # spec=Album so the rerank's isinstance(track.album, Album) check passes.
+        album = MagicMock(spec=Album)
         album.year = album_year
         track.album = album
     else:
         track.album = None
+    metadata = MagicMock()
+    metadata.genres = list(genres) or None
+    track.metadata = metadata
     mapping = MagicMock()
     mapping.item_id = item_id
     mapping.provider_instance = provider

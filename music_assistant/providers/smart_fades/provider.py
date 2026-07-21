@@ -525,15 +525,16 @@ class SmartFadesProvider(AudioAnalysisProvider):
             model = self._firered_model
             if model is None:
                 raise RuntimeError("FireRed AED model is not loaded")
-            start = time.perf_counter()
+            compute_seconds = 0.0
             chunks = []
             for chunk, core_offset, core_length in split_firered_features(features):
-                chunk_probabilities = await self._run_offloaded(
+                chunk_probabilities, elapsed = await self._run_offloaded_timed(
                     infer_firered_chunk,
                     model,
                     chunk,
                     self._device,
                 )
+                compute_seconds += elapsed
                 chunks.append(chunk_probabilities[core_offset : core_offset + core_length])
             frame_probabilities = (
                 np.concatenate(chunks) if chunks else np.empty((0, 3), dtype=np.float32)
@@ -549,8 +550,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
             ) from err
         self.logger.log(
             VERBOSE_LOG_LEVEL,
-            "FireRed vocal inference: %.1fms over %d frames",
-            (time.perf_counter() - start) * 1000,
+            "FireRed vocal inference: %.1fms compute over %d frames",
+            compute_seconds * 1000,
             len(features),
         )
         return probabilities

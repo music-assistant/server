@@ -507,7 +507,13 @@ async def test_vocal_inference_starts_before_beat_finishes(
             return "C", "major"
         raise AssertionError(f"unexpected offload: {func}")
 
-    with patch.object(provider, "_run_offloaded", side_effect=run_offloaded):
+    async def run_offloaded_timed(func: Callable[..., object], *args: object) -> object:
+        return await run_offloaded(func, *args), 0.0
+
+    with (
+        patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
+        patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed),
+    ):
         beat_key, vocal = await provider._run_final_inference(
             np.zeros((10, 128), dtype=np.float32),
             None,
@@ -536,7 +542,13 @@ async def test_final_inference_cancellation_stops_long_vocal_loop(
         await never_finish.wait()
         raise AssertionError("unreachable")
 
-    with patch.object(provider, "_run_offloaded", side_effect=run_offloaded):
+    async def run_offloaded_timed(func: Callable[..., object], *args: object) -> object:
+        return await run_offloaded(func, *args), 0.0
+
+    with (
+        patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
+        patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed),
+    ):
         task = asyncio.create_task(
             provider._run_final_inference(
                 np.zeros((10, 128), dtype=np.float32),
@@ -575,8 +587,12 @@ async def test_beat_failure_cancels_vocal_inference(
                 raise
         raise AssertionError(f"unexpected offload: {func}")
 
+    async def run_offloaded_timed(func: Callable[..., object], *args: object) -> object:
+        return await run_offloaded(func, *args), 0.0
+
     with (
         patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
+        patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed),
         pytest.raises(AudioAnalysisError, match="no rhythmic beat"),
     ):
         await asyncio.wait_for(
