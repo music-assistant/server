@@ -410,8 +410,6 @@ jobs:
           build-args: |
             MASS_VERSION=${{ inputs.version }}
             BASE_IMAGE_VERSION=${{ needs.validate-and-build.outputs.base_image_version }}
-          secrets: |
-            airplay_cli_token=${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
 
   update-addon-repository:
     name: Update Home Assistant Add-on Repository

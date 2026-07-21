@@ -368,9 +368,9 @@ flag. Binaries are located in the [bin/](bin/) directory and validated on first 
 
 The executables are not stored in this source repository or its Python packages.
 Official Linux container builds download the pinned, architecture-specific asset
-from the private [airplay-cli releases](https://github.com/music-assistant/airplay-cli/releases)
+from the [airplay-cli releases](https://github.com/music-assistant/airplay-cli/releases)
 and verify it against that release's `SHA256SUMS`. For local source development,
-download the matching release asset into `bin/` and make it executable.
+`scripts/setup.sh` downloads and verifies the same pinned asset when it is absent.
 
 ### Binary Communication
 

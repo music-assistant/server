@@ -24,6 +24,9 @@ fi
 echo "Activating virtual environment..."
 source "$env_name/bin/activate"
 
+echo "Preparing AirPlay development binary..."
+python -m scripts.fetch_airplay_cli
+
 echo "Installing development dependencies..."
 uv pip install -e "."
 uv pip install -e ".[test]"

@@ -8,35 +8,17 @@ ARG CLIAIRPLAY_VERSION=v0.1.0
 ARG CLIAIRPLAY_CHECKSUMS_SHA256=95f83ca025e2b132fedc9055bb5202efdbc63839ef29042bf88db6711026cd53
 ARG TARGETARCH
 
-# Download the cliairplay release asset for this image architecture. The private
-# repository token is mounted for this step only and is never stored in a layer.
-RUN --mount=type=secret,id=airplay_cli_token,required=true \
-    set -eu \
+# Download the cliairplay release asset for this image architecture.
+RUN set -eu \
     && case "$TARGETARCH" in \
         amd64) CLIAIRPLAY_ARCH="x86_64" ;; \
         arm64) CLIAIRPLAY_ARCH="aarch64" ;; \
         *) echo "Unsupported cliairplay architecture: $TARGETARCH" >&2; exit 1 ;; \
     esac \
     && CLIAIRPLAY_BINARY="cliairplay-linux-${CLIAIRPLAY_ARCH}" \
-    && GITHUB_TOKEN="$(cat /run/secrets/airplay_cli_token)" \
-    && RELEASE_API_URL="https://api.github.com/repos/music-assistant/airplay-cli/releases" \
-    && wget -q \
-        --header="Authorization: Bearer ${GITHUB_TOKEN}" \
-        --header="Accept: application/vnd.github+json" \
-        --header="X-GitHub-Api-Version: 2022-11-28" \
-        "${RELEASE_API_URL}/tags/${CLIAIRPLAY_VERSION}" \
-        -O /tmp/cliairplay-release.json \
-    && for ASSET in SHA256SUMS "$CLIAIRPLAY_BINARY"; do \
-        ASSET_ID="$(python3 -c \
-            'import json, sys; release = json.load(open(sys.argv[1])); print(next(asset["id"] for asset in release["assets"] if asset["name"] == sys.argv[2]))' \
-            /tmp/cliairplay-release.json "$ASSET")"; \
-        wget -q \
-            --header="Authorization: Bearer ${GITHUB_TOKEN}" \
-            --header="Accept: application/octet-stream" \
-            --header="X-GitHub-Api-Version: 2022-11-28" \
-            "${RELEASE_API_URL}/assets/${ASSET_ID}" \
-            -O "/tmp/${ASSET}"; \
-    done \
+    && RELEASE_URL="https://github.com/music-assistant/airplay-cli/releases/download/${CLIAIRPLAY_VERSION}" \
+    && wget -q "${RELEASE_URL}/SHA256SUMS" -O /tmp/SHA256SUMS \
+    && wget -q "${RELEASE_URL}/${CLIAIRPLAY_BINARY}" -O "/tmp/${CLIAIRPLAY_BINARY}" \
     && echo "${CLIAIRPLAY_CHECKSUMS_SHA256}  /tmp/SHA256SUMS" | sha256sum --check - \
     && mkdir -p /cliairplay \
     && mv "/tmp/${CLIAIRPLAY_BINARY}" "/cliairplay/${CLIAIRPLAY_BINARY}" \
@@ -46,7 +28,7 @@ RUN --mount=type=secret,id=airplay_cli_token,required=true \
     && test "$(wc -l < /tmp/cliairplay.sha256)" -eq 1 \
     && (cd /cliairplay && sha256sum --check /tmp/cliairplay.sha256) \
     && chmod 755 "/cliairplay/${CLIAIRPLAY_BINARY}" \
-    && rm /tmp/SHA256SUMS /tmp/cliairplay-release.json /tmp/cliairplay.sha256
+    && rm /tmp/SHA256SUMS /tmp/cliairplay.sha256
 
 FROM scratch AS cliairplay
 COPY --from=cliairplay-download /cliairplay /cliairplay

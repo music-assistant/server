@@ -173,10 +173,14 @@ async def get_cli_binary() -> str:
 
     :raises RuntimeError: If the binary cannot be found.
     """
+    system = platform.system()
+    architecture = platform.machine()
+    binary_name = _get_cli_binary_name(system, architecture)
+    if binary_name is None:
+        msg = f"Unsupported cliairplay platform: {system.lower()}/{architecture.lower()}"
+        raise RuntimeError(msg)
     base_path = os.path.join(os.path.dirname(__file__), "bin")
-    system = platform.system().lower().replace("darwin", "macos")
-    architecture = platform.machine().lower()
-    binary_path = os.path.join(base_path, f"cliairplay-{system}-{architecture}")
+    binary_path = os.path.join(base_path, binary_name)
 
     try:
         returncode, output = await check_output(binary_path, "--check")
@@ -186,7 +190,7 @@ async def get_cli_binary() -> str:
     except OSError:
         pass
 
-    msg = f"Unable to locate cliairplay binary for {system}/{architecture}"
+    msg = f"Unable to locate {binary_name} for {system.lower()}/{architecture.lower()}"
     raise RuntimeError(msg)
 
 
@@ -253,3 +257,19 @@ def get_final_output_format(
         bit_depth=audio_format.bit_depth,
         channels=audio_format.channels,
     )
+
+
+def _get_cli_binary_name(system: str, machine: str) -> str | None:
+    """Return the cliairplay release asset name for a platform."""
+    normalized_system = system.lower().replace("darwin", "macos")
+    normalized_machine = machine.lower()
+
+    if normalized_machine in ("amd64", "x86_64"):
+        architecture = "x86_64"
+    elif normalized_machine in ("aarch64", "arm64"):
+        architecture = "arm64" if normalized_system == "macos" else "aarch64"
+    else:
+        return None
+    if normalized_system not in ("linux", "macos"):
+        return None
+    return f"cliairplay-{normalized_system}-{architecture}"
