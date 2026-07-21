@@ -931,6 +931,8 @@ async def test_http_proxy_request_does_not_block_receive_loop(mock_certificate: 
         response_data = json.loads(session.data_channel.send.call_args[0][0])
         assert response_data["id"] == "1"
     finally:
+        # Unblock a still-pending fetch so cleanup can't hang on assertion failure
+        release.set()
         session.local_ws.closed = True
         forward_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
