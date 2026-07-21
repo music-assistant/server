@@ -33,6 +33,9 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 logging.getLogger("aioice").setLevel(logging.WARNING)
 logging.getLogger("aiortc").setLevel(logging.WARNING)
 
+# Max concurrent proxied fetches, so a burst of album-art requests stays bounded
+HTTP_PROXY_CONCURRENCY = 6
+
 
 @dataclass
 class WebRTCSession:
@@ -122,6 +125,8 @@ class WebRTCGateway:
 
         self.sessions: dict[str, WebRTCSession] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
+        # gateway-wide by design: normally a single remote client is connected
+        self._http_proxy_semaphore = asyncio.Semaphore(HTTP_PROXY_CONCURRENCY)
         self._signaling_ws: aiohttp.ClientWebSocketResponse | None = None
         self._running = False
         self._reconnect_delay = 10  # Wait 10 seconds before reconnecting
@@ -675,8 +680,12 @@ class WebRTCGateway:
                 try:
                     msg_data = json.loads(message)
                     if isinstance(msg_data, dict) and msg_data.get("type") == "http-proxy-request":
-                        # Handle HTTP proxy request
-                        await self._handle_http_proxy_request(session, msg_data)
+                        # handle off the receive loop so a slow fetch never blocks API traffic
+                        task = asyncio.create_task(
+                            self._handle_http_proxy_request(session, msg_data)
+                        )
+                        self._background_tasks.add(task)
+                        task.add_done_callback(self._background_tasks.discard)
                         continue
                 except json.JSONDecodeError, ValueError:
                     pass
@@ -736,39 +745,40 @@ class WebRTCGateway:
 
         self.logger.debug("HTTP proxy request: %s %s", method, local_http_url)
 
-        try:
-            # Use shared HTTP session for this request
-            async with self.http_session.request(
-                method, local_http_url, headers=headers
-            ) as response:
-                # Read response body
-                body = await response.read()
+        async with self._http_proxy_semaphore:
+            try:
+                # Use shared HTTP session for this request
+                async with self.http_session.request(
+                    method, local_http_url, headers=headers
+                ) as response:
+                    # Read response body
+                    body = await response.read()
 
-                # Prepare response data
-                response_data = {
+                    # Prepare response data
+                    response_data = {
+                        "type": "http-proxy-response",
+                        "id": request_id,
+                        "status": response.status,
+                        "headers": dict(response.headers),
+                        "body": body.hex(),  # Send as hex string to avoid encoding issues
+                    }
+
+                    # Send response back through data channel
+                    if session.data_channel and session.data_channel.readyState == "open":
+                        session.data_channel.send(json.dumps(response_data))
+
+            except Exception as err:
+                self.logger.exception("Error handling HTTP proxy request")
+                # Send error response
+                error_response = {
                     "type": "http-proxy-response",
                     "id": request_id,
-                    "status": response.status,
-                    "headers": dict(response.headers),
-                    "body": body.hex(),  # Send as hex string to avoid encoding issues
+                    "status": 500,
+                    "headers": {"Content-Type": "text/plain"},
+                    "body": str(err).encode().hex(),
                 }
-
-                # Send response back through data channel
                 if session.data_channel and session.data_channel.readyState == "open":
-                    session.data_channel.send(json.dumps(response_data))
-
-        except Exception as err:
-            self.logger.exception("Error handling HTTP proxy request")
-            # Send error response
-            error_response = {
-                "type": "http-proxy-response",
-                "id": request_id,
-                "status": 500,
-                "headers": {"Content-Type": "text/plain"},
-                "body": str(err).encode().hex(),
-            }
-            if session.data_channel and session.data_channel.readyState == "open":
-                session.data_channel.send(json.dumps(error_response))
+                    session.data_channel.send(json.dumps(error_response))
 
     async def _close_session(self, session_id: str) -> None:
         """
