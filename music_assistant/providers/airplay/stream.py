@@ -674,7 +674,6 @@ class AirPlayStream:
                 await self._cli_proc.kill()
         finally:
             await self.commands_pipe.remove()
-            await self._cleanup_artwork()
             self._cleanup_complete = True
             self._cli_proc = None
 

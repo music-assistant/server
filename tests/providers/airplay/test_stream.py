@@ -264,7 +264,6 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
     first_stream = AirPlayStream(player)
     second_stream = AirPlayStream(player)
     assert first_stream.commands_pipe.path != second_stream.commands_pipe.path
-    assert first_stream.commands_pipe.path != second_stream.commands_pipe.path
 
 
 @pytest.mark.asyncio
