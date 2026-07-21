@@ -1,10 +1,11 @@
 """Unit tests for AirPlay provider helpers."""
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from music_assistant.providers.airplay.helpers import (
+    get_cli_binary,
     serialize_txt_records,
     supports_airplay2,
 )
@@ -51,3 +52,36 @@ def test_serialize_txt_records() -> None:
     assert "flags=0x4" in pairs
     assert "deviceid=AA:BB:CC:DD:EE:FF" in pairs
     assert len(pairs) == 3
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "expected_name"),
+    [
+        ("Linux", "arm64", "cliairplay-linux-aarch64"),
+        ("Linux", "amd64", "cliairplay-linux-x86_64"),
+        ("Darwin", "aarch64", "cliairplay-macos-arm64"),
+        ("Darwin", "x86_64", "cliairplay-macos-x86_64"),
+    ],
+)
+async def test_get_cli_binary_uses_release_asset_name(
+    system: str,
+    machine: str,
+    expected_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Resolve platform aliases to the filename installed by development setup.
+
+    The runtime lookup must use the exact release asset name for every supported alias.
+    """
+    check_output = AsyncMock(return_value=(0, b"cliairplay v0.1.0 check"))
+    monkeypatch.setattr("music_assistant.providers.airplay.helpers.platform.system", lambda: system)
+    monkeypatch.setattr(
+        "music_assistant.providers.airplay.helpers.platform.machine", lambda: machine
+    )
+    monkeypatch.setattr("music_assistant.providers.airplay.helpers.check_output", check_output)
+
+    result = await get_cli_binary()
+
+    assert result.endswith(f"/bin/{expected_name}")
+    check_output.assert_awaited_once_with(result, "--check")

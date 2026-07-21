@@ -231,6 +231,35 @@ def test_ptp_daemon_line_handler_tolerates_no_event() -> None:
     prov._handle_ptp_daemon_line(DAEMON_UP_LINE)
 
 
+async def test_ptp_daemon_bind_failure_degrades_without_restart() -> None:
+    """
+    Verify a privileged-port bind failure leaves streams on NTP timing.
+
+    The provider must clear readiness without restarting an immediate bind failure.
+    """
+    prov = _ptp_provider()
+    daemon = MagicMock()
+    daemon.wait = AsyncMock(return_value=2)
+    ready = asyncio.Event()
+    ready.set()
+    prov.logger = MagicMock()
+    prov._ptp_daemon = daemon
+    prov._ptp_daemon_ready = ready
+    prov._ptp_daemon_stop_requested = False
+    prov._ptp_daemon_started = time.monotonic()
+    prov._ptp_daemon_restarted = False
+
+    with patch.object(prov, "_start_ptp_daemon", new_callable=AsyncMock) as restart:
+        await prov._ptp_daemon_monitor(daemon)
+
+    restart.assert_not_awaited()
+    assert not await prov.wait_ptp_daemon_ready(timeout=0)
+    warning = prov.logger.warning
+    warning.assert_called_once()
+    assert warning.call_args.args[1] == 2
+    assert "CAP_NET_BIND_SERVICE" in warning.call_args.args[0]
+
+
 async def test_wait_ptp_daemon_ready_true_when_signalled() -> None:
     """wait_ptp_daemon_ready returns True once readiness has been signalled."""
     prov = _ptp_provider()

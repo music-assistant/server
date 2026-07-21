@@ -69,8 +69,9 @@ airplay/
 ├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
 ├── constants.py         # Constants and enums
 ├── stream.py            # Unified AirPlayStream (RAOP + AirPlay 2) driving cliairplay
-└── bin/                 # Platform-specific CLI binaries
-    └── cliairplay-*     # Unified RAOP + AirPlay 2 streaming binary
+└── bin/                 # Binary documentation and downloaded local artifacts
+    ├── README.md
+    └── cliairplay-*     # Downloaded during container build or local setup; not tracked
 ```
 
 ## Protocol Selection: RAOP vs AirPlay 2
@@ -366,6 +367,12 @@ provider selects it based on:
 The protocol (RAOP or AirPlay 2) is chosen at runtime via the `--protocol`
 flag. Binaries are located in the [bin/](bin/) directory and validated on first use.
 
+The executables are not stored in this source repository or its Python packages.
+Official Linux container builds download the pinned, architecture-specific asset
+from the [airplay-cli releases](https://github.com/music-assistant/airplay-cli/releases)
+and verify it against that release's `SHA256SUMS`. For local source development,
+`scripts/setup.sh` downloads and verifies the same pinned asset when it is absent.
+
 ### Binary Communication
 
 **Input** (stdin):
@@ -422,9 +429,16 @@ whole lifetime (spawned at setup, terminated at unload, restarted once if it
 crashes). Every AirPlay 2-capable stream is started with `--ptp-shared` while
 the daemon runs, attaching it to the daemon's elected clock via shared memory.
 
-If the daemon cannot start (ports taken, no root/`CAP_NET_BIND_SERVICE`), a
-warning is logged and streams fall back to their in-process timing engine -
-playback keeps working but multi-room PTP sync may be degraded.
+The official Music Assistant container runs as root, allowing the daemon to bind
+these ports. A custom container running Music Assistant as a non-root user must
+grant the binary `CAP_NET_BIND_SERVICE` (for example,
+`setcap cap_net_bind_service=+ep <path-to-cliairplay>`) and retain that capability
+in the container's bounding set. UDP 319/320 must also be free on the container's
+network namespace.
+
+If the daemon cannot bind, the binary exits with code 2. The provider logs a
+warning and native AirPlay 2 streams fall back to NTP timing. Playback keeps
+working, but native AirPlay 2 multi-room sync may be degraded.
 
 After connect, the binary reports the effective lead and the device's
 buffering window on stdout (`[STATUS] latency lead_ms=... device_min_frames=...
