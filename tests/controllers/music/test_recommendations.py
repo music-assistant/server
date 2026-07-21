@@ -6,8 +6,9 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
-from music_assistant.controllers.music.recommendations.sources.base import (
-    CallableRecommendationSource,
+from music_assistant.controllers.music.recommendations.library import (
+    LIBRARY_RECOMMENDATIONS,
+    LibraryRecommendation,
 )
 from music_assistant.mass import MusicAssistant
 
@@ -43,18 +44,17 @@ async def test_recommendations_rows_have_no_items(mass: MusicAssistant) -> None:
     assert all(folder.items == [] for folder in folders)
 
 
-async def test_source_descriptor_fields(mass: MusicAssistant) -> None:
-    """A source's descriptor carries the row identity fields without items."""
-    source = CallableRecommendationSource(
-        mass,
+async def test_library_recommendation_folder_fields() -> None:
+    """A library row's folder() carries the row identity fields without items."""
+    rec = LibraryRecommendation(
         item_id="x",
         name="X",
         translation_key="x_key",
         icon="mdi-x",
-        items_factory=lambda: _async_return(_fake_items()),
+        get_items=lambda _mass: _async_return(_fake_items()),
         enabled_by_default=False,
     )
-    folder = source.descriptor()
+    folder = rec.folder()
     assert folder.item_id == "x"
     assert folder.provider == "library"
     assert folder.name == "X"
@@ -178,26 +178,23 @@ async def test_recently_played_always_include_media_types_query(mass: MusicAssis
     assert "track-q" not in result_ids, "non-user-initiated track should be excluded"
 
 
-async def test_register_adds_a_custom_source(mass: MusicAssistant) -> None:
-    """Registering a custom source adds its row and serves its items."""
-    before = len(mass.music.recommendations.sources)
+async def test_library_rows_match_table(mass: MusicAssistant) -> None:
+    """Every LIBRARY_RECOMMENDATIONS entry appears in the rows listing and is routable."""
+    folders = await mass.music.recommendations.get_recommendations()
+    listed = {f.item_id for f in folders if f.provider == "library"}
+    assert {rec.item_id for rec in LIBRARY_RECOMMENDATIONS} <= listed
 
-    source = CallableRecommendationSource(
-        mass,
+
+async def test_library_row_items_served_from_table(mass: MusicAssistant) -> None:
+    """Items for a library row are served through the row's get_items query."""
+    rec = LibraryRecommendation(
         item_id="custom_test_row",
         name="Custom Test Row",
         translation_key="custom_test_key",
         icon="mdi-custom",
-        items_factory=lambda: _async_return(_fake_items()),
+        get_items=lambda _mass: _async_return(_fake_items()),
     )
-    mass.music.recommendations.register(source)
-
-    assert len(mass.music.recommendations.sources) == before + 1
-
-    folders = await mass.music.recommendations.get_recommendations()
-    folder = next(f for f in folders if f.item_id == "custom_test_row")
-    assert folder.name == "Custom Test Row"
-    assert folder.items == []
+    mass.music.recommendations._library_rows_by_id["custom_test_row"] = rec
 
     items = await mass.music.recommendations.get_recommendation_items("library", "custom_test_row")
     assert [item.item_id for item in items] == ["a"]
@@ -209,25 +206,19 @@ async def test_unknown_library_row_returns_empty(mass: MusicAssistant) -> None:
     assert items == []
 
 
-async def test_failing_source_items_isolated(mass: MusicAssistant) -> None:
-    """A source whose items factory raises returns an empty list, not an error."""
+async def test_failing_library_row_items_isolated(mass: MusicAssistant) -> None:
+    """A library row whose items query raises returns an empty list, not an error."""
 
-    async def _boom() -> list[ItemMapping]:
-        raise RuntimeError("source boom")
+    async def _boom(_mass: MusicAssistant) -> list[ItemMapping]:
+        raise RuntimeError("row boom")
 
-    mass.music.recommendations.register(
-        CallableRecommendationSource(
-            mass,
-            item_id="boom_row",
-            name="Boom Row",
-            translation_key="boom_key",
-            icon="mdi-boom",
-            items_factory=_boom,
-        )
+    mass.music.recommendations._library_rows_by_id["boom_row"] = LibraryRecommendation(
+        item_id="boom_row",
+        name="Boom Row",
+        translation_key="boom_key",
+        icon="mdi-boom",
+        get_items=_boom,
     )
-    # the row is still listed (descriptors never touch the items factory)
-    folders = await mass.music.recommendations.get_recommendations()
-    assert "boom_row" in {f.item_id for f in folders}
     items = await mass.music.recommendations.get_recommendation_items("library", "boom_row")
     assert items == []
 

@@ -17,7 +17,7 @@ from music_assistant.controllers.music.constants import (
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
 
-from .sources.defaults import build_default_sources
+from .library import LIBRARY_RECOMMENDATIONS
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import (
@@ -32,17 +32,15 @@ if TYPE_CHECKING:
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.plugin import PluginProvider
 
-    from .sources.base import RecommendationSource
-
 
 class RecommendationsController:
-    """Owns the registry of recommendation sources and serves the recommendations API."""
+    """Serves the recommendations API: default library rows plus provider rows."""
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize the controller and register its api commands."""
         self.mass = mass
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.recommendations")
-        self._sources: list[RecommendationSource] = build_default_sources(mass)
+        self._library_rows_by_id = {rec.item_id: rec for rec in LIBRARY_RECOMMENDATIONS}
         self.mass.register_api_command(
             "music/recommendations",
             self.get_recommendations,
@@ -54,22 +52,13 @@ class RecommendationsController:
             required_scope=Scope.LIBRARY_READ,
         )
 
-    @property
-    def sources(self) -> list[RecommendationSource]:
-        """Return a copy of the registered sources."""
-        return list(self._sources)
-
-    def register(self, source: RecommendationSource) -> None:
-        """Register an additional recommendation source."""
-        self._sources.append(source)
-
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get all available recommendation rows (library + providers, interleaved), without items."""
         providers = self.mass.music._apply_user_provider_filter(
             self.mass.get_providers_supporting_feature(ProviderFeature.RECOMMENDATIONS)
         )
         rows_per_source: list[list[RecommendationFolder]] = [
-            [source.descriptor() for source in self._sources],
+            [rec.folder() for rec in LIBRARY_RECOMMENDATIONS],
             *await asyncio.gather(
                 *[
                     self._provider_rows(
@@ -93,10 +82,10 @@ class RecommendationsController:
         """
         try:
             if provider == "library":
-                source = next((s for s in self._sources if s.item_id == item_id), None)
-                if source is None:
+                library_row = self._library_rows_by_id.get(item_id)
+                if library_row is None:
                     return UniqueList()
-                return UniqueList(await source.get_items())
+                return UniqueList(await library_row.get_items(self.mass))
             prov = self.mass.get_provider(provider)
             # re-apply the user provider filter the rows listing applies, so a user
             # can not fetch items from a music provider an admin has restricted them from

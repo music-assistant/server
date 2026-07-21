@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.media_items import ItemMapping, RecommendationFolder, UniqueList
 
+from music_assistant.controllers.music.recommendations.library import (
+    LIBRARY_RECOMMENDATIONS,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -119,7 +122,7 @@ async def test_rows_interleave_uneven_provider_lengths_no_tail_dropped(
 
     folders = await mass.music.recommendations.get_recommendations()
 
-    builtin_ids = [source.item_id for source in mass.music.recommendations.sources]
+    builtin_ids = [rec.item_id for rec in LIBRARY_RECOMMENDATIONS]
     expected: list[tuple[str, str]] = []
     for i, builtin_id in enumerate(builtin_ids):
         expected.append(("library", builtin_id))
