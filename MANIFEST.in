@@ -2,6 +2,7 @@ include *.txt
 include README.rst
 include LICENSE.md
 graft music_assistant
-recursive-exclude music_assistant/providers/airplay/bin cliairplay-*
+recursive-exclude music_assistant/providers/airplay/bin *
+include music_assistant/providers/airplay/bin/README.md
 recursive-exclude * *.py[co]
 recursive-exclude * *.DS_Store
