@@ -91,21 +91,23 @@ class AirPlayStreamSession:
         # group start as plain unix epoch milliseconds: every member of the
         # sync group receives the exact same value (--start-unix-ms)
         self.start_unix_ms = int(self.start_time * 1000)
-        await asyncio.gather(
-            *[
-                self._start_client(p, self.start_unix_ms, self.use_shared_ptp)
-                for p in self.sync_clients
-            ]
-        )
-        self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
         try:
+            async with asyncio.TaskGroup() as task_group:
+                for player in self.sync_clients:
+                    task_group.create_task(
+                        self._start_client(player, self.start_unix_ms, self.use_shared_ptp)
+                    )
+            self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
             await asyncio.gather(
                 *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
             )
-        except Exception:
+        except asyncio.CancelledError:
+            await self.stop()
+            raise
+        except Exception as err:
             # playback failed to start, cleanup
             await self.stop()
-            raise PlayerCommandFailed("Playback failed to start")
+            raise PlayerCommandFailed("Playback failed to start") from err
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""

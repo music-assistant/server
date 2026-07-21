@@ -132,9 +132,23 @@ class AirPlayStream:
         args = await self._build_cli_args(start_unix_ms, use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
-        await self._cli_proc.start()
-        self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
-        self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
+        try:
+            await self.commands_pipe.create()
+            await self._cli_proc.start()
+            self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
+            self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
+            metadata = self.player.current_media
+            if metadata is None and self.session:
+                metadata = self.session.media
+            if metadata:
+                progress = int(metadata.corrected_elapsed_time or 0)
+                await self.send_metadata(progress, metadata, send_artwork=False)
+        except BaseException:
+            try:
+                await self._cleanup_failed_start()
+            except Exception as err:
+                self.player.logger.warning("Failed to clean up cliairplay startup: %s", err)
+            raise
 
     async def wait_for_connection(self) -> None:
         """Wait for device connection to be established."""
@@ -225,8 +239,19 @@ class AirPlayStream:
             return
         await self._write_cli_command(command)
 
-    async def send_metadata(self, progress: int | None, metadata: PlayerMedia | None) -> None:
-        """Send metadata to player."""
+    async def send_metadata(
+        self,
+        progress: int | None,
+        metadata: PlayerMedia | None,
+        send_artwork: bool = True,
+    ) -> None:
+        """
+        Send metadata to player.
+
+        :param progress: Current playback position in seconds.
+        :param metadata: Media metadata to send.
+        :param send_artwork: Whether artwork should be rendered and sent.
+        """
         metadata_checksum: str | None = None
         duration = 0
         title = ""
@@ -267,13 +292,14 @@ class AirPlayStream:
                 if metadata_generation != self._metadata_generation:
                     return
                 if (
-                    metadata.image_url
+                    send_artwork
+                    and metadata.image_url
                     and needs_artwork
                     and metadata_generation not in self._artwork_render_generations
                 ):
                     self._artwork_render_generations.add(metadata_generation)
                     artwork_url = metadata.image_url
-                elif not metadata.image_url or not needs_artwork:
+                elif not send_artwork or not metadata.image_url or not needs_artwork:
                     self._metadata_checksum = metadata_checksum
             if progress is not None and abs(progress - self._last_progress_sent) >= 2:
                 self._last_progress_sent = progress
@@ -685,6 +711,28 @@ class AirPlayStream:
         """Remove all rendered artwork files owned by this stream."""
         for artwork_path in tuple(self._artwork_paths):
             await self._remove_artwork(artwork_path)
+
+    async def _cleanup_failed_start(self) -> None:
+        """Release all resources owned by a cliairplay process that failed to start."""
+        self._stopping = True
+        self._stopped = True
+        stdout_reader_task = self._stdout_reader_task
+        if stdout_reader_task and not stdout_reader_task.done():
+            stdout_reader_task.cancel()
+            try:
+                await stdout_reader_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as err:
+                self.player.logger.debug("cliairplay stdout reader cleanup failed: %s", err)
+        try:
+            if self._cli_proc and not self._cli_proc.closed:
+                await self._cli_proc.kill()
+        finally:
+            await self.commands_pipe.remove()
+            await self._cleanup_artwork()
+            self._cleanup_complete = True
+            self._cli_proc = None
 
     async def _write_cli_command(self, command: str) -> None:
         """Write an interactive command regardless of stream teardown state."""
