@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -13,7 +14,13 @@ import pytest
 # Use mock enums from conftest
 from music_assistant_models.enums import EventType, PlaybackState
 
-from music_assistant.providers.yandex_smarthome.notifier import StateNotifier
+from music_assistant.providers.yandex_smarthome.notifier import (
+    StateNotifier,
+    _CallbackErrorAlreadyLogged,
+)
+
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
 
 
 @dataclass
@@ -47,6 +54,11 @@ class MockEvent:
 
     event: str
     data: Any = None
+
+
+def _event(event: str, data: Any = None) -> MassEvent:
+    """Build a MockEvent viewed through the real MassEvent type."""
+    return cast("MassEvent", MockEvent(event=event, data=data))
 
 
 def _make_mass(players: list[MockPlayer] | None = None) -> MagicMock:
@@ -135,10 +147,10 @@ class TestStateNotifierLifecycle:
         notifier = _make_notifier(mass=mass)
 
         await notifier.start()
-        unsub = notifier._unsub
+        unsub = cast("MagicMock", notifier._unsub)
         await notifier.stop()
 
-        unsub.assert_called_once()  # type: ignore[union-attr]
+        unsub.assert_called_once()
         assert notifier._unsub is None
         assert notifier._heartbeat_task is None
 
@@ -159,9 +171,9 @@ class TestStateNotifierEvents:
         notifier = _make_notifier(mass=mass)
 
         player = MockPlayer(player_id="p1", playback_state=PlaybackState.PLAYING)
-        event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
+        event = _event(event=EventType.PLAYER_UPDATED, data=player)
 
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        notifier._on_player_event(event)
 
         assert "p1" in notifier._dirty_player_ids
 
@@ -171,9 +183,9 @@ class TestStateNotifierEvents:
         notifier = _make_notifier(mass=mass)
 
         player = MockPlayer(player_id="p1", available=False)
-        event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
+        event = _event(event=EventType.PLAYER_UPDATED, data=player)
 
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        notifier._on_player_event(event)
 
         assert "p1" not in notifier._dirty_player_ids
 
@@ -182,8 +194,8 @@ class TestStateNotifierEvents:
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
-        event = MockEvent(event=EventType.PLAYER_ADDED, data=MockPlayer())
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        event = _event(event=EventType.PLAYER_ADDED, data=MockPlayer())
+        notifier._on_player_event(event)
 
         # Discovery triggers create_task
         mass.create_task.assert_called()
@@ -193,8 +205,8 @@ class TestStateNotifierEvents:
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
-        event = MockEvent(event=EventType.PLAYER_REMOVED, data="p1")
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        event = _event(event=EventType.PLAYER_REMOVED, data="p1")
+        notifier._on_player_event(event)
 
         mass.create_task.assert_called()
 
@@ -203,8 +215,8 @@ class TestStateNotifierEvents:
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
-        event = MockEvent(event=EventType.PLAYER_UPDATED, data=None)
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        event = _event(event=EventType.PLAYER_UPDATED, data=None)
+        notifier._on_player_event(event)
 
         assert len(notifier._dirty_player_ids) == 0
 
@@ -215,8 +227,8 @@ class TestStateNotifierEvents:
         notifier._exposed_ids = {"p2", "p3"}
 
         player = MockPlayer(player_id="p1", playback_state=PlaybackState.PLAYING)
-        event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        event = _event(event=EventType.PLAYER_UPDATED, data=player)
+        notifier._on_player_event(event)
 
         assert "p1" not in notifier._dirty_player_ids
 
@@ -227,8 +239,8 @@ class TestStateNotifierEvents:
         notifier._exposed_ids = {"p1", "p2"}
 
         player = MockPlayer(player_id="p1", playback_state=PlaybackState.PLAYING)
-        event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        event = _event(event=EventType.PLAYER_UPDATED, data=player)
+        notifier._on_player_event(event)
 
         assert "p1" in notifier._dirty_player_ids
 
@@ -238,8 +250,8 @@ class TestStateNotifierEvents:
         notifier = _make_notifier(mass=mass)
 
         child = MockPlayer(player_id="child1", synced_to="grp1")
-        event = MockEvent(event=EventType.PLAYER_UPDATED, data=child)
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        event = _event(event=EventType.PLAYER_UPDATED, data=child)
+        notifier._on_player_event(event)
 
         assert "grp1" in notifier._dirty_player_ids
         assert "child1" not in notifier._dirty_player_ids
@@ -305,8 +317,8 @@ class TestStateNotifierFlush:
         notifier = _make_notifier(mass=mass, session=session)
 
         # Simulate event with transient volume=0
-        event = MockEvent(event=EventType.PLAYER_UPDATED, data=player_event)
-        notifier._on_player_event(event)  # type: ignore[arg-type]
+        event = _event(event=EventType.PLAYER_UPDATED, data=player_event)
+        notifier._on_player_event(event)
 
         # Flush should use live player state (volume=75)
         await notifier._flush_pending()
@@ -396,7 +408,7 @@ class TestStateNotifierCloudPlus:
 
     @pytest.mark.asyncio
     async def test_rejects_http_500(self) -> None:
-        """Non-success status codes should re-queue dirty IDs and raise."""
+        """HTTP 500: re-queue dirty IDs, swallow exception (already logged)."""
         mock_resp = AsyncMock()
         mock_resp.status = 500
         mock_resp.text = AsyncMock(return_value="Internal Server Error")
@@ -414,12 +426,76 @@ class TestStateNotifierCloudPlus:
 
         notifier._dirty_player_ids.add("p1")
 
-        with pytest.raises(RuntimeError, match="State callback failed"):
-            await notifier._flush_pending()
+        # No raise — _send_state_callback's _CallbackErrorAlreadyLogged is
+        # deduped + swallowed here so MA's task scheduler does not re-log
+        # it as "Task exception was never retrieved" on every retry.
+        await notifier._flush_pending()
 
         session.post.assert_called_once()
-        # Player IDs should be re-queued after failure
         assert "p1" in notifier._dirty_player_ids
+
+    @pytest.mark.asyncio
+    async def test_http_5xx_dedupe_warns_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Repeated HTTP 5xx logs WARNING once, then DEBUG on retries."""
+        mock_resp = AsyncMock()
+        mock_resp.status = 500
+        mock_resp.text = AsyncMock(return_value="Internal Server Error")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        session.post.return_value = ctx
+
+        player = MockPlayer(player_id="p1")
+        mass = _make_mass([player])
+        mass.players.get_player = MagicMock(return_value=player)
+        notifier = _make_notifier(mass=mass, session=session)
+
+        caplog.set_level(logging.DEBUG, logger=notifier._logger.name)
+
+        # First failure → WARNING
+        with pytest.raises(_CallbackErrorAlreadyLogged):
+            await notifier._send_state_callback(
+                [MagicMock()]  # devices payload — content irrelevant for this test
+            )
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "HTTP 500" in warnings[0].message
+
+        # Second failure with same fingerprint → DEBUG, no new WARNING
+        caplog.clear()
+        with pytest.raises(_CallbackErrorAlreadyLogged):
+            await notifier._send_state_callback([MagicMock()])
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert warnings == []
+        assert any("still failing" in r.message for r in debugs)
+
+    @pytest.mark.asyncio
+    async def test_recovery_logs_info_and_clears_fingerprint(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A successful callback after a failure logs INFO and resets state."""
+        # Pre-set the fingerprint to simulate prior failure
+        mass = _make_mass()
+        session = MagicMock(spec=aiohttp.ClientSession)
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        session.post.return_value = ctx
+
+        notifier = _make_notifier(mass=mass, session=session)
+        notifier._last_error_fingerprint = "http_500"
+
+        caplog.set_level(logging.INFO, logger=notifier._logger.name)
+        await notifier._send_state_callback([MagicMock()])
+
+        infos = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any("recovered" in r.message for r in infos)
+        assert notifier._last_error_fingerprint is None
 
     @pytest.mark.asyncio
     async def test_discovery_url_cloud_plus(self) -> None:

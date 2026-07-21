@@ -20,6 +20,7 @@ LOCALES = {
     "bg_BG": "Bulgarian",
     "cs_CZ": "Czech",
     "zh_CN": "Chinese",
+    "zh_TW": "Chinese (Traditional)",
     "hr_HR": "Croatian",
     "da_DK": "Danish",
     "de_DE": "German",

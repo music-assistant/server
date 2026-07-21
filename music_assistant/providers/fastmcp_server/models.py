@@ -135,6 +135,22 @@ class QueueBrief:
 
 
 @dataclass
+class RemoveFromQueueResult:
+    """
+    Per-item outcome of a ``remove_item`` call.
+
+    Every requested ``item_id`` lands in exactly one bucket, so the caller
+    always learns the fate of the full batch — including rows deleted before
+    a later id turned out to be stale.
+    """
+
+    removed: list[str] = field(default_factory=list)
+    skipped_played: list[str] = field(default_factory=list)
+    skipped_buffered: list[str] = field(default_factory=list)
+    not_found: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AddToQueueResult:
     """Confirmation of a successful ``add_to_queue`` call."""
 

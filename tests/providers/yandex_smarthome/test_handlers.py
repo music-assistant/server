@@ -19,7 +19,10 @@ from music_assistant.providers.yandex_smarthome.handlers import (
     handle_user_unlink,
     parse_action_payload,
 )
-from music_assistant.providers.yandex_smarthome.schema import DeviceListPayload
+from music_assistant.providers.yandex_smarthome.schema import (
+    DeviceListPayload,
+    YandexCapabilityType,
+)
 
 
 @dataclass
@@ -61,6 +64,7 @@ def _make_mass(players: list[MockPlayer]) -> MagicMock:
     mass.players.cmd_power = AsyncMock()
     mass.players.cmd_volume_set = AsyncMock()
     mass.players.cmd_volume_mute = AsyncMock()
+    mass.player_queues.play_media = AsyncMock()
     return mass
 
 
@@ -116,6 +120,26 @@ class TestHandleDeviceList:
         result = await handle_device_list(mass, "user1")
         assert len(result.devices) == 1
         assert result.devices[0].id == "leader"
+
+    @pytest.mark.asyncio
+    async def test_playlist_uris_register_mode_capability(self) -> None:
+        """Players without native sources get mode(input_source) when playlists are configured."""
+        players = [MockPlayer(player_id="p1")]
+        mass = _make_mass(players)
+        result = await handle_device_list(
+            mass,
+            "user1",
+            playlist_uris=("library://playlist/a", "library://playlist/b"),
+        )
+        assert len(result.devices) == 1
+        mode_caps = [
+            c for c in result.devices[0].capabilities if c.type == YandexCapabilityType.MODE
+        ]
+        assert len(mode_caps) == 1
+        assert mode_caps[0].parameters is not None
+        modes = mode_caps[0].parameters.modes
+        assert modes is not None
+        assert [m.value for m in modes] == ["one", "two"]
 
     @pytest.mark.asyncio
     async def test_filters_by_exposed_ids(self) -> None:
