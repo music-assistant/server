@@ -36,9 +36,18 @@ COPY --from=cliairplay-download /cliairplay /cliairplay
 # Builder image. It builds the venv that will be copied to the final image
 #
 FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS builder
+ARG TARGETARCH
 
 ADD dist dist
 COPY requirements_all.txt .
+
+# miniaudio has no Linux arm64 wheels, so pyatv requires a source build there.
+# The compiler stays in this disposable builder stage and is not copied to the final image.
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends gcc g++ && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # ensure UV is installed
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
