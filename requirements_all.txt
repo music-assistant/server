@@ -89,7 +89,6 @@ snapcast==2.3.8
 soco==0.31.1
 soundcloudpy==0.1.4
 sounddevice==0.5.5
-srptools>=1.0.1
 sxm==0.2.8
 threadpoolctl==3.6.0
 torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
