@@ -1,8 +1,5 @@
 {
   "config_entries": {
-    "BROKEN_AIRPLAY": {
-      "label": "This player is known to have broken AirPlay support. Playback may fail or simply be silent. There is no workaround for this issue at the moment. \nIf you already enforced AirPlay 2 on the player and it remains silent, this is one of the known broken models. Only remedy is to nag the manufacturer for a fix."
-    },
     "force_raop": {
       "label": "Force RAOP protocol",
       "description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP."

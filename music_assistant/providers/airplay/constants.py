@@ -6,8 +6,7 @@ from dataclasses import replace
 from enum import IntEnum
 from typing import Final
 
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
+from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, INTERNAL_PCM_FORMAT
@@ -101,19 +100,6 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
 # native flow only). At 24-bit the cliairplay binary expects raw s32le on stdin
 # and truncates to 24-bit ALAC internally.
 AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
-
-BROKEN_AIRPLAY_MODELS = (
-    # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
-    # Samsung will work with AirPlay2 once PTP timing is implemented for the MA build
-    ("Samsung", "*"),
-)
-
-BROKEN_AIRPLAY_WARN = ConfigEntry(
-    key="BROKEN_AIRPLAY",
-    type=ConfigEntryType.ALERT,
-    default_value=None,
-    required=False,
-)
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,

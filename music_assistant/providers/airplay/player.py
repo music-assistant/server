@@ -32,7 +32,6 @@ from .constants import (
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_RAOP_SETUP_LEAD_MS,
     BASE_PLAYER_FEATURES,
-    BROKEN_AIRPLAY_WARN,
     CONF_ACTION_FINISH_PAIRING,
     CONF_ACTION_RESET_PAIRING,
     CONF_ACTION_START_PAIRING,
@@ -58,7 +57,6 @@ from .constants import (
 )
 from .helpers import (
     is_apple_device,
-    is_broken_airplay_model,
     player_id_to_mac_address,
     supports_airplay2,
 )
@@ -115,7 +113,7 @@ class AirPlayPlayer(Player):
         self._attr_device_info.add_identifier(IdentifierType.AIRPLAY_ID, player_id)
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
-        self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
+        self._attr_enabled_by_default = True
 
         # Set player type based on manufacturer/model:
         # - Apple devices (HomePod, Apple TV) have native AirPlay support -> PLAYER
@@ -302,9 +300,6 @@ class AirPlayPlayer(Player):
                 advanced=True,
             ),
         ]
-
-        if is_broken_airplay_model(self.device_info.manufacturer, self.device_info.model):
-            base_entries.insert(-1, BROKEN_AIRPLAY_WARN)
 
         return base_entries
 

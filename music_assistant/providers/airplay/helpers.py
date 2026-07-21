@@ -13,7 +13,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import get_source_ip_for_target
-from music_assistant.providers.airplay.constants import BROKEN_AIRPLAY_MODELS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -120,14 +119,6 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
         return ("Apple", f"Mac ({model})")
 
     return (manufacturer or "AirPlay", model)
-
-
-def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
-    """Check if a model is known to have broken AirPlay support."""
-    for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
-        if broken_manufacturer in (manufacturer, "*") and broken_model in (model, "*"):
-            return True
-    return False
 
 
 def supports_airplay2(features_value: str | None) -> bool:
