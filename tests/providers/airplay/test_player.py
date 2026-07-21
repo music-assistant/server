@@ -1,11 +1,14 @@
 """Unit tests for AirPlay player."""
 
+import asyncio
 import time
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_SYNC_ADJUST
@@ -458,6 +461,268 @@ def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
     queue_item.streamdetails.audio_format.sample_rate = 88200
     fmt = airplay_player._get_session_pcm_format([hires_client], media)
     assert fmt.sample_rate == 44100
+
+
+@pytest.mark.asyncio
+async def test_start_stream_waits_for_previous_session_teardown(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A replacement cannot start until the previous session has released the player."""
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    events: list[str] = []
+
+    async def remove_previous(*_args: object, **_kwargs: object) -> None:
+        events.append("remove-start")
+        cleanup_started.set()
+        await release_cleanup.wait()
+        events.append("remove-end")
+
+    async def stop_previous(*_args: object, **_kwargs: object) -> None:
+        events.append("stop-previous")
+
+    async def start_replacement(*_args: object, **_kwargs: object) -> None:
+        events.append("start-replacement")
+
+    previous_session = MagicMock()
+    previous_session.remove_client = AsyncMock(side_effect=remove_previous)
+    previous_stream = MagicMock()
+    previous_stream.session = previous_session
+    previous_stream.stop = AsyncMock(side_effect=stop_previous)
+    replacement_stream = MagicMock()
+    replacement_stream.session = object()
+    replacement_stream.start = AsyncMock(side_effect=start_replacement)
+    replacement_stream.stop = AsyncMock()
+    airplay_player.stream = previous_stream
+
+    start_task = asyncio.create_task(
+        airplay_player.start_stream(replacement_stream, 1_750_000_000_000)
+    )
+    await cleanup_started.wait()
+    replacement_stream.start.assert_not_awaited()
+    release_cleanup.set()
+    await start_task
+
+    assert events == ["remove-start", "remove-end", "stop-previous", "start-replacement"]
+    assert airplay_player.stream is replacement_stream
+
+
+@pytest.mark.asyncio
+async def test_latest_stream_reservation_wins_across_sessions(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An older delayed request cannot replace a newer completed request."""
+    older_stream = MagicMock()
+    older_stream.session = object()
+    older_stream.stop = AsyncMock()
+    newer_stream = MagicMock()
+    newer_stream.session = object()
+    newer_stream.stop = AsyncMock()
+    older_generation = airplay_player.reserve_stream_generation()
+    newer_generation = airplay_player.reserve_stream_generation()
+
+    async with airplay_player.stream_replacement(
+        newer_stream,
+        expected_generation=newer_generation,
+    ):
+        pass
+
+    with pytest.raises(PlayerCommandFailed):
+        async with airplay_player.stream_replacement(
+            older_stream,
+            expected_generation=older_generation,
+        ):
+            pass
+
+    newer_stream.stop.assert_not_awaited()
+    assert airplay_player.stream is newer_stream
+
+
+@pytest.mark.asyncio
+async def test_stop_invalidates_queued_stream_replacement(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A replacement queued before stop cannot publish after stop completes."""
+    current_stream = MagicMock()
+    current_stream.session = None
+    current_stream.stop = AsyncMock()
+    replacement_stream = MagicMock()
+    replacement_stream.session = None
+    replacement_stream.start = AsyncMock()
+    replacement_stream.stop = AsyncMock()
+    airplay_player.stream = current_stream
+    provider = cast("Any", airplay_player.provider)
+    provider.bridge_manager.stop_streaming = AsyncMock(return_value=False)
+
+    await airplay_player._stream_lock.acquire()
+    try:
+        replacement_task = asyncio.create_task(
+            airplay_player.start_stream(replacement_stream, 1_750_000_000_000)
+        )
+        await asyncio.sleep(0)
+        stop_task = asyncio.create_task(airplay_player.stop())
+        await asyncio.sleep(0)
+    finally:
+        airplay_player._stream_lock.release()
+
+    with pytest.raises(PlayerCommandFailed):
+        await replacement_task
+    await stop_task
+
+    replacement_stream.start.assert_not_awaited()
+    current_stream.stop.assert_awaited_once_with(force=True)
+    assert airplay_player.stream is None
+
+
+@pytest.mark.asyncio
+async def test_stop_invalidates_bridge_alongside_stream_session(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Stopping a session stream also invalidates any pending bridge generation."""
+    stream_session = MagicMock()
+    stream_session.stop = AsyncMock()
+    stream = MagicMock()
+    stream.session = stream_session
+    airplay_player.stream = stream
+    provider = cast("Any", airplay_player.provider)
+    provider.bridge_manager.stop_streaming = AsyncMock(return_value=True)
+
+    await airplay_player.stop()
+
+    provider.bridge_manager.stop_streaming.assert_awaited_once_with(airplay_player.player_id)
+    stream_session.stop.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_unload_invalidates_queued_stream_replacement(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A stream queued before unload cannot publish after the player is gone."""
+    replacement_stream = MagicMock()
+    replacement_stream.session = None
+    replacement_stream.start = AsyncMock()
+    replacement_stream.stop = AsyncMock()
+    provider = cast("Any", airplay_player.provider)
+    provider.bridge_manager.stop_streaming = AsyncMock(return_value=False)
+
+    await airplay_player._stream_lock.acquire()
+    try:
+        replacement_task = asyncio.create_task(
+            airplay_player.start_stream(replacement_stream, 1_750_000_000_000)
+        )
+        await asyncio.sleep(0)
+        unload_task = asyncio.create_task(airplay_player.on_unload())
+        await asyncio.sleep(0)
+    finally:
+        airplay_player._stream_lock.release()
+
+    with pytest.raises(PlayerCommandFailed):
+        await replacement_task
+    await unload_task
+
+    replacement_stream.start.assert_not_awaited()
+    assert airplay_player.stream is None
+    assert airplay_player._unloading is True
+
+
+@pytest.mark.asyncio
+async def test_failed_live_add_does_not_commit_group_membership(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Group membership is committed only after the child joins the live session."""
+    child = MagicMock()
+    child.player_id = "child"
+    child.reserve_stream_generation.return_value = 1
+    child.is_stream_generation_current.return_value = True
+    child.stop_stream_for_grouping = AsyncMock(return_value=False)
+    stream_session = MagicMock()
+    stream_session.sync_clients = []
+    stream_session.add_client = AsyncMock(return_value=False)
+    stream = MagicMock()
+    stream.session = stream_session
+    airplay_player.stream = stream
+    airplay_player.mass.players.get_player.return_value = child  # type: ignore[attr-defined]
+
+    with patch.object(
+        AirPlayPlayer,
+        "synced_to",
+        new_callable=PropertyMock,
+        return_value=None,
+    ):
+        await airplay_player.set_members(player_ids_to_add=[child.player_id])
+
+    assert child.player_id not in airplay_player.group_members
+
+
+@pytest.mark.asyncio
+async def test_superseded_live_add_does_not_commit_group_membership(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A newer child reservation prevents an older successful add from committing."""
+    child = MagicMock()
+    child.player_id = "child"
+    child._stream_generation = 0
+    child._stream_stopping = False
+    child.reserve_stream_generation = AirPlayPlayer.reserve_stream_generation.__get__(
+        child, AirPlayPlayer
+    )
+    child.is_stream_generation_current = AirPlayPlayer.is_stream_generation_current.__get__(
+        child, AirPlayPlayer
+    )
+
+    async def add_client(*_args: Any, **_kwargs: Any) -> bool:
+        child.reserve_stream_generation()
+        return True
+
+    stream_session = MagicMock()
+    stream_session.sync_clients = []
+    stream_session.add_client = AsyncMock(side_effect=add_client)
+    stream = MagicMock()
+    stream.session = stream_session
+    airplay_player.stream = stream
+    airplay_player.mass.players.get_player.return_value = child  # type: ignore[attr-defined]
+
+    with patch.object(
+        AirPlayPlayer,
+        "synced_to",
+        new_callable=PropertyMock,
+        return_value=None,
+    ):
+        await airplay_player.set_members(player_ids_to_add=[child.player_id])
+
+    assert child.player_id not in airplay_player.group_members
+
+
+@pytest.mark.asyncio
+async def test_cancelled_live_remove_commits_group_membership_change(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Completed transport removal updates group state before cancellation propagates."""
+    child = MagicMock()
+    child.player_id = "child"
+    stream_session = MagicMock()
+    stream_session.sync_clients = [airplay_player, child]
+    stream_session.remove_client = AsyncMock(side_effect=asyncio.CancelledError)
+    stream = MagicMock()
+    stream.session = stream_session
+    airplay_player.stream = stream
+    airplay_player._attr_group_members = [airplay_player.player_id, child.player_id]
+    airplay_player.mass.players.get_player.side_effect = (  # type: ignore[attr-defined]
+        lambda player_id: child if player_id == child.player_id else airplay_player
+    )
+
+    with (
+        patch.object(
+            AirPlayPlayer,
+            "synced_to",
+            new_callable=PropertyMock,
+            return_value=None,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await airplay_player.set_members(player_ids_to_remove=[child.player_id])
+
+    assert child.player_id not in airplay_player.group_members
 
 
 # --- Volume and Mute tests ---

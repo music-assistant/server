@@ -249,6 +249,8 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
     session = _make_ptp_session(prov, players)
+    for player in players:
+        session._player_streams[player.player_id] = player.stream
 
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,

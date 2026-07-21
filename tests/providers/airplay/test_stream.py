@@ -1,8 +1,9 @@
 """Unit tests for the AirPlay stream CLI argument assembly."""
 
+import asyncio
 import logging
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -223,3 +224,80 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     # The volume resend is still deferred (existing behavior preserved).
     assert player.provider.mass.call_later.call_count == 1
     assert player.provider.mass.call_later.call_args_list[0].args[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_start_cancellation_kills_spawned_process() -> None:
+    """Cancelling process startup must wait for the child and then kill it."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process_spawned = asyncio.Event()
+    release_start = asyncio.Event()
+
+    async def start_process() -> None:
+        process_spawned.set()
+        await release_start.wait()
+
+    cli_proc = MagicMock()
+    cli_proc.closed = False
+    cli_proc.start = AsyncMock(side_effect=start_process)
+    cli_proc.kill = AsyncMock()
+
+    with (
+        patch.object(stream, "_build_cli_args", new=AsyncMock(return_value=["cliairplay"])),
+        patch(
+            "music_assistant.providers.airplay.stream.AsyncProcess",
+            return_value=cli_proc,
+        ),
+    ):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS))
+        await process_spawned.wait()
+        start_task.cancel()
+        await asyncio.sleep(0)
+        release_start.set()
+        with pytest.raises(asyncio.CancelledError):
+            await start_task
+
+    cli_proc.kill.assert_awaited_once_with()
+    assert stream._cli_proc is None
+    assert stream.running is False
+    assert stream.connected is False
+
+
+@pytest.mark.asyncio
+async def test_force_stop_escalates_pending_graceful_stop() -> None:
+    """A forceful teardown kills a process even when graceful stop already started."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stop_command_started = asyncio.Event()
+    release_stop_command = asyncio.Event()
+    process_killed = asyncio.Event()
+
+    async def send_stop_command(_command: str) -> None:
+        stop_command_started.set()
+        await release_stop_command.wait()
+
+    async def kill_process() -> None:
+        cli_proc.closed = True
+        process_killed.set()
+
+    cli_proc = MagicMock()
+    cli_proc.closed = False
+    cli_proc.kill = AsyncMock(side_effect=kill_process)
+    cli_proc.close = AsyncMock()
+    stream._cli_proc = cli_proc
+
+    with (
+        patch.object(stream, "send_cli_command", side_effect=send_stop_command),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        graceful_stop = asyncio.create_task(stream.stop())
+        await stop_command_started.wait()
+        force_stop = asyncio.create_task(stream.stop(force=True))
+        await process_killed.wait()
+        release_stop_command.set()
+        await asyncio.gather(graceful_stop, force_stop)
+
+    assert cli_proc.kill.await_count >= 1
+    cli_proc.close.assert_not_awaited()
+    assert stream._cli_proc is None

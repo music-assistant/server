@@ -12,8 +12,11 @@ tests are deterministic and independent of the host wall-clock:
   time so a late-join catch-up backlog is not dumped into the CLI.
 """
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
 
@@ -157,6 +160,7 @@ def _make_bridge(clock_now_us: int, wait_start_ms: int = AP2_LEAD_MS) -> Sendspi
     airplay_player.player_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
     airplay_player.wait_start = wait_start_ms
+    airplay_player.stream = None
     sendspin_server = MagicMock()
     sendspin_server.clock = ManualClock(now_us_value=clock_now_us)
     bridge = SendspinAirPlayBridge(provider, airplay_player, sendspin_server)
@@ -243,3 +247,237 @@ def test_late_join_backlog_trips_pacing_bound_but_steady_feed_does_not() -> None
         start_unix_ms, 3 * BRIDGE_BYTES_PER_SECOND, BRIDGE_BYTES_PER_SECOND, now
     )
     assert steady_ahead < MAX_DEVICE_BUFFER_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_awaits_writer_and_stream_teardown() -> None:
+    """Bridge teardown does not return while its writer or AirPlay stream remains active."""
+    bridge = _make_bridge(SENDSPIN_EPOCH_US)
+    writer_cancelled = asyncio.Event()
+
+    async def writer() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            writer_cancelled.set()
+
+    async def stop_stream(*_args: Any, **_kwargs: Any) -> None:
+        assert bridge.airplay_player.stream is stream
+
+    writer_task = asyncio.create_task(writer())
+    stream = MagicMock()
+    stream.stop = AsyncMock(side_effect=stop_stream)
+    bridge_state = cast("Any", bridge)
+    bridge_state._writer_task = writer_task
+    bridge_state._airplay_stream = stream
+    bridge.airplay_player.stream = stream
+
+    with patch.object(bridge.mass, "create_task", side_effect=asyncio.create_task):
+        await bridge.stop_streaming()
+
+    assert writer_cancelled.is_set()
+    assert writer_task.done()
+    stream.stop.assert_awaited_once_with(force=True)
+    assert bridge_state._writer_task is None
+    assert bridge_state._airplay_stream is None
+    assert bridge.airplay_player.stream is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_cancel_replacement_writer() -> None:
+    """A cleanup only tears down the bridge generation it captured."""
+    bridge = _make_bridge(SENDSPIN_EPOCH_US)
+    bridge_state = cast("Any", bridge)
+    start_cancelled = asyncio.Event()
+    release_start = asyncio.Event()
+
+    async def old_start() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            start_cancelled.set()
+            await release_start.wait()
+            raise
+
+    async def writer() -> None:
+        await asyncio.Event().wait()
+
+    old_start_task = asyncio.create_task(old_start())
+    old_writer_task = asyncio.create_task(writer())
+    old_stream = MagicMock()
+    old_stream.stop = AsyncMock()
+    bridge_state._airplay_stream_start_task = old_start_task
+    bridge_state._writer_task = old_writer_task
+    bridge_state._airplay_stream = old_stream
+    bridge.airplay_player.stream = old_stream
+
+    await asyncio.sleep(0)
+    with patch.object(bridge.mass, "create_task", side_effect=asyncio.create_task):
+        cleanup_task = bridge._schedule_cleanup()
+        await start_cancelled.wait()
+
+        replacement_writer = asyncio.create_task(writer())
+        replacement_stream = MagicMock()
+        replacement_stream.stop = AsyncMock()
+        bridge_state._writer_task = replacement_writer
+        bridge_state._airplay_stream = replacement_stream
+        bridge.airplay_player.stream = replacement_stream
+        release_start.set()
+        await cleanup_task
+
+    assert old_writer_task.cancelled()
+    old_stream.stop.assert_awaited_once_with(force=True)
+    assert not replacement_writer.done()
+    replacement_stream.stop.assert_not_awaited()
+    assert bridge_state._writer_task is replacement_writer
+    assert bridge_state._airplay_stream is replacement_stream
+
+    replacement_writer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement_writer
+
+
+@pytest.mark.asyncio
+async def test_protocol_start_only_waits_for_preceding_cleanup() -> None:
+    """A cleanup scheduled after protocol start cannot become its dependency."""
+    bridge = _make_bridge(SENDSPIN_EPOCH_US)
+    bridge_state = cast("Any", bridge)
+    release_previous_cleanup = asyncio.Event()
+
+    async def previous_cleanup() -> None:
+        await release_previous_cleanup.wait()
+
+    async def start_stream(*_args: Any, **_kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+    previous_cleanup_task = asyncio.create_task(previous_cleanup())
+    bridge_state._cleanup_task = previous_cleanup_task
+    cast("Any", bridge.airplay_player).start_stream = AsyncMock(side_effect=start_stream)
+    stream = MagicMock()
+    stream.stop = AsyncMock()
+
+    with (
+        patch.object(bridge.mass, "create_task", side_effect=asyncio.create_task),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+    ):
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000))
+        protocol_start_task = bridge._airplay_stream_start_task
+        assert protocol_start_task is not None
+        cleanup_task = bridge._schedule_cleanup()
+        release_previous_cleanup.set()
+        await asyncio.wait_for(cleanup_task, timeout=1)
+
+    assert protocol_start_task.done()
+
+
+@pytest.mark.asyncio
+async def test_stale_start_failure_does_not_cleanup_replacement() -> None:
+    """A failed superseded start cannot schedule teardown for its replacement."""
+    bridge = _make_bridge(SENDSPIN_EPOCH_US)
+    bridge_state = cast("Any", bridge)
+    start_entered = asyncio.Event()
+    release_start = asyncio.Event()
+
+    async def fail_start(*_args: Any, **_kwargs: Any) -> None:
+        start_entered.set()
+        await release_start.wait()
+        raise RuntimeError("start failed")
+
+    async def replacement_start() -> None:
+        await asyncio.Event().wait()
+
+    old_stream = MagicMock()
+    old_stream.stop = AsyncMock()
+    cast("Any", bridge.airplay_player).start_stream = AsyncMock(side_effect=fail_start)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=old_stream,
+        ),
+        patch.object(bridge, "_schedule_cleanup") as schedule_cleanup,
+    ):
+        old_start_task = asyncio.create_task(bridge._start_protocol_from_chunk())
+        bridge_state._airplay_stream_start_task = old_start_task
+        await start_entered.wait()
+        replacement_task = asyncio.create_task(replacement_start())
+        bridge_state._airplay_stream_start_task = replacement_task
+        release_start.set()
+        await old_start_task
+
+    schedule_cleanup.assert_not_called()
+    assert not replacement_task.done()
+    replacement_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement_task
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_rejects_replacement_writer_during_cleanup() -> None:
+    """An explicit bridge stop cannot return with a writer started during cleanup."""
+    bridge = _make_bridge(SENDSPIN_EPOCH_US)
+    bridge_state = cast("Any", bridge)
+    stop_started = asyncio.Event()
+    release_stop = asyncio.Event()
+
+    async def stop_stream(*_args: Any, **_kwargs: Any) -> None:
+        stop_started.set()
+        await release_stop.wait()
+
+    stream = MagicMock()
+    stream.stop = AsyncMock(side_effect=stop_stream)
+    bridge_state._airplay_stream = stream
+    bridge_state._stream_generation = object()
+    bridge.airplay_player.stream = stream
+
+    with patch.object(bridge.mass, "create_task", side_effect=asyncio.create_task):
+        stop_task = asyncio.create_task(bridge.stop_streaming())
+        await stop_started.wait()
+        bridge._on_bridge_stream_start()
+
+        assert bridge_state._writer_task is None
+        assert bridge._is_streaming is False
+        release_stop.set()
+        await stop_task
+
+    bridge._on_bridge_stream_start()
+    assert bridge_state._writer_task is None
+    assert bridge._is_streaming is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_bridge_stop_still_unregisters_client() -> None:
+    """Cancelling bridge stop waits through Sendspin client unregistration."""
+    bridge = _make_bridge(SENDSPIN_EPOCH_US)
+    bridge_state = cast("Any", bridge)
+    stop_started = asyncio.Event()
+    release_stop = asyncio.Event()
+
+    async def stop_stream(*_args: Any, **_kwargs: Any) -> None:
+        stop_started.set()
+        await release_stop.wait()
+
+    stream = MagicMock()
+    stream.stop = AsyncMock(side_effect=stop_stream)
+    bridge_state._airplay_stream = stream
+    bridge_state._sendspin_client = MagicMock()
+    bridge_state._bridge_client_id = "bridge-client"
+    bridge.airplay_player.stream = stream
+    sendspin_server = cast("Any", bridge.sendspin_server)
+    sendspin_server.remove_client = AsyncMock()
+
+    with patch.object(bridge.mass, "create_task", side_effect=asyncio.create_task):
+        stop_task = asyncio.create_task(bridge.stop())
+        await stop_started.wait()
+        stop_task.cancel()
+        await asyncio.sleep(0)
+        release_stop.set()
+        with pytest.raises(asyncio.CancelledError):
+            await stop_task
+
+    sendspin_server.remove_client.assert_awaited_once_with("bridge-client")
+    assert bridge_state._sendspin_client is None
+    assert bridge._stop_requests == 0

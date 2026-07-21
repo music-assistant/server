@@ -12,10 +12,12 @@ import asyncio
 import ipaddress
 import logging
 import time
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.images import get_image_thumb
@@ -73,6 +75,9 @@ class AirPlayStream:
         )
         self._stopped = False
         self._connected = asyncio.Event()
+        self._lifecycle_lock = asyncio.Lock()
+        self._stop_task: asyncio.Task[None] | None = None
+        self._force_stop_requested = False
         self._metadata_checksum = ""
         self._last_progress_sent: int = -1
         self._elapsed_time_offset: float | None = None
@@ -95,7 +100,7 @@ class AirPlayStream:
     @property
     def connected(self) -> bool:
         """Return boolean if the device connection has been established."""
-        return self._connected.is_set()
+        return not self._stopped and self._connected.is_set()
 
     async def start(self, start_unix_ms: int, use_shared_ptp: bool | None = None) -> None:
         """
@@ -110,18 +115,37 @@ class AirPlayStream:
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
         """
-        args = await self._build_cli_args(start_unix_ms, use_shared_ptp)
-        self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
-        self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
-        await self._cli_proc.start()
-        self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
-        self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
+        async with self._lifecycle_lock:
+            if self._stopped:
+                raise RuntimeError("Cannot start a stopped AirPlay stream")
+            if self._cli_proc is not None:
+                raise RuntimeError("AirPlay stream already started")
+
+            args = await self._build_cli_args(start_unix_ms, use_shared_ptp)
+            self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
+            cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
+            self._cli_proc = cli_proc
+            start_task = asyncio.create_task(cli_proc.start())
+            try:
+                await asyncio.shield(start_task)
+            except BaseException:
+                with suppress(asyncio.CancelledError, Exception):
+                    await start_task
+                await self._stop_locked(force=True)
+                raise
+
+            cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
+            self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
 
     async def wait_for_connection(self) -> None:
         """Wait for device connection to be established."""
         if not self._cli_proc:
+            if self._stopped:
+                raise PlayerCommandFailed("AirPlay stream stopped before connecting")
             return
         await asyncio.wait_for(self._connected.wait(), timeout=10)
+        if self._stopped:
+            raise PlayerCommandFailed("AirPlay stream stopped before connecting")
         # Send the mute-aware volume right away — audio can start within a
         # second now that metadata goes out immediately — and repeat it after
         # 2 seconds because some players ignore the first volume command
@@ -144,21 +168,23 @@ class AirPlayStream:
 
         :param force: If True, immediately kill the process without graceful shutdown.
         """
-        await self.send_cli_command("ACTION=STOP")
-        self._stopped = True
-        await self.commands_pipe.remove()
-        # stop the stdout reader first so process close can drain the pipe
-        if self._stdout_reader_task and not self._stdout_reader_task.done():
-            self._stdout_reader_task.cancel()
         if force:
-            if self._cli_proc and not self._cli_proc.closed:
-                await self._cli_proc.kill()
-        else:
-            if self._cli_proc:
-                await self._cli_proc.write_eof()
-            if self._cli_proc and not self._cli_proc.closed:
-                await self._cli_proc.close()
-        self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+            self._force_stop_requested = True
+            if self._stop_task and not self._stop_task.done() and (cli_proc := self._cli_proc):
+                kill_task = asyncio.create_task(cli_proc.kill())
+                try:
+                    await asyncio.shield(kill_task)
+                except asyncio.CancelledError:
+                    await kill_task
+                    raise
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop(force))
+        stop_task = self._stop_task
+        try:
+            await asyncio.shield(stop_task)
+        except asyncio.CancelledError:
+            await stop_task
+            raise
 
     async def write_audio(self, data: bytes) -> None:
         """
@@ -212,6 +238,57 @@ class AirPlayStream:
         if progress is not None and abs(progress - self._last_progress_sent) >= 2:
             self._last_progress_sent = progress
             await self.send_cli_command(f"PROGRESS={progress}")
+
+    async def _stop(self, force: bool) -> None:
+        """Stop the cliairplay process under the lifecycle lock."""
+        async with self._lifecycle_lock:
+            await self._stop_locked(force)
+
+    async def _stop_locked(self, force: bool) -> None:
+        """Stop the cliairplay process while the lifecycle lock is held."""
+        if self._stopped and self._cli_proc is None:
+            return
+
+        cli_proc = self._cli_proc
+        if not (force or self._force_stop_requested) and cli_proc and not cli_proc.closed:
+            try:
+                await self.send_cli_command("ACTION=STOP")
+            except Exception as err:
+                self.logger.debug(
+                    "Could not send STOP to cliairplay for %s: %s",
+                    self.player.display_name,
+                    err,
+                )
+
+        self._stopped = True
+        self._connected.set()
+        await self.commands_pipe.remove()
+
+        stdout_reader_task = self._stdout_reader_task
+        self._stdout_reader_task = None
+        if (
+            stdout_reader_task
+            and stdout_reader_task is not asyncio.current_task()
+            and not stdout_reader_task.done()
+        ):
+            stdout_reader_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await stdout_reader_task
+
+        try:
+            if cli_proc:
+                if force or self._force_stop_requested:
+                    await cli_proc.kill()
+                elif not cli_proc.closed:
+                    await cli_proc.write_eof()
+                    await cli_proc.close()
+        finally:
+            self._cli_proc = None
+            self.player.set_state_from_stream(
+                state=PlaybackState.IDLE,
+                elapsed_time=0,
+                stream=self,
+            )
 
     async def _build_cli_args(  # noqa: PLR0915
         self, start_unix_ms: int, use_shared_ptp: bool | None = None

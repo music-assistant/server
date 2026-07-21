@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import ipaddress
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -18,6 +19,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
@@ -95,6 +97,10 @@ class AirPlayPlayer(Player):
         self.stream: AirPlayStream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
+        self._stream_lock = asyncio.Lock()
+        self._stream_generation = 0
+        self._stream_stopping = False
+        self._unloading = False
         self._active_pairing: AirPlayPairing | None = None
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         # Set (static) player attributes
@@ -143,6 +149,24 @@ class AirPlayPlayer(Player):
         only reflects MA's own planning heuristic (timing, ports).
         """
         return StreamingProtocol.RAOP if self._force_raop_active else None
+
+    @property
+    def stream_generation(self) -> int:
+        """Return the generation that new stream replacements must match."""
+        return self._stream_generation
+
+    def reserve_stream_generation(self) -> int:
+        """Reserve and return the next player stream generation."""
+        self._stream_generation += 1
+        return self._stream_generation
+
+    def is_stream_generation_current(self, generation: int) -> bool:
+        """Return whether a reserved stream generation can still commit state."""
+        return (
+            not self._stream_stopping
+            and not self._unloading
+            and generation == self._stream_generation
+        )
 
     @property
     def hires_playback_enabled(self) -> bool:
@@ -296,24 +320,134 @@ class AirPlayPlayer(Player):
 
         return base_entries
 
+    @contextlib.asynccontextmanager
+    async def stream_replacement(
+        self,
+        stream: AirPlayStream,
+        is_current: Callable[[], bool] | None = None,
+        expected_generation: int | None = None,
+        before_replace: Callable[[], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[None]:
+        """
+        Reserve this player for a replacement AirPlay stream.
+
+        :param stream: The new stream to start.
+        :param is_current: Optional validation run after reserving the player and
+            before replacing its current stream.
+        :param expected_generation: Player stream generation captured when startup
+            was requested.
+        :param before_replace: Optional teardown to await after validation and
+            before replacing the current stream.
+        """
+        generation = (
+            self.reserve_stream_generation() if expected_generation is None else expected_generation
+        )
+        async with self._stream_lock:
+            if (
+                self._stream_stopping
+                or self._unloading
+                or generation != self._stream_generation
+                or (is_current is not None and not is_current())
+            ):
+                raise PlayerCommandFailed("AirPlay stream start was superseded")
+            if before_replace is not None:
+                await before_replace()
+                if (
+                    self._stream_stopping
+                    or self._unloading
+                    or generation != self._stream_generation
+                    or (is_current is not None and not is_current())
+                ):
+                    raise PlayerCommandFailed("AirPlay stream start was superseded")
+            previous_stream = self.stream
+            if previous_stream and previous_stream is not stream:
+                previous_session = previous_stream.session
+                if previous_session and previous_session is not stream.session:
+                    await previous_session.remove_client(
+                        self,
+                        reason="replaced by another stream session",
+                        expected_stream=previous_stream,
+                        preserve_reservation=True,
+                    )
+                await previous_stream.stop(force=True)
+                if (
+                    self._stream_stopping
+                    or self._unloading
+                    or generation != self._stream_generation
+                    or (is_current is not None and not is_current())
+                ):
+                    raise PlayerCommandFailed("AirPlay stream start was superseded")
+                if self.stream is previous_stream:
+                    self.stream = None
+
+            self.stream = stream
+            try:
+                yield
+                if (
+                    self._stream_stopping
+                    or self._unloading
+                    or generation != self._stream_generation
+                    or (is_current is not None and not is_current())
+                ):
+                    raise PlayerCommandFailed("AirPlay stream start was superseded")
+            except BaseException:
+                await stream.stop(force=True)
+                if self.stream is stream:
+                    self.stream = None
+                raise
+
+    async def start_stream(
+        self,
+        stream: AirPlayStream,
+        start_unix_ms: int,
+        use_shared_ptp: bool | None = None,
+        expected_generation: int | None = None,
+    ) -> None:
+        """
+        Replace and start the current AirPlay stream.
+
+        :param stream: The new stream to start.
+        :param start_unix_ms: The instant the first sample must be audible.
+        :param use_shared_ptp: Whether the stream should use the shared PTP clock.
+        :param expected_generation: Player stream generation reserved for this start.
+        """
+        generation = (
+            self.reserve_stream_generation() if expected_generation is None else expected_generation
+        )
+        async with self.stream_replacement(stream, expected_generation=generation):
+            await stream.start(start_unix_ms, use_shared_ptp)
+
+    async def stop_stream_for_grouping(
+        self,
+        expected_generation: int | None = None,
+    ) -> bool:
+        """
+        Release this player from active streaming before idle grouping.
+
+        :param expected_generation: Player stream generation reserved for this request.
+        :return: True if this request released the current stream.
+        """
+        generation = (
+            self.reserve_stream_generation() if expected_generation is None else expected_generation
+        )
+        stop_task = asyncio.create_task(self._stop_stream_for_grouping(generation))
+        try:
+            return await asyncio.shield(stop_task)
+        except asyncio.CancelledError:
+            await stop_task
+            raise
+
     async def stop(self) -> None:
         """Send STOP command to player."""
         async with self._lock:
-            if self.stream and self.stream.session:
-                # forward stop to the entire stream session
-                await self.stream.session.stop()
-            elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(
-                self.player_id
-            ):
-                # Sendspin bridge active: trigger full bridge cleanup
-                # which stops streaming, kills the CLI, and cancels writer tasks
-                pass
-            elif self.stream and self.stream.running:
-                # Fallback: stop protocol directly
-                await self.stream.stop(force=True)
-                self.stream = None
-            self._attr_current_media = None
-            self.update_state()
+            self._stream_stopping = True
+            self._stream_generation += 1
+            stop_task = asyncio.create_task(self._stop_stream())
+            try:
+                await asyncio.shield(stop_task)
+            except asyncio.CancelledError:
+                await stop_task
+                raise
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to player."""
@@ -346,32 +480,56 @@ class AirPlayPlayer(Player):
                 raise RuntimeError("Player is synced")
             self._attr_current_media = media
 
-            # Always stop any existing stream
-            if self.stream and self.stream.running and self.stream.session:
-                # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
-                self._transitioning = True
-                await self.stream.session.stop()
-                self.stream = None
-
-            # select audio source
-            sync_clients = self._get_sync_clients()
-            session_pcm_format = self._get_session_pcm_format(sync_clients, media)
-            audio_source = self.mass.streams.get_stream(
-                media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
-            )
-
-            # setup StreamSession for player (and its sync childs if any)
             provider = cast("AirPlayProvider", self.provider)
-            stream_session = AirPlayStreamSession(
-                provider,
-                sync_clients,
-                session_pcm_format,
-                media,
-            )
-            await stream_session.start(audio_source)
-            self._attr_elapsed_time = time.time() - stream_session.start_time
-            self._attr_elapsed_time_last_updated = time.time()
-            self._transitioning = False
+            sync_clients = self._get_sync_clients()
+            expected_generations = {
+                client.player_id: client.reserve_stream_generation() for client in sync_clients
+            }
+            expected_client_ids = set(expected_generations)
+            play_generation = expected_generations[self.player_id]
+            previous_stream = self.stream
+            self._transitioning = previous_stream is not None
+            try:
+                if previous_stream:
+                    if previous_stream.session:
+                        await previous_stream.session.stop()
+                    else:
+                        await provider.bridge_manager.stop_streaming(self.player_id)
+                        await previous_stream.stop(force=True)
+                        if self.stream is previous_stream:
+                            self.stream = None
+                if not self.is_stream_generation_current(play_generation) or self.synced_to:
+                    raise PlayerCommandFailed("AirPlay playback start was superseded")
+
+                # select audio source
+                sync_clients = self._get_sync_clients()
+                if {client.player_id for client in sync_clients} != expected_client_ids:
+                    raise PlayerCommandFailed("AirPlay group changed during playback start")
+                if any(
+                    not client.is_stream_generation_current(expected_generations[client.player_id])
+                    for client in sync_clients
+                ):
+                    raise PlayerCommandFailed("AirPlay playback start was superseded")
+                session_pcm_format = self._get_session_pcm_format(sync_clients, media)
+                audio_source = self.mass.streams.get_stream(
+                    media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
+                )
+
+                # setup StreamSession for player (and its sync childs if any)
+                stream_session = AirPlayStreamSession(
+                    provider,
+                    sync_clients,
+                    session_pcm_format,
+                    media,
+                )
+                await stream_session.start(
+                    audio_source,
+                    expected_generations=expected_generations,
+                )
+                self._attr_elapsed_time = time.time() - stream_session.start_time
+                self._attr_elapsed_time_last_updated = time.time()
+            finally:
+                self._transitioning = False
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -406,23 +564,27 @@ class AirPlayPlayer(Player):
                 # nothing to do
                 return
 
-            stream_session = (
-                self.stream.session
-                if self.stream and self.stream.running and self.stream.session
-                else None
-            )
+            stream_session = self.stream.session if self.stream and self.stream.session else None
+            removal_cancellation: asyncio.CancelledError | None = None
             # handle removals first
             if player_ids_to_remove:
                 if self.player_id in player_ids_to_remove:
-                    if stream_session and len(stream_session.sync_clients) > 1:
-                        # Other clients remain: remove only this leader client,
-                        # session continues for remaining players (dynamic leader switch)
-                        await stream_session.remove_client(self, reason="leader removed from group")
-                    elif stream_session:
-                        # Last client, stop the whole session
-                        await stream_session.stop()
+                    try:
+                        if stream_session and len(stream_session.sync_clients) > 1:
+                            # Other clients remain: remove only this leader client,
+                            # session continues for remaining players (dynamic leader switch)
+                            await stream_session.remove_client(
+                                self, reason="leader removed from group"
+                            )
+                        elif stream_session:
+                            # Last client, stop the whole session
+                            await stream_session.stop()
+                    except asyncio.CancelledError as err:
+                        removal_cancellation = err
                     self._attr_group_members = []
                     self.update_state()
+                    if removal_cancellation:
+                        raise removal_cancellation
                     return
 
                 for child_player in self._get_sync_clients():
@@ -431,14 +593,20 @@ class AirPlayPlayer(Player):
                         # where a concurrent play_media could re-include this player
                         if child_player.player_id in self._attr_group_members:
                             self._attr_group_members.remove(child_player.player_id)
-                        if stream_session:
-                            await stream_session.remove_client(
-                                child_player, reason="child removed from group"
-                            )
-                        elif child_player.stream and child_player.stream.running:
-                            # leader's stream is no longer running but child still has
-                            # an active stream - stop it directly
-                            await child_player.stream.stop(force=True)
+                        try:
+                            if stream_session:
+                                await stream_session.remove_client(
+                                    child_player, reason="child removed from group"
+                                )
+                            elif child_player.stream:
+                                # leader's stream is no longer running but child still has
+                                # an active stream - stop it directly
+                                child_stream = child_player.stream
+                                await child_stream.stop(force=True)
+                                if child_player.stream is child_stream:
+                                    child_player.stream = None
+                        except asyncio.CancelledError as err:
+                            removal_cancellation = err
 
                 # If group leader is left alone after removals, clear the group_members list
                 if (
@@ -447,46 +615,17 @@ class AirPlayPlayer(Player):
                     and self.player_id in self._attr_group_members
                 ):
                     self._attr_group_members = []
+                if removal_cancellation:
+                    self.update_state()
+                    raise removal_cancellation
 
-            # handle additions
-            for player_id in player_ids_to_add or []:
-                if player_id == self.player_id or player_id in self.group_members:
-                    # nothing to do: player is already part of the group
-                    continue
-                child_player_to_add: AirPlayPlayer | None = cast(
-                    "AirPlayPlayer | None", self.mass.players.get_player(player_id)
-                )
-                if not child_player_to_add:
-                    # should not happen, but guard against it
-                    continue
-
-                # ensure the child does not have an existing stream session active
-                if child_player_to_add := cast(
-                    "AirPlayPlayer | None", self.mass.players.get_player(player_id)
-                ):
-                    if (
-                        child_player_to_add.playback_state == PlaybackState.PAUSED
-                        and child_player_to_add.stream
-                    ):
-                        # Stop the paused stream to avoid a deadlock situation
-                        await child_player_to_add.stream.stop()
-                    if (
-                        child_player_to_add.stream
-                        and child_player_to_add.stream.running
-                        and child_player_to_add.stream.session
-                        and child_player_to_add.stream.session != stream_session
-                    ):
-                        await child_player_to_add.stream.session.remove_client(
-                            child_player_to_add, reason="moving to different session"
-                        )
-
-                # add new child to the existing stream (RAOP or AirPlay2) session (if any)
-                self._attr_group_members.append(player_id)
-                if stream_session and child_player_to_add is not None:
-                    # Skip add_client if the player is already streaming in this session
-                    # (e.g. after a dynamic leader switch where the stream continues)
-                    if child_player_to_add not in stream_session.sync_clients:
-                        await stream_session.add_client(child_player_to_add)
+            try:
+                await self._add_members(player_ids_to_add, stream_session)
+            except asyncio.CancelledError:
+                if self._attr_group_members and self.player_id not in self._attr_group_members:
+                    self._attr_group_members.insert(0, self.player_id)
+                self.update_state()
+                raise
 
             # Ensure group leader includes itself in group_members when it has members
             # This is required for the synced_to property to work correctly
@@ -630,15 +769,131 @@ class AirPlayPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
+        self._unloading = True
+        self._stream_stopping = True
+        self._stream_generation += 1
+        unload_task = asyncio.create_task(self._unload())
+        try:
+            await asyncio.shield(unload_task)
+        except asyncio.CancelledError:
+            await unload_task
+            raise
+
+    async def _stop_stream(self) -> None:
+        """Stop the current stream while rejecting queued replacements."""
+        try:
+            async with self._stream_lock:
+                provider = cast("AirPlayProvider", self.provider)
+                await provider.bridge_manager.stop_streaming(self.player_id)
+                stream = self.stream
+                if stream and stream.session:
+                    await stream.session.stop()
+                elif stream:
+                    await stream.stop(force=True)
+                    if self.stream is stream:
+                        self.stream = None
+                self._attr_current_media = None
+                self.update_state()
+        finally:
+            self._stream_generation += 1
+            self._stream_stopping = self._unloading
+
+    async def _stop_stream_for_grouping(self, expected_generation: int) -> bool:
+        """Stop the current stream if the idle-group request is still current."""
+        async with self._stream_lock:
+            if (
+                self._stream_stopping
+                or self._unloading
+                or expected_generation != self._stream_generation
+            ):
+                return False
+            provider = cast("AirPlayProvider", self.provider)
+            await provider.bridge_manager.stop_streaming(self.player_id)
+            if (
+                self._stream_stopping
+                or self._unloading
+                or expected_generation != self._stream_generation
+            ):
+                return False
+            stream = self.stream
+            if stream and stream.session:
+                await stream.session.remove_client(
+                    self,
+                    reason="moving to idle group",
+                    expected_stream=stream,
+                    preserve_reservation=True,
+                )
+            elif stream:
+                await stream.stop(force=True)
+                if self.stream is stream:
+                    self.stream = None
+            return not self._stream_stopping and expected_generation == self._stream_generation
+
+    async def _unload(self) -> None:
+        """Unload the player after all stream resources are released."""
         await super().on_unload()
-        if self.stream:
-            # remove this player from the stream session if it is running
-            if self.stream.running and self.stream.session:
-                await self.stream.session.remove_client(self, reason="player unloaded")
-            self.stream = None
+        async with self._stream_lock:
+            provider = cast("AirPlayProvider", self.provider)
+            await provider.bridge_manager.stop_streaming(self.player_id)
+            stream = self.stream
+            if stream and stream.session:
+                await stream.session.remove_client(
+                    self,
+                    reason="player unloaded",
+                    expected_stream=stream,
+                )
+            elif stream:
+                await stream.stop(force=True)
+                if self.stream is stream:
+                    self.stream = None
         if self._active_pairing:
             await self._active_pairing.close()
             self._active_pairing = None
+
+    async def _add_members(
+        self,
+        player_ids: list[str] | None,
+        stream_session: AirPlayStreamSession | None,
+    ) -> None:
+        """Add players after their transport transition succeeds."""
+        for player_id in player_ids or []:
+            if player_id == self.player_id or player_id in self.group_members:
+                continue
+            child_player = cast(
+                "AirPlayPlayer | None",
+                self.mass.players.get_player(player_id),
+            )
+            if not child_player:
+                continue
+
+            if stream_session:
+                if child_player in stream_session.sync_clients:
+                    generation = None
+                    transition_succeeded = True
+                else:
+                    generation = child_player.reserve_stream_generation()
+                    transition_succeeded = await stream_session.add_client(
+                        child_player,
+                        expected_generation=generation,
+                    )
+                    if (
+                        not transition_succeeded
+                        and not stream_session.accepting_clients
+                        and child_player.is_stream_generation_current(generation)
+                    ):
+                        transition_succeeded = await child_player.stop_stream_for_grouping(
+                            expected_generation=generation,
+                        )
+            else:
+                generation = child_player.reserve_stream_generation()
+                transition_succeeded = await child_player.stop_stream_for_grouping(
+                    expected_generation=generation,
+                )
+            if not transition_succeeded:
+                continue
+            if generation is not None and not child_player.is_stream_generation_current(generation):
+                continue
+            self._attr_group_members.append(player_id)
 
     @property
     def _has_native_protocol_parent(self) -> bool:
