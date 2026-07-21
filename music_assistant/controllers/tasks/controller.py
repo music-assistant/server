@@ -20,7 +20,8 @@ from music_assistant_models.background_task import (
     TaskMetadataValue,
     TaskSchedule,
 )
-from music_assistant_models.enums import EventType, TaskStatus
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.enums import ConfigEntryType, EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -29,6 +30,8 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.models.core_controller import CoreController
+
+from music_assistant.constants import CONF_MAX_CONCURRENT_TASKS, CONF_ENTRY_MAX_CONCURRENT_TASKS
 
 from .constants import (
     ACTIVE_TASK_ID,
@@ -58,7 +61,11 @@ from .helpers import (
 from .models import ManagedTask
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigEntryType,
+    CoreConfig,
+)
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -85,10 +92,21 @@ class TasksController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Set up the controller."""
         self.config = config
-        self._max_concurrent_tasks = DEFAULT_MAX_CONCURRENT_TASKS
+        self._max_concurrent_tasks = config.get_value(
+            CONF_MAX_CONCURRENT_TASKS, DEFAULT_MAX_CONCURRENT_TASKS
+        )
         if self._log_handler is None:
             self._log_handler = TaskLogHandler(self.mass, self._append_task_log)
             logging.getLogger().addHandler(self._log_handler)
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        del action, values
+        return (CONF_ENTRY_MAX_CONCURRENT_TASKS,)
 
     async def close(self) -> None:
         """Clean up the controller."""
