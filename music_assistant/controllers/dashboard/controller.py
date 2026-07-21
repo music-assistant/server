@@ -83,14 +83,11 @@ class DashboardController(CoreController):
             raise ProviderUnavailableError(msg)
         provider.check_feature(ProviderFeature.SHOW_DASHBOARD)
 
+        # resolve everything that can fail before the cast, so a failure never
+        # leaves a dashboard showing without a tracked session
+        device_name = await self._resolve_device_name(provider, device_id)
         url = await self._resolve_dashboard_url(dashboard, player_id)
         await provider.show_dashboard(device_id=device_id, url=url)
-
-        device_name = device_id
-        for device in await provider.get_dashboard_devices():
-            if device.device_id == device_id:
-                device_name = device.name
-                break
         self._sessions[(provider_instance, device_id)] = DashboardSession(
             device_id=device_id,
             provider_instance=provider_instance,
@@ -128,6 +125,13 @@ class DashboardController(CoreController):
 
         self._sessions.pop((provider_instance, device_id), None)
         self._signal_sessions_updated()
+
+    async def _resolve_device_name(self, provider: PlayerProvider, device_id: str) -> str:
+        """Return the display name for a device, falling back to its id."""
+        for device in await provider.get_dashboard_devices():
+            if device.device_id == device_id:
+                return device.name
+        return device_id
 
     async def _resolve_dashboard_url(self, dashboard: DashboardType, player_id: str | None) -> str:
         """
