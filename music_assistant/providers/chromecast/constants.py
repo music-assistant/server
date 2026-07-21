@@ -12,7 +12,7 @@ from music_assistant.constants import (
     create_sample_rates_config_entry,
 )
 
-MASS_APP_ID = "920426A9"  # TODO: dev receiver app, swap back to "C35B0678" before release
+MASS_APP_ID = "C35B0678"
 APP_MEDIA_RECEIVER = "CC1AD845"
 SENDSPIN_CAST_APP_ID = "DD107DDB"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
