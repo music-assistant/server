@@ -19,6 +19,7 @@ from .constants import (
     CONF_AUTO_TRIGGER,
     CONF_FRIENDLY_NAME,
     CONF_ICON_PRESET,
+    CONF_INCLUDE_MONITORS,
     CONF_INPUT_DEVICE,
     CONF_TARGET_PLAYER_ID,
     CONF_THUMBNAIL_IMAGE,
@@ -59,7 +60,9 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    device_options = await get_available_input_devices()
+    include_monitors = bool(values.get(CONF_INCLUDE_MONITORS, False)) if values else False
+    device_options = await get_available_input_devices(include_monitors=include_monitors)
+
     player_options = [
         ConfigValueOption(x.player_id, title=x.display_name)
         for x in sorted(
@@ -97,6 +100,18 @@ async def get_config_entries(
             required=False,
             depends_on=CONF_ICON_PRESET,
             depends_on_value=ICON_PRESET_CUSTOM,
+        ),
+        ConfigEntry(
+            key=CONF_INCLUDE_MONITORS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Include monitor sources",
+            description=(
+                "When enabled, sink monitor sources (loopback capture of what's currently "
+                "playing on an output) also appear in the Audio Input Device list below."
+            ),
+            default_value=False,
+            required=False,
+            immediate_apply=True,
         ),
         ConfigEntry(
             key=CONF_INPUT_DEVICE,

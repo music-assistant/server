@@ -39,7 +39,8 @@
 
 - **Display Name** – what shows up in source lists.
 - **Thumbnail** – pick a bundled icon (Bluetooth, Cable, Vinyl, Stereo, Chromecast, …) or a custom image URL.
-- **Audio Input Device** – dropdown of PulseAudio/PipeWire sources detected via `pactl list sources` (monitor sources — i.e. "what's currently playing on sink X" — are excluded from this list).
+- **Include monitor sources** – off by default. Enable to also show sink monitor sources (loopback capture of what's currently playing on an output) in the device list below.
+- **Audio Input Device** – dropdown of PulseAudio/PipeWire sources detected via `pactl list sources`.
 
 Sample rate and channel count are fixed at 44.1kHz stereo; PulseAudio/PipeWire transparently resample and remap whichever source you pick to that format, so this works regardless of the source's native rate/channel count (e.g. a mono USB mic).
 

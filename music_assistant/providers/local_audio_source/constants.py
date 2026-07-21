@@ -9,6 +9,7 @@ CONF_INPUT_DEVICE = "input_device"  # PulseAudio/PipeWire source name, e.g. "als
 CONF_FRIENDLY_NAME = "friendly_name"  # UI label
 CONF_ICON_PRESET = "icon_preset"  # bundled icon, or "custom" for CONF_THUMBNAIL_IMAGE
 CONF_THUMBNAIL_IMAGE = "thumbnail_image"  # URL, only used when CONF_ICON_PRESET == "custom"
+CONF_INCLUDE_MONITORS = "include_monitors"  # bool: show sink monitor sources in the picker
 CONF_AUTO_TRIGGER = "auto_trigger"  # bool: watch signal level and auto play/stop
 CONF_TARGET_PLAYER_ID = "target_player_id"  # player to auto-start when signal is detected
 CONF_TRIGGER_THRESHOLD_DBFS = "trigger_threshold_dbfs"  # float, dBFS RMS level to treat as signal
