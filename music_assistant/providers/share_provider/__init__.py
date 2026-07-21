@@ -206,7 +206,11 @@ class ShareProvider(PluginProvider):
         art: str | None = None
 
         if item.image:
-            art = item.image.path
+            # Only include art URLs that are publicly accessible from anywhere.
+            # Local imageproxy URLs (e.g. http://localhost:8095/imageproxy/...)
+            # are useless to the recipient of the share link.
+            if item.image.remotely_accessible:
+                art = item.image.path
 
         if media_type == "track":
             isrc = item.get_external_id(ExternalID.ISRC)
