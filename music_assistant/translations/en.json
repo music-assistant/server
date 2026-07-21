@@ -1562,6 +1562,8 @@
   "provider.opensubsonic.config_entries.username.description": "Your username for this Open Subsonic server",
   "provider.opensubsonic.errors.connect_failed": "Failed to connect to {0}, check your settings.",
   "provider.opensubsonic.errors.create_playlist_failed": "Failed to create playlist with name '{0}'.",
+  "provider.opensubsonic.errors.extension_failure": "Failed to query server for OpenSubsonic extensions",
+  "provider.opensubsonic.errors.formpost_missing": "Server does not support the 'formpost' OpenSubsonic extension, which is required.",
   "provider.opensubsonic.manifest.description": "Stream music from your OpenSubsonic compatible server — your own cloud jukebox.",
   "provider.opensubsonic.media.recommendations.starred_items.name": "Starred Items",
   "provider.orf_radiothek.config_entries.catchup_proto.description": "Use 'progressive' (mp3) or 'hls' (m3u8) URLs from the broadcast detail.",
