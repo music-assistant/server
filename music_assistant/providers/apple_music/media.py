@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -18,7 +18,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.track_filter import filter_tracks
 
 from .constants import ARTWORK_CACHE_EXPIRATION, PARSED_ITEM_CACHE_CHECKSUM
-from .helpers.utils import is_catalog_id, is_library_id
+from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
 from .parsers import (
     format_artwork_url,
     parse_album,
@@ -162,22 +162,20 @@ class AppleMusicMediaManager:
         :param media_type: The media type value of the artwork token (album/track/...).
         :param prov_item_id: The provider item id of the item the artwork belongs to.
         """
-        if media_type == MediaType.ARTIST.value:
-            endpoint = f"catalog/{self.provider._storefront}/artists/{prov_item_id}"
-        elif media_type == MediaType.ALBUM.value:
-            if is_library_id(prov_item_id):
-                endpoint = f"me/library/albums/{prov_item_id}"
-            else:
-                endpoint = f"catalog/{self.provider._storefront}/albums/{prov_item_id}"
-        elif media_type == MediaType.TRACK.value:
-            endpoint = f"catalog/{self.provider._storefront}/songs/{prov_item_id}"
-        elif media_type == MediaType.PLAYLIST.value:
-            if not is_catalog_id(prov_item_id):
-                endpoint = f"me/library/playlists/{prov_item_id}"
-            else:
-                endpoint = f"catalog/{self.provider._storefront}/playlists/{prov_item_id}"
-        else:
+        try:
+            apple_type = translate_media_type_to_apple_type(MediaType(media_type))
+        except ValueError, MusicAssistantError:
             return None
+        # playlists use globalId ("pl.") catalog ids; all other types use the
+        # library id format to tell library and catalog items apart
+        if media_type == MediaType.PLAYLIST.value:
+            in_library = not is_catalog_id(prov_item_id)
+        else:
+            in_library = is_library_id(prov_item_id)
+        if in_library:
+            endpoint = f"me/library/{apple_type}/{prov_item_id}"
+        else:
+            endpoint = f"catalog/{self.provider._storefront}/{apple_type}/{prov_item_id}"
         response = await self.api.get_data(endpoint, include="catalog")
         item_obj = response["data"][0]
         attributes = item_obj.get("attributes") or {}
