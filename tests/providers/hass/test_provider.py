@@ -50,6 +50,24 @@ def _config(**values: str) -> MagicMock:
     return config
 
 
+def _mock_state_http(mass: MagicMock, states: list[dict[str, Any]]) -> None:
+    """Serve the given states via the mocked REST ``/api/states/<entity_id>`` endpoint."""
+    states_by_id = {state["entity_id"]: state for state in states}
+
+    def _get(url: str, headers: dict[str, str] | None = None) -> MagicMock:  # noqa: ARG001
+        entity_id = url.rsplit("/api/states/", 1)[-1]
+        state = states_by_id.get(entity_id)
+        response = MagicMock()
+        response.status = 200 if state is not None else 404
+        response.json = AsyncMock(return_value=state)
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=response)
+        context.__aexit__ = AsyncMock(return_value=False)
+        return context
+
+    mass.http_session.get.side_effect = _get
+
+
 def _mass() -> MagicMock:
     """Return the Music Assistant dependencies used during provider startup."""
     mass = MagicMock()
@@ -66,26 +84,26 @@ class _HomeAssistantClient:
     def __init__(
         self,
         states: list[dict[str, Any]],
-        get_states_error: Exception | None = None,
+        registry_error: Exception | None = None,
         listener_error: Exception | None = None,
         connect_error: Exception | None = None,
-        block_get_states: bool = False,
+        block_registry: bool = False,
     ) -> None:
         self.connected = False
         self.disconnected = False
         self.listener_started = asyncio.Event()
         self.listener_cancelled = asyncio.Event()
         self.listener_stopped = asyncio.Event()
-        self.get_states_started = asyncio.Event()
-        self.get_states_cancelled = asyncio.Event()
-        self.get_states_stopped = asyncio.Event()
+        self.registry_started = asyncio.Event()
+        self.registry_cancelled = asyncio.Event()
+        self.registry_stopped = asyncio.Event()
         self.calls: list[str] = []
         self._states = states
-        self._get_states_error = get_states_error
+        self._registry_error = registry_error
         self._listener_error = listener_error
         self._connect_error = connect_error
-        self._get_states_result = (
-            asyncio.get_running_loop().create_future() if block_get_states else None
+        self._registry_result = (
+            asyncio.get_running_loop().create_future() if block_registry else None
         )
         self.send_command = AsyncMock(return_value={"response": {"data": "answer"}})
 
@@ -108,26 +126,26 @@ class _HomeAssistantClient:
             self.listener_cancelled.set()
             raise
         finally:
-            if self._get_states_result and not self._get_states_result.done():
-                self._get_states_result.cancel()
+            if self._registry_result and not self._registry_result.done():
+                self._registry_result.cancel()
             self.listener_stopped.set()
 
-    async def get_states(self) -> list[dict[str, Any]]:
-        """Return states after command responses can be received."""
+    async def get_entity_registry(self) -> list[dict[str, Any]]:
+        """Return the entity registry after command responses can be received."""
         await self.listener_started.wait()
-        self.calls.append("get_states")
-        self.get_states_started.set()
+        self.calls.append("get_entity_registry")
+        self.registry_started.set()
         try:
-            if self._get_states_result:
-                await self._get_states_result
-            if self._get_states_error:
-                raise self._get_states_error
-            return self._states
+            if self._registry_result:
+                await self._registry_result
+            if self._registry_error:
+                raise self._registry_error
+            return [{"entity_id": state["entity_id"]} for state in self._states]
         except asyncio.CancelledError:
-            self.get_states_cancelled.set()
+            self.registry_cancelled.set()
             raise
         finally:
-            self.get_states_stopped.set()
+            self.registry_stopped.set()
 
     async def disconnect(self) -> None:
         """Disconnect the client."""
@@ -142,11 +160,13 @@ async def _start_provider(
 ) -> AsyncIterator[tuple[HomeAssistantProvider, _HomeAssistantClient]]:
     """Start the provider with a connected mocked Home Assistant client."""
     hass = _HomeAssistantClient(states)
+    mass = _mass()
+    _mock_state_http(mass, states)
     manifest = MagicMock()
     manifest.domain = "hass"
     manifest.name = "Home Assistant"
     with patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass):
-        provider = await setup(_mass(), manifest, _config(**config_values))
+        provider = await setup(mass, manifest, _config(**config_values))
         assert isinstance(provider, HomeAssistantProvider)
         async with asyncio.timeout(1):
             await provider.handle_async_init()
@@ -164,7 +184,7 @@ async def test_feature_resolution_starts_listener_first() -> None:
     ]
 
     async with _start_provider(states) as (provider, hass):
-        assert hass.calls[:3] == ["connect", "start_listening", "get_states"]
+        assert hass.calls[:3] == ["connect", "start_listening", "get_entity_registry"]
         assert ProviderFeature.AI_QUERY in provider.supported_features
         assert ProviderFeature.TTS in provider.supported_features
 
@@ -186,7 +206,7 @@ async def test_feature_resolution_failure_cleans_up_connection() -> None:
     assert hass.listener_started.is_set()
     assert hass.listener_stopped.is_set()
     assert hass.disconnected
-    assert hass.calls == ["connect", "start_listening", "get_states", "disconnect"]
+    assert hass.calls == ["connect", "start_listening", "get_entity_registry", "disconnect"]
     assert provider._listen_task is None
 
 
@@ -217,7 +237,7 @@ async def test_listener_exit_terminates_pending_feature_resolution() -> None:
     hass = _HomeAssistantClient(
         [],
         listener_error=BaseHassClientError("Listener failed"),
-        block_get_states=True,
+        block_registry=True,
     )
     mass = _mass()
     manifest = MagicMock()
@@ -233,7 +253,7 @@ async def test_listener_exit_terminates_pending_feature_resolution() -> None:
 
     assert hass.listener_started.is_set()
     assert hass.listener_stopped.is_set()
-    assert hass.get_states_stopped.is_set()
+    assert hass.registry_stopped.is_set()
     assert hass.disconnected
     assert provider._listen_task is None
     mass.call_later.assert_not_called()
@@ -241,7 +261,7 @@ async def test_listener_exit_terminates_pending_feature_resolution() -> None:
 
 async def test_feature_resolution_timeout_cleans_up_connection() -> None:
     """Clean up startup when Home Assistant feature resolution times out."""
-    hass = _HomeAssistantClient([], block_get_states=True)
+    hass = _HomeAssistantClient([], block_registry=True)
     mass = _mass()
     manifest = MagicMock()
     manifest.domain = "hass"
@@ -254,15 +274,15 @@ async def test_feature_resolution_timeout_cleans_up_connection() -> None:
         assert isinstance(provider, HomeAssistantProvider)
         init_task = asyncio.create_task(provider.handle_async_init())
         async with asyncio.timeout(1):
-            await hass.get_states_started.wait()
+            await hass.registry_started.wait()
 
         with pytest.raises(
             SetupFailedError, match="Timed out while resolving Home Assistant feature entities"
         ):
             await init_task
 
-    assert hass.get_states_stopped.is_set()
-    assert hass.get_states_cancelled.is_set()
+    assert hass.registry_stopped.is_set()
+    assert hass.registry_cancelled.is_set()
     assert hass.listener_stopped.is_set()
     assert hass.listener_cancelled.is_set()
     assert hass.disconnected
@@ -272,7 +292,7 @@ async def test_feature_resolution_timeout_cleans_up_connection() -> None:
 
 async def test_feature_resolution_cancellation_cleans_up_connection() -> None:
     """Clean up startup when Home Assistant initialization is cancelled."""
-    hass = _HomeAssistantClient([], block_get_states=True)
+    hass = _HomeAssistantClient([], block_registry=True)
     mass = _mass()
     manifest = MagicMock()
     manifest.domain = "hass"
@@ -282,14 +302,14 @@ async def test_feature_resolution_cancellation_cleans_up_connection() -> None:
         assert isinstance(provider, HomeAssistantProvider)
         init_task = asyncio.create_task(provider.handle_async_init())
         async with asyncio.timeout(1):
-            await hass.get_states_started.wait()
+            await hass.registry_started.wait()
         init_task.cancel()
 
         with pytest.raises(asyncio.CancelledError):
             await init_task
 
-    assert hass.get_states_stopped.is_set()
-    assert hass.get_states_cancelled.is_set()
+    assert hass.registry_stopped.is_set()
+    assert hass.registry_cancelled.is_set()
     assert hass.listener_stopped.is_set()
     assert hass.listener_cancelled.is_set()
     assert hass.disconnected
