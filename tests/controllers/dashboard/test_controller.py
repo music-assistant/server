@@ -127,6 +127,20 @@ async def test_resolve_dashboard_url_now_playing_embeds_player_id_in_path() -> N
     assert query["path"] == "/now-playing?player=player1"
 
 
+async def test_resolve_dashboard_url_encodes_player_id() -> None:
+    """A player_id with reserved characters is url-encoded in the now_playing route."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
+        url = await controller._resolve_dashboard_url(DashboardType.NOW_PLAYING, "a&b=c d")
+
+    query = _query(url)
+    assert query["path"] == "/now-playing?player=a%26b%3Dc+d"
+
+
 async def test_resolve_dashboard_url_rejects_unknown_dashboard_type() -> None:
     """An UNKNOWN dashboard type is never a valid target to cast."""
     controller = _make_controller()

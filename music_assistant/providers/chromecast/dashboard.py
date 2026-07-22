@@ -66,8 +66,12 @@ class ChromecastDashboards:
 
         :param uuid: Cast device uuid, as reported by discovery.
         """
-        if unregister_callback := self._unregister_callbacks.pop(str(uuid), None):
+        device_id = str(uuid)
+        if unregister_callback := self._unregister_callbacks.pop(device_id, None):
             unregister_callback()
+        if chromecast := self._dashboard_connections.pop(device_id, None):
+            # non-blocking: close the socket, the daemon thread exits on its own
+            chromecast.disconnect(0)
 
     async def unload(self) -> None:
         """Unregister all dashboard endpoints and disconnect cached on-demand connections."""
@@ -113,10 +117,10 @@ class ChromecastDashboards:
         try:
             await self.mass.loop.run_in_executor(None, send_show_dashboard, chromecast, url)
         except TimeoutError as err:
-            msg = f"Timed out launching app on {chromecast.name}"
+            # the helper's message already carries device name + failure reason
             raise PlayerUnavailableError(
-                msg,
-                translation_key="app_launch_timeout",
+                str(err),
+                translation_key="show_dashboard_failed",
                 translation_owner=self.provider.translation_owner,
                 translation_args=[chromecast.name],
             ) from err

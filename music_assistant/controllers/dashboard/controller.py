@@ -375,7 +375,7 @@ class DashboardController(CoreController):
             if not player_id:
                 msg = "player_id is required to show the now_playing dashboard"
                 raise InvalidCommand(msg)
-            return f"/now-playing?player={player_id}"
+            return f"/now-playing?{urlencode({'player': player_id})}"
         if dashboard == DashboardType.MUSIC_QUIZ:
             return "/music-quiz"
         msg = f"Unsupported dashboard type: {dashboard}"

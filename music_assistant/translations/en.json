@@ -1010,6 +1010,7 @@
   "provider.chromecast.config_entries.use_mass_app.description": "By default, Music Assistant will use a special Music Assistant Cast Receiver app to play media on cast devices. It is tweaked to provide better metadata and future expansion. \n\nIf you want to use the official Google Cast Receiver app instead, disable this option, for example if your device has issues with the Music Assistant app.",
   "provider.chromecast.config_entries.use_mass_app.label": "Use Music Assistant Cast App",
   "provider.chromecast.errors.app_launch_timeout": "Timed out launching app on {0}.",
+  "provider.chromecast.errors.show_dashboard_failed": "Failed to show the dashboard on {0}.",
   "provider.chromecast.manifest.description": "Cast music and podcasts to Chromecast or Google Cast devices.",
   "provider.coverartarchive.manifest.description": "Provides album artwork from the Cover Art Archive, the official artwork repository for MusicBrainz.",
   "provider.deezer.config_entries.arl_token.description": "Your Deezer ARL cookie token. See https://www.dumpmedia.com/deezplus/deezer-arl.html",

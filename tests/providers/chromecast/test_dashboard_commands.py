@@ -97,6 +97,19 @@ def test_unregister_calls_stored_unregister_callback() -> None:
     unregister_callback.assert_called_once()
 
 
+def test_unregister_disconnects_cached_connection() -> None:
+    """Removing a discovered device also drops its cached on-demand connection."""
+    dashboards = _make_dashboards()
+    uuid = uuid4()
+    chromecast = MagicMock()
+    dashboards._dashboard_connections[str(uuid)] = chromecast
+
+    dashboards.unregister(uuid)
+
+    assert not dashboards._dashboard_connections
+    chromecast.disconnect.assert_called_once_with(0)
+
+
 def test_unregister_unknown_device_is_noop() -> None:
     """Unregistering a device that was never registered does not raise."""
     dashboards = _make_dashboards()
@@ -155,7 +168,7 @@ async def test_on_show_raises_for_unknown_device() -> None:
 
 
 async def test_on_show_wraps_timeout_error() -> None:
-    """A TimeoutError from the helper surfaces as a PlayerUnavailableError."""
+    """A TimeoutError from the helper surfaces as PlayerUnavailableError, keeping its reason."""
     dashboards = _make_dashboards()
     device_uuid = uuid4()
     connected_chromecast = MagicMock()
@@ -166,7 +179,7 @@ async def test_on_show_wraps_timeout_error() -> None:
     with (
         patch(
             "music_assistant.providers.chromecast.dashboard.send_show_dashboard",
-            side_effect=TimeoutError,
+            side_effect=TimeoutError("Launching app on Living Room TV failed"),
         ),
         pytest.raises(PlayerUnavailableError) as exc_info,
     ):
@@ -174,7 +187,8 @@ async def test_on_show_wraps_timeout_error() -> None:
             str(device_uuid), DashboardType.PARTY, "https://mass.example.com?path=%2Fparty", None
         )
 
-    assert exc_info.value.translation_key == "app_launch_timeout"
+    assert str(exc_info.value) == "Launching app on Living Room TV failed"
+    assert exc_info.value.translation_key == "show_dashboard_failed"
     assert exc_info.value.translation_owner == "provider.chromecast"
 
 
