@@ -335,6 +335,19 @@ class SendspinProvider(PlayerProvider):
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
+    def on_player_enabled(self, player_id: str) -> None:
+        """Call (by config manager) when a player gets enabled."""
+        # A client that connected while disabled has no player object;
+        # replay the add event so re-enabling takes effect immediately.
+        if (
+            self.server_api.get_client(player_id) is not None
+            and self.mass.players.get_player(player_id) is None
+        ):
+            event_version = self._begin_client_event(player_id)
+            self.mass.create_task(self._handle_client_added(player_id, event_version))
+            return
+        super().on_player_enabled(player_id)
+
     def register_bridge_identifiers(
         self, client_id: str, identifiers: dict[IdentifierType, str]
     ) -> None:
