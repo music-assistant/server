@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
+import hashlib
+import io
 import json
 import logging
+import time
 from html import escape as html_escape
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import quote
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from urllib.parse import quote, urlsplit, urlunsplit
 
+import aiohttp
 from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
@@ -50,6 +55,18 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 _KNOWN_EXTENSIONS = (".mp3", ".json", ".flac", ".aac")
 
+PARTY_CACHE_TTL = 10.0
+PARTY_CALL_TIMEOUT = 5.0
+
+
+class PartyInfo(NamedTuple):
+    """Active-party details resolved from the MA Party plugin."""
+
+    join_url: str
+    name: str | None
+    qr_text: str | None
+    qr_version: str
+
 
 def _int_param(query: MultiMapping[str], name: str, default: int, max_val: int = 10000) -> int:
     """Parse an integer query parameter safely, clamping to [0, max_val]."""
@@ -65,6 +82,42 @@ def _strip_known_extension(value: str) -> str:
         if value.endswith(ext):
             return value[: -len(ext)]
     return value
+
+
+@functools.lru_cache(maxsize=4)
+def _render_qr(join_url: str, kind: str) -> bytes:
+    """
+    Render the join URL as a QR image (blocking on a miss; run in a worker thread).
+
+    Results are memoized — the output only changes when the join code rotates.
+    """
+    import segno  # noqa: PLC0415  # only needed when the Party plugin is used
+
+    buf = io.BytesIO()
+    segno.make(join_url, error="m").save(buf, kind=kind, scale=8)
+    return buf.getvalue()
+
+
+def _render_qr_cover(join_url: str, cover_bytes: bytes) -> bytes:
+    """Render the QR and composite it onto the cover (blocking; run in a worker thread)."""
+    return _stamp_qr_on_cover(cover_bytes, _render_qr(join_url, "png"))
+
+
+def _stamp_qr_on_cover(cover_bytes: bytes, qr_bytes: bytes) -> bytes:
+    """Composite the QR into the cover's bottom-right corner; returns PNG bytes."""
+    from PIL import Image  # noqa: PLC0415  # only needed when the Party plugin is used
+
+    cover = Image.open(io.BytesIO(cover_bytes)).convert("RGB")
+    qr = Image.open(io.BytesIO(qr_bytes)).convert("RGB")
+    # ~28% of the smaller cover side keeps the QR scannable without hiding the art;
+    # NEAREST preserves the hard module edges QR readers need.
+    side = max(48, min(cover.width, cover.height) * 28 // 100)
+    qr = qr.resize((side, side), Image.Resampling.NEAREST)
+    margin = side // 8
+    cover.paste(qr, (cover.width - side - margin, cover.height - side - margin))
+    out = io.BytesIO()
+    cover.save(out, format="PNG")
+    return out.getvalue()
 
 
 def _sort_album_tracks(tracks: list[Any]) -> list[Any]:
@@ -97,7 +150,253 @@ class MSXHTTPServer:
         self._ws_clients: dict[str, set[web.WebSocketResponse]] = {}
         self._active_stream_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._active_stream_transports: dict[str, set[Any]] = {}
+        self._party_cache: tuple[float, PartyInfo | None] | None = None
+        self._qr_cover_cache: dict[tuple[str, str], bytes] = {}
+        self._qr_cover_inflight: dict[tuple[str, str], asyncio.Task[bytes]] = {}
+        self._client_prefixes: dict[str, str] = {}
         self._setup_routes()
+
+    async def start(self) -> None:
+        """Start the HTTP server."""
+        self._runner = web.AppRunner(self.app)
+        await self._runner.setup()
+        # reuse_address + reuse_port allow fast restart after reload.
+        # 0.0.0.0 is required: MSX TVs on LAN must reach this server by host IP;
+        # binding to 127.0.0.1 would prevent TV connections.
+        site = web.TCPSite(
+            self._runner,
+            "0.0.0.0",
+            self.port,
+            reuse_address=True,
+            reuse_port=True,
+        )
+        await site.start()
+        logger.info("MSX Bridge HTTP server started on port %s", self.port)
+
+    async def stop(self) -> None:
+        """Stop the HTTP server."""
+        # iterate over copies: closing a WS wakes its handler, whose cleanup
+        # discards the WS from these collections mid-iteration
+        for clients in list(self._ws_clients.values()):
+            for ws in list(clients):
+                if not ws.closed:
+                    await ws.close()
+        self._ws_clients.clear()
+        for player_id in list(self._active_stream_tasks):
+            self.cancel_streams_for_player(player_id)
+        if self._runner:
+            await self._runner.cleanup()
+            self._runner = None
+        logger.info("MSX Bridge HTTP server stopped")
+
+    def broadcast_play(
+        self,
+        player_id: str,
+        *,
+        title: str | None = None,
+        artist: str | None = None,
+        image_url: str | None = None,
+        duration: int | None = None,
+        next_action: str | None = None,
+        prev_action: str | None = None,
+    ) -> None:
+        """Notify subscribed WebSocket clients to start playback with metadata."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_play: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_play: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+
+        # We always use direct stream for maximum compatibility.
+        play_path = f"/stream/{player_id}"
+
+        payload: dict[str, Any] = {
+            "type": "play",
+            "path": play_path,
+            "player_id": player_id,
+        }
+        if title:
+            payload["title"] = title
+        if artist:
+            payload["artist"] = artist
+        if image_url:
+            # During a party the play background carries the join QR (MSX has
+            # no overlays); the endpoint falls back to the original image when
+            # the party is over, so a stale cache entry here is harmless.
+            if self._cached_party() and (client_prefix := self._client_prefixes.get(player_id)):
+                image_url = (
+                    f"{client_prefix}/api/party/qr-cover.png?image={quote(image_url, safe='')}"
+                )
+            payload["image_url"] = image_url
+        if duration is not None:
+            payload["duration"] = duration
+        if next_action:
+            payload["next_action"] = next_action
+        if prev_action:
+            payload["prev_action"] = prev_action
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_playlist(self, player_id: str, playlist_url: str) -> None:
+        """Notify subscribed WebSocket clients to load an MSX native playlist."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_playlist: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_playlist: player_id=%s, url=%s, sending to %d client(s)",
+            player_id,
+            playlist_url,
+            len(clients),
+        )
+        payload: dict[str, Any] = {
+            "type": "playlist",
+            "url": playlist_url,
+            "player_id": player_id,
+        }
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_sendspin(self, player_id: str, url: str) -> None:
+        """Notify WebSocket clients to open the Sendspin kiosk (bridge stream start)."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_sendspin: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_sendspin: player_id=%s, url=%s, sending to %d client(s)",
+            player_id,
+            url,
+            len(clients),
+        )
+        msg = json.dumps({"type": "sendspin", "url": url, "player_id": player_id})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_goto_index(self, player_id: str, index: int) -> None:
+        """Notify subscribed WebSocket clients to jump to a playlist index."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        logger.info(
+            "broadcast_goto_index: player_id=%s, index=%d, sending to %d client(s)",
+            player_id,
+            index,
+            len(clients),
+        )
+        payload: dict[str, Any] = {"type": "goto_index", "index": index}
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def cancel_streams_for_player(self, player_id: str) -> None:
+        """Cancel stream tasks and abort connections for the given player."""
+        tasks = self._active_stream_tasks.pop(player_id, set())
+        transports = self._active_stream_transports.pop(player_id, set())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for transport in transports:
+            with contextlib.suppress(Exception):
+                if transport and hasattr(transport, "abort"):
+                    transport.abort()
+        if tasks or transports:
+            logger.debug(
+                "Cancelled %d task(s), aborted %d transport(s) for player %s",
+                len(tasks),
+                len(transports),
+                player_id,
+            )
+
+    def broadcast_pause(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to pause playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        logger.info(
+            "broadcast_pause: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+        msg = json.dumps({"type": "pause"})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_resume(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to resume playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            return
+        logger.info(
+            "broadcast_resume: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+        msg = json.dumps({"type": "resume"})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_stop(self, player_id: str) -> None:
+        """Notify subscribed WebSocket clients to stop playback."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.warning(
+                "broadcast_stop: no WebSocket clients for player_id=%s (connected: %s)",
+                player_id,
+                list(self._ws_clients.keys()),
+            )
+            return
+        logger.info(
+            "broadcast_stop: player_id=%s, sending to %d client(s)",
+            player_id,
+            len(clients),
+        )
+        show_notification = self.provider.config.get_value(
+            CONF_SHOW_STOP_NOTIFICATION, DEFAULT_SHOW_STOP_NOTIFICATION
+        )
+        payload: dict[str, Any] = {
+            "type": "stop",
+            "showNotification": bool(show_notification),
+        }
+        msg = json.dumps(payload)
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
+
+    def broadcast_seek(self, player_id: str, position_seconds: int) -> None:
+        """Notify subscribed WebSocket clients to seek to a position."""
+        clients = self._ws_clients.get(player_id, set())
+        if not clients:
+            logger.debug("broadcast_seek: no WebSocket clients for player_id=%s", player_id)
+            return
+        msg = json.dumps({"type": "seek", "position": position_seconds})
+        for ws in list(clients):
+            if not ws.closed:
+                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     def _setup_routes(self) -> None:
         """Register all HTTP routes."""
@@ -129,6 +428,7 @@ class MSXHTTPServer:
         self.app.router.add_get("/msx/search-page.json", self._handle_msx_search_page)
         self.app.router.add_get("/msx/search-input.json", self._handle_msx_search_input)
         self.app.router.add_get("/msx/search.json", self._handle_msx_search)
+        self.app.router.add_get("/msx/party.json", self._handle_msx_party)
 
         # MSX detail pages
         self.app.router.add_get("/msx/albums/{item_id}/tracks.json", self._handle_msx_album_tracks)
@@ -188,14 +488,23 @@ class MSXHTTPServer:
         self.app.router.add_get("/api/recently-played", self._handle_recently_played)
         self.app.router.add_get("/api/lyrics/{player_id}", self._handle_lyrics)
         self.app.router.add_get("/api/queue/{player_id}", self._handle_queue)
+        self.app.router.add_get("/api/party", self._handle_party_status)
+        self.app.router.add_get("/api/party/qr.svg", self._handle_party_qr)
+        self.app.router.add_get("/api/party/qr.png", self._handle_party_qr)
+        self.app.router.add_get("/api/party/qr-cover.png", self._handle_party_qr_cover)
 
-        # Playback control
+        # Playback control — GET (MSX interaction plugin) + POST (web player,
+        # dashboard). Never wildcard: extra methods only widen the CSRF surface.
         self.app.router.add_post("/api/play", self._handle_play)
-        self.app.router.add_route("*", "/api/pause/{player_id}", self._handle_pause)
-        self.app.router.add_route("*", "/api/stop/{player_id}", self._handle_stop)
-        self.app.router.add_route("*", "/api/quick-stop/{player_id}", self._handle_quick_stop)
-        self.app.router.add_route("*", "/api/next/{player_id}", self._handle_next)
-        self.app.router.add_route("*", "/api/previous/{player_id}", self._handle_previous)
+        for path, handler in (
+            ("/api/pause/{player_id}", self._handle_pause),
+            ("/api/stop/{player_id}", self._handle_stop),
+            ("/api/quick-stop/{player_id}", self._handle_quick_stop),
+            ("/api/next/{player_id}", self._handle_next),
+            ("/api/previous/{player_id}", self._handle_previous),
+        ):
+            self.app.router.add_get(path, handler)
+            self.app.router.add_post(path, handler)
 
     # --- Server Lifecycle ---
 
@@ -220,37 +529,6 @@ class MSXHTTPServer:
         response: web.StreamResponse = await handler(request)
         response.headers["Access-Control-Allow-Origin"] = "*"
         return response
-
-    async def start(self) -> None:
-        """Start the HTTP server."""
-        self._runner = web.AppRunner(self.app)
-        await self._runner.setup()
-        # reuse_address + reuse_port allow fast restart after reload.
-        # 0.0.0.0 is required: MSX TVs on LAN must reach this server by host IP;
-        # binding to 127.0.0.1 would prevent TV connections.
-        site = web.TCPSite(
-            self._runner,
-            "0.0.0.0",
-            self.port,
-            reuse_address=True,
-            reuse_port=True,
-        )
-        await site.start()
-        logger.info("MSX Bridge HTTP server started on port %s", self.port)
-
-    async def stop(self) -> None:
-        """Stop the HTTP server."""
-        for clients in self._ws_clients.values():
-            for ws in clients:
-                if not ws.closed:
-                    await ws.close()
-        self._ws_clients.clear()
-        for player_id in list(self._active_stream_tasks):
-            self.cancel_streams_for_player(player_id)
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        logger.info("MSX Bridge HTTP server stopped")
 
     # --- MSX Bootstrap Routes ---
 
@@ -299,6 +577,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
   background: #1976d2; color: white; cursor: pointer; font-size: 14px; }}
 .btn:hover {{ background: #1565c0; }}
 .link-row {{ margin: 8px 0; }}
+.builder-row {{ margin: 6px 0; }}
+.builder-row label {{ margin-right: 16px; cursor: pointer; }}
 .link-row a {{ color: #1976d2; text-decoration: none; }}
 .link-row a:hover {{ text-decoration: underline; }}
 small {{ color: #666; display: block; margin-top: 4px; }}
@@ -338,6 +618,54 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 <strong>Custom Sendspin URL:</strong><br>
 <code>/web?kiosk=1&amp;sendspin=1&amp;sendspin_url=http://&lt;ma-server&gt;:8927</code>
 </div>
+</div>
+
+<div class="info">
+<h3>Kiosk URL Builder</h3>
+<div id="kiosk-builder">
+<div class="builder-row">
+<label><input type="radio" name="kiosk-mode" value="html5" checked> HTML5</label>
+<label><input type="radio" name="kiosk-mode" value="sendspin"> Sendspin</label>
+</div>
+<div class="builder-row">
+<label><input type="checkbox" data-kiosk-param="controls" checked> Controls</label>
+<label><input type="checkbox" data-kiosk-param="party" checked> Party QR</label>
+<label><input type="checkbox" data-kiosk-param="viz" checked> Visualizer</label>
+<label><input type="checkbox" data-kiosk-param="lyrics" checked> Lyrics</label>
+</div>
+<div class="link-row">
+<a id="kiosk-builder-link" href="/web?kiosk=1" target="_blank">Open kiosk</a>
+</div>
+<code id="kiosk-builder-url"></code>
+</div>
+<script>
+(function () {{
+    var builder = document.getElementById('kiosk-builder');
+    var link = document.getElementById('kiosk-builder-link');
+    var urlOut = document.getElementById('kiosk-builder-url');
+
+    function rebuild() {{
+        var params = ['kiosk=1'];
+        var mode = builder.querySelector('input[name="kiosk-mode"]:checked').value;
+        if (mode === 'sendspin') {{
+            params.push('sendspin=1');
+        }}
+        var boxes = builder.querySelectorAll('input[data-kiosk-param]');
+        for (var i = 0; i < boxes.length; i++) {{
+            // only non-default choices land in the URL
+            if (!boxes[i].checked) {{
+                params.push(boxes[i].getAttribute('data-kiosk-param') + '=0');
+            }}
+        }}
+        var url = location.origin + '/web?' + params.join('&');
+        link.href = url;
+        urlOut.textContent = url;
+    }}
+
+    builder.addEventListener('change', rebuild);
+    rebuild();
+}})();
+</script>
 </div>
 
 <div class="info">
@@ -435,6 +763,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             ("Tracks", "msx-white-soft:audiotrack", f"{prefix}/msx/tracks.json"),
             ("Search", "search", f"{prefix}/msx/search-page.json"),
         ]
+        if await self._get_active_party() is not None:
+            items.append(("Party", "msx-white-soft:qr-code", f"{prefix}/msx/party.json"))
         content = MsxContent(
             headline="Music Assistant",
             template=MsxTemplate(
@@ -727,6 +1057,29 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         )
         return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
 
+    async def _handle_msx_party(self, request: web.Request) -> web.Response:
+        """Return MSX page with the party QR code, or a hint when no party is active."""
+        await self._ensure_player_for_request(request)
+        prefix = self._get_prefix(request)
+        party = await self._get_active_party()
+        if party is None:
+            item = MsxItem(
+                title="No active party",
+                label="Enable guest access in the Music Assistant Party plugin",
+            )
+        else:
+            # PNG, not SVG: MSX image slots on older TV engines cannot decode SVG
+            item = MsxItem(
+                image=f"{prefix}/api/party/qr.png",
+                label=party.qr_text or "Scan to join the party",
+            )
+        content = MsxContent(
+            headline=(party.name if party else None) or "Party",
+            template=MsxTemplate(type="separate", layout="0,0,4,4"),
+            items=[item],
+        )
+        return web.json_response(content.model_dump(by_alias=True, exclude_none=True))
+
     async def _build_search_items(
         self,
         query: str,
@@ -890,6 +1243,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -913,6 +1267,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -933,6 +1288,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -951,6 +1307,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -973,6 +1330,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -1013,6 +1371,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             player_id,
             self.provider,
             device_param,
+            qr_cover_base=await self._qr_cover_base(prefix),
         )
         return web.json_response(playlist.model_dump(by_alias=True, exclude_none=True))
 
@@ -1050,6 +1409,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             if from_playlist:
                 player._skip_ws_notify = True
 
+            # Arm BEFORE enqueuing so wait_for_media() waits for the new track's
+            # play_media() instead of returning the previous track's media.
+            player.expect_new_media()
             try:
                 async with ImpersonatedUser(
                     self.provider.mass, await self.provider.get_owner_username()
@@ -1143,18 +1505,11 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """
         player_id = player.player_id
 
-        # Resolve effective output format: per-player config overrides provider default.
-        # CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 uses key "output_codec"; fall back to
-        # player.output_format (set from provider-level config during registration).
-        effective_format = cast(
-            "str",
-            player.config.get_value("output_codec", player.output_format),
-        )
-
         # --- Mode 1: MA Redirect ---
         if self.provider.is_redirect_stream_mode():
-            redirect_url = await self.provider.get_ma_stream_url(media, effective_format)
+            redirect_url = await self.provider.get_ma_stream_url(player_id, media)
             if redirect_url:
+                redirect_url = self._rewrite_stream_host(request, redirect_url)
                 logger.info(
                     "[StreamMode:redirect] Player %s -> MA Streamserver: %s",
                     player_id,
@@ -1167,6 +1522,16 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                 "falling back to independent mode",
                 player_id,
             )
+
+        # Resolve effective output format: per-player config overrides provider default.
+        # CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 uses key "output_codec"; fall back to
+        # player.output_format (set from provider-level config during registration).
+        # Only the proxy paths below need this — in redirect mode the MA streamserver
+        # applies the same per-player codec config itself.
+        effective_format = cast(
+            "str",
+            player.config.get_value("output_codec", player.output_format),
+        )
 
         pcm_format, out_format, headers = self._build_audio_params(
             effective_format,
@@ -1555,119 +1920,6 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
         return ws
 
-    def broadcast_play(
-        self,
-        player_id: str,
-        *,
-        title: str | None = None,
-        artist: str | None = None,
-        image_url: str | None = None,
-        duration: int | None = None,
-        next_action: str | None = None,
-        prev_action: str | None = None,
-    ) -> None:
-        """Notify subscribed WebSocket clients to start playback with metadata."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.warning(
-                "broadcast_play: no WebSocket clients for player_id=%s (connected: %s)",
-                player_id,
-                list(self._ws_clients.keys()),
-            )
-            return
-        logger.info(
-            "broadcast_play: player_id=%s, sending to %d client(s)",
-            player_id,
-            len(clients),
-        )
-
-        # We always use direct stream for maximum compatibility.
-        play_path = f"/stream/{player_id}"
-
-        payload: dict[str, Any] = {
-            "type": "play",
-            "path": play_path,
-            "player_id": player_id,
-        }
-        if title:
-            payload["title"] = title
-        if artist:
-            payload["artist"] = artist
-        if image_url:
-            payload["image_url"] = image_url
-        if duration is not None:
-            payload["duration"] = duration
-        if next_action:
-            payload["next_action"] = next_action
-        if prev_action:
-            payload["prev_action"] = prev_action
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_playlist(self, player_id: str, playlist_url: str) -> None:
-        """Notify subscribed WebSocket clients to load an MSX native playlist."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.warning(
-                "broadcast_playlist: no WebSocket clients for player_id=%s (connected: %s)",
-                player_id,
-                list(self._ws_clients.keys()),
-            )
-            return
-        logger.info(
-            "broadcast_playlist: player_id=%s, url=%s, sending to %d client(s)",
-            player_id,
-            playlist_url,
-            len(clients),
-        )
-        payload: dict[str, Any] = {
-            "type": "playlist",
-            "url": playlist_url,
-            "player_id": player_id,
-        }
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_goto_index(self, player_id: str, index: int) -> None:
-        """Notify subscribed WebSocket clients to jump to a playlist index."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            return
-        logger.info(
-            "broadcast_goto_index: player_id=%s, index=%d, sending to %d client(s)",
-            player_id,
-            index,
-            len(clients),
-        )
-        payload: dict[str, Any] = {"type": "goto_index", "index": index}
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def cancel_streams_for_player(self, player_id: str) -> None:
-        """Cancel stream tasks and abort connections for the given player."""
-        tasks = self._active_stream_tasks.pop(player_id, set())
-        transports = self._active_stream_transports.pop(player_id, set())
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        for transport in transports:
-            with contextlib.suppress(Exception):
-                if transport and hasattr(transport, "abort"):
-                    transport.abort()
-        if tasks or transports:
-            logger.debug(
-                "Cancelled %d task(s), aborted %d transport(s) for player %s",
-                len(tasks),
-                len(transports),
-                player_id,
-            )
-
     def _register_stream(self, player_id: str, task: asyncio.Task[None], transport: Any) -> None:
         """Register active stream task and transport for cancel on stop."""
         if player_id not in self._active_stream_tasks:
@@ -1689,74 +1941,6 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if not self._active_stream_tasks[player_id]:
             del self._active_stream_tasks[player_id]
             del self._active_stream_transports[player_id]
-
-    def broadcast_pause(self, player_id: str) -> None:
-        """Notify subscribed WebSocket clients to pause playback."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            return
-        logger.info(
-            "broadcast_pause: player_id=%s, sending to %d client(s)",
-            player_id,
-            len(clients),
-        )
-        msg = json.dumps({"type": "pause"})
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_resume(self, player_id: str) -> None:
-        """Notify subscribed WebSocket clients to resume playback."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            return
-        logger.info(
-            "broadcast_resume: player_id=%s, sending to %d client(s)",
-            player_id,
-            len(clients),
-        )
-        msg = json.dumps({"type": "resume"})
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_stop(self, player_id: str) -> None:
-        """Notify subscribed WebSocket clients to stop playback."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.warning(
-                "broadcast_stop: no WebSocket clients for player_id=%s (connected: %s)",
-                player_id,
-                list(self._ws_clients.keys()),
-            )
-            return
-        logger.info(
-            "broadcast_stop: player_id=%s, sending to %d client(s)",
-            player_id,
-            len(clients),
-        )
-        show_notification = self.provider.config.get_value(
-            CONF_SHOW_STOP_NOTIFICATION, DEFAULT_SHOW_STOP_NOTIFICATION
-        )
-        payload: dict[str, Any] = {
-            "type": "stop",
-            "showNotification": bool(show_notification),
-        }
-        msg = json.dumps(payload)
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
-
-    def broadcast_seek(self, player_id: str, position_seconds: int) -> None:
-        """Notify subscribed WebSocket clients to seek to a position."""
-        clients = self._ws_clients.get(player_id, set())
-        if not clients:
-            logger.debug("broadcast_seek: no WebSocket clients for player_id=%s", player_id)
-            return
-        msg = json.dumps({"type": "seek", "position": position_seconds})
-        for ws in list(clients):
-            if not ws.closed:
-                self.provider.mass.create_task(self._ws_send(ws, msg, player_id))
 
     async def _ws_send(
         self, ws: web.WebSocketResponse, text: str, player_id: str | None = None
@@ -2109,10 +2293,225 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
         return web.json_response({"items": items, "current_index": current_index})
 
+    # --- Party Mode ---
+
+    def _cached_party(self) -> PartyInfo | None:
+        """Return the last cached party state without refreshing (sync contexts)."""
+        return self._party_cache[1] if self._party_cache else None
+
+    async def _qr_cover_base(self, prefix: str) -> str | None:
+        """Return the QR-cover endpoint base when a party is active, else None."""
+        if await self._get_active_party() is None:
+            return None
+        return f"{prefix}/api/party/qr-cover.png"
+
+    async def _get_active_party(self) -> PartyInfo | None:
+        """
+        Return details of the active party, or None when no party is active.
+
+        Never raises: a broken or slow Party plugin degrades to "no party" so
+        the core UI (menu, kiosk) keeps working. Results are cached briefly.
+        """
+        now = time.monotonic()
+        if self._party_cache is not None and now - self._party_cache[0] < PARTY_CACHE_TTL:
+            return self._party_cache[1]
+        info: PartyInfo | None = None
+        try:
+            party = cast("Any", self.provider.mass.get_provider("party"))
+            if party is not None:
+                join_url = await asyncio.wait_for(party.get_party_url(), PARTY_CALL_TIMEOUT)
+                if join_url:
+                    config = await asyncio.wait_for(party.get_party_config(), PARTY_CALL_TIMEOUT)
+                    info = PartyInfo(
+                        join_url=join_url,
+                        name=getattr(config, "party_name", None),
+                        qr_text=getattr(config, "qr_text", None),
+                        qr_version=hashlib.sha256(join_url.encode()).hexdigest()[:12],
+                    )
+        except Exception:
+            logger.warning("Party plugin status check failed", exc_info=True)
+        self._party_cache = (now, info)
+        return info
+
+    async def _handle_party_status(self, _request: web.Request) -> web.Response:
+        """Return party status for the kiosk overlay."""
+        party = await self._get_active_party()
+        if party is None:
+            return web.json_response({"active": False})
+        # the join URL itself is deliberately not exposed — clients only get the QR
+        # image URL (relative, so it works behind reverse proxies) plus an opaque
+        # version so they refetch the image only when the join code rotates
+        return web.json_response(
+            {
+                "active": True,
+                "name": party.name,
+                "qr_text": party.qr_text,
+                "qr_url": "/api/party/qr.svg",
+                "qr_version": party.qr_version,
+            }
+        )
+
+    async def _handle_party_qr(self, request: web.Request) -> web.Response:
+        """Serve the guest join URL as a QR code image (SVG or PNG by route)."""
+        party = await self._get_active_party()
+        if party is None:
+            return web.Response(status=404, text="No active party")
+        kind = "png" if request.path.endswith(".png") else "svg"
+        body = await asyncio.to_thread(_render_qr, party.join_url, kind)
+        return web.Response(
+            body=body,
+            content_type="image/png" if kind == "png" else "image/svg+xml",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def _handle_party_qr_cover(self, request: web.Request) -> web.Response:
+        """
+        Serve a cover image with the party QR stamped into its corner (PNG).
+
+        MSX cannot render overlays, so during a party the playback background
+        is routed through this endpoint. Degrades to a redirect to the
+        original image when the party ended, the source is not ours, or the
+        fetch/composite fails — stale playlist JSON on TVs keeps working.
+        """
+        image_url = request.query.get("image", "")
+        if not image_url:
+            return web.Response(status=400, text="Missing image parameter")
+        # Reject non-MA sources outright — redirecting would be an open
+        # redirect and fetching would be an SSRF proxy.
+        if not self._is_allowed_cover_source(request, image_url):
+            return web.Response(status=400, text="Image source not permitted")
+        party = await self._get_active_party()
+        if party is None:
+            raise web.HTTPFound(location=image_url)
+        cache_key = (image_url, party.qr_version)
+        if (cached := self._qr_cover_cache.get(cache_key)) is None:
+            try:
+                # shield: a TV dropping its request must not cancel the shared
+                # render — late joiners and the cache still get the result
+                cached = await asyncio.shield(
+                    self._qr_cover_task(cache_key, image_url, party.join_url)
+                )
+            except Exception as err:
+                logger.debug("QR cover composite failed for %s: %s", image_url, err)
+                raise web.HTTPFound(location=image_url) from None
+        return web.Response(
+            body=cached,
+            content_type="image/png",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    def _qr_cover_task(
+        self, cache_key: tuple[str, str], image_url: str, join_url: str
+    ) -> asyncio.Task[bytes]:
+        """Return the in-flight render task for this cover, starting one if needed."""
+        if (task := self._qr_cover_inflight.get(cache_key)) is None:
+            task = asyncio.create_task(self._fetch_and_render_cover(cache_key, image_url, join_url))
+            self._qr_cover_inflight[cache_key] = task
+
+            def _cleanup(finished: asyncio.Task[bytes]) -> None:
+                self._qr_cover_inflight.pop(cache_key, None)
+                # consume the exception so a task whose waiters were all
+                # cancelled never logs "exception was never retrieved"
+                if not finished.cancelled():
+                    finished.exception()
+
+            task.add_done_callback(_cleanup)
+        return task
+
+    async def _fetch_and_render_cover(
+        self, cache_key: tuple[str, str], image_url: str, join_url: str
+    ) -> bytes:
+        """Fetch the cover, composite the QR onto it, and cache the PNG."""
+        async with self.provider.mass.http_session.get(
+            image_url,
+            timeout=aiohttp.ClientTimeout(total=10),
+            allow_redirects=False,
+        ) as resp:
+            if resp.status != 200:
+                raise ValueError(f"cover fetch returned HTTP {resp.status}")
+            cover_bytes = await resp.read()
+        # PIL decode/re-encode blocks; on this loop it would stall audio
+        # streaming for every player, so hop to a worker thread
+        rendered = await asyncio.to_thread(_render_qr_cover, join_url, cover_bytes)
+        # QR rotation changes the cache key; keep the cache tiny and bounded
+        if len(self._qr_cover_cache) >= 32:
+            self._qr_cover_cache.clear()
+        self._qr_cover_cache[cache_key] = rendered
+        return rendered
+
+    @staticmethod
+    def _rewrite_stream_host(request: web.Request, url: str) -> str:
+        """
+        Point a stream URL at the host the client already uses to reach us.
+
+        The MA streamserver advertises its own IP, which is unreachable for
+        the TV when MA runs behind Docker/NAT. The host the TV used for this
+        request is known-good, so only the URL's host is replaced — scheme,
+        port, path and query are preserved.
+        """
+        client_host = request.url.host
+        if not client_host:
+            return url
+        parts = urlsplit(url)
+        if ":" in client_host:  # IPv6 literals need brackets in a netloc
+            client_host = f"[{client_host}]"
+        netloc = f"{client_host}:{parts.port}" if parts.port else client_host
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+    @staticmethod
+    def _url_origin(url: str) -> tuple[str, str | None, int | None]:
+        """Return (scheme, hostname, port); raises ValueError on malformed URLs."""
+        parts = urlsplit(url)
+        # .port is lazy and raises on garbage like "host:8095.evil.example"
+        return (parts.scheme, parts.hostname, parts.port)
+
+    def _is_allowed_cover_source(self, request: web.Request, image_url: str) -> bool:
+        """Only composite covers served by this provider or MA itself (no open proxy)."""
+        try:
+            target_origin = self._url_origin(image_url)
+        except ValueError:
+            return False
+        if target_origin[0] not in ("http", "https") or not target_origin[1]:
+            return False
+        allowed_bases = [self._get_prefix(request)]
+        for source in (
+            getattr(self.provider.mass, "webserver", None),
+            getattr(self.provider.mass, "streams", None),
+        ):
+            base_url = getattr(source, "base_url", None)
+            if isinstance(base_url, str) and base_url.startswith("http"):
+                allowed_bases.append(base_url)
+        # Compare parsed origins, not string prefixes: "http://ma:8095.evil.com"
+        # must not pass for the allowed base "http://ma:8095".
+        for base in allowed_bases:
+            try:
+                if target_origin == self._url_origin(base):
+                    return True
+            except ValueError:
+                continue
+        return False
+
     # --- Playback Control ---
+
+    @staticmethod
+    def _reject_cross_site(request: web.Request) -> web.Response | None:
+        """
+        Reject browser cross-site requests to state-changing endpoints (CSRF guard).
+
+        Any web page can fire an unauthenticated GET at this LAN server via an
+        img/script tag; modern browsers mark such requests with
+        Sec-Fetch-Site: cross-site. Legitimate callers are same-origin (web
+        player, MSX interaction plugin, dashboard) or non-browser clients that
+        omit the header entirely — both pass.
+        """
+        if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+            return web.json_response({"error": "Cross-site request rejected"}, status=403)
+        return None
 
     async def _handle_play(self, request: web.Request) -> web.Response:
         """Start playback of a track."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         try:
             body = await request.json()
         except Exception:
@@ -2132,6 +2531,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         """Pause playback."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2141,6 +2542,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_stop(self, request: web.Request) -> web.Response:
         """Stop playback."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2150,6 +2553,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_quick_stop(self, request: web.Request) -> web.Response:
         """Stop playback on MSX immediately (same signal as Disable)."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2163,6 +2568,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_next(self, request: web.Request) -> web.Response:
         """Skip to next track."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2172,6 +2579,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
     async def _handle_previous(self, request: web.Request) -> web.Response:
         """Skip to previous track."""
+        if rejected := self._reject_cross_site(request):
+            return rejected
         player_id = _strip_known_extension(request.match_info["player_id"])
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
@@ -2244,6 +2653,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         Player may be None if registration failed.
         """
         player_id, device_param = self._get_player_id_and_device_param(request)
+        # Remember how this client reaches us — WS pushes have no request context
+        self._client_prefixes[player_id] = self._get_prefix(request)
         remote_ip = request.remote
         # Web player clients pass source=web to distinguish from MSX TV players
         prefix_label = "WEB TV" if request.query.get("source") == "web" else "MSX TV"
