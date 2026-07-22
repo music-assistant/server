@@ -382,7 +382,7 @@ class MusicAssistant:
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
 
     @api_command("providers/icon", required_scope=Scope.PROVIDERS_READ)
-    def get_provider_icon_data_uri(
+    def get_provider_icon_data(
         self,
         provider: str,
         variant: ProviderIconVariant = ProviderIconVariant.DEFAULT,
