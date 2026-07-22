@@ -546,16 +546,8 @@ class PartyPlugin(PluginProvider):
 
         :returns: The guest join URL, or None if guest access is disabled.
         """
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return None
-
-        guest_user = await guest_access.get_or_create_guest_user(
-            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
-        )
-        code = await guest_access.get_or_create_join_code(
-            self.mass, guest_user, device_name="Party Guest"
-        )
-        return guest_access.build_join_url(self.mass, code)
+        url, _ = await self._get_party_url_and_expiry()
+        return url
 
     async def get_party_player(self) -> str | None:
         """
@@ -1087,25 +1079,29 @@ class PartyPlugin(PluginProvider):
                 PARTY_GUEST_USER,
             )
 
-    async def _schedule_join_code_expiry_timer(self) -> None:
+    async def _get_party_url_and_expiry(self) -> tuple[str | None, datetime | None]:
+        """Fetch the party URL and the active join code expiry datetime in one pass."""
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            return None, None
+
+        guest_user = await guest_access.get_or_create_guest_user(
+            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
+        )
+        code = await guest_access.get_or_create_join_code(
+            self.mass, guest_user, device_name="Party Guest"
+        )
+        expiry = await self.mass.webserver.auth.get_join_code_expiry(code, guest_user)
+        url = guest_access.build_join_url(self.mass, code)
+        return url, expiry
+
+    async def _schedule_join_code_expiry_timer(self, expiry: datetime | None) -> None:
         """Schedule a task that fires when the active join code expires."""
         # Cancel any existing timer
         if self._expiry_task:
             self._expiry_task.cancel()
             self._expiry_task = None
 
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return
-
-        guest_user = await guest_access.get_or_create_guest_user(
-            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
-        )
-        active_code = await self.mass.webserver.auth.get_active_join_code(guest_user)
-        if not active_code:
-            return
-
-        expiry = await self.mass.webserver.auth.get_join_code_expiry(active_code, guest_user)
-        if not expiry:
+        if not expiry or not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return
 
         async def _on_code_expired(code_expiry: datetime) -> None:
@@ -1125,7 +1121,7 @@ class PartyPlugin(PluginProvider):
     async def _push_url_update(self) -> None:
         """Push a URL/QR update event to subscribers if the party URL has changed."""
         try:
-            url = await self.get_party_url()
+            url, expiry = await self._get_party_url_and_expiry()
         except Exception as err:
             self.logger.error("Failed to resolve party URL: %s", err, exc_info=err)
             return
@@ -1140,7 +1136,7 @@ class PartyPlugin(PluginProvider):
         # Only push if the URL actually changed
         if url == self._last_pushed_url:
             # Still reschedule the expiry timer (url is the same but code might be refreshed)
-            await self._schedule_join_code_expiry_timer()
+            await self._schedule_join_code_expiry_timer(expiry)
             return
 
         self._last_pushed_url = url
@@ -1153,7 +1149,7 @@ class PartyPlugin(PluginProvider):
         )
         self.logger.debug("Pushed party URL and QR update: %s", url)
 
-        await self._schedule_join_code_expiry_timer()
+        await self._schedule_join_code_expiry_timer(expiry)
 
     async def _on_core_state_updated(self, event: MassEvent) -> None:
         """Handle core state changes (remote access toggle changes the URL format)."""
