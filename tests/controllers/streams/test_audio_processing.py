@@ -470,14 +470,12 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     )
 
     assert plan.filter_params[0] == "volume=-1.0dB"
-    assert "pan=mono|c0=FL" in plan.filter_params
-    assert plan.filter_params[-1] == "alimiter=limit=-2dB:level=false:asc=true"
+    assert plan.filter_params[-1] == "pan=mono|c0=FL"
     assert plan.output_details.dsp == AudioDSPDetails(
         state=DSPState.ENABLED,
         input_gain=-1.0,
         filters=[ToneControlFilter(enabled=True, bass_level=2.0)],
         output_gain=-0.5,
-        output_limiter=True,
         preset_id="night",
     )
     assert plan.dsp_config_id == "player-1"
@@ -584,7 +582,6 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
     assert plan.output_details.dsp.preset_id == "parent-preset"
     assert plan.dsp_config_id == "player-1"
     assert plan.output_details.source_channel == AudioChannel.FR
-    assert not plan.output_details.dsp.output_limiter
     assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
         "player-1"
     }
