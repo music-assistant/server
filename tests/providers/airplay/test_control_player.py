@@ -177,6 +177,26 @@ async def test_config_entries_keep_pairing_sections_separate() -> None:
     assert CONF_NATIVE_MRP_CREDENTIALS in keys
 
 
+async def test_stored_credentials_never_exposed_in_config_entries() -> None:
+    """Stored pairing secrets are not included in the config-entry payload."""
+    player = _make_control_player(
+        config_values={
+            CONF_COMPANION_CREDENTIALS: "companion-creds",
+            CONF_MRP_CREDENTIALS: "mrp-creds",
+            CONF_NATIVE_MRP_CREDENTIALS: "native-creds",
+        }
+    )
+
+    entries = await player.get_config_entries()
+
+    credential_keys = (
+        CONF_COMPANION_CREDENTIALS,
+        CONF_MRP_CREDENTIALS,
+        CONF_NATIVE_MRP_CREDENTIALS,
+    )
+    assert all(entry.value is None for entry in entries if entry.key in credential_keys)
+
+
 def test_mute_feature_follows_available_control_path() -> None:
     """Mute is available only for an active stream or native absolute volume."""
     player = _make_control_player()
@@ -848,9 +868,10 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     player = provider.mass.players.register.await_args.args[0]
     assert isinstance(player, GenericAirPlayPlayer)
     control_lookups = [
-        call
-        for call in provider.mass.discovery.async_find_mdns_service.await_args_list
-        if call.args and call.args[0] in (COMPANION_DISCOVERY_TYPE, MRP_DISCOVERY_TYPE)
+        lookup_call
+        for lookup_call in provider.mass.discovery.async_find_mdns_service.await_args_list
+        if lookup_call.args
+        and lookup_call.args[0] in (COMPANION_DISCOVERY_TYPE, MRP_DISCOVERY_TYPE)
     ]
     assert not control_lookups
 

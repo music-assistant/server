@@ -738,7 +738,14 @@ class AirPlayControlPlayer(AirPlayPlayer):
                         ),
                     ]
                 )
-        entries.append(self._get_hidden_credentials_entry(CONF_COMPANION_CREDENTIALS, credentials))
+        # Only in-flight values are echoed back; stored secrets must never be
+        # included in the config-entry payload.
+        entries.append(
+            self._get_hidden_credentials_entry(
+                CONF_COMPANION_CREDENTIALS,
+                values.get(CONF_COMPANION_CREDENTIALS) if values is not None else None,
+            )
+        )
         return entries
 
     def _get_mrp_config_entries(
@@ -801,12 +808,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
                         ),
                     ]
                 )
+        # Only in-flight values are echoed back; stored secrets must never be
+        # included in the config-entry payload.
         entries.extend(
             self._get_hidden_credentials_entry(
                 credentials_key,
-                values.get(credentials_key)
-                if values is not None
-                else self.config.get_value(credentials_key),
+                values.get(credentials_key) if values is not None else None,
             )
             for credentials_key in (CONF_MRP_CREDENTIALS, CONF_NATIVE_MRP_CREDENTIALS)
         )
