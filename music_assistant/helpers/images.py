@@ -830,16 +830,6 @@ async def detect_provider_icons(
     return icons
 
 
-async def get_icon_string(icon_path: str) -> str:
-    """Get svg icon as string."""
-    ext = icon_path.rsplit(".", maxsplit=1)[-1]
-    assert ext == "svg"
-    async with aiofiles.open(icon_path) as _file:
-        xml_data = await _file.read()
-        assert isinstance(xml_data, str)  # for type checking
-        return xml_data.replace("\n", "").strip()
-
-
 def _thumb_cache_filepath(mass: MusicAssistant, cache_filename: str) -> str:
     """Return a validated absolute path for a thumbnail cache filename."""
     thumb_dir = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
