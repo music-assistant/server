@@ -773,6 +773,29 @@ async def test_companion_discovery_is_attached_and_retained_during_sleep() -> No
     assert provider._companion_info_by_address["192.168.1.10"] is info
 
 
+async def test_control_service_cache_prunes_addresses_no_longer_advertised() -> None:
+    """A control service that moves to a new address leaves no stale cache entry."""
+    provider = AirPlayProvider.__new__(AirPlayProvider)
+    provider.mass = MagicMock()
+    provider._companion_info_by_address = {}
+    provider.get_players = MagicMock(return_value=[])  # type: ignore[method-assign]
+    info = _service_info(COMPANION_DISCOVERY_TYPE)
+    other_info = _service_info(COMPANION_DISCOVERY_TYPE, address="192.168.1.60")
+    other_info.name = f"other.{COMPANION_DISCOVERY_TYPE}"
+    moved_info = _service_info(COMPANION_DISCOVERY_TYPE, address="192.168.1.40")
+
+    for service_info in (info, other_info, moved_info):
+        await provider._handle_companion_service_state_change(
+            service_info.name,
+            ServiceStateChange.Updated,
+            service_info,
+        )
+
+    assert "192.168.1.10" not in provider._companion_info_by_address
+    assert provider._companion_info_by_address["192.168.1.40"] is moved_info
+    assert provider._companion_info_by_address["192.168.1.60"] is other_info
+
+
 async def test_mrp_discovery_is_attached_by_shared_address() -> None:
     """A native MRP service is attached to its controlled AirPlay endpoint."""
     provider = AirPlayProvider.__new__(AirPlayProvider)

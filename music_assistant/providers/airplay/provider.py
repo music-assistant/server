@@ -430,9 +430,7 @@ class AirPlayProvider(PlayerProvider):
         if info is None:
             return
 
-        addresses = set(info.parsed_addresses())
-        for address in addresses:
-            self._companion_info_by_address[address] = info
+        addresses = self._cache_control_service(self._companion_info_by_address, info)
         player = self._find_airplay_player(addresses)
         if player is None:
             return
@@ -450,9 +448,7 @@ class AirPlayProvider(PlayerProvider):
         """Associate an MRP service with its controlled AirPlay player."""
         if state_change == ServiceStateChange.Removed or info is None:
             return
-        addresses = set(info.parsed_addresses())
-        for address in addresses:
-            self._mrp_info_by_address[address] = info
+        addresses = self._cache_control_service(self._mrp_info_by_address, info)
         player = self._find_airplay_player(addresses)
         if player is None:
             return
@@ -476,8 +472,7 @@ class AirPlayProvider(PlayerProvider):
             service_type,
             player_addresses,
         ):
-            for address in discovery_info.parsed_addresses():
-                info_by_address[address] = discovery_info
+            self._cache_control_service(info_by_address, discovery_info)
             return discovery_info
         discovery_info = await self.mass.discovery.async_find_mdns_service(
             service_type,
@@ -490,11 +485,9 @@ class AirPlayProvider(PlayerProvider):
             )
             if discovery_info is None:
                 return None
-        addresses = set(discovery_info.parsed_addresses())
-        if player_addresses.isdisjoint(addresses):
+        if player_addresses.isdisjoint(discovery_info.parsed_addresses()):
             return None
-        for address in addresses:
-            info_by_address[address] = discovery_info
+        self._cache_control_service(info_by_address, discovery_info)
         return discovery_info
 
     async def _find_cached_discovery_info(
@@ -602,6 +595,26 @@ class AirPlayProvider(PlayerProvider):
         control_player._attr_group_members = group_members
         await self.mass.players.register(control_player)
         await self._bridge_manager.evaluate_bridge(control_player)
+
+    @staticmethod
+    def _cache_control_service(
+        info_by_address: dict[str, AsyncServiceInfo],
+        info: AsyncServiceInfo,
+    ) -> set[str]:
+        """Cache a control service by address and return its current addresses."""
+        addresses = set(info.parsed_addresses())
+        # Drop addresses this service no longer advertises (e.g. after a DHCP
+        # change), so a stale entry can never classify a future device that
+        # gets the old address assigned.
+        for stale_address in [
+            address
+            for address, cached in info_by_address.items()
+            if cached.name == info.name and address not in addresses
+        ]:
+            del info_by_address[stale_address]
+        for address in addresses:
+            info_by_address[address] = info
+        return addresses
 
     @staticmethod
     def _get_discovery_addresses(
