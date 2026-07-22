@@ -208,13 +208,14 @@ class FFMpeg(AsyncProcess):
             if decode_errors >= 50 and not decode_errors_reported:
                 # stream is too corrupted to bother decoding further: report once (instead
                 # of promoting every remaining line to ERROR) and abort. close() awaits
-                # this very stderr reader task, so it must run as a detached task rather
-                # than be awaited here, or it would deadlock on itself.
+                # this very stderr reader task, and a task awaiting itself raises
+                # RuntimeError, so the abort must run as a detached task rather than be
+                # awaited here.
                 decode_errors_reported = True
                 self.logger.error(
                     "Excessive decode errors (%d+) for this stream; aborting", decode_errors
                 )
-                self._abort_task = asyncio.create_task(self.close())
+                self._abort_task = asyncio.create_task(self._abort_on_decode_errors())
 
             # Log reconnection events for radio streams
             if "Opening" in line or "Reconnect" in line or "reconnect" in line:
@@ -253,6 +254,16 @@ class FFMpeg(AsyncProcess):
                     self.parsed_duration = duration
                     self.logger.debug("Detected input duration: %s seconds", duration)
             del line
+
+    async def _abort_on_decode_errors(self) -> None:
+        """Close the process after excessive decode errors, swallowing any close() error."""
+        try:
+            await self.close()
+        except Exception as err:
+            # close() can raise (e.g. send_signal racing an already-exited process); this
+            # task is never awaited by a caller, so an unhandled exception here would only
+            # surface as an untracked "Task exception was never retrieved" warning.
+            self.logger.warning("Error aborting stream after excessive decode errors: %s", err)
 
     async def _feed_stdin(self) -> None:
         """Feed stdin with audio chunks from an AsyncGenerator."""
@@ -397,6 +408,11 @@ async def get_ffmpeg_stream(
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
             yield chunk
+        # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
+        # excessive decode errors) closes stdout early, which ends the loop above before
+        # the OS process has actually exited, leaving returncode as None if checked directly
+        with suppress(TimeoutError):
+            await ffmpeg_proc.wait_with_timeout(5)
         if ffmpeg_proc.returncode not in (None, 0) or ffmpeg_proc.concat_error:
             # unclean exit of ffmpeg - raise error with log tail
             log_lines = -20 if ffmpeg_proc.concat_error else -5
@@ -464,6 +480,11 @@ async def get_ffmpeg_overlay_stream(
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
             yield chunk
+        # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
+        # excessive decode errors) closes stdout early, which ends the loop above before
+        # the OS process has actually exited, leaving returncode as None if checked directly
+        with suppress(TimeoutError):
+            await ffmpeg_proc.wait_with_timeout(5)
         if ffmpeg_proc.returncode not in (None, 0):
             # unclean exit of ffmpeg - raise error with log tail
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
