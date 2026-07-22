@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import threading
+from base64 import b64encode
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
@@ -374,6 +375,24 @@ class MusicAssistant:
         if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
+
+    @api_command("providers/icon", required_scope=Scope.PROVIDERS_READ)
+    def get_provider_icon_data_uri(
+        self,
+        provider: str,
+        variant: ProviderIconVariant = ProviderIconVariant.DEFAULT,
+    ) -> str | None:
+        """
+        Return a provider icon variant as a base64 data URI.
+
+        :param provider: A provider domain or instance id.
+        :param variant: Which icon variant to return.
+        """
+        icon = self.get_provider_icon(provider, variant)
+        if icon is None:
+            return None
+        mime, data = icon
+        return f"data:{mime};base64,{b64encode(data).decode('ascii')}"
 
     def get_provider_icon(
         self,
