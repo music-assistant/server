@@ -83,7 +83,7 @@ PROTOCOL_ONLY_MODELS = (
 def is_protocol_only_device(device_model: str) -> bool:
     """Return True if the device uses squeezelite as a secondary protocol only."""
     device_model_lower = device_model.lower()
-    return any(model in device_model_lower for model in PROTOCOL_ONLY_MODELS)
+    return any(model.lower() in device_model_lower for model in PROTOCOL_ONLY_MODELS)
 
 
 class SqueezelitePlayer(Player):
