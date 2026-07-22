@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -24,7 +23,6 @@ from music_assistant.constants import (
     create_output_codec_config_entry,
 )
 from music_assistant.helpers.datetime import from_iso_string
-from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
@@ -314,21 +312,8 @@ class HomeAssistantPlayer(Player):
                 "Announcement volume level is not supported for player %s",
                 self.display_name,
             )
-        await self.hass.call_service(
-            domain="media_player",
-            service="play_media",
-            service_data={
-                "media_content_id": announcement.uri,
-                "media_content_type": "music",
-                "announce": True,
-            },
-            target={"entity_id": self.player_id},
-        )
-        # Wait until the announcement is finished playing
-        # This is helpful for people who want to play announcements in a sequence
-        media_info = await async_parse_tags(announcement.uri, require_duration=True)
-        duration = media_info.duration or 5
-        await asyncio.sleep(duration)
+        hass_prov = cast("HomeAssistantPlayerProvider", self.provider).hass_prov
+        await hass_prov.play_announcement_on_entity(self.player_id, announcement.uri)
         self.logger.debug(
             "Playing announcement on %s completed",
             self.display_name,

@@ -90,7 +90,7 @@ from music_assistant.providers.sendspin.security import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Sequence
 
     from aiosendspin.models.core import PairMethodDescriptor
     from aiosendspin.models.management import (
@@ -241,6 +241,7 @@ class SendspinProvider(PlayerProvider):
     _manual_ip_config: tuple[str, ...]
     _virtual_players: dict[str, str]
     _unloading: bool
+    _hass_available: bool
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -265,6 +266,7 @@ class SendspinProvider(PlayerProvider):
             str, tuple[SendspinConnection, ManagementResultData]
         ] = {}
         self._unloading = False
+        self._hass_available = False
         self.unregister_cbs = []
 
     async def handle_async_init(self) -> None:
@@ -843,15 +845,56 @@ class SendspinProvider(PlayerProvider):
         """Return True if the event version is still the latest for the client."""
         return self._client_event_versions.get(client_id) == event_version
 
-    async def _apply_hass_name_override(self, player: SendspinBasePlayer, client_id: str) -> None:
-        """Apply Home Assistant display name for ESPHome-backed Sendspin players."""
-        if player.device_info.manufacturer != "ESPHome":
+    async def _apply_hass_esphome_enrichment(self, players: Sequence[SendspinBasePlayer]) -> None:
+        """
+        Apply Home Assistant-sourced enrichment to ESPHome-backed Sendspin players.
+
+        Applies the HA display name and resolves the HA media_player entity that
+        announcements are relayed to: ESPHome devices support announcements
+        natively, but that capability is only reachable through the HA API.
+        Players are correlated by MAC address (the Sendspin client id).
+        """
+        esphome_players = [
+            player for player in players if player.device_info.manufacturer == "ESPHome"
+        ]
+        if not esphome_players:
             return
-        if not (hass := self.mass.get_provider("hass")):
+        hass = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
+        if hass is None or not hass.available:
+            for player in esphome_players:
+                if isinstance(player, SendspinPlayer):
+                    player.set_hass_announce_entity(None)
             return
-        hass = cast("HomeAssistantProvider", hass)
-        if hass_device := await hass.get_device_by_connection(client_id):
-            player._attr_name = hass_device["name_by_user"] or hass_device["name"] or player.name
+        try:
+            device_infos = await hass.get_media_player_device_infos(
+                [player.player_id for player in esphome_players], platform="esphome"
+            )
+        except Exception as err:
+            self.logger.warning("Failed to apply Home Assistant enrichment: %s", err)
+            return
+        for player in esphome_players:
+            device_info = device_infos.get(player.player_id.lower())
+            if device_info is not None and device_info["name"]:
+                player._attr_name = device_info["name"]
+            if isinstance(player, SendspinPlayer):
+                player.set_hass_announce_entity(
+                    device_info["announce_entity_id"] if device_info is not None else None
+                )
+
+    async def _refresh_hass_esphome_enrichment(self) -> None:
+        """Re-apply the HA enrichment to all registered ESPHome players (in place)."""
+        players = [
+            player
+            for player in self.players
+            if isinstance(player, SendspinBasePlayer)
+            and player.device_info.manufacturer == "ESPHome"
+        ]
+        if not players:
+            return
+        await self._apply_hass_esphome_enrichment(players)
+        for player in players:
+            if player.initialized.is_set():
+                player.update_state()
 
     def _create_player(
         self,
@@ -1141,9 +1184,9 @@ class SendspinProvider(PlayerProvider):
             for id_type, id_value in preserved_identifiers.items():
                 player.device_info.add_identifier(id_type, id_value)
             self.logger.debug("Client %s connected", client_id)
-            await self._apply_hass_name_override(player, client_id)
+            await self._apply_hass_esphome_enrichment([player])
             if not self._is_current_client_event(client_id, event_version):
-                self.logger.debug("Skipping stale add event for %s after name override", client_id)
+                self.logger.debug("Skipping stale add event for %s after HA enrichment", client_id)
                 player._unsubscribe_client_callbacks()
                 return
             try:
@@ -1200,7 +1243,7 @@ class SendspinProvider(PlayerProvider):
             existing_player._refresh_client_info(sendspin_client)
             if isinstance(existing_player, SendspinPlayer):
                 existing_player.restore_bridge_identity(previous_device_info, previous_type)
-            await self._apply_hass_name_override(existing_player, client_id)
+            await self._apply_hass_esphome_enrichment([existing_player])
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)
                 return
@@ -1302,11 +1345,12 @@ class SendspinProvider(PlayerProvider):
         """Accept stream start requests for virtual players (nothing to connect)."""
 
     async def _on_providers_updated(self, event: MassEvent) -> None:
-        """Remove virtual players whose owning provider is no longer loaded."""
+        """Handle a change in the loaded providers."""
         # during (server) shutdown all providers unload; the startup sweep
         # takes care of configs whose owner is really gone
         if self._unloading or self.mass.closing:
             return
+        # remove virtual players whose owning provider is no longer loaded
         for player_id, owner_instance_id in list(self._virtual_players.items()):
             if self.mass.get_provider(owner_instance_id) is not None:
                 continue
@@ -1314,6 +1358,12 @@ class SendspinProvider(PlayerProvider):
                 "Removing virtual player %s: owner %s unloaded", player_id, owner_instance_id
             )
             await self.remove_virtual_player(player_id)
+        # (re)apply the HA-backed enrichment when the hass plugin (un)loads
+        hass = self.mass.get_provider("hass")
+        hass_available = hass is not None and hass.available
+        if hass_available != self._hass_available:
+            self._hass_available = hass_available
+            await self._refresh_hass_esphome_enrichment()
 
     def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""
