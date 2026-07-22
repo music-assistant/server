@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -471,11 +471,12 @@ async def test_provider_waits_for_companion_discovery_before_selecting_model() -
         AIRPLAY_DISCOVERY_TYPE,
         properties={"model": "AppleTV11,1"},
     )
+    info.parsed_addresses.return_value = ["fd00::10", "192.168.1.10"]
 
     with (
         patch(
             "music_assistant.providers.airplay.provider.get_primary_ip_address_from_zeroconf",
-            return_value="192.168.1.10",
+            return_value="fd00::10",
         ),
         patch(
             "music_assistant.providers.airplay.provider.get_model_info",
@@ -494,6 +495,12 @@ async def test_companion_discovery_is_attached_and_retained_during_sleep() -> No
     provider.mass = MagicMock()
     provider._companion_info_by_address = {}
     player = _make_apple_player(companion_flags=None)
+    player.address = "fd00::10"
+    assert player.airplay_discovery_info is not None
+    cast("MagicMock", player.airplay_discovery_info).parsed_addresses.return_value = [
+        "fd00::10",
+        "192.168.1.10",
+    ]
     set_companion_info = AsyncMock()
     player.set_companion_discovery_info = set_companion_info  # type: ignore[method-assign]
     provider.get_players = MagicMock(return_value=[player])  # type: ignore[method-assign]

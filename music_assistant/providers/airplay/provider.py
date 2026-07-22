@@ -356,8 +356,13 @@ class AirPlayProvider(PlayerProvider):
         apple_device = is_apple_device(manufacturer, model) and is_native_apple_device(
             model_discovery_info
         )
+        player_addresses = self._get_discovery_addresses(
+            airplay_discovery_info,
+            raop_discovery_info,
+        )
+        player_addresses.add(address)
         companion_info = (
-            await self._get_companion_discovery_info(address, display_name)
+            await self._get_companion_discovery_info(player_addresses, display_name)
             if apple_device
             else None
         )
@@ -415,7 +420,16 @@ class AirPlayProvider(PlayerProvider):
             (
                 candidate
                 for candidate in self.get_players()
-                if isinstance(candidate, AppleDevicePlayer) and candidate.address in addresses
+                if isinstance(candidate, AppleDevicePlayer)
+                and not addresses.isdisjoint(
+                    {
+                        candidate.address,
+                        *self._get_discovery_addresses(
+                            candidate.airplay_discovery_info,
+                            candidate.raop_discovery_info,
+                        ),
+                    }
+                )
             ),
             None,
         )
@@ -424,11 +438,12 @@ class AirPlayProvider(PlayerProvider):
         await player.set_companion_discovery_info(info)
 
     async def _get_companion_discovery_info(
-        self, address: str, display_name: str
+        self, player_addresses: set[str], display_name: str
     ) -> AsyncServiceInfo | None:
         """Return a matching Companion service from cache or mDNS discovery."""
-        if companion_info := self._companion_info_by_address.get(address):
-            return companion_info
+        for address in player_addresses:
+            if companion_info := self._companion_info_by_address.get(address):
+                return companion_info
         companion_info = await self.mass.discovery.async_find_mdns_service(
             COMPANION_DISCOVERY_TYPE,
             display_name,
@@ -436,11 +451,23 @@ class AirPlayProvider(PlayerProvider):
         if companion_info is None:
             return None
         addresses = set(companion_info.parsed_addresses())
-        if address not in addresses:
+        if player_addresses.isdisjoint(addresses):
             return None
         for companion_address in addresses:
             self._companion_info_by_address[companion_address] = companion_info
         return companion_info
+
+    @staticmethod
+    def _get_discovery_addresses(
+        *discovery_infos: AsyncServiceInfo | None,
+    ) -> set[str]:
+        """Return all IP addresses advertised by the given mDNS services."""
+        return {
+            address
+            for discovery_info in discovery_infos
+            if discovery_info is not None
+            for address in discovery_info.parsed_addresses()
+        }
 
     def _migrate_sync_adjust(self) -> None:
         """One-time reset of persisted sync_adjust values on this provider's players."""
