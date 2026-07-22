@@ -448,39 +448,34 @@ device_max_frames=...`), which the stream parses and logs for diagnostics.
 
 ## Player Types
 
-The provider uses a shared AirPlay streaming base with separate player models
-based on the control protocols each receiver advertises.
+The provider uses a shared AirPlay streaming base with separate player models.
 
 ### PlayerType.PLAYER
-- **Devices**: AirPlay receivers with usable Companion, native MRP, or tunneled
-  MRP support
-- **Reason**: These are standalone players with an independent control or
-  playback-monitoring plane Music Assistant can use
+- **Devices**: Apple TV, HomePod
+- **Reason**: These are standalone players with a native control and
+  playback-monitoring plane (Companion/MRP) Music Assistant can use
 - **Behavior**: Exposed as top-level players, with external playback monitoring
   and native controls when the device advertises them
 - **Not merged**: These players are NOT combined with other protocols
 
 ### PlayerType.PROTOCOL
-- **Devices**: AirPlay receivers without usable Companion or MRP support
+- **Devices**: All other AirPlay receivers
 - **Reason**: AirPlay is just one output protocol among many for these devices (often supporting Chromecast, DLNA, etc.)
 - **Behavior**: Automatically merged into a **Universal Player** if other protocols are detected for the same device
 - **Example**: A Sonos speaker supporting both AirPlay and Chromecast will appear as a single "Sonos" player with selectable output protocols
 
-**Detection**: [provider.py](provider.py) selects `AirPlayControlPlayer` whenever
-the receiver advertises pairable Companion, a usable native MRP service, or an
-AirPlay MRP tunnel. This is capability-based rather than vendor-based, so
-third-party implementations work too. All other endpoints use
-`GenericAirPlayPlayer`.
-
-The chosen model is persisted in the player config (`control_capable`) and a
-registered player never changes model in place: the model determines the player
-id exposed to API consumers (protocol endpoint behind a parent player vs
-standalone player), which must stay stable for Home Assistant and other API
-clients. This also keeps the model stable when discovery timing varies, e.g. an
-Apple TV that withdraws its Companion record while it sleeps through a server
-restart. Control capability detected after a player was registered as generic
-is recorded and applied the next time the player registers (e.g. after a
-restart). Removing the player (and its config) resets the decision.
+**Detection**: [provider.py](provider.py) selects `AirPlayControlPlayer` for
+Apple TV and HomePod devices (`is_apple_device`); all other endpoints use
+`GenericAirPlayPlayer`. The model is decided from the device's own identity
+only and never changes for a registered player: the model determines the
+player id exposed to API consumers (protocol endpoint behind a parent player
+vs standalone player), which must stay stable for Home Assistant and other API
+clients. Unlike the separate Companion/MRP mDNS records, the identity is
+always available in the very record that creates the player, so the decision
+cannot vary with discovery timing. Which control features are offered on a
+control-capable player is then decided from the advertised capabilities
+(pairable Companion, native MRP service, or AirPlay MRP tunnel), degrading
+gracefully when a device does not advertise them.
 
 ### Independent device control
 
@@ -503,7 +498,8 @@ Apple TV models generally expose pairable Companion and an AirPlay MRP tunnel.
 Current HomePod firmware advertises Companion without a PIN-pairing path, so
 Companion power/wake control is not available; HomePods instead use AirPlay's
 transient MRP tunnel with no PIN or persisted credentials. Third-party receivers
-gain the same behavior whenever they advertise compatible protocol capabilities.
+remain protocol endpoints regardless of advertised control capabilities, which
+keeps their exposed player id stable and their Universal Player merging intact.
 
 **For more details on output protocols and protocol linking**, see the [Player Controller README](../../controllers/players/README.md), which explains:
 - How multiple protocol players for the same physical device are automatically linked

@@ -29,7 +29,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_ACTION_START_MRP_PAIRING,
     CONF_COMPANION_CREDENTIALS,
     CONF_COMPANION_PAIRING_PIN,
-    CONF_CONTROL_CAPABLE,
     CONF_MRP_CREDENTIALS,
     CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
@@ -588,53 +587,22 @@ def test_protocol_config_uses_its_own_discovery_address() -> None:
 
 
 @pytest.mark.parametrize(
-    ("airplay_features", "companion_flags", "mrp_properties", "expected_type"),
+    ("manufacturer", "model", "expected_type"),
     [
-        (
-            AP2_FEATURES,
-            "0x367A2",
-            None,
-            AirPlayControlPlayer,
-        ),
-        (
-            AP2_FEATURES,
-            None,
-            None,
-            AirPlayControlPlayer,
-        ),
-        (
-            "0x0",
-            "0x367A2",
-            None,
-            AirPlayControlPlayer,
-        ),
-        (
-            "0x0",
-            None,
-            {"SystemBuildVersion": "18A123", "AllowPairing": "yes"},
-            AirPlayControlPlayer,
-        ),
-        (
-            "0x0",
-            None,
-            {"SystemBuildVersion": "19A123"},
-            GenericAirPlayPlayer,
-        ),
-        (
-            "0x0",
-            None,
-            None,
-            GenericAirPlayPlayer,
-        ),
+        ("Apple", "Apple TV 4K", AirPlayControlPlayer),
+        ("Apple", "HomePod Mini", AirPlayControlPlayer),
+        # Macs are multi-purpose devices, not standalone players.
+        ("Apple", "MacBook Pro", GenericAirPlayPlayer),
+        # Advertised control capabilities never promote a third-party receiver.
+        ("Receiver", "Generic", GenericAirPlayPlayer),
     ],
 )
-async def test_provider_selects_player_model_from_device_capabilities(
-    airplay_features: str,
-    companion_flags: str | None,
-    mrp_properties: dict[str, str] | None,
+async def test_provider_selects_player_model_from_device_identity(
+    manufacturer: str,
+    model: str,
     expected_type: type[AirPlayPlayer],
 ) -> None:
-    """Discovery selects the controlled model from advertised protocol support."""
+    """The player model follows the device identity, not discovered capabilities."""
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
     provider.logger = logging.getLogger("test.airplay.provider")
@@ -642,26 +610,13 @@ async def test_provider_selects_player_model_from_device_capabilities(
     provider.config.instance_id = "airplay"
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.evaluate_bridge = AsyncMock()
-    provider._companion_info_by_address = (
-        {
-            "192.168.1.10": _service_info(
-                COMPANION_DISCOVERY_TYPE,
-                properties={"rpfl": companion_flags},
-            )
-        }
-        if companion_flags is not None
-        else {}
-    )
-    provider._mrp_info_by_address = (
-        {
-            "192.168.1.10": _service_info(
-                MRP_DISCOVERY_TYPE,
-                properties=mrp_properties,
-            )
-        }
-        if mrp_properties is not None
-        else {}
-    )
+    provider._companion_info_by_address = {
+        "192.168.1.10": _service_info(
+            COMPANION_DISCOVERY_TYPE,
+            properties={"rpfl": "0x367A2"},
+        )
+    }
+    provider._mrp_info_by_address = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_player.return_value = None
@@ -670,7 +625,7 @@ async def test_provider_selects_player_model_from_device_capabilities(
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
-        properties={"model": "ThirdPartyReceiver1,1", "features": airplay_features},
+        properties={"features": AP2_FEATURES},
     )
 
     with (
@@ -680,7 +635,7 @@ async def test_provider_selects_player_model_from_device_capabilities(
         ),
         patch(
             "music_assistant.providers.airplay.provider.get_model_info",
-            return_value=("Receiver", "Generic"),
+            return_value=(manufacturer, model),
         ),
     ):
         await provider._setup_player("player", "Player", info)
@@ -689,8 +644,8 @@ async def test_provider_selects_player_model_from_device_capabilities(
     assert isinstance(player, expected_type)
 
 
-async def test_provider_waits_for_companion_discovery_before_selecting_model() -> None:
-    """An endpoint can use Companion discovered after its AirPlay service."""
+async def test_apple_device_setup_attaches_discovered_companion_service() -> None:
+    """An Apple device picks up its Companion service discovered by name."""
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
     provider.logger = logging.getLogger("test.airplay.provider")
@@ -732,13 +687,14 @@ async def test_provider_waits_for_companion_discovery_before_selecting_model() -
         ),
         patch(
             "music_assistant.providers.airplay.provider.get_model_info",
-            return_value=("Receiver", "Generic"),
+            return_value=("Apple", "Apple TV 4K"),
         ),
     ):
         await provider._setup_player("apple", "Apple TV", info)
 
     player = provider.mass.players.register.await_args.args[0]
     assert isinstance(player, AirPlayControlPlayer)
+    assert player.companion_discovery_info is companion_info
 
 
 async def test_companion_discovery_is_attached_and_retained_during_sleep() -> None:
@@ -819,17 +775,14 @@ async def test_mrp_discovery_is_attached_by_shared_address() -> None:
     assert provider._mrp_info_by_address["192.168.1.10"] is info
 
 
-async def test_late_companion_discovery_marks_capability_without_model_change() -> None:
-    """A late control service is recorded for the next registration, never applied live."""
+async def test_late_companion_discovery_never_changes_player_model() -> None:
+    """A control service appearing for a generic endpoint never changes its model."""
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
     provider.logger = logging.getLogger("test.airplay.provider")
     provider.config = MagicMock()
     provider.config.instance_id = "airplay"
     provider._companion_info_by_address = {}
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, _key, default=None: default
-    )
     generic_player = GenericAirPlayPlayer(
         provider=provider,
         player_id=PLAYER_ID,
@@ -856,13 +809,10 @@ async def test_late_companion_discovery_marks_capability_without_model_change() 
 
     provider.mass.players.unregister.assert_not_awaited()
     provider.mass.players.register.assert_not_awaited()
-    provider.mass.config.set_raw_player_config_value.assert_called_once_with(
-        PLAYER_ID, CONF_CONTROL_CAPABLE, True
-    )
 
 
-async def test_persisted_control_capability_selects_control_model() -> None:
-    """A player registers with the persisted model even without control discovery."""
+async def test_generic_device_setup_skips_control_discovery() -> None:
+    """A non-Apple receiver registers without Companion/MRP service lookups."""
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
     provider.logger = logging.getLogger("test.airplay.provider")
@@ -876,50 +826,7 @@ async def test_persisted_control_capability_selects_control_model() -> None:
     provider.mass.players.register = AsyncMock()
     provider.mass.players.get_player.return_value = None
     provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: (
-            True if key in ("enabled", CONF_CONTROL_CAPABLE) else default
-        )
-    )
-    info = _service_info(
-        AIRPLAY_DISCOVERY_TYPE,
-        properties={"model": "ThirdPartyReceiver1,1", "features": "0x0"},
-    )
-
-    with (
-        patch(
-            "music_assistant.providers.airplay.provider.get_primary_ip_address_from_zeroconf",
-            return_value="192.168.1.10",
-        ),
-        patch(
-            "music_assistant.providers.airplay.provider.get_model_info",
-            return_value=("Receiver", "Generic"),
-        ),
-    ):
-        await provider._setup_player("player", "Player", info)
-
-    player = provider.mass.players.register.await_args.args[0]
-    assert isinstance(player, AirPlayControlPlayer)
-
-
-async def test_persisted_generic_model_skips_control_discovery() -> None:
-    """A player persisted as generic registers without new control-service lookups."""
-    provider = AirPlayProvider.__new__(AirPlayProvider)
-    provider.mass = MagicMock()
-    provider.logger = logging.getLogger("test.airplay.provider")
-    provider.config = MagicMock()
-    provider.config.instance_id = "airplay"
-    provider._bridge_manager = MagicMock()
-    provider._bridge_manager.evaluate_bridge = AsyncMock()
-    provider._companion_info_by_address = {}
-    provider._mrp_info_by_address = {}
-    provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
-    provider.mass.players.register = AsyncMock()
-    provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: {
-            "enabled": True,
-            CONF_CONTROL_CAPABLE: False,
-        }.get(key, default)
+        lambda _player_id, key, default=None: True if key == "enabled" else default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,

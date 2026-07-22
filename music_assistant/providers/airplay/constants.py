@@ -44,7 +44,6 @@ CONF_HIRES_PLAYBACK: Final[str] = "hires_playback"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
-CONF_CONTROL_CAPABLE: Final[str] = "control_capable"
 
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 COMPANION_DISCOVERY_TYPE: Final[str] = "_companion-link._tcp.local."
