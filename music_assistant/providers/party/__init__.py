@@ -1124,8 +1124,18 @@ class PartyPlugin(PluginProvider):
 
     async def _push_url_update(self) -> None:
         """Push a URL/QR update event to subscribers if the party URL has changed."""
-        url = await self.get_party_url()
-        qr_code = segno.make(url).svg_data_uri() if url else None
+        try:
+            url = await self.get_party_url()
+        except Exception as err:
+            self.logger.error("Failed to resolve party URL: %s", err, exc_info=err)
+            return
+
+        qr_code = None
+        if url:
+            try:
+                qr_code = segno.make(url).svg_data_uri()
+            except Exception as err:
+                self.logger.error("Failed to generate QR code SVG: %s", err, exc_info=err)
 
         # Only push if the URL actually changed
         if url == self._last_pushed_url:
