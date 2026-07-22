@@ -60,6 +60,7 @@ from .constants import (
     CONF_MRP_PAIRING_PIN,
     CONF_STORED_VOLUME,
 )
+from .helpers import supports_companion_pairing
 from .player import AirPlayPlayer
 
 if TYPE_CHECKING:
@@ -67,8 +68,6 @@ if TYPE_CHECKING:
 
     from .provider import AirPlayProvider
 
-_COMPANION_PAIRING_DISABLED = 0x04
-_COMPANION_PAIRING_WITH_PIN = 0x4000
 _CONTROL_RECONNECT_DELAY: Final[float] = 30.0
 _WAKE_TIMEOUT: Final[float] = 10.0
 
@@ -150,19 +149,7 @@ class AppleDevicePlayer(AirPlayPlayer):
     @property
     def companion_pairing_supported(self) -> bool:
         """Return whether this device advertises Companion PIN pairing."""
-        info = self.companion_discovery_info
-        if info is None:
-            return False
-        raw_flags = info.decoded_properties.get("rpfl", "0x0")
-        if raw_flags is None:
-            return False
-        try:
-            flags = int(raw_flags, 16)
-        except TypeError, ValueError:
-            return False
-        return bool(flags & _COMPANION_PAIRING_WITH_PIN) and not bool(
-            flags & _COMPANION_PAIRING_DISABLED
-        )
+        return supports_companion_pairing(self.companion_discovery_info)
 
     @property
     def needs_setup(self) -> bool:
@@ -180,8 +167,7 @@ class AppleDevicePlayer(AirPlayPlayer):
     def mrp_pairing_supported(self) -> bool:
         """Return whether AirPlay playback monitoring can be paired."""
         return bool(
-            not self._is_homepod
-            and self.airplay_discovery_info
+            self.airplay_discovery_info
             and self._is_airplay2_capable
             and self.airplay_discovery_info.decoded_properties.get("acl", "0") != "1"
         )
@@ -564,7 +550,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         if not self.airplay_discovery_info:
             return False
         credentials = self.config.get_value(CONF_MRP_CREDENTIALS)
-        if credentials is None and not self._is_homepod:
+        if credentials is None:
             return False
         config = self._build_config(
             self.airplay_discovery_info,
@@ -675,11 +661,6 @@ class AppleDevicePlayer(AirPlayPlayer):
             return IPv4Address(self.address)
         except AddressValueError:
             return None
-
-    @property
-    def _is_homepod(self) -> bool:
-        """Return whether this Apple player is a HomePod."""
-        return "homepod" in self.device_info.model.lower()
 
     @property
     def _stream_active(self) -> bool:

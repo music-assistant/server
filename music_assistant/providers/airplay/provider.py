@@ -43,7 +43,14 @@ from .constants import (
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
 )
-from .helpers import convert_airplay_volume, get_cli_binary, get_model_info, is_apple_device
+from .helpers import (
+    convert_airplay_volume,
+    get_cli_binary,
+    get_model_info,
+    is_apple_device,
+    is_native_apple_device,
+    supports_companion_pairing,
+)
 from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
@@ -291,11 +298,12 @@ class AirPlayProvider(PlayerProvider):
             )
 
         if airplay_discovery_info:
-            manufacturer, model = get_model_info(airplay_discovery_info)
+            model_discovery_info = airplay_discovery_info
         elif raop_discovery_info:
-            manufacturer, model = get_model_info(raop_discovery_info)
+            model_discovery_info = raop_discovery_info
         else:
             return  # should not happen, but guard just in case
+        manufacturer, model = get_model_info(model_discovery_info)
 
         prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
         address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
@@ -345,9 +353,17 @@ class AirPlayProvider(PlayerProvider):
             model,
         )
 
+        apple_device = is_apple_device(manufacturer, model) and is_native_apple_device(
+            model_discovery_info
+        )
+        companion_info = (
+            await self._get_companion_discovery_info(address, display_name)
+            if apple_device
+            else None
+        )
+
         player: AirPlayPlayer
-        if is_apple_device(manufacturer, model):
-            companion_info = self._companion_info_by_address.get(address)
+        if apple_device and supports_companion_pairing(companion_info):
             player = AppleDevicePlayer(
                 provider=self,
                 player_id=player_id,
@@ -406,6 +422,25 @@ class AirPlayProvider(PlayerProvider):
         if player is None:
             return
         await player.set_companion_discovery_info(info)
+
+    async def _get_companion_discovery_info(
+        self, address: str, display_name: str
+    ) -> AsyncServiceInfo | None:
+        """Return a matching Companion service from cache or mDNS discovery."""
+        if companion_info := self._companion_info_by_address.get(address):
+            return companion_info
+        companion_info = await self.mass.discovery.async_find_mdns_service(
+            COMPANION_DISCOVERY_TYPE,
+            display_name,
+        )
+        if companion_info is None:
+            return None
+        addresses = set(companion_info.parsed_addresses())
+        if address not in addresses:
+            return None
+        for companion_address in addresses:
+            self._companion_info_by_address[companion_address] = companion_info
+        return companion_info
 
     def _migrate_sync_adjust(self) -> None:
         """One-time reset of persisted sync_adjust values on this provider's players."""

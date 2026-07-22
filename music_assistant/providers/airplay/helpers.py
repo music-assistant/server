@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
+_COMPANION_PAIRING_DISABLED = 0x04
+_COMPANION_PAIRING_WITH_PIN = 0x4000
 
 
 async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
@@ -155,6 +157,32 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     """
     return manufacturer.lower().startswith("apple") and (
         "homepod" in model.lower() or "apple tv" in model.lower()
+    )
+
+
+def is_native_apple_device(discovery_info: AsyncServiceInfo) -> bool:
+    """Return whether AirPlay identifies a standalone Apple device model."""
+    raw_model = (
+        discovery_info.decoded_properties.get("model")
+        or discovery_info.decoded_properties.get("am")
+        or ""
+    )
+    return raw_model.startswith(("AppleTV", "AudioAccessory"))
+
+
+def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether a Companion service supports PIN pairing."""
+    if discovery_info is None:
+        return False
+    raw_flags = discovery_info.decoded_properties.get("rpfl")
+    if raw_flags is None:
+        return False
+    try:
+        flags = int(raw_flags, 16)
+    except TypeError, ValueError:
+        return False
+    return bool(flags & _COMPANION_PAIRING_WITH_PIN) and not bool(
+        flags & _COMPANION_PAIRING_DISABLED
     )
 
 

@@ -450,21 +450,25 @@ The provider uses a shared AirPlay streaming base with separate player models fo
 native Apple devices and third-party AirPlay receivers.
 
 ### PlayerType.PLAYER
-- **Devices**: Apple HomePod and Apple TV
-- **Reason**: These are standalone players with native AirPlay support and an
-  Apple control plane
+- **Devices**: Recognized Apple devices that advertise pairable Companion
+  control (currently Apple TV)
+- **Reason**: These are standalone players with both native AirPlay support and
+  a control plane Music Assistant can authenticate
 - **Behavior**: Exposed as top-level players, with external playback monitoring
   and native controls when the device advertises them
 - **Not merged**: These players are NOT combined with other protocols
 
 ### PlayerType.PROTOCOL
-- **Devices**: Third-party AirPlay receivers (Sonos, receivers, smart speakers, soundbars)
+- **Devices**: HomePod and third-party AirPlay receivers (Sonos, receivers,
+  smart speakers, soundbars)
 - **Reason**: AirPlay is just one output protocol among many for these devices (often supporting Chromecast, DLNA, etc.)
 - **Behavior**: Automatically merged into a **Universal Player** if other protocols are detected for the same device
 - **Example**: A Sonos speaker supporting both AirPlay and Chromecast will appear as a single "Sonos" player with selectable output protocols
 
-**Detection**: [provider.py](provider.py) selects `AppleDevicePlayer` for
-HomePod and Apple TV models and `GenericAirPlayPlayer` for all other receivers.
+**Detection**: [provider.py](provider.py) selects `AppleDevicePlayer` only when
+the AirPlay endpoint is a recognized Apple device and its matching
+`_companion-link._tcp` service advertises PIN pairing. All other endpoints use
+`GenericAirPlayPlayer`.
 
 ### Apple device control
 
@@ -485,9 +489,8 @@ always-on control connections:
 
 Support is capability-driven. Apple TV models that advertise Companion PIN
 pairing expose the full control surface. Current HomePod firmware advertises
-Companion as non-pairable, so HomePods use the AirPlay MRP tunnel where
-available and automatically gain Companion controls if future firmware
-advertises pairing support.
+Companion without a PIN-pairing path (authorization is tied to the Apple Home),
+so HomePods remain generic AirPlay endpoints.
 
 **For more details on output protocols and protocol linking**, see the [Player Controller README](../../controllers/players/README.md), which explains:
 - How multiple protocol players for the same physical device are automatically linked
@@ -527,8 +530,8 @@ Some devices have known broken AirPlay implementations (see `BROKEN_AIRPLAY_MODE
 1. **DACP remote control**: Only active while streaming; Apple devices use
    Companion/MRP for idle and external playback control
 2. **Pause while synced**: Not supported; uses stop instead
-3. **HomePod power control**: Current HomePod firmware does not advertise
-   Companion PIN pairing, so explicit power control is unavailable
+3. **HomePod native control**: Current HomePod firmware does not advertise
+   Companion PIN pairing, so only AirPlay-session controls are available
 4. **External artwork**: MRP exposes external playback metadata but its artwork
    is not currently published through the Music Assistant image proxy
 5. **Apple TV artwork for non-public images**: Cover art only reachable through the imageproxy (e.g. filesystem-provider images with no public URL) does not currently render on the Apple TV's now-playing screen, while externally-hosted art does
