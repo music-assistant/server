@@ -8,6 +8,7 @@ to add songs to the queue with configurable rate limiting.
 from __future__ import annotations
 
 import asyncio
+import io
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -1118,6 +1119,13 @@ class PartyPlugin(PluginProvider):
 
         self._expiry_task = self.mass.create_task(_on_code_expired(expiry))
 
+    def _generate_qr_code(self, url: str) -> str:
+        """Generate a QR code SVG for the party URL."""
+        qr = segno.make(url)
+        buffer = io.BytesIO()
+        qr.save(buffer, kind="svg", scale=4, light="white")
+        return buffer.getvalue().decode("utf-8")
+
     async def _push_url_update(self) -> None:
         """Push a URL/QR update event to subscribers if the party URL has changed."""
         try:
@@ -1129,7 +1137,7 @@ class PartyPlugin(PluginProvider):
         qr_code = None
         if url:
             try:
-                qr_code = segno.make(url).svg_data_uri()
+                qr_code = self._generate_qr_code(url)
             except Exception as err:
                 self.logger.error("Failed to generate QR code SVG: %s", err, exc_info=err)
 
