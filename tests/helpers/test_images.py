@@ -30,7 +30,6 @@ from music_assistant.helpers.images import (
 )
 from music_assistant.models.metadata_provider import MetadataProvider
 
-
 if TYPE_CHECKING:
     from collections.abc import Iterator
 

@@ -210,25 +210,7 @@ class MusicAssistant:
         )
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
-        self.cache = CacheController(self)
-        self.tasks = TasksController(self)
-        self.webserver = WebserverController(self)
-        self.metadata = MetaDataController(self)
-        self.music = MusicController(self)
-        self.players = PlayerController(self)
-        self.player_queues = PlayerQueuesController(self)
-        self.streams = StreamsController(self)
-        self.translations = TranslationController(self)
-        self.diagnostics = DiagnosticsController(self)
-        # add manifests for core controllers
-        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
-            controller: CoreController = getattr(self, controller_name)
-            self._provider_manifests[controller.domain] = controller.manifest
-            # load icon image(s) shipped alongside the controller module
-            controller_dir = os.path.dirname(inspect.getfile(type(controller)))
-            if icons := await detect_provider_icons(controller_dir):
-                self._provider_icons[controller.domain] = icons
-                controller.manifest.icon_images = list(icons)
+        await self._load_core_controllers()
 
         # setup all core controllers in parallel
         async def setup_controller(controller: CoreController) -> None:
@@ -1024,6 +1006,28 @@ class MusicAssistant:
                     self.register_api_command(
                         obj.api_cmd, obj, authenticated, required_scope, allow_impersonation, alias
                     )
+
+    async def _load_core_controllers(self) -> None:
+        """Instantiate the core controllers and register their manifests and icons."""
+        self.cache = CacheController(self)
+        self.tasks = TasksController(self)
+        self.webserver = WebserverController(self)
+        self.metadata = MetaDataController(self)
+        self.music = MusicController(self)
+        self.players = PlayerController(self)
+        self.player_queues = PlayerQueuesController(self)
+        self.streams = StreamsController(self)
+        self.translations = TranslationController(self)
+        self.diagnostics = DiagnosticsController(self)
+        # add manifests for core controllers
+        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
+            controller: CoreController = getattr(self, controller_name)
+            self._provider_manifests[controller.domain] = controller.manifest
+            # load icon image(s) shipped alongside the controller module
+            controller_dir = os.path.dirname(inspect.getfile(type(controller)))
+            if icons := await detect_provider_icons(controller_dir):
+                self._provider_icons[controller.domain] = icons
+                controller.manifest.icon_images = list(icons)
 
     async def _load_builtin_providers(self) -> None:
         """
