@@ -452,6 +452,19 @@ async def test_handle_imageproxy_rejects_extra_path_segments(
     assert bad.status == 400
 
 
+async def test_handle_imageproxy_rejects_unsupported_size(
+    metadata_controller: MetaDataController,
+) -> None:
+    """A size outside the allowed set is rejected with a non-empty reason body."""
+    image_id = metadata_controller.compute_image_id("filesystem", "/local/cover.jpg")
+    request = MagicMock()
+    request.path = f"/imageproxy/{image_id}"
+    request.query = {"size": "300"}
+    bad = await metadata_controller.handle_imageproxy(request)
+    assert bad.status == 400
+    assert bad.text
+
+
 def test_is_svg_data() -> None:
     """SVG bytes are detected by content, regardless of file extension."""
     # plain root element
