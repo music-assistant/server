@@ -47,6 +47,7 @@ dependencies = [
   "gql[all]==4.0.0",
   "aiortc>=1.6.0",
   "pyjwt[crypto]>=2.10.1",
+  "segno==1.6.6",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}

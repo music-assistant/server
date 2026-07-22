@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+import segno
 from mashumaro import DataClassDictMixin
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
@@ -1081,8 +1082,9 @@ class PartyPlugin(PluginProvider):
             )
 
     async def _push_url_update(self) -> None:
-        """Compute the current guest URL, push it if changed, and schedule the expiry timer."""
+        """Compute current guest URL & QR code, push them if changed, and schedule expiry timer."""
         url = await self.get_party_url()
+        qr_code = segno.make(url).svg_data_uri() if url else None
 
         # Only push if the URL actually changed
         if url == self._last_pushed_url:
@@ -1091,8 +1093,14 @@ class PartyPlugin(PluginProvider):
             return
 
         self._last_pushed_url = url
-        self.signal_provider_event(data={"url": url}, sub_scope="url")
-        self.logger.debug("Pushed party URL update: %s", url)
+        self.signal_provider_event(
+            data={
+                "url": url,
+                "qr_code": qr_code,
+            },
+            sub_scope="url",
+        )
+        self.logger.debug("Pushed party URL and QR update: %s", url)
 
         await self._schedule_join_code_expiry_timer()
 
