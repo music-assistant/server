@@ -1,184 +1,411 @@
-"""Tests for the chromecast provider's dashboard casting transport."""
+"""Tests for the chromecast provider's dashboard registration and casting transport."""
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from music_assistant_models.dashboard import DashboardDevice
+from music_assistant_models.enums import DashboardType
 from music_assistant_models.errors import PlayerUnavailableError
+from pychromecast.const import CAST_TYPE_CHROMECAST
 
+from music_assistant.providers.chromecast.dashboard import ChromecastDashboards
+from music_assistant.providers.chromecast.player import ChromecastPlayer
 from music_assistant.providers.chromecast.provider import ChromecastProvider
 
 
-def _make_provider() -> ChromecastProvider:
-    """Build a ChromecastProvider instance without running its (network-touching) __init__."""
-    provider = ChromecastProvider.__new__(ChromecastProvider)
-    provider.mass = MagicMock()
+def _make_dashboards() -> ChromecastDashboards:
+    """Build a ChromecastDashboards instance with a fully mocked owning provider."""
+    provider = MagicMock()
+    provider.translation_owner = "provider.chromecast"
+    provider.mass.closing = False
     # run_in_executor just calls the function inline, synchronously
     provider.mass.loop.run_in_executor = AsyncMock(
         side_effect=lambda _executor, func, *args: func(*args)
     )
     provider.mass.players.get_player.return_value = None
-    provider.manifest = MagicMock(domain="chromecast")
-    provider.config = MagicMock(instance_id="chromecast--test")
-    provider._dashboard_connections = {}
-    return provider
+    return ChromecastDashboards(provider)
 
 
-def _cast_info(cast_type: str, name: str) -> MagicMock:
+def _cast_info(cast_type: str = CAST_TYPE_CHROMECAST, name: str = "Living Room TV") -> MagicMock:
     info = MagicMock()
     info.cast_type = cast_type
     info.friendly_name = name
     return info
 
 
-async def test_get_dashboard_devices_filters_video_capable() -> None:
-    """Only the video-capable (chromecast) device is returned, audio/group devices are not."""
-    provider = _make_provider()
-    video_uuid, audio_uuid, group_uuid = uuid4(), uuid4(), uuid4()
-    provider.browser = MagicMock(
-        devices={
-            video_uuid: _cast_info("cast", "Living Room TV"),
-            audio_uuid: _cast_info("audio", "Kitchen Speaker"),
-            group_uuid: _cast_info("group", "Whole House"),
-        }
+def _make_provider() -> ChromecastProvider:
+    """Build a ChromecastProvider without running its (network-touching) __init__."""
+    provider = ChromecastProvider.__new__(ChromecastProvider)
+    provider.mass = MagicMock()
+    provider.mass.closing = False
+    provider.mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda func, *args: func(*args))
+    provider.mass.players.get_player.return_value = None
+    provider.mass.config.get_raw_player_config_value.return_value = True
+    provider.logger = MagicMock()
+    provider._discover_lock = threading.Lock()
+    provider._pending_discoveries = set()
+    provider.dashboards = MagicMock()
+    return provider
+
+
+### Registration on discovery
+
+
+def test_register_ignores_non_video_capable_device() -> None:
+    """Audio speakers/groups are not registered as dashboard endpoints."""
+    dashboards = _make_dashboards()
+
+    dashboards.register(uuid4(), _cast_info(cast_type="audio"))
+
+    dashboards.mass.dashboard.register_dashboard_handler.assert_not_called()
+
+
+def test_register_video_capable_device_without_player() -> None:
+    """A video-capable device with no registered MA player registers with player_id=None."""
+    dashboards = _make_dashboards()
+    uuid = uuid4()
+
+    dashboards.register(uuid, _cast_info(name="Living Room TV"))
+
+    dashboards.mass.dashboard.register_dashboard_handler.assert_called_once()
+    device = dashboards.mass.dashboard.register_dashboard_handler.call_args[0][0]
+    assert device == DashboardDevice(
+        dashboard_id=f"chromecast_{uuid}",
+        name="Living Room TV",
+        supported_types={DashboardType.PARTY, DashboardType.NOW_PLAYING},
+        player_id=None,
     )
 
-    devices = await provider.get_dashboard_devices()
 
-    assert devices == [
-        DashboardDevice(
-            device_id=str(video_uuid),
-            provider_instance=provider.instance_id,
-            name="Living Room TV",
-            player_id=None,
-        )
-    ]
-
-
-async def test_get_dashboard_devices_links_registered_player() -> None:
+def test_register_links_registered_player() -> None:
     """A display device that is also a registered MA player carries its player_id."""
-    provider = _make_provider()
-    video_uuid = uuid4()
-    provider.browser = MagicMock(devices={video_uuid: _cast_info("cast", "Living Room TV")})
-    provider.mass.players.get_player.side_effect = (  # type: ignore[attr-defined]
-        lambda player_id: MagicMock() if player_id == str(video_uuid) else None
-    )
+    dashboards = _make_dashboards()
+    uuid = uuid4()
+    dashboards.mass.players.get_player.return_value = MagicMock()
 
-    devices = await provider.get_dashboard_devices()
+    dashboards.register(uuid, _cast_info())
 
-    assert devices[0].player_id == str(video_uuid)
+    device = dashboards.mass.dashboard.register_dashboard_handler.call_args[0][0]
+    assert device.player_id == str(uuid)
 
 
-async def test_show_dashboard_raises_for_unknown_device() -> None:
-    """An unknown device_id (not in the browser's discovered devices) is rejected."""
-    provider = _make_provider()
-    provider.browser = MagicMock(devices={})
-
-    with pytest.raises(PlayerUnavailableError):
-        await provider.show_dashboard(str(uuid4()), "https://mass.example.com?path=%2Fparty")
+### Re-registration when the linked player appears/disappears
 
 
-async def test_show_dashboard_delegates_to_helper() -> None:
-    """The resolved chromecast and url are forwarded to the helper transport."""
-    provider = _make_provider()
+def test_refresh_player_link_adds_player_id_once_player_appears() -> None:
+    """Re-registering after a player appears carries the player_id into the device."""
+    dashboards = _make_dashboards()
+    uuid = uuid4()
+    dashboards.register(uuid, _cast_info())
+    dashboards.mass.dashboard.register_dashboard_handler.reset_mock()
+    dashboards.mass.players.get_player.return_value = MagicMock()
 
+    dashboards.refresh_player_link(str(uuid))
+
+    device = dashboards.mass.dashboard.register_dashboard_handler.call_args[0][0]
+    assert device.player_id == str(uuid)
+
+
+def test_refresh_player_link_drops_player_id_once_player_disappears() -> None:
+    """Re-registering after a player disappears clears the player_id again."""
+    dashboards = _make_dashboards()
+    uuid = uuid4()
+    dashboards.mass.players.get_player.return_value = MagicMock()
+    dashboards.register(uuid, _cast_info())
+    dashboards.mass.dashboard.register_dashboard_handler.reset_mock()
+    dashboards.mass.players.get_player.return_value = None
+
+    dashboards.refresh_player_link(str(uuid))
+
+    device = dashboards.mass.dashboard.register_dashboard_handler.call_args[0][0]
+    assert device.player_id is None
+
+
+def test_refresh_player_link_noop_for_unknown_device() -> None:
+    """A device that was never discovered/registered has nothing to refresh."""
+    dashboards = _make_dashboards()
+
+    dashboards.refresh_player_link(str(uuid4()))
+
+    dashboards.mass.dashboard.register_dashboard_handler.assert_not_called()
+
+
+### Unregistration on removal
+
+
+def test_unregister_calls_stored_unregister_callback() -> None:
+    """Removing a discovered device unregisters it from the dashboard controller."""
+    dashboards = _make_dashboards()
+    uuid = uuid4()
+    unregister_callback = MagicMock()
+    dashboards.mass.dashboard.register_dashboard_handler.return_value = unregister_callback
+    dashboards.register(uuid, _cast_info())
+
+    dashboards.unregister(uuid)
+
+    unregister_callback.assert_called_once()
+    assert str(uuid) not in dashboards._cast_info
+
+
+def test_unregister_unknown_device_is_noop() -> None:
+    """Unregistering a device that was never registered does not raise."""
+    dashboards = _make_dashboards()
+
+    dashboards.unregister(uuid4())
+
+
+### on_show: connection reuse and error wrapping
+
+
+async def test_on_show_reuses_connected_player_cc() -> None:
+    """A connected registered player's own Chromecast connection is reused."""
+    dashboards = _make_dashboards()
     device_uuid = uuid4()
     connected_chromecast = MagicMock()
     connected_chromecast.socket_client.is_connected = True
-    provider._dashboard_connections = {str(device_uuid): connected_chromecast}
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.cc = connected_chromecast
+    dashboards.mass.players.get_player.return_value = castplayer
     url = "https://mass.example.com?path=%2Fparty"
 
     with patch(
-        "music_assistant.providers.chromecast.provider.send_show_dashboard"
+        "music_assistant.providers.chromecast.dashboard.send_show_dashboard"
     ) as mock_send_show_dashboard:
-        await provider.show_dashboard(str(device_uuid), url)
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, url, None)
 
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url)
 
 
-async def test_show_dashboard_wraps_timeout_error() -> None:
-    """A TimeoutError from the helper surfaces as a PlayerUnavailableError."""
-    provider = _make_provider()
+async def test_on_show_reuses_cached_on_demand_connection() -> None:
+    """A cached on-demand connection (no MA player) is reused instead of reconnecting."""
+    dashboards = _make_dashboards()
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    dashboards._dashboard_connections[str(device_uuid)] = connected_chromecast
+    url = "https://mass.example.com?path=%2Fparty"
 
+    with patch(
+        "music_assistant.providers.chromecast.dashboard.send_show_dashboard"
+    ) as mock_send_show_dashboard:
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, url, None)
+
+    mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url)
+
+
+async def test_on_show_raises_for_unknown_device() -> None:
+    """An unknown device_id (not in the browser's discovered devices) is rejected."""
+    dashboards = _make_dashboards()
+    dashboards.provider.browser = MagicMock(devices={})
+
+    with pytest.raises(PlayerUnavailableError):
+        await dashboards._on_show(
+            str(uuid4()), DashboardType.PARTY, "https://mass.example.com?path=%2Fparty", None
+        )
+
+
+async def test_on_show_wraps_timeout_error() -> None:
+    """A TimeoutError from the helper surfaces as a PlayerUnavailableError."""
+    dashboards = _make_dashboards()
     device_uuid = uuid4()
     connected_chromecast = MagicMock()
     connected_chromecast.socket_client.is_connected = True
     connected_chromecast.name = "Living Room TV"
-    provider._dashboard_connections = {str(device_uuid): connected_chromecast}
+    dashboards._dashboard_connections[str(device_uuid)] = connected_chromecast
 
     with (
         patch(
-            "music_assistant.providers.chromecast.provider.send_show_dashboard",
+            "music_assistant.providers.chromecast.dashboard.send_show_dashboard",
             side_effect=TimeoutError,
         ),
-        pytest.raises(PlayerUnavailableError),
+        pytest.raises(PlayerUnavailableError) as exc_info,
     ):
-        await provider.show_dashboard(str(device_uuid), "https://mass.example.com?path=%2Fparty")
+        await dashboards._on_show(
+            str(device_uuid), DashboardType.PARTY, "https://mass.example.com?path=%2Fparty", None
+        )
+
+    assert exc_info.value.translation_key == "app_launch_timeout"
+    assert exc_info.value.translation_owner == "provider.chromecast"
 
 
-async def test_hide_dashboard_delegates_to_helper() -> None:
-    """The resolved chromecast is passed to the hide helper via the executor."""
-    provider = _make_provider()
-
-    device_uuid = uuid4()
-    connected_chromecast = MagicMock()
-    connected_chromecast.socket_client.is_connected = True
-    provider._dashboard_connections = {str(device_uuid): connected_chromecast}
-
-    with patch(
-        "music_assistant.providers.chromecast.provider.send_hide_dashboard"
-    ) as mock_send_hide_dashboard:
-        await provider.hide_dashboard(str(device_uuid))
-
-    mock_send_hide_dashboard.assert_called_once_with(connected_chromecast)
+### on_hide: no-op / eviction behavior
 
 
-async def test_hide_dashboard_no_op_for_device_without_existing_connection() -> None:
+async def test_on_hide_noop_when_nothing_connected() -> None:
     """Hiding on a device with no registered player and no cached connection is a no-op."""
-    provider = _make_provider()
-    provider.browser = MagicMock(devices={})
+    dashboards = _make_dashboards()
+    dashboards.provider.browser = MagicMock(devices={})
 
     with patch(
-        "music_assistant.providers.chromecast.provider.send_hide_dashboard"
+        "music_assistant.providers.chromecast.dashboard.send_hide_dashboard"
     ) as mock_send_hide_dashboard:
-        await provider.hide_dashboard(str(uuid4()))
+        await dashboards._on_hide(str(uuid4()))
 
     mock_send_hide_dashboard.assert_not_called()
 
 
-async def test_hide_dashboard_evicts_on_demand_connection() -> None:
+async def test_on_hide_evicts_on_demand_connection() -> None:
     """Hiding disconnects and drops an on-demand connection cached for the device."""
-    provider = _make_provider()
-
+    dashboards = _make_dashboards()
     device_uuid = uuid4()
     connected_chromecast = MagicMock()
     connected_chromecast.socket_client.is_connected = True
-    provider._dashboard_connections = {str(device_uuid): connected_chromecast}
+    dashboards._dashboard_connections[str(device_uuid)] = connected_chromecast
 
-    with patch("music_assistant.providers.chromecast.provider.send_hide_dashboard"):
-        await provider.hide_dashboard(str(device_uuid))
+    with patch("music_assistant.providers.chromecast.dashboard.send_hide_dashboard"):
+        await dashboards._on_hide(str(device_uuid))
 
     connected_chromecast.disconnect.assert_called_once_with(10)
-    assert str(device_uuid) not in provider._dashboard_connections
+    assert str(device_uuid) not in dashboards._dashboard_connections
 
 
-async def test_hide_dashboard_logs_debug_when_nothing_was_showing() -> None:
-    """A False result from send_hide_dashboard is logged at debug, not raised."""
-    provider = _make_provider()
-
+async def test_on_hide_keeps_registered_player_connection() -> None:
+    """Hiding on a live MA player's own connection must not disconnect it."""
+    dashboards = _make_dashboards()
     device_uuid = uuid4()
     connected_chromecast = MagicMock()
     connected_chromecast.socket_client.is_connected = True
-    provider._dashboard_connections = {str(device_uuid): connected_chromecast}
-    provider.logger = MagicMock()
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.cc = connected_chromecast
+    dashboards.mass.players.get_player.return_value = castplayer
+
+    with patch("music_assistant.providers.chromecast.dashboard.send_hide_dashboard"):
+        await dashboards._on_hide(str(device_uuid))
+
+    connected_chromecast.disconnect.assert_not_called()
+
+
+async def test_on_hide_logs_debug_when_nothing_was_showing() -> None:
+    """A False result from send_hide_dashboard is logged at debug, not raised."""
+    dashboards = _make_dashboards()
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    dashboards._dashboard_connections[str(device_uuid)] = connected_chromecast
 
     with patch(
-        "music_assistant.providers.chromecast.provider.send_hide_dashboard",
+        "music_assistant.providers.chromecast.dashboard.send_hide_dashboard",
         return_value=False,
     ):
-        await provider.hide_dashboard(str(device_uuid))
+        await dashboards._on_hide(str(device_uuid))
 
-    provider.logger.debug.assert_called_once()
+    dashboards.logger.debug.assert_called_once()
+
+
+### unload cleanup
+
+
+async def test_unload_unregisters_all_and_disconnects_via_executor() -> None:
+    """Unload unregisters every dashboard endpoint and disconnects cached connections."""
+    dashboards = _make_dashboards()
+    unregister_callback = MagicMock()
+    dashboards.mass.dashboard.register_dashboard_handler.return_value = unregister_callback
+    dashboards.register(uuid4(), _cast_info())
+    chromecast = MagicMock()
+    dashboards._dashboard_connections["on-demand-device"] = chromecast
+
+    await dashboards.unload()
+
+    unregister_callback.assert_called_once()
+    chromecast.disconnect.assert_called_once_with(10)
+    assert dashboards._dashboard_connections == {}
+    assert dashboards._cast_info == {}
+
+
+async def test_unload_disconnects_without_executor_when_closing() -> None:
+    """During shutdown, disconnects happen synchronously instead of via the executor."""
+    dashboards = _make_dashboards()
+    dashboards.mass.closing = True
+    chromecast = MagicMock()
+    dashboards._dashboard_connections["on-demand-device"] = chromecast
+
+    await dashboards.unload()
+
+    chromecast.disconnect.assert_called_once_with(0)
+
+
+### Provider wiring: discovery lifecycle hooks
+
+
+def test_discovery_registers_device_with_dashboards() -> None:
+    """Discovering an already-registered player's Cast device still (re-)registers it."""
+    provider = _make_provider()
+    uuid = uuid4()
+    disc_info = _cast_info()
+    disc_info.uuid = uuid
+    provider.browser = MagicMock(devices={uuid: disc_info})
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.available = True
+    castplayer.cast_info = MagicMock(is_audio_group=False)
+    provider.mass.players.get_player.return_value = castplayer
+
+    provider._on_chromecast_discovered(uuid, "service")
+
+    provider.dashboards.register.assert_called_once_with(uuid, disc_info)
+
+
+def test_discovery_registers_device_even_when_player_disabled() -> None:
+    """A device disabled as a player is still registered as a dashboard endpoint."""
+    provider = _make_provider()
+    uuid = uuid4()
+    disc_info = _cast_info()
+    disc_info.uuid = uuid
+    provider.browser = MagicMock(devices={uuid: disc_info})
+    provider.mass.config.get_raw_player_config_value.return_value = False
+
+    provider._on_chromecast_discovered(uuid, "service")
+
+    provider.dashboards.register.assert_called_once_with(uuid, disc_info)
+
+
+def test_removed_callback_unregisters_dashboard() -> None:
+    """A Cast device removed from discovery is unregistered as a dashboard endpoint."""
+    provider = _make_provider()
+    uuid = uuid4()
+
+    provider._on_chromecast_removed(uuid, "service", _cast_info())
+
+    provider.dashboards.unregister.assert_called_once_with(uuid)
+
+
+async def test_create_and_register_player_refreshes_dashboard_link() -> None:
+    """Registering a new ChromecastPlayer refreshes its dashboard's player_id link."""
+    provider = _make_provider()
+    provider.bridge_manager = MagicMock()
+    provider.bridge_manager.evaluate_bridge = AsyncMock()
+    provider.mass.players.register_or_update = AsyncMock()
+    player_id = str(uuid4())
+    mock_castplayer = MagicMock()
+    mock_castplayer.async_setup = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.chromecast.provider.ChromecastPlayer",
+        return_value=mock_castplayer,
+    ):
+        await provider._create_and_register_player(player_id, MagicMock(), MagicMock())
+
+    provider.dashboards.refresh_player_link.assert_called_once_with(player_id)
+
+
+async def test_recheck_multichannel_child_refreshes_dashboard_link_on_removal() -> None:
+    """A player removed for being a passive multichannel child refreshes its dashboard link."""
+    provider = _make_provider()
+    player_id = str(uuid4())
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.last_multichannel_check = 0.0
+    castplayer.cast_info = MagicMock()
+    provider.mass.players.get_player.return_value = castplayer
+    provider.mass.players.unregister = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.chromecast.provider.ChromecastInfo"
+    ) as mock_chromecast_info_cls:
+        mock_chromecast_info_cls.from_cast_info.return_value.is_multichannel_child = True
+        await provider._recheck_multichannel_child(player_id, _cast_info())
+
+    provider.mass.players.unregister.assert_called_once_with(player_id, permanent=True)
+    provider.dashboards.refresh_player_link.assert_called_once_with(player_id)
