@@ -570,6 +570,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 "Stored Companion credentials are no longer valid for %s",
                 self.display_name,
             )
+            self._clear_stored_credentials(CONF_COMPANION_CREDENTIALS)
             return False
         except _CONNECTION_ERRORS as err:
             self.logger.debug("Unable to connect Companion control for %s: %s", self.name, err)
@@ -619,6 +620,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self.logger.warning(
                 "Unable to authenticate playback monitoring for %s: %s", self.name, err
             )
+            if credentials:
+                self._clear_stored_credentials(self._mrp_credentials_key)
             return False
         except _CONNECTION_ERRORS as err:
             self.logger.debug("Unable to connect playback monitoring for %s: %s", self.name, err)
@@ -1013,6 +1016,16 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self.player_id,
             CONF_STORED_VOLUME,
             volume,
+        )
+        self.update_state()
+
+    def _clear_stored_credentials(self, credentials_key: str) -> None:
+        """Clear credentials that the receiver rejected."""
+        self.config.update({credentials_key: None})
+        self.mass.config.set_raw_player_config_value(
+            self.player_id,
+            credentials_key,
+            None,
         )
         self.update_state()
 

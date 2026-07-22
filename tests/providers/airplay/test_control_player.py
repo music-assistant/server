@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from pyatv import exceptions as pyatv_exceptions
 from pyatv.const import (
     DeviceState,
     FeatureName,
@@ -374,6 +375,25 @@ async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
     assert service.credentials == credentials
     assert player._mrp_state_listener is not None
     assert player._mrp_push_listener is not None
+
+
+async def test_rejected_mrp_credentials_are_cleared() -> None:
+    """Rejected MRP credentials return playback monitoring to setup state."""
+    values: dict[str, object] = {CONF_MRP_CREDENTIALS: "invalid-creds"}
+    player = _make_control_player(config_values=values)
+
+    with patch(
+        "music_assistant.providers.airplay.control_player.pyatv.connect",
+        side_effect=pyatv_exceptions.InvalidCredentialsError(),
+    ):
+        assert await player._connect_mrp() is False
+
+    assert values[CONF_MRP_CREDENTIALS] is None
+    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_called_once_with(
+        player.player_id,
+        CONF_MRP_CREDENTIALS,
+        None,
+    )
 
 
 async def test_homepod_mrp_connection_uses_transient_credentials() -> None:
