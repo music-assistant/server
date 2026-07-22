@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Self, cast
+from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 import pytest
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
 from music_assistant.providers.filesystem_yandex_disk import auth
-from music_assistant.providers.filesystem_yandex_disk.constants import OAUTH_AUTHORIZE_URL
+from music_assistant.providers.filesystem_yandex_disk.constants import (
+    OAUTH_AUTHORIZE_URL,
+    VERIFICATION_CODE_REDIRECT,
+)
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -59,13 +63,15 @@ def _mass(resp: _FakeResp | None = None) -> MusicAssistant:
     return cast("MusicAssistant", _MassStub(resp))
 
 
-def test_manual_authorize_url_contains_client_and_scope() -> None:
-    """The manual authorize URL carries the client id and read scope."""
+def test_manual_authorize_url_contains_client_scope_and_redirect() -> None:
+    """The manual authorize URL carries the client, scope and OOB redirect."""
     url = auth.manual_authorize_url("cid123")
     assert url.startswith(OAUTH_AUTHORIZE_URL)
-    assert "client_id=cid123" in url
-    assert "response_type=code" in url
-    assert "cloud_api" in url
+    params = parse_qs(urlparse(url).query)
+    assert params["client_id"] == ["cid123"]
+    assert params["response_type"] == ["code"]
+    assert params["scope"] == ["cloud_api:disk.read"]
+    assert params["redirect_uri"] == [VERIFICATION_CODE_REDIRECT]
 
 
 @pytest.mark.asyncio

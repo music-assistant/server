@@ -43,6 +43,7 @@ def manual_authorize_url(client_id: str) -> str:
         "response_type": "code",
         "client_id": client_id,
         "scope": OAUTH_SCOPE,
+        "redirect_uri": VERIFICATION_CODE_REDIRECT,
         "force_confirm": "yes",
     }
     return f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}"

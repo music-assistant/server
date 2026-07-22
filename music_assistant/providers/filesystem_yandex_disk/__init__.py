@@ -152,10 +152,10 @@ async def _handle_auth_action(
         return
     client_id = str(values.get(CONF_CLIENT_ID) or "")
     client_secret = str(values.get(CONF_CLIENT_SECRET) or "")
-    # the frontend masks a previously stored secret; fetch the real value
+    # the frontend masks a previously stored secret; fetch and decrypt the real value
     if client_secret == SECURE_STRING_SUBSTITUTE and instance_id:
-        client_secret = str(
-            mass.config.get_raw_provider_config_value(instance_id, CONF_CLIENT_SECRET) or ""
+        client_secret = mass.config.decrypt_string(
+            str(mass.config.get_raw_provider_config_value(instance_id, CONF_CLIENT_SECRET) or "")
         )
     if not client_id or not client_secret:
         raise LoginFailed("Enter the Yandex OAuth Client ID and Client Secret first")
