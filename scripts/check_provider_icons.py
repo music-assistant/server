@@ -1,11 +1,15 @@
 """
-Fail when a provider icon SVG exceeds the 5 KB size budget.
+Fail when a provider or controller icon exceeds its size budget.
 
-Provider icons (``icon.svg``, ``icon_dark.svg``, ``icon_monochrome.svg``, ...) ship inside the
-package and are served to every UI client, so an unoptimized multi-hundred-KB export bloats the
-install and the wire. New icons must stay at or below 5 KB; the icons that already exceeded it when
-this check was introduced are grandfathered through ``scripts/lint_baselines/oversized_provider_icons.txt``
-and should be shrunk over time (run an SVG optimizer such as ``svgo``).
+Icons (``icon.svg``, ``icon_dark.svg``, ``icon.png``, ...) ship inside the package and are served
+to every UI client, so an unoptimized export bloats the install and the wire. Budgets:
+
+- SVG: 5 KB (vector, should stay tiny).
+- PNG: 20 KB (raster, needs more headroom than vector).
+
+New icons must stay within budget; icons that already exceeded it when this check was introduced are
+grandfathered through ``scripts/lint_baselines/oversized_provider_icons.txt`` and should be shrunk
+over time (optimize svgs with a tool such as ``svgo``, and re-export/compress oversized pngs).
 
 Usage:
     uv run -m scripts.check_provider_icons
@@ -23,31 +27,39 @@ from scripts.lint_baseline import diff_baseline, load_baseline, render_baseline
 
 # repo paths (this file lives at <repo>/scripts/check_provider_icons.py)
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PROVIDERS_PATH = REPO_ROOT / "music_assistant" / "providers"
 BASELINE_PATH = REPO_ROOT / "scripts" / "lint_baselines" / "oversized_provider_icons.txt"
 
-# Maximum allowed size for a provider icon SVG (5 KB).
-MAX_ICON_SIZE = 5 * 1024
+# Icons live one level below these roots (``<root>/<name>/icon*.svg|png``).
+ICON_ROOTS = (
+    REPO_ROOT / "music_assistant" / "providers",
+    REPO_ROOT / "music_assistant" / "controllers",
+)
+
+# Maximum allowed size per format. Raster pngs get more headroom than vector svgs.
+MAX_SIZE_BY_SUFFIX = {".svg": 5 * 1024, ".png": 20 * 1024}
 
 _BASELINE_HEADER = (
-    "Provider icon SVGs that already exceeded the 5 KB budget when the check was introduced.\n"
-    "New icons must stay <= 5 KB; shrink these (e.g. with svgo) and drop them from this list.\n"
-    "Regenerate with: uv run -m scripts.check_provider_icons --update-baseline"
+    "Provider/controller icons that already exceeded their size budget when the check was "
+    "introduced.\nNew icons must stay within budget (svg <= 5 KB, png <= 20 KB); shrink these and "
+    "drop them from this list.\nRegenerate with: uv run -m scripts.check_provider_icons "
+    "--update-baseline"
 )
 
 
 def find_oversized_icons() -> dict[str, int]:
-    """Return ``{repo-relative path: 1}`` for every provider icon SVG larger than ``MAX_ICON_SIZE``."""
-    # Only top-level provider icons (``providers/<name>/*.svg``); nested vendored assets are skipped.
-    return {
-        svg_path.relative_to(REPO_ROOT).as_posix(): 1
-        for svg_path in sorted(PROVIDERS_PATH.glob("*/*.svg"))
-        if svg_path.stat().st_size > MAX_ICON_SIZE
-    }
+    """Return ``{repo-relative path: 1}`` for every icon larger than its per-format budget."""
+    # Only top-level icons (``<root>/<name>/*.svg|*.png``); nested vendored assets are skipped.
+    oversized: dict[str, int] = {}
+    for root in ICON_ROOTS:
+        for suffix, max_size in MAX_SIZE_BY_SUFFIX.items():
+            for icon_path in sorted(root.glob(f"*/*{suffix}")):
+                if icon_path.stat().st_size > max_size:
+                    oversized[icon_path.relative_to(REPO_ROOT).as_posix()] = 1
+    return oversized
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Report provider icons that newly exceed the size budget; return 1 when any were found."""
+    """Report icons that newly exceed their size budget; return 1 when any were found."""
     argv = sys.argv[1:] if argv is None else argv
     current = find_oversized_icons()
     if "--update-baseline" in argv:
@@ -58,12 +70,12 @@ def main(argv: list[str] | None = None) -> int:
     if not regressions and not improvements:
         return 0
     if regressions:
-        print(
-            f"Provider icon SVG(s) exceed the {MAX_ICON_SIZE // 1024} KB budget:", file=sys.stderr
-        )
+        print("Icon(s) exceed their size budget (svg <= 5 KB, png <= 20 KB):", file=sys.stderr)
         for path in sorted(regressions):
-            print(f"  {path} ({(REPO_ROOT / path).stat().st_size} bytes)", file=sys.stderr)
-        print("Optimize them (e.g. with svgo) to <= 5 KB.", file=sys.stderr)
+            budget = MAX_SIZE_BY_SUFFIX[Path(path).suffix.lower()]
+            size = (REPO_ROOT / path).stat().st_size
+            print(f"  {path} ({size} bytes, budget {budget // 1024} KB)", file=sys.stderr)
+        print("Optimize them to fit the budget.", file=sys.stderr)
     if improvements:
         print(
             "These icons are now within budget; drop them from the baseline with "
