@@ -103,8 +103,12 @@ BADGE_COLOR_OPTIONS = [
 PARTY_GUEST_USER = "party_guest"
 PARTY_GUEST_DISPLAY_NAME = "Party Guest"
 
-# Sentinel value for uninitialized URL tracking
-_UNSET = object()
+
+class _Unset:
+    """Sentinel for uninitialized state."""
+
+
+_UNSET = _Unset()
 
 # Extra attribute keys for tracking guest items in the queue
 ATTR_PARTY_GUEST = "party_guest"
@@ -426,7 +430,7 @@ class PartyPlugin(PluginProvider):
         self._queue_lock = asyncio.Lock()
         self._session: SharedPlaybackSession | None = None
         self._session_lock = asyncio.Lock()
-        self._last_pushed_url: str | None | object = _UNSET
+        self._last_pushed_url: str | None | _Unset = _UNSET
         self._expiry_task: asyncio.Task[None] | None = None
 
     async def loaded_in_mass(self) -> None:
