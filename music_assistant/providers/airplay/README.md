@@ -384,6 +384,8 @@ and verify it against that release's `SHA256SUMS`. For local source development,
 **Commands** (named pipe):
 - Interactive commands sent via `AsyncNamedPipeWriter`
 - Examples: `ACTION=PLAY`, `ACTION=PAUSE`, `VOLUME=50`, `TITLE=Song Name`
+- MA creates the pipe and sends text metadata immediately after process start;
+  timeline-anchored metadata and artwork are refreshed once the receiver connects
 
 **Output** (stderr):
 - Normalized `[STATUS]` messages (connected/playing/paused/eof), logs and errors

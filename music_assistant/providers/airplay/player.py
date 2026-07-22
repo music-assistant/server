@@ -1003,9 +1003,12 @@ class AirPlayPlayer(Player):
         credentials = await self._active_pairing.finish_pairing(pin=str(pin))
         self._active_pairing = None
 
-        # Store credentials with the protocol-specific key
+        # Store credentials with the protocol-specific key. The get_entries action
+        # flow never persists `values` itself, so save the credentials through
+        # save_player_config to make them live and persisted (encrypted) right away.
         cred_key = self._get_credentials_key(protocol)
         values[cred_key] = credentials
+        await self.mass.config.save_player_config(self.player_id, {cred_key: credentials})
 
         self.logger.info(f"Finished {protocol_name} pairing for {self.display_name}")
 
@@ -1021,7 +1024,11 @@ class AirPlayPlayer(Player):
         if values is not None:
             values[cred_key] = None
             values[CONF_AP2PASSWORD] = None
-        self.config.update({cred_key: None, CONF_AP2PASSWORD: None})
+        # Persist the cleared credentials immediately so a restart cannot
+        # resurrect them from the stored config.
+        await self.mass.config.save_player_config(
+            self.player_id, {cred_key: None, CONF_AP2PASSWORD: None}
+        )
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""

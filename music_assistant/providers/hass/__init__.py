@@ -16,6 +16,7 @@ from functools import partial
 from typing import TYPE_CHECKING, cast
 
 import shortuuid
+from aiohttp import ClientError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import (
@@ -52,6 +53,8 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import OFF_STATES, MediaPlayerEntityFeature
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from aiohttp import ClientSession
     from hass_client.models import CompressedState, Device, EntityStateEvent, State
     from music_assistant_models.config_entries import ProviderConfig
@@ -71,6 +74,13 @@ CONF_VOLUME_CONTROLS = "volume_controls"
 CONF_TTS_ENTITY = "tts_entity"
 CONF_AI_TASK_ENTITY = "ai_task_entity"
 FEATURE_DISCOVERY_TIMEOUT = 30
+STATE_FETCH_TIMEOUT = 30
+STATE_FETCH_CONCURRENCY = 8
+
+# Home Assistant entity domains Music Assistant can offer as player controls.
+CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
+# Home Assistant entity domains that back the TTS and AI Task features.
+FEATURE_DOMAINS = ("tts", "ai_task")
 
 
 async def setup(
@@ -190,7 +200,7 @@ async def get_config_entries(
         hass_prov = cast("HomeAssistantProvider", hass_prov)
         return (
             *base_entries,
-            *(await _get_config_entries(hass_prov.hass)),
+            *(await _get_config_entries(hass_prov)),
         )
 
     return (
@@ -231,14 +241,14 @@ async def get_config_entries(
     )
 
 
-async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, ...]:
+async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigEntry, ...]:
     """Return the (entity based) config entries."""
     all_power_entities: list[ConfigValueOption] = []
     all_mute_entities: list[ConfigValueOption] = []
     all_volume_entities: list[ConfigValueOption] = []
-    if not hass.connected:
+    if not hass_prov.hass.connected:
         return ()
-    states = await hass.get_states()
+    states = await hass_prov.get_states(domains=(*CONTROL_DOMAINS, *FEATURE_DOMAINS))
     tts_entities, ai_task_entities = _get_feature_entity_options(states)
     for state in states:
         entity_platform = state["entity_id"].split(".")[0]
@@ -482,6 +492,66 @@ class HomeAssistantProvider(PluginProvider):
             self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None
 
+    async def get_states(
+        self,
+        *,
+        entity_ids: list[str] | None = None,
+        domains: Collection[str] | None = None,
+    ) -> list[State]:
+        """
+        Return the current Home Assistant state for the requested entities.
+
+        Provide explicit entity IDs and/or a set of domains; only those entities
+        are fetched.
+
+        :param entity_ids: Explicit entity IDs to fetch the current state for.
+        :param domains: Entity domains whose entities should be fetched.
+        """
+        ids: set[str] = set(entity_ids or ())
+        if domains:
+            # resolve domains to entity_ids via the registry, which is far smaller
+            # than a full state dump (it carries no attributes)
+            registry = await self.hass.get_entity_registry()
+            ids.update(
+                entry["entity_id"]
+                for entry in registry
+                if entry["entity_id"].split(".", 1)[0] in domains
+            )
+        if not ids:
+            return []
+        # fetch each state via the REST api rather than the websocket: it is not subject
+        # to the websocket message size limit and lets us request individual entities
+        ha_url, headers, http_session = self._get_ha_http()
+        semaphore = asyncio.Semaphore(STATE_FETCH_CONCURRENCY)
+
+        async def _fetch_state(entity_id: str) -> State | None:
+            try:
+                async with (
+                    semaphore,
+                    http_session.get(
+                        f"{ha_url}/api/states/{entity_id}", headers=headers
+                    ) as response,
+                ):
+                    if response.status == 404:
+                        # entity currently has no state (e.g. not available)
+                        return None
+                    if response.status != 200:
+                        self.logger.warning(
+                            "Unexpected status %s fetching state for %s",
+                            response.status,
+                            entity_id,
+                        )
+                        return None
+                    return cast("State", await response.json())
+            except (ClientError, ValueError) as err:
+                # ValueError covers a malformed JSON body
+                self.logger.warning("Failed to fetch state for %s: %s", entity_id, err)
+                return None
+
+        async with asyncio.timeout(STATE_FETCH_TIMEOUT):
+            states = await asyncio.gather(*(_fetch_state(entity_id) for entity_id in ids))
+        return [state for state in states if state is not None]
+
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path."""
         ha_url, headers, http_session = self._get_ha_http()
@@ -571,8 +641,7 @@ class HomeAssistantProvider(PluginProvider):
         }
         hass_states = {
             state["entity_id"]: state
-            for state in await self.hass.get_states()
-            if state["entity_id"] in control_entity_ids
+            for state in await self.get_states(entity_ids=list(control_entity_ids))
         }
         assert self._player_controls is not None  # for type checking
         for entity_id in control_entity_ids:
@@ -760,7 +829,8 @@ class HomeAssistantProvider(PluginProvider):
 
     async def _resolve_feature_entities(self) -> None:
         """Resolve configured or default Home Assistant feature entities."""
-        tts_entities, ai_task_entities = _get_feature_entity_options(await self.hass.get_states())
+        states = await self.get_states(domains=FEATURE_DOMAINS)
+        tts_entities, ai_task_entities = _get_feature_entity_options(states)
         self._tts_entity_id = _select_feature_entity(
             self.config.get_value(CONF_TTS_ENTITY), tts_entities
         )

@@ -56,7 +56,6 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
-    CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_FLOW_MODE_SAMPLE_RATE,
     CONF_OUTPUT_CHANNELS,
@@ -1123,20 +1122,6 @@ class StreamsAudio:
         finally:
             await remove_file(temp_file)
 
-    def is_output_limiter_enabled(self, player: Player) -> bool:
-        """Check if the player has the output limiter enabled."""
-        deciding_player_id = player.protocol_parent_id or player.player_id
-        if player.state.active_group:
-            deciding_player_id = player.state.active_group
-        elif player.state.synced_to:
-            deciding_player_id = player.state.synced_to
-        output_limiter_enabled = self.mass.config.get_raw_player_config_value(
-            deciding_player_id,
-            CONF_ENTRY_OUTPUT_LIMITER.key,
-            CONF_ENTRY_OUTPUT_LIMITER.default_value,
-        )
-        return bool(output_limiter_enabled)
-
     def get_player_output_plan(
         self,
         player_id: str,
@@ -1176,7 +1161,6 @@ class StreamsAudio:
         if player:
             dsp_config_id = self._resolve_player_dsp_config_id(player)
             dsp = self._resolve_player_dsp_config(player)
-            limiter_enabled = self.is_output_limiter_enabled(player)
             configured_dsp = self.mass.config.get_player_dsp_config(dsp_config_id)
             if configured_dsp.enabled and not dsp.enabled and is_grouping_preventing_dsp(player):
                 dsp_state = DSPState.DISABLED_BY_UNSUPPORTED_GROUP
@@ -1185,7 +1169,6 @@ class StreamsAudio:
         else:
             dsp_config_id = player_id
             dsp = self.mass.config.get_player_dsp_config(player_id)
-            limiter_enabled = True
             dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
 
         enabled_filters = [dsp_filter for dsp_filter in dsp.filters if dsp_filter.enabled]
@@ -1215,9 +1198,6 @@ class StreamsAudio:
             source_channel = AudioChannel.FR
             filter_params.append("pan=mono|c0=FR")
 
-        if limiter_enabled:
-            filter_params.append("alimiter=limit=-2dB:level=false:asc=true")
-
         output_details = AudioOutputDetails(
             player_ids=sorted(destination_player_ids),
             dsp=AudioDSPDetails(
@@ -1225,7 +1205,6 @@ class StreamsAudio:
                 input_gain=dsp.input_gain if dsp.enabled else 0.0,
                 filters=effective_filters,
                 output_gain=dsp.output_gain if dsp.enabled else 0.0,
-                output_limiter=limiter_enabled,
                 preset_id=dsp.preset_id,
             ),
             source_channel=source_channel,
