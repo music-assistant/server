@@ -17,6 +17,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_FORCE_RAOP,
     CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
+    CONF_PAIRING_PIN,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     StreamingProtocol,
@@ -223,6 +224,86 @@ async def test_airplay2_pairing_fails_without_ipv4_address() -> None:
         pytest.raises(PlayerCommandFailed, match="requires an IPv4"),
     ):
         await player._start_pairing(StreamingProtocol.AIRPLAY2, "AirPlay")
+
+
+FAKE_HAP_CREDENTIALS = "ab" * 96  # 192 hex chars, as produced by cliairplay --pair-setup
+
+
+def _make_pin_required_player(**overrides: object) -> AirPlayPlayer:
+    """Create a player whose discovery info requires PIN pairing (flags bit 0x8)."""
+    airplay_info = MagicMock()
+    airplay_info.properties = {b"flags": b"0x8"}
+    player = AirPlayPlayer(
+        provider=MagicMock(),
+        player_id="test_player",
+        display_name="Wohnzimmer TV",
+        address="127.0.0.1",
+        manufacturer="LG",
+        model="OLED48C17LB",
+        raop_discovery_info=None,
+        airplay_discovery_info=airplay_info,
+        **overrides,
+    )
+    player._active_pairing = AsyncMock()
+    player._active_pairing.finish_pairing = AsyncMock(return_value=FAKE_HAP_CREDENTIALS)
+    return player
+
+
+@pytest.mark.asyncio
+async def test_finish_pairing_persists_credentials_to_live_config() -> None:
+    """A successful pairing must write the credentials into the live player config.
+
+    Regression test: pairing computed valid HAP credentials and logged success
+    ("Finished AirPlay pairing for ...") but only stored them in the transient
+    `values` dict returned by the (read-only) config/players/get_entries call.
+    stream.py's `config.get_value(CONF_AIRPLAY_CREDENTIALS)` at the next play
+    attempt then found nothing, no --auth was passed to cliairplay, and it fell
+    back to asking for interactive pairing again even though pairing had just
+    succeeded (observed with an LG webOS TV as an AirPlay 2 hass_players target).
+    """
+    player = _make_pin_required_player()
+    pairing_session = player._active_pairing  # captured before _finish_pairing clears it
+    values: dict[str, object] = {CONF_PAIRING_PIN: "1234"}
+
+    await player._finish_pairing(values, StreamingProtocol.AIRPLAY2, "AirPlay")
+
+    pairing_session.finish_pairing.assert_awaited_once_with(pin="1234")
+    # the response payload for the UI/API caller must contain the credentials...
+    assert values[CONF_AIRPLAY_CREDENTIALS] == FAKE_HAP_CREDENTIALS
+    # ...but that alone is not enough: config/players/get_entries never persists
+    # `values` anywhere, so the live PlayerConfig must be updated explicitly too
+    # (mirroring what _reset_pairing already does for the clear-credentials case).
+    player.config.update.assert_called_once_with(  # type: ignore[attr-defined]
+        {CONF_AIRPLAY_CREDENTIALS: FAKE_HAP_CREDENTIALS}
+    )
+    # the finished pairing session must be cleared so a stray second pairing
+    # attempt from the device-side subprocess can't be mistaken for it
+    assert player._active_pairing is None
+
+
+@pytest.mark.asyncio
+async def test_finish_pairing_raop_uses_raop_credentials_key() -> None:
+    """RAOP (AirPlay 1) pairing must persist under the RAOP-specific config key."""
+    player = _make_pin_required_player()
+    values: dict[str, object] = {CONF_PAIRING_PIN: "1234"}
+
+    await player._finish_pairing(values, StreamingProtocol.RAOP, "RAOP")
+
+    player.config.update.assert_called_once_with(  # type: ignore[attr-defined]
+        {CONF_RAOP_CREDENTIALS: FAKE_HAP_CREDENTIALS}
+    )
+
+
+@pytest.mark.asyncio
+async def test_finish_pairing_without_active_session_does_not_persist() -> None:
+    """No active pairing session means nothing should be written to config."""
+    player = _make_pin_required_player()
+    player._active_pairing = None
+    values: dict[str, object] = {CONF_PAIRING_PIN: "1234"}
+
+    await player._finish_pairing(values, StreamingProtocol.AIRPLAY2, "AirPlay")
+
+    player.config.update.assert_not_called()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

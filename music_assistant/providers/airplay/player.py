@@ -1011,9 +1011,15 @@ class AirPlayPlayer(Player):
         credentials = await self._active_pairing.finish_pairing(pin=str(pin))
         self._active_pairing = None
 
-        # Store credentials with the protocol-specific key
+        # Store credentials with the protocol-specific key. `values` only feeds the
+        # ConfigEntry response of this (read-only) config/players/get_entries call, so
+        # without also persisting to the live config here, stream.py's subsequent
+        # config.get_value(cred_key) lookup at play time finds nothing and cliairplay
+        # falls back to asking for interactive pairing again, even though pairing just
+        # succeeded (see _reset_pairing below, which already does this for its case).
         cred_key = self._get_credentials_key(protocol)
         values[cred_key] = credentials
+        self.config.update({cred_key: credentials})
 
         self.logger.info(f"Finished {protocol_name} pairing for {self.display_name}")
 
