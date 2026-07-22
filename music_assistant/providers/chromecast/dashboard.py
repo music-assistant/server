@@ -47,17 +47,19 @@ class ChromecastDashboards:
         self._unregister_callbacks: dict[str, Callable[[], None]] = {}
         # Cast connections opened on-demand for dashboard casting (not registered players)
         self._dashboard_connections: dict[str, pychromecast.Chromecast] = {}
+        self._unloaded = False
 
     def register(self, uuid: UUID, cast_info: CastInfo) -> None:
         """
         Register (or refresh) a discovered Cast device as a dashboard endpoint.
 
-        Non video-capable devices (audio speakers/groups) are ignored.
+        Non video-capable devices (audio speakers/groups) are ignored. A no-op
+        once the provider has unloaded, closing a race with late discovery callbacks.
 
         :param uuid: Cast device uuid, as reported by discovery.
         :param cast_info: Discovery info for the Cast device.
         """
-        if cast_info.cast_type != CAST_TYPE_CHROMECAST:
+        if self._unloaded or cast_info.cast_type != CAST_TYPE_CHROMECAST:
             return
         device_id = str(uuid)
         self._cast_info[device_id] = cast_info
@@ -87,6 +89,7 @@ class ChromecastDashboards:
 
     async def unload(self) -> None:
         """Unregister all dashboard endpoints and disconnect cached on-demand connections."""
+        self._unloaded = True
         for unregister_callback in list(self._unregister_callbacks.values()):
             unregister_callback()
         self._unregister_callbacks.clear()

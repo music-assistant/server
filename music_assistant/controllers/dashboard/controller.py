@@ -10,9 +10,18 @@ from urllib.parse import urlencode
 from music_assistant_models.auth import Scope
 from music_assistant_models.dashboard import DashboardDevice, DashboardSession
 from music_assistant_models.enums import DashboardType, EventType
-from music_assistant_models.errors import ActionUnavailable, InvalidCommand, MusicAssistantError
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    InsufficientPermissions,
+    InvalidCommand,
+    MusicAssistantError,
+)
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_client_id
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_client_id,
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.guest_access import get_or_create_guest_user
 from music_assistant.models.core_controller import CoreController
@@ -65,25 +74,41 @@ class DashboardController(CoreController):
         """
         Register the calling client as a dashboard endpoint.
 
-        Re-registering an existing dashboard_id replaces it, e.g. on a client reconnect.
+        Re-registering an existing dashboard_id from the same client replaces it,
+        e.g. on a client reconnect.
 
         :param dashboard_id: Unique id chosen by the registering client.
         :param name: Display name for the dashboard endpoint.
-        :param supported_types: Dashboard types this endpoint can show, defaults to all.
+        :param supported_types: Dashboard types this endpoint can show, defaults to all
+            when omitted; an explicitly empty set is rejected.
         :param icon: Optional material design (mdi-*) or MA/lucide icon name.
         :param player_id: Set when this dashboard endpoint is also registered as a MA player.
+        :raises InvalidCommand: If not called from a websocket client, if supported_types
+            is an empty set, or if dashboard_id is already registered by another owner.
         """
+        client_id = get_current_client_id()
+        if client_id is None:
+            msg = "Registering a dashboard is only available for websocket clients"
+            raise InvalidCommand(msg)
+        if supported_types is not None and not supported_types:
+            msg = "supported_types cannot be an empty set"
+            raise InvalidCommand(msg)
+
+        existing = self._dashboards.get(dashboard_id)
+        if existing is not None and existing.client_id != client_id:
+            msg = f"Dashboard {dashboard_id} is already registered by another owner"
+            raise InvalidCommand(msg)
+
         device = DashboardDevice(
             dashboard_id=dashboard_id,
             name=name,
-            supported_types=set(supported_types) if supported_types else set(ALL_DASHBOARD_TYPES),
+            supported_types=set(supported_types)
+            if supported_types is not None
+            else set(ALL_DASHBOARD_TYPES),
             icon=icon,
             player_id=player_id,
         )
-        existing = self._dashboards.get(dashboard_id)
-        self._dashboards[dashboard_id] = _RegisteredDashboard(
-            device=device, client_id=get_current_client_id()
-        )
+        self._dashboards[dashboard_id] = _RegisteredDashboard(device=device, client_id=client_id)
         # don't spam subscribers when a re-registration changed nothing
         if existing is None or existing.device != device:
             self._signal_dashboards_updated()
@@ -96,9 +121,22 @@ class DashboardController(CoreController):
         Graceful no-op when dashboard_id is not currently registered.
 
         :param dashboard_id: Id of a registered dashboard endpoint.
+        :raises InvalidCommand: If not called from a websocket client, or if dashboard_id
+            is registered by another owner.
         """
-        if self._dashboards.pop(dashboard_id, None) is None:
+        client_id = get_current_client_id()
+        if client_id is None:
+            msg = "Unregistering a dashboard is only available for websocket clients"
+            raise InvalidCommand(msg)
+
+        existing = self._dashboards.get(dashboard_id)
+        if existing is None:
             return
+        if existing.client_id != client_id:
+            msg = f"Dashboard {dashboard_id} is registered by another owner"
+            raise InvalidCommand(msg)
+
+        del self._dashboards[dashboard_id]
         self._signal_dashboards_updated()
         if self._sessions.pop(dashboard_id, None) is not None:
             self._signal_sessions_updated()
@@ -134,7 +172,8 @@ class DashboardController(CoreController):
             by `dashboard/dashboards`.
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
-        :raises InvalidCommand: If dashboard_id is unknown, or doesn't support this dashboard.
+        :raises InvalidCommand: If dashboard_id is unknown, doesn't support this dashboard,
+            or the dashboard/player_id combination isn't routable.
         """
         registration = self._dashboards.get(dashboard_id)
         if registration is None:
@@ -143,6 +182,9 @@ class DashboardController(CoreController):
         if dashboard not in registration.device.supported_types:
             msg = f"Dashboard {dashboard_id} does not support {dashboard}"
             raise InvalidCommand(msg)
+        # validate intent up-front so both branches below reject it identically,
+        # before any session/event is committed
+        self._dashboard_route(dashboard, player_id)
 
         session = DashboardSession(
             dashboard_id=dashboard_id,
@@ -197,9 +239,17 @@ class DashboardController(CoreController):
         """
         Return a fully-qualified dashboard URL for a client to load itself.
 
+        Requires the users.invite scope, or that the calling client owns a registered
+        dashboard endpoint with an active session matching the requested dashboard.
+
         :param dashboard: Dashboard to load.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
+        :raises InsufficientPermissions: If the caller has neither the required scope
+            nor a matching active session of its own.
         """
+        if not self._can_resolve_url_for_caller(dashboard, player_id):
+            msg = "Insufficient permissions to resolve a dashboard url"
+            raise InsufficientPermissions(msg)
         return await self._resolve_dashboard_url(dashboard, player_id)
 
     def register_dashboard_handler(
@@ -252,6 +302,31 @@ class DashboardController(CoreController):
         self._signal_dashboards_updated()
         if sessions_changed:
             self._signal_sessions_updated()
+
+    def _can_resolve_url_for_caller(self, dashboard: DashboardType, player_id: str | None) -> bool:
+        """
+        Return whether the current caller may resolve a dashboard url for itself.
+
+        :param dashboard: Dashboard the caller wants a url for.
+        :param player_id: Player the caller wants a url for, when dashboard is NOW_PLAYING.
+        """
+        user = get_current_user()
+        if user is not None and has_scope(user, Scope.USERS_INVITE):
+            return True
+
+        client_id = get_current_client_id()
+        if client_id is None:
+            return False
+        for dashboard_id, registration in self._dashboards.items():
+            if registration.client_id != client_id:
+                continue
+            session = self._sessions.get(dashboard_id)
+            if session is None or session.dashboard != dashboard:
+                continue
+            if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
+                continue
+            return True
+        return False
 
     async def _resolve_dashboard_url(self, dashboard: DashboardType, player_id: str | None) -> str:
         """
@@ -315,6 +390,8 @@ class DashboardController(CoreController):
                 msg = "player_id is required to show the now_playing dashboard"
                 raise InvalidCommand(msg)
             return f"/now-playing?player={player_id}"
+        if dashboard == DashboardType.MUSIC_QUIZ:
+            return "/music-quiz"
         msg = f"Unsupported dashboard type: {dashboard}"
         raise InvalidCommand(msg)
 

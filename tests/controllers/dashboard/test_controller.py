@@ -9,7 +9,12 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from music_assistant_models.dashboard import DashboardDevice, DashboardSession
 from music_assistant_models.enums import DashboardType, EventType
-from music_assistant_models.errors import ActionUnavailable, InvalidCommand, MusicAssistantError
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    InsufficientPermissions,
+    InvalidCommand,
+    MusicAssistantError,
+)
 
 from music_assistant.controllers.dashboard import DashboardController
 from music_assistant.controllers.dashboard.controller import (
@@ -155,7 +160,7 @@ async def test_register_dashboard_stores_registration_and_signals() -> None:
 
     with patch(
         "music_assistant.controllers.dashboard.controller.get_current_client_id",
-        return_value=None,
+        return_value="client1",
     ):
         await controller.register_dashboard("dash1", "Living Room", icon="apple-tv")
 
@@ -177,7 +182,7 @@ async def test_register_dashboard_respects_explicit_supported_types() -> None:
 
     with patch(
         "music_assistant.controllers.dashboard.controller.get_current_client_id",
-        return_value=None,
+        return_value="client1",
     ):
         await controller.register_dashboard(
             "dash1", "Living Room", supported_types={DashboardType.PARTY}
@@ -199,13 +204,87 @@ async def test_register_dashboard_stores_calling_client_id() -> None:
     assert controller._dashboards["dash1"].client_id == "client123"
 
 
+async def test_register_dashboard_requires_websocket_client() -> None:
+    """Registering without a websocket client context is rejected."""
+    controller = _make_controller()
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value=None,
+        ),
+        pytest.raises(InvalidCommand),
+    ):
+        await controller.register_dashboard("dash1", "Living Room")
+
+    assert "dash1" not in controller._dashboards
+
+
+async def test_register_dashboard_rejects_empty_supported_types() -> None:
+    """An explicitly empty supported_types set is a client bug, not 'supports nothing'."""
+    controller = _make_controller()
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value="client1",
+        ),
+        pytest.raises(InvalidCommand),
+    ):
+        await controller.register_dashboard("dash1", "Living Room", supported_types=set())
+
+    assert "dash1" not in controller._dashboards
+
+
+async def test_register_dashboard_rejects_foreign_owner_collision() -> None:
+    """A dashboard_id already registered by another client cannot be taken over."""
+    controller = _make_controller()
+
+    with patch(
+        "music_assistant.controllers.dashboard.controller.get_current_client_id",
+        return_value="client1",
+    ):
+        await controller.register_dashboard("dash1", "Living Room")
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value="client2",
+        ),
+        pytest.raises(InvalidCommand),
+    ):
+        await controller.register_dashboard("dash1", "Kitchen")
+
+    assert controller._dashboards["dash1"].device.name == "Living Room"
+
+
+async def test_register_dashboard_rejects_callback_owned_collision() -> None:
+    """A dashboard_id already registered by an in-server callback cannot be taken over."""
+    controller = _make_controller()
+    device = DashboardDevice(dashboard_id="dash1", name="Living Room")
+    controller._dashboards["dash1"] = _RegisteredDashboard(
+        device=device, on_show=AsyncMock(), on_hide=AsyncMock()
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value="client1",
+        ),
+        pytest.raises(InvalidCommand),
+    ):
+        await controller.register_dashboard("dash1", "Kitchen")
+
+    assert controller._dashboards["dash1"].device.name == "Living Room"
+
+
 async def test_register_dashboard_replaces_existing_registration() -> None:
     """Re-registering an existing dashboard_id replaces it (e.g. client reconnect)."""
     controller = _make_controller()
 
     with patch(
         "music_assistant.controllers.dashboard.controller.get_current_client_id",
-        return_value=None,
+        return_value="client1",
     ):
         await controller.register_dashboard("dash1", "Old Name")
         await controller.register_dashboard(
@@ -223,7 +302,7 @@ async def test_register_dashboard_unchanged_reregistration_does_not_signal() -> 
 
     with patch(
         "music_assistant.controllers.dashboard.controller.get_current_client_id",
-        return_value=None,
+        return_value="client1",
     ):
         await controller.register_dashboard("dash1", "Living Room")
         controller.mass.signal_event.reset_mock()  # type: ignore[attr-defined]
@@ -250,12 +329,16 @@ async def test_unregister_dashboard_removes_registration_and_session() -> None:
     """Unregistering drops the registration and any active session, signaling both events."""
     controller = _make_controller()
     device = DashboardDevice(dashboard_id="dash1", name="Living Room")
-    controller._dashboards["dash1"] = _RegisteredDashboard(device=device)
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device, client_id="client1")
     controller._sessions["dash1"] = DashboardSession(
         dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
     )
 
-    await controller.unregister_dashboard("dash1")
+    with patch(
+        "music_assistant.controllers.dashboard.controller.get_current_client_id",
+        return_value="client1",
+    ):
+        await controller.unregister_dashboard("dash1")
 
     assert "dash1" not in controller._dashboards
     assert "dash1" not in controller._sessions
@@ -272,9 +355,13 @@ async def test_unregister_dashboard_without_session_only_signals_dashboards() ->
     """Unregistering an endpoint with no active session doesn't signal sessions updated."""
     controller = _make_controller()
     device = DashboardDevice(dashboard_id="dash1", name="Living Room")
-    controller._dashboards["dash1"] = _RegisteredDashboard(device=device)
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device, client_id="client1")
 
-    await controller.unregister_dashboard("dash1")
+    with patch(
+        "music_assistant.controllers.dashboard.controller.get_current_client_id",
+        return_value="client1",
+    ):
+        await controller.unregister_dashboard("dash1")
 
     controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
         EventType.DASHBOARDS_UPDATED, data=[]
@@ -285,9 +372,65 @@ async def test_unregister_dashboard_unknown_id_is_noop() -> None:
     """Unregistering an unknown dashboard_id is a graceful no-op, no events signaled."""
     controller = _make_controller()
 
-    await controller.unregister_dashboard("unknown")
+    with patch(
+        "music_assistant.controllers.dashboard.controller.get_current_client_id",
+        return_value="client1",
+    ):
+        await controller.unregister_dashboard("unknown")
 
     controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_unregister_dashboard_requires_websocket_client() -> None:
+    """Unregistering without a websocket client context is rejected."""
+    controller = _make_controller()
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value=None,
+        ),
+        pytest.raises(InvalidCommand),
+    ):
+        await controller.unregister_dashboard("dash1")
+
+
+async def test_unregister_dashboard_rejects_foreign_owner() -> None:
+    """Unregistering a dashboard_id owned by a different client is rejected."""
+    controller = _make_controller()
+    device = DashboardDevice(dashboard_id="dash1", name="Living Room")
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device, client_id="client1")
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value="client2",
+        ),
+        pytest.raises(InvalidCommand),
+    ):
+        await controller.unregister_dashboard("dash1")
+
+    assert "dash1" in controller._dashboards
+
+
+async def test_unregister_dashboard_rejects_callback_owned_entry() -> None:
+    """A callback-registered (client_id=None) entry cannot be unregistered via the API."""
+    controller = _make_controller()
+    device = DashboardDevice(dashboard_id="dash1", name="Living Room")
+    controller._dashboards["dash1"] = _RegisteredDashboard(
+        device=device, on_show=AsyncMock(), on_hide=AsyncMock()
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value="client1",
+        ),
+        pytest.raises(InvalidCommand),
+    ):
+        await controller.unregister_dashboard("dash1")
+
+    assert "dash1" in controller._dashboards
 
 
 async def test_get_dashboards_returns_all_registered() -> None:
@@ -425,6 +568,38 @@ async def test_show_dashboard_api_path_emits_event_without_url() -> None:
     assert controller._sessions["dash1"] == session
 
 
+async def test_show_dashboard_api_path_now_playing_requires_player_id() -> None:
+    """now_playing without a player_id is rejected before any session/event is committed."""
+    controller = _make_controller()
+    device = DashboardDevice(
+        dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
+    )
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device)
+
+    with pytest.raises(InvalidCommand):
+        await controller.show_dashboard("dash1", DashboardType.NOW_PLAYING)
+
+    assert "dash1" not in controller._sessions
+    controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("dashboard", "player_id", "expected_path"),
+    [
+        (DashboardType.PARTY, None, "/party"),
+        (DashboardType.NOW_PLAYING, "player1", "/now-playing?player=player1"),
+        (DashboardType.MUSIC_QUIZ, None, "/music-quiz"),
+    ],
+)
+def test_dashboard_route_resolves_expected_path(
+    dashboard: DashboardType, player_id: str | None, expected_path: str
+) -> None:
+    """Each supported dashboard type resolves to its own frontend route."""
+    controller = _make_controller()
+
+    assert controller._dashboard_route(dashboard, player_id) == expected_path
+
+
 async def test_hide_dashboard_callback_path_invokes_on_hide() -> None:
     """A callback registration's on_hide is awaited, and the session is dropped."""
     controller = _make_controller()
@@ -504,16 +679,113 @@ async def test_get_dashboard_sessions_returns_stored_sessions() -> None:
 
 
 async def test_get_url_for_dashboard_returns_resolved_url() -> None:
-    """The public get_url_for_dashboard method is a thin wrapper around URL resolution."""
+    """An authorized caller gets a thin wrapper around URL resolution."""
     controller = _make_controller()
     controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
 
-    with patch.object(
-        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    with (
+        patch.object(DashboardController, "_can_resolve_url_for_caller", return_value=True),
+        patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")),
     ):
         url = await controller.get_url_for_dashboard(DashboardType.PARTY)
 
     assert _query(url) == {"dashboard": "code456", "path": "/party"}
+
+
+async def test_get_url_for_dashboard_allows_users_invite_scope() -> None:
+    """A user holding the users.invite scope may resolve any dashboard url."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+    user = MagicMock()
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_user",
+            return_value=user,
+        ),
+        patch(
+            "music_assistant.controllers.dashboard.controller.has_scope",
+            return_value=True,
+        ),
+        patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")),
+    ):
+        url = await controller.get_url_for_dashboard(DashboardType.PARTY)
+
+    assert _query(url) == {"dashboard": "code456", "path": "/party"}
+
+
+async def test_get_url_for_dashboard_allows_owner_with_matching_session() -> None:
+    """A client owning a dashboard with a matching active session may resolve its own url."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+    device = DashboardDevice(dashboard_id="dash1", name="Living Room")
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device, client_id="client1")
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_user",
+            return_value=None,
+        ),
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value="client1",
+        ),
+        patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")),
+    ):
+        url = await controller.get_url_for_dashboard(DashboardType.PARTY)
+
+    assert _query(url) == {"dashboard": "code456", "path": "/party"}
+
+
+async def test_get_url_for_dashboard_rejects_owner_without_session() -> None:
+    """Owning a dashboard endpoint alone, without an active matching session, isn't enough."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+    device = DashboardDevice(dashboard_id="dash1", name="Living Room")
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device, client_id="client1")
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_user",
+            return_value=None,
+        ),
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value="client1",
+        ),
+        pytest.raises(InsufficientPermissions),
+    ):
+        await controller.get_url_for_dashboard(DashboardType.PARTY)
+
+
+async def test_get_url_for_dashboard_now_playing_session_must_match_player() -> None:
+    """A now_playing session for a different player does not authorize this request."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+    device = DashboardDevice(dashboard_id="dash1", name="Living Room")
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device, client_id="client1")
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1",
+        name="Living Room",
+        dashboard=DashboardType.NOW_PLAYING,
+        player_id="player1",
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_user",
+            return_value=None,
+        ),
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_client_id",
+            return_value="client1",
+        ),
+        pytest.raises(InsufficientPermissions),
+    ):
+        await controller.get_url_for_dashboard(DashboardType.NOW_PLAYING, player_id="player2")
 
 
 async def test_handle_client_disconnected_removes_owned_registrations_and_sessions() -> None:

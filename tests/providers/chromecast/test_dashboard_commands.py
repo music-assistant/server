@@ -329,6 +329,16 @@ async def test_unload_disconnects_without_executor_when_closing() -> None:
     chromecast.disconnect.assert_called_once_with(0)
 
 
+async def test_register_after_unload_is_noop() -> None:
+    """A late discovery callback after unload must not resurrect a stale registration."""
+    dashboards = _make_dashboards()
+
+    await dashboards.unload()
+    dashboards.register(uuid4(), _cast_info())
+
+    dashboards.mass.dashboard.register_dashboard_handler.assert_not_called()  # type: ignore[attr-defined]
+
+
 ### Provider wiring: discovery lifecycle hooks
 
 
