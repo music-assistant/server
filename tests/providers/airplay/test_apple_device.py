@@ -200,9 +200,26 @@ async def test_play_media_wakes_device_before_starting_stream() -> None:
     assert events == ["wake", "stream"]
 
 
+async def test_stop_routes_stale_stream_to_external_playback() -> None:
+    """A stopped AirPlay stream does not block native playback control."""
+    player = _make_apple_player()
+    player.stream = MagicMock(running=False)
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.Stop
+    device.remote_control.stop = AsyncMock()
+    player._mrp_device = device
+
+    with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as stop_stream:
+        await player.stop()
+
+    stop_stream.assert_not_awaited()
+    device.remote_control.stop.assert_awaited_once()
+
+
 def test_power_off_update_tracks_sleep_state() -> None:
     """A Companion power-off update clears stale playback state."""
     player = _make_apple_player()
+    player.stream = MagicMock(running=False)
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_active_source = "external"
     player._attr_current_media = MagicMock()
@@ -256,6 +273,24 @@ def test_mrp_updates_external_source_and_media() -> None:
     assert player.current_media.title == "External track"
     assert player.current_media.elapsed_time == 12
     assert player.source_list[0].name == "Music"
+
+
+def test_mrp_update_without_app_uses_generic_source() -> None:
+    """MRP playback without app metadata uses the generic Apple source."""
+    player = _make_apple_player()
+    device = MagicMock(spec=AppleTV)
+    device.metadata.app = None
+    player._mrp_device = device
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(
+            Playing(device_state=DeviceState.Playing, title="External media")
+        )
+
+    assert player.active_source == "apple_device"
+    assert player.current_media is not None
+    assert player.current_media.title == "External media"
+    assert player.source_list[0].name == "Apple device"
 
 
 def test_mrp_idle_update_clears_external_media() -> None:

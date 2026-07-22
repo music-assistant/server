@@ -366,7 +366,7 @@ class AppleDevicePlayer(AirPlayPlayer):
     async def play(self) -> None:
         """Resume Music Assistant or external playback."""
         await self._wake_for_playback()
-        if self.stream and self.stream.running:
+        if self._stream_active:
             await super().play()
             return
         device = self._device_for_feature(FeatureName.Play)
@@ -380,7 +380,7 @@ class AppleDevicePlayer(AirPlayPlayer):
 
     async def pause(self) -> None:
         """Pause Music Assistant or external playback."""
-        if self.stream and self.stream.running:
+        if self._stream_active:
             await super().pause()
             return
         device = self._device_for_feature(FeatureName.Pause)
@@ -394,7 +394,7 @@ class AppleDevicePlayer(AirPlayPlayer):
 
     async def stop(self) -> None:
         """Stop Music Assistant or external playback."""
-        if self.stream:
+        if self._stream_active:
             await super().stop()
             return
         device = self._device_for_feature(FeatureName.Stop)
@@ -414,7 +414,7 @@ class AppleDevicePlayer(AirPlayPlayer):
 
     async def volume_set(self, volume_level: int) -> None:
         """Set stream or native Apple device volume."""
-        if self.stream and self.stream.running:
+        if self._stream_active:
             await super().volume_set(volume_level)
             return
         device = self._device_for_feature(FeatureName.SetVolume)
@@ -681,6 +681,11 @@ class AppleDevicePlayer(AirPlayPlayer):
         """Return whether this Apple player is a HomePod."""
         return "homepod" in self.device_info.model.lower()
 
+    @property
+    def _stream_active(self) -> bool:
+        """Return whether Music Assistant is actively streaming to this device."""
+        return bool(self.stream and self.stream.running)
+
     def _device_for_feature(self, feature: FeatureName) -> AppleTV | None:
         """Return the preferred connected device facade for a feature."""
         for device in (self._companion_device, self._mrp_device):
@@ -918,7 +923,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         elif power_state == PowerState.Off:
             self._attr_powered = False
             self._power_on_event.clear()
-            if not self.stream:
+            if not self._stream_active:
                 self._attr_playback_state = PlaybackState.IDLE
                 self._attr_active_source = None
                 self._attr_current_media = None
@@ -945,7 +950,7 @@ class AppleDevicePlayer(AirPlayPlayer):
 
     def _handle_playing_update(self, playing: Playing) -> None:
         """Apply external playback state received over the MRP tunnel."""
-        if self.stream and self.stream.running:
+        if self._stream_active:
             return
         playback_state = {
             DeviceState.Playing: PlaybackState.PLAYING,
@@ -962,7 +967,7 @@ class AppleDevicePlayer(AirPlayPlayer):
 
         app = self._mrp_device.metadata.app if self._mrp_device else None
         source_id = app.identifier if app else "apple_device"
-        source_name = app.name or app.identifier if app else "Apple device"
+        source_name = (app.name or app.identifier) if app else "Apple device"
         self._attr_active_source = source_id
         self._ensure_source(source_id, source_name)
         self._attr_elapsed_time = float(playing.position or 0)
