@@ -10,7 +10,11 @@ import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.providers.airplay.constants import CONF_ENCRYPTION, StreamingProtocol
+from music_assistant.providers.airplay.constants import (
+    CONF_ENCRYPTION,
+    AirPlayRemoteCommand,
+    StreamingProtocol,
+)
 from music_assistant.providers.airplay.stream import AirPlayStream
 
 START_UNIX_MS = 1_750_000_000_000
@@ -252,6 +256,55 @@ def test_parse_latency_status() -> None:
     assert stream.latency_lead_ms == 1750
     assert stream.device_min_frames == 11025
     assert stream.device_max_frames == 88200
+
+
+@pytest.mark.parametrize(
+    ("value", "command"),
+    [
+        ("play", AirPlayRemoteCommand.PLAY),
+        ("pause", AirPlayRemoteCommand.PAUSE),
+        ("play_pause", AirPlayRemoteCommand.PLAY_PAUSE),
+        ("next", AirPlayRemoteCommand.NEXT),
+        ("previous", AirPlayRemoteCommand.PREVIOUS),
+    ],
+)
+def test_parse_remote_event(value: str, command: AirPlayRemoteCommand) -> None:
+    """A normalized CLI remote event is dispatched against its own player."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._parse_remote_event(f"[EVENT] remote command={value}")
+
+    player.provider.handle_remote_command.assert_called_once_with(player, command)
+
+
+def test_parse_remote_event_rejects_unknown_command(caplog: pytest.LogCaptureFixture) -> None:
+    """An unknown CLI remote event is reported and ignored."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_remote_event("[EVENT] remote command=unsupported")
+
+    player.provider.handle_remote_command.assert_not_called()
+    assert "Ignoring unknown cliairplay remote command: unsupported" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stdout_reader_dispatches_remote_events_once() -> None:
+    """The CLI stdout reader dispatches each normalized remote event exactly once."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    output = "".join(f"[EVENT] remote command={command}\n" for command in AirPlayRemoteCommand)
+    process.read = AsyncMock(side_effect=[output.encode(), b""])
+    stream._cli_proc = process
+
+    await stream._stdout_reader()
+
+    assert player.provider.handle_remote_command.call_args_list == [
+        call(player, command) for command in AirPlayRemoteCommand
+    ]
 
 
 def test_temporary_paths_are_unique_per_stream() -> None:
