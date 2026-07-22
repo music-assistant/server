@@ -36,7 +36,7 @@ SEARCH_CACHE_EXPIRATION_COMBINED: Final[int] = 600
 
 # max time to wait for a single recommendation row's item fetch before skipping
 # the row, so one slow provider row can never block an items request
-RECOMMENDATIONS_PROVIDER_TIMEOUT: Final[int] = 30
+RECOMMENDATIONS_ITEMS_TIMEOUT: Final[int] = 30
 
 # max time to wait for a single provider's recommendation rows; rows are
 # contractually fast (no live backend calls) so a short timeout suffices

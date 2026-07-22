@@ -121,7 +121,7 @@ async def test_provider_items_timeout_returns_empty(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A provider that never returns its items yields an empty list once the timeout elapses."""
-    monkeypatch.setattr(rec_controller, "RECOMMENDATIONS_PROVIDER_TIMEOUT", 0.05)
+    monkeypatch.setattr(rec_controller, "RECOMMENDATIONS_ITEMS_TIMEOUT", 0.05)
     hanging = _build(_HangingItemsProvider)
     monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: hanging)
     items = await mass.music.recommendations.get_recommendation_items("fake_instance", "row1")

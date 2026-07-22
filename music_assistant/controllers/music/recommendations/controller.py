@@ -13,7 +13,7 @@ from music_assistant_models.media_items import UniqueList
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.music.constants import (
-    RECOMMENDATIONS_PROVIDER_TIMEOUT,
+    RECOMMENDATIONS_ITEMS_TIMEOUT,
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
 
@@ -91,7 +91,7 @@ class RecommendationsController:
                 # keep the base-model guarantee that this method is only called for
                 # providers declaring the feature, matching the rows listing
                 return UniqueList()
-            async with asyncio.timeout(RECOMMENDATIONS_PROVIDER_TIMEOUT):
+            async with asyncio.timeout(RECOMMENDATIONS_ITEMS_TIMEOUT):
                 return await cast(
                     "MusicProvider | MetadataProvider | PluginProvider", prov
                 ).get_recommendation_items(item_id)
