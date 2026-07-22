@@ -41,9 +41,6 @@ class ChromecastDashboards:
         self.provider = provider
         self.mass = provider.mass
         self.logger = provider.logger.getChild("dashboard")
-        # last known CastInfo per device_id, so a player appearing/disappearing
-        # later can re-register without needing a fresh discovery callback
-        self._cast_info: dict[str, CastInfo] = {}
         self._unregister_callbacks: dict[str, Callable[[], None]] = {}
         # Cast connections opened on-demand for dashboard casting (not registered players)
         self._dashboard_connections: dict[str, pychromecast.Chromecast] = {}
@@ -61,9 +58,7 @@ class ChromecastDashboards:
         """
         if self._unloaded or cast_info.cast_type != CAST_TYPE_CHROMECAST:
             return
-        device_id = str(uuid)
-        self._cast_info[device_id] = cast_info
-        self._register_device(device_id, cast_info)
+        self._register_device(str(uuid), cast_info)
 
     def unregister(self, uuid: UUID) -> None:
         """
@@ -71,21 +66,8 @@ class ChromecastDashboards:
 
         :param uuid: Cast device uuid, as reported by discovery.
         """
-        device_id = str(uuid)
-        self._cast_info.pop(device_id, None)
-        if unregister_callback := self._unregister_callbacks.pop(device_id, None):
+        if unregister_callback := self._unregister_callbacks.pop(str(uuid), None):
             unregister_callback()
-
-    def refresh_player_link(self, player_id: str) -> None:
-        """
-        Re-register a dashboard endpoint after its linked MA player appeared or disappeared.
-
-        Graceful no-op if the device was never registered as a dashboard endpoint.
-
-        :param player_id: Cast device uuid (as string) whose MA player registration changed.
-        """
-        if cast_info := self._cast_info.get(player_id):
-            self._register_device(player_id, cast_info)
 
     async def unload(self) -> None:
         """Unregister all dashboard endpoints and disconnect cached on-demand connections."""
@@ -93,7 +75,6 @@ class ChromecastDashboards:
         for unregister_callback in list(self._unregister_callbacks.values()):
             unregister_callback()
         self._unregister_callbacks.clear()
-        self._cast_info.clear()
 
         dashboard_connections = list(self._dashboard_connections.values())
         self._dashboard_connections.clear()
@@ -107,13 +88,11 @@ class ChromecastDashboards:
 
     def _register_device(self, device_id: str, cast_info: CastInfo) -> None:
         """Build a DashboardDevice for device_id and (re-)register it with the controller."""
-        player_id = device_id if self.mass.players.get_player(device_id) else None
         device = DashboardDevice(
             dashboard_id=f"chromecast_{device_id}",
             name=cast_info.friendly_name or device_id,
             supported_types=SUPPORTED_DASHBOARD_TYPES,
             icon="cast",
-            player_id=player_id,
         )
         self._unregister_callbacks[device_id] = self.mass.dashboard.register_dashboard_handler(
             device,

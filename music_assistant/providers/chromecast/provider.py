@@ -237,8 +237,6 @@ class ChromecastProvider(PlayerProvider):
             )
             await castplayer.async_setup()
             await self.mass.players.register_or_update(castplayer)
-            # keep the dashboard registration's player_id in sync now a player exists
-            self.dashboards.refresh_player_link(player_id)
             # Set up Sendspin bridge
             await self.bridge_manager.evaluate_bridge(castplayer)
         finally:
@@ -286,8 +284,6 @@ class ChromecastProvider(PlayerProvider):
                     castplayer.cast_info.friendly_name,
                 )
                 await self.mass.players.unregister(player_id, permanent=True)
-                # the device is still discovered, just no longer a MA player
-                self.dashboards.refresh_player_link(player_id)
         except Exception:
             self.logger.debug("Multichannel re-check failed for %s", player_id, exc_info=True)
         finally:

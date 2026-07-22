@@ -68,7 +68,6 @@ class DashboardController(CoreController):
         name: str,
         supported_types: set[DashboardType] | None = None,
         icon: str | None = None,
-        player_id: str | None = None,
     ) -> None:
         """
         Register the calling client as a dashboard endpoint.
@@ -78,7 +77,6 @@ class DashboardController(CoreController):
         :param supported_types: Dashboard types this endpoint can show, defaults to all
             when omitted; an explicitly empty set is rejected.
         :param icon: Optional material design (mdi-*) or MA/lucide icon name.
-        :param player_id: Set when this dashboard endpoint is also registered as a MA player.
         :raises InvalidCommand: If not called from a websocket client, if supported_types
             is an empty set, or if dashboard_id is already registered by another owner.
         """
@@ -102,7 +100,6 @@ class DashboardController(CoreController):
             if supported_types is not None
             else set(ALL_DASHBOARD_TYPES),
             icon=icon,
-            player_id=player_id,
         )
         self._dashboards[dashboard_id] = _RegisteredDashboard(device=device, client_id=client_id)
         # don't spam subscribers when a re-registration changed nothing
