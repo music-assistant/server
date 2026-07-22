@@ -37,6 +37,8 @@ from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPl
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.queue_item import QueueItem
@@ -1085,8 +1087,43 @@ class PartyPlugin(PluginProvider):
                 PARTY_GUEST_USER,
             )
 
+    async def _schedule_join_code_expiry_timer(self) -> None:
+        """Schedule a task that fires when the active join code expires."""
+        # Cancel any existing timer
+        if self._expiry_task:
+            self._expiry_task.cancel()
+            self._expiry_task = None
+
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            return
+
+        guest_user = await guest_access.get_or_create_guest_user(
+            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
+        )
+        active_code = await self.mass.webserver.auth.get_active_join_code(guest_user)
+        if not active_code:
+            return
+
+        expiry = await self.mass.webserver.auth.get_join_code_expiry(active_code, guest_user)
+        if not expiry:
+            return
+
+        async def _on_code_expired(code_expiry: datetime) -> None:
+            """Handle active join code expiry."""
+            try:
+                now = utc()
+                # Add 1 second buffer so get_active_join_code sees the code as expired
+                delay = max(0, (code_expiry - now).total_seconds() + 1)
+                await asyncio.sleep(delay)
+                # Code has expired; push update which will auto-create a new code
+                await self._push_url_update()
+            except asyncio.CancelledError:
+                pass
+
+        self._expiry_task = self.mass.create_task(_on_code_expired(expiry))
+
     async def _push_url_update(self) -> None:
-        """Compute current guest URL & QR code, push them if changed, and schedule expiry timer."""
+        """Push a URL/QR update event to subscribers if the party URL has changed."""
         url = await self.get_party_url()
         qr_code = segno.make(url).svg_data_uri() if url else None
 
@@ -1111,39 +1148,3 @@ class PartyPlugin(PluginProvider):
     async def _on_core_state_updated(self, event: MassEvent) -> None:
         """Handle core state changes (remote access toggle changes the URL format)."""
         await self._push_url_update()
-
-    async def _schedule_join_code_expiry_timer(self) -> None:
-        """Schedule a task that fires when the active join code expires."""
-        # Cancel any existing timer
-        if self._expiry_task:
-            self._expiry_task.cancel()
-            self._expiry_task = None
-
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return
-
-        guest_user = await guest_access.get_or_create_guest_user(
-            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
-        )
-        active_code = await self.mass.webserver.auth.get_active_join_code(guest_user)
-        if not active_code:
-            return
-
-        expiry = await self.mass.webserver.auth.get_join_code_expiry(active_code, guest_user)
-        if not expiry:
-            return
-
-        now = utc()
-        # Add 1 second buffer so get_active_join_code sees the code as expired
-        delay = max(0, (expiry - now).total_seconds() + 1)
-
-        async def _on_code_expired() -> None:
-            """Handle active join code expiry."""
-            try:
-                await asyncio.sleep(delay)
-                # Code has expired; push update which will auto-create a new code
-                await self._push_url_update()
-            except asyncio.CancelledError:
-                pass
-
-        self._expiry_task = self.mass.create_task(_on_code_expired())
