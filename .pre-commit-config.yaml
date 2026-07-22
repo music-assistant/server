@@ -54,14 +54,13 @@ repos:
         types: [json]
         files: ^music_assistant/providers/[^/]+/manifest\.json$
 
-      # fail when a provider icon SVG exceeds the 5 KB budget (existing offenders are baselined)
+      # fail when a provider/controller icon exceeds its size budget (existing offenders baselined)
       - id: check_provider_icons
         name: check_provider_icons
         entry: uv run -m scripts.check_provider_icons
         pass_filenames: false
         language: system
-        types: [text]
-        files: ^(music_assistant/providers/.+\.svg|scripts/check_provider_icons\.py|scripts/lint_baseline(s/oversized_provider_icons\.txt|\.py))$
+        files: ^(music_assistant/(providers|controllers)/.+\.(svg|png)|scripts/check_provider_icons\.py|scripts/lint_baseline(s/oversized_provider_icons\.txt|\.py))$
 
       # fail when a browse/recommendation folder hardcodes a label instead of using translation_key
       - id: check_translatable_labels
