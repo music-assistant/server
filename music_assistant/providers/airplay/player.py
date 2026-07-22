@@ -1082,6 +1082,6 @@ class AirPlayPlayer(Player):
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):
-    """AirPlay protocol endpoint for a non-Apple receiver."""
+    """AirPlay protocol endpoint without independent device control."""
 
     _attr_type = PlayerType.PROTOCOL

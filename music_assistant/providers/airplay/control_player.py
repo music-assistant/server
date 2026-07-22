@@ -1047,16 +1047,23 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if volume_level == 0:
             if self._volume_before_mute is None and self._attr_volume_level:
                 self._volume_before_mute = self._attr_volume_level
+            mute_changed = self._attr_volume_muted is not True
             self._attr_volume_muted = True
-            self.update_state()
+            if mute_changed:
+                self.update_state()
             return
+        mute_changed = self._attr_volume_muted is not False
         self._attr_volume_muted = False
         self._volume_before_mute = None
-        self._update_native_volume(volume_level)
+        self._update_native_volume(volume_level, state_changed=mute_changed)
 
-    def _update_native_volume(self, volume: int) -> None:
+    def _update_native_volume(self, volume: int, *, state_changed: bool = False) -> None:
         """Update and persist a volume reported by device control."""
         volume = max(0, min(100, volume))
+        if self._attr_volume_level == volume:
+            if state_changed:
+                self.update_state()
+            return
         self._attr_volume_level = volume
         self.mass.config.set_raw_player_config_value(
             self.player_id,

@@ -213,6 +213,19 @@ async def test_native_mute_zeros_and_restores_volume() -> None:
     device.audio.set_volume.assert_awaited_once_with(42)
 
 
+def test_duplicate_native_volume_update_is_ignored() -> None:
+    """Repeated native volume events do not rewrite config or player state."""
+    player = _make_control_player()
+    player._attr_volume_level = 42
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("companion", 42)
+
+    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    update_state.assert_not_called()
+
+
 def test_pairable_companion_service_requires_setup_until_paired() -> None:
     """Companion and MRP pairing contribute to the player's setup state."""
     player = _make_control_player()
