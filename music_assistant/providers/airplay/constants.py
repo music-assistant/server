@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from typing import Final
 
 from music_assistant_models.enums import ContentType, PlayerFeature
@@ -19,6 +19,16 @@ class StreamingProtocol(IntEnum):
 
     RAOP = 1  # AirPlay 1 (RAOP)
     AIRPLAY2 = 2  # AirPlay 2
+
+
+class AirPlayRemoteCommand(StrEnum):
+    """Transport commands received from an AirPlay receiver."""
+
+    PLAY = "play"
+    PAUSE = "pause"
+    PLAY_PAUSE = "play_pause"
+    NEXT = "next"
+    PREVIOUS = "previous"
 
 
 CONF_VOLUME_START: Final[str] = "volume_start"
