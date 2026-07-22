@@ -116,10 +116,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
             ):
                 return
 
-            current_index = queue.index_in_buffer
-            if current_index is None:
+            current_item = queue.current_item
+            if current_item is None:
                 return
-            current_next = self.get_next_item(queue_id, current_index)
+            current_next = self.get_next_item(queue_id, current_item.queue_item_id)
             if current_next is None or current_next.queue_item_id != next_item.queue_item_id:
                 return
 
