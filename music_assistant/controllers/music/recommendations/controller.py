@@ -81,7 +81,7 @@ class RecommendationsController:
         """
         try:
             if provider == "library":
-                return UniqueList(await library_items(self.mass, item_id))
+                return await library_items(self.mass, item_id)
             prov = self.mass.get_provider(provider)
             # re-apply the user provider filter the rows listing applies, so a user
             # can not fetch items from a music provider an admin has restricted them from
