@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from music_assistant.providers.fastmcp_server.constants import (
+    CONF_META_TOOL_DISCOVERY,
     HOT_SWAPPABLE_KEYS,
     PERMISSION_KEYS,
     RESOURCE_KEYS,
@@ -19,9 +20,9 @@ def test_resource_keys_count() -> None:
     assert len(RESOURCE_KEYS) == 3
 
 
-def test_hot_swappable_includes_perm_and_resource_keys() -> None:
-    """Hot-swappable set is exactly the union — anything else triggers a runtime restart."""
-    assert HOT_SWAPPABLE_KEYS == PERMISSION_KEYS | RESOURCE_KEYS
+def test_hot_swappable_includes_perm_resource_and_meta_keys() -> None:
+    """Hot-swappable set is exactly this union — anything else triggers a runtime restart."""
+    assert PERMISSION_KEYS | RESOURCE_KEYS | {CONF_META_TOOL_DISCOVERY} == HOT_SWAPPABLE_KEYS
 
 
 def test_no_overlap_perm_resource() -> None:

@@ -3049,8 +3049,8 @@ async def test_music_timeline_ready_cancels_intermediate_auto_advance() -> None:
 
 
 @pytest.mark.asyncio
-async def test_music_timeline_finish_skips_unanswered_bonus() -> None:
-    """Keep finish as a backward-compatible way to skip a bonus."""
+async def test_music_timeline_wrong_placement_accepts_bonus_and_finish() -> None:
+    """Accept bonuses after a wrong placement and keep finish available to skip one."""
     definitions: list[TimelineBonusDefinition] = [
         TimelineFreeTextBonusDefinition(
             bonus_type=TimelineBonusType.ARTIST,
@@ -3092,8 +3092,8 @@ async def test_music_timeline_finish_skips_unanswered_bonus() -> None:
                 {
                     "answer_type": "timeline",
                     "action": "place",
-                    "previous_entry_id": "anchor",
-                    "next_entry_id": None,
+                    "previous_entry_id": None,
+                    "next_entry_id": "anchor",
                 },
             ),
         )
@@ -3119,8 +3119,10 @@ async def test_music_timeline_finish_skips_unanswered_bonus() -> None:
     game = plugin._game
     assert game is not None
     assert game.phase == MusicQuizPhase.REVEAL
-    assert game.players[player_ids["Alice"]].score == 1250
+    assert game.players[player_ids["Alice"]].score == 250
     assert revealed["you"]["answer"]["finished"] is True
+    assert revealed["you"]["answer"]["correct"] is False
+    assert revealed["you"]["answer"]["points"] == 0
     assert revealed["you"]["answer"]["bonus_results"] == [
         {"bonus_type": "artist", "correct": True, "points": 250}
     ]

@@ -42,7 +42,7 @@ class CompareState(TypedDict):
     last_playing_elapsed_time: int
     stream_title: str | None
     codec_type: ContentType | None
-    output_formats: list[str] | None
+    output_player_ids: list[str] | None
 
 
 class _PlayActionHost(Protocol):

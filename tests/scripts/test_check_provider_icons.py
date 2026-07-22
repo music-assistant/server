@@ -2,16 +2,16 @@
 
 from scripts.check_provider_icons import (
     BASELINE_PATH,
-    MAX_ICON_SIZE,
+    MAX_SIZE_BY_SUFFIX,
     find_oversized_icons,
     main,
 )
 from scripts.lint_baseline import load_baseline
 
 
-def test_size_budget_is_5kb() -> None:
-    """The icon budget is exactly 5 KB."""
-    assert MAX_ICON_SIZE == 5 * 1024
+def test_size_budgets() -> None:
+    """The icon budgets are 5 KB for svg and 20 KB for png."""
+    assert MAX_SIZE_BY_SUFFIX == {".svg": 5 * 1024, ".png": 20 * 1024}
 
 
 def test_oversized_icons_match_baseline() -> None:

@@ -39,7 +39,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 37
+API_SCHEMA_VERSION: Final[int] = 38
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -101,7 +101,6 @@ CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
-CONF_OUTPUT_LIMITER: Final[str] = "output_limiter"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
@@ -359,6 +358,7 @@ CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
         ConfigValueOption(FLOW_MODE_SAMPLE_RATE_HIGHEST),
     ],
     default_value=FLOW_MODE_SAMPLE_RATE_SMART,
+    depends_on=CONF_FLOW_MODE,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
@@ -428,16 +428,6 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     advanced=True,
     requires_reload=True,
 )
-
-CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
-    key=CONF_OUTPUT_LIMITER,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=True,
-    category="playback",
-    advanced=True,
-    requires_reload=True,
-)
-
 
 # Note: the crossfade_mode select entry (standard/smart) is built dynamically in the config
 # controller because its options and default depend on smart fades availability.

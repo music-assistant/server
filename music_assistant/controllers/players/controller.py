@@ -949,9 +949,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
             )
             if muted:
-                player.extra_data[ATTR_PREVIOUS_VOLUME] = player.state.volume_level
-                player.extra_data[ATTR_FAKE_MUTE] = True
+                already_muted = bool(player.extra_data.get(ATTR_FAKE_MUTE))
+                if not already_muted:
+                    # on a repeated mute command the volume is already 0
+                    player.extra_data[ATTR_PREVIOUS_VOLUME] = player.state.volume_level
                 await self._handle_cmd_volume_set(player_id, 0)
+                # set the flag after the volume command, as that clears it
+                player.extra_data[ATTR_FAKE_MUTE] = True
                 player.update_state()
             else:
                 prev_volume = player.extra_data.get(ATTR_PREVIOUS_VOLUME, 1)
@@ -3485,6 +3489,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 filtered_native_remove,
             )
             if filtered_native_add or filtered_native_remove:
+                if PlayerFeature.SET_MEMBERS not in parent_player.state.supported_features:
+                    return
                 self.logger.info(
                     "Calling set_members on native player %s with add=%s, remove=%s",
                     parent_player.state.name,

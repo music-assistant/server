@@ -33,6 +33,7 @@ from music_assistant.constants import (
     CONF_OUTPUT_CODEC,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import (
@@ -295,7 +296,10 @@ class SqueezelitePlayer(Player):
 
         # start the stream task
         self.multi_client_stream = stream = MultiClientStream(
-            audio_source=audio_source, audio_format=master_audio_format
+            audio_source=audio_source,
+            audio_format=master_audio_format,
+            queue_id=media.source_id,
+            session_id=get_media_session_id(media),
         )
         base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}"
 

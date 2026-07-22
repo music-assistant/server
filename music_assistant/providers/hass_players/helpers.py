@@ -25,9 +25,12 @@ async def get_hass_media_players(
 ) -> AsyncGenerator[HassState]:
     """Return all HA state objects for (valid) media_player entities."""
     entity_registry = {x["entity_id"]: x for x in await hass_prov.hass.get_entity_registry()}
-    for state in await hass_prov.hass.get_states():
-        if not state["entity_id"].startswith("media_player"):
-            continue
+    # discover via the registry instead of a full state dump; entities without a
+    # unique_id are not registered and are therefore not discovered here
+    media_player_ids = [
+        entity_id for entity_id in entity_registry if entity_id.startswith("media_player.")
+    ]
+    for state in await hass_prov.get_states(entity_ids=media_player_ids):
         if "mass_player_type" in state["attributes"]:
             # filter out mass players
             continue

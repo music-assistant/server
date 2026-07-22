@@ -361,3 +361,76 @@ async def test_migration_populates_fts_tables(database: DatabaseConnection) -> N
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'albums_fts'"
     )
     assert not rows
+
+
+async def test_migration_rewrites_apple_music_artwork_to_tokens(
+    database: DatabaseConnection,
+) -> None:
+    """Persisted (expired) blobstore artwork URLs are rewritten to resolvable tokens."""
+    await database.execute("ALTER TABLE albums ADD COLUMN metadata json")
+    await database.execute(
+        "CREATE TABLE provider_mappings([media_type] TEXT, [item_id] INTEGER, "
+        "[provider_domain] TEXT, [provider_instance] TEXT, [provider_item_id] TEXT)"
+    )
+    signed_url = "https://store-033.blobstore.apple.com/pic/image?X-Amz-Signature=dead"
+    metadata = {
+        "images": [
+            {
+                "type": "thumb",
+                "path": signed_url,
+                "provider": "apple_music--1",
+                "remotely_accessible": True,
+            },
+            {
+                "type": "fanart",
+                "path": "https://tadb/fanart.jpg",
+                "provider": "theaudiodb",
+                "remotely_accessible": True,
+            },
+            {
+                "type": "thumb",
+                "path": signed_url,
+                "provider": "apple_music--removed",
+                "remotely_accessible": True,
+            },
+        ]
+    }
+    await database.execute(
+        "INSERT INTO albums (item_id, metadata) VALUES (1, :metadata)",
+        {"metadata": json.dumps(metadata)},
+    )
+    # an unrelated row without apple artwork must be left untouched
+    await database.execute(
+        "INSERT INTO albums (item_id, metadata) VALUES (2, :metadata)",
+        {"metadata": json.dumps({"images": [{"path": "https://x/y.jpg", "provider": "spotify"}]})},
+    )
+    await database.execute(
+        "INSERT INTO provider_mappings "
+        "(media_type, item_id, provider_domain, provider_instance, provider_item_id) "
+        "VALUES ('album', 1, 'apple_music', 'apple_music--1', 'l.abc123')"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=54,
+        create_tables=AsyncMock(),
+    )
+
+    rows = await database.get_rows_from_query(
+        "SELECT item_id, metadata FROM albums ORDER BY item_id"
+    )
+    images = json.loads(rows[0]["metadata"])["images"]
+    # the mapped entry became a token, the metadata-provider entry survived and
+    # the entry whose apple instance no longer exists was dropped
+    assert [(img["path"], img["provider"], img["remotely_accessible"]) for img in images] == [
+        ("album/l.abc123", "apple_music--1", False),
+        ("https://tadb/fanart.jpg", "theaudiodb", True),
+    ]
+    assert json.loads(rows[1]["metadata"])["images"] == [
+        {"path": "https://x/y.jpg", "provider": "spotify"}
+    ]

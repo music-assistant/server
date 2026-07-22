@@ -581,6 +581,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue."""
         queue = self._queue_data[queue_id].queue
+        self.mass.streams.audio_processing.clear(queue_id)
         self.store_sources(queue, [])
         queue.is_dynamic = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
@@ -632,6 +633,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
         self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
         self._set_transitioning(queue_id, False)
+        queue_data = self._queue_data[queue_id]
+        session_id = queue_data.session_id
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -642,6 +645,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # public cmd_stop redirects to queue.stop when a queue is active,
         # which would loop back here indefinitely.
         await self.mass.players._handle_cmd_stop(queue_id)
+        if queue_data.session_id == session_id:
+            queue_data.session_id = None
+        self.mass.streams.audio_processing.clear(queue_id, session_id)
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play", required_scope=Scope.QUEUES_CONTROL)
@@ -914,6 +920,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.next_item_id_enqueued = None
             # always update session id when we start a new playback session
             queue_data.session_id = shortuuid.random(length=8)
+            self.mass.streams.audio_processing.start_session(
+                queue_id,
+                queue_data.session_id,
+            )
             # handle resume point of audiobook(chapter) or podcast(episode)
             if (
                 not seek_position
@@ -953,6 +963,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     # if we reach this point, loading the item succeeded, break the loop
                     queue.current_index = index
                     queue.current_item = queue_item
+                    # reset the elapsed clock together with the item switch (like
+                    # next/previous do), so queue updates signaled before the player
+                    # reports position don't carry the previous item's elapsed_time
+                    queue.elapsed_time = seek_position if attempt == 0 else 0
+                    queue.elapsed_time_last_updated = time.time()
                     break
                 except (MediaNotFoundError, AudioError) as err:
                     item_name = queue_item.name if queue_item else "unknown"
@@ -1199,6 +1214,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def on_player_remove(self, player_id: str, permanent: bool) -> None:
         """Call when a player is removed from the registry."""
+        self.mass.streams.audio_processing.clear(player_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{player_id}")
         # cancel a pending debounced cache write AND an already-started one, so neither can
@@ -1453,6 +1469,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if items_changed:
             queue_data.items_cache_dirty = True
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
+        self.mass.streams.audio_processing.prune(queue_id)
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
         # also signal update to the player itself so it can update its current_media
