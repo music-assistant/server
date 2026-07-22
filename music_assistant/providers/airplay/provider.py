@@ -39,6 +39,7 @@ from .constants import (
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
+    AirPlayRemoteCommand,
     StreamingProtocol,
 )
 from .helpers import convert_airplay_volume, get_cli_binary, get_model_info
@@ -138,6 +139,24 @@ class AirPlayProvider(PlayerProvider):
             ready_task.cancel()
             exit_task.cancel()
             await asyncio.gather(ready_task, exit_task, return_exceptions=True)
+
+    def handle_remote_command(self, player: AirPlayPlayer, command: AirPlayRemoteCommand) -> None:
+        """Dispatch a transport command received from an AirPlay receiver."""
+        player_id = player.player_id
+        match command:
+            case AirPlayRemoteCommand.PLAY:
+                # Some receivers echo play as confirmation of a command from MA.
+                if player.playback_state != PlaybackState.PLAYING:
+                    self.mass.create_task(self.mass.players.cmd_play(player_id))
+            case AirPlayRemoteCommand.PAUSE:
+                if player.playback_state == PlaybackState.PLAYING:
+                    self.mass.create_task(self.mass.players.cmd_pause(player_id))
+            case AirPlayRemoteCommand.PLAY_PAUSE:
+                self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
+            case AirPlayRemoteCommand.NEXT:
+                self.mass.create_task(self.mass.players.cmd_next_track(player_id))
+            case AirPlayRemoteCommand.PREVIOUS:
+                self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -584,16 +603,13 @@ class AirPlayProvider(PlayerProvider):
                 or player.device_info.manufacturer.lower() == "apple"
             )
             if path == "/ctrl-int/1/nextitem":
-                self.mass.create_task(self.mass.players.cmd_next_track(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.NEXT)
             elif path == "/ctrl-int/1/previtem":
-                self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.PREVIOUS)
             elif path == "/ctrl-int/1/play":
-                # sometimes this request is sent by a device as confirmation of a play command
-                # we ignore this if the player is already playing
-                if player.playback_state != PlaybackState.PLAYING:
-                    self.mass.create_task(self.mass.players.cmd_play(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.PLAY)
             elif path == "/ctrl-int/1/playpause":
-                self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.PLAY_PAUSE)
             elif path == "/ctrl-int/1/stop":
                 self.mass.create_task(self.mass.players.cmd_stop(player_id))
             elif path == "/ctrl-int/1/volumeup":
@@ -608,8 +624,7 @@ class AirPlayProvider(PlayerProvider):
                     active_queue.queue_id, not active_queue.shuffle_enabled
                 )
             elif path == "/ctrl-int/1/pause":
-                if player.state.playback_state == PlaybackState.PLAYING:
-                    self.mass.create_task(self.mass.players.cmd_pause(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.PAUSE)
             elif path == "/ctrl-int/1/discrete-pause":
                 # Some devices send discrete-pause right before device-prevent-playback=1
                 # when switching to another source. We debounce the pause to avoid

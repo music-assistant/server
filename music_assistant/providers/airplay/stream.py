@@ -16,14 +16,12 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
-import aiofiles
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.images import get_image_thumb
+from music_assistant.helpers.images import get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import remove_file
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_PCM_FORMAT,
@@ -31,6 +29,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    AirPlayRemoteCommand,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
@@ -98,8 +97,6 @@ class AirPlayStream:
         # Route the binary resolved for this stream (empty until reported),
         # e.g. "AirPlay 2 (native, PTP)" or "RAOP"
         self.active_route: str = ""
-        self._artwork_paths: set[str] = set()
-        self._current_artwork_path: str | None = None
 
     @property
     def running(self) -> bool:
@@ -214,7 +211,6 @@ class AirPlayStream:
                                 elapsed_time=0,
                                 stream=self,
                             )
-                            await self._cleanup_artwork()
                             self._cleanup_complete = True
 
     async def write_audio(self, data: bytes) -> None:
@@ -324,7 +320,6 @@ class AirPlayStream:
             async with self._metadata_lock:
                 self._artwork_render_generations.discard(metadata_generation)
             raise
-        remove_artwork: str | None = None
         async with self._metadata_lock:
             self._artwork_render_generations.discard(metadata_generation)
             if (
@@ -339,15 +334,7 @@ class AirPlayStream:
                     and not self._stopping
                     and metadata_generation == self._metadata_generation
                 ):
-                    remove_artwork = self._current_artwork_path
-                    self._current_artwork_path = artwork
                     self._metadata_checksum = metadata_checksum
-                else:
-                    remove_artwork = artwork
-            elif artwork:
-                remove_artwork = artwork
-        if remove_artwork:
-            await self._remove_artwork(remove_artwork)
 
     async def _build_cli_args(  # noqa: PLR0915
         self, start_unix_ms: int, use_shared_ptp: bool | None = None
@@ -511,6 +498,7 @@ class AirPlayStream:
           [STATUS] route protocol=<raop|airplay2> flow=<...> timing=<ntp|ptp> buffered=<0|1>
           [STATUS] latency lead_ms=<int> device_min_frames=<int> device_max_frames=<int>
           [STATUS] mrp path=<command> status=<http status>
+          [EVENT] remote command=<play|pause|play_pause|next|previous>
         """
         if not self._cli_proc:
             return
@@ -528,7 +516,22 @@ class AirPlayStream:
                     self._parse_mrp_status(line)
                 elif "[STATUS] latency" in line:
                     self._parse_latency_status(line)
+                elif line.startswith("[EVENT] remote command="):
+                    self._parse_remote_event(line)
                 self.player.logger.log(VERBOSE_LOG_LEVEL, line)
+
+    def _parse_remote_event(self, line: str) -> None:
+        """Dispatch a normalized remote command reported by cliairplay."""
+        command_value = line.removeprefix("[EVENT] remote command=").strip()
+        try:
+            command = AirPlayRemoteCommand(command_value)
+        except ValueError:
+            self.player.logger.warning(
+                "Ignoring unknown cliairplay remote command: %s", command_value
+            )
+            return
+        prov = cast("AirPlayProvider", self.prov)
+        prov.handle_remote_command(self.player, command)
 
     def _parse_mrp_status(self, line: str) -> None:
         """Parse the [STATUS] mrp line and log the now-playing push result."""
@@ -633,7 +636,6 @@ class AirPlayStream:
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
                 await self.commands_pipe.remove()
-                await self._cleanup_artwork()
 
     def _update_elapsed(self, elapsed_time: float) -> None:
         """Update elapsed time with session offset compensation."""
@@ -647,21 +649,19 @@ class AirPlayStream:
             state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
         )
 
-    async def _prepare_artwork(self, image_url: str, generation: int) -> str | None:
+    async def _prepare_artwork(self, image_url: str, _generation: int) -> str | None:
         """
-        Render cover art to a local JPEG file the binary can embed.
+        Return a cached JPEG path for the binary to embed.
 
         The binary consumes artwork as a local file only; it does not fetch
-        URLs. The image is flattened to JPEG (legacy AirPlay receivers cannot
-        be assumed to handle transparency) and written to a per-stream path.
+        URLs. The image is flattened to JPEG and stored in the shared thumbnail
+        cache.
 
         :param image_url: The (imageproxy or remote) cover-art URL.
-        :param generation: Metadata generation the rendered file belongs to.
+        :param _generation: Metadata generation associated with the render request.
         """
-        artwork_path = self._get_artwork_path(generation)
-        self._artwork_paths.add(artwork_path)
         try:
-            jpeg = await get_image_thumb(
+            return await get_image_thumb_path(
                 self.mass,
                 image_url,
                 AIRPLAY_ARTWORK_SIZE,
@@ -669,48 +669,9 @@ class AirPlayStream:
                 image_format="JPEG",
                 flatten_transparency=True,
             )
-            if self._teardown_started():
-                self._artwork_paths.discard(artwork_path)
-                await self._delete_artwork_file(artwork_path)
-                return None
-            async with aiofiles.open(artwork_path, "wb") as artfile:
-                await artfile.write(jpeg)
-            if self._teardown_started():
-                self._artwork_paths.discard(artwork_path)
-                await self._delete_artwork_file(artwork_path)
-                return None
         except Exception as err:
             self.player.logger.debug("Could not prepare artwork: %s", err)
-            self._artwork_paths.discard(artwork_path)
-            await self._delete_artwork_file(artwork_path)
             return None
-        return artwork_path
-
-    async def _remove_artwork(self, artwork_path: str) -> None:
-        """Remove a rendered artwork file."""
-        if artwork_path not in self._artwork_paths:
-            return
-        self._artwork_paths.discard(artwork_path)
-        was_current = self._current_artwork_path == artwork_path
-        if was_current:
-            self._current_artwork_path = None
-        try:
-            await self._delete_artwork_file(artwork_path)
-        except OSError:
-            self._artwork_paths.add(artwork_path)
-            if was_current:
-                self._current_artwork_path = artwork_path
-            raise
-
-    async def _delete_artwork_file(self, artwork_path: str) -> None:
-        """Delete an artwork file even when teardown already released its ownership."""
-        with suppress(FileNotFoundError):
-            await remove_file(artwork_path)
-
-    async def _cleanup_artwork(self) -> None:
-        """Remove all rendered artwork files owned by this stream."""
-        for artwork_path in tuple(self._artwork_paths):
-            await self._remove_artwork(artwork_path)
 
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
@@ -730,7 +691,6 @@ class AirPlayStream:
                 await self._cli_proc.kill()
         finally:
             await self.commands_pipe.remove()
-            await self._cleanup_artwork()
             self._cleanup_complete = True
             self._cli_proc = None
 
@@ -742,14 +702,3 @@ class AirPlayStream:
         if not command.endswith("\n"):
             command += "\n"
         await self.commands_pipe.write(command.encode("utf-8"))
-
-    def _get_artwork_path(self, generation: int) -> str:
-        """Return the artwork path owned by this stream and metadata generation."""
-        return (
-            f"/tmp/cliairplay-art-{self.player.player_id}-"  # noqa: S108
-            f"{self._stream_id}-{generation}.jpg"
-        )
-
-    def _teardown_started(self) -> bool:
-        """Return whether stream teardown has started or completed."""
-        return self._stopping or self._stopped
