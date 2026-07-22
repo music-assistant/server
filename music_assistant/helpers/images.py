@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
+import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
 from music_assistant_models.errors import MusicAssistantError
@@ -795,7 +796,7 @@ async def load_provider_icon(icon_path: str) -> tuple[str, bytes]:
     """
     ext = icon_path.rsplit(".", maxsplit=1)[-1].lower()
     if ext == "svg":
-        async with aiofiles.open(icon_path) as svg_file:
+        async with aiofiles.open(icon_path, encoding="utf-8") as svg_file:
             xml_data = (await svg_file.read()).replace("\n", "").strip()
         return "image/svg+xml", xml_data.encode("utf-8")
     if ext == "png":
@@ -824,7 +825,7 @@ async def detect_provider_icons(
     for variant, filenames in variant_files.items():
         for filename in filenames:  # svg first -> preferred
             icon_path = os.path.join(provider_path, filename)
-            if os.path.isfile(icon_path):
+            if await aiofiles.os.path.isfile(icon_path):
                 icons[variant] = await load_provider_icon(icon_path)
                 break
     return icons
