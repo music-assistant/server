@@ -101,6 +101,28 @@ async def test_refresh_token_failure(
     assert await auth_manager.refresh_token() is False
 
 
+async def test_refresh_token_cooldown(
+    auth_manager: TidalAuthManager, http_session: AsyncMock
+) -> None:
+    """Test a refresh right after a successful one skips the token endpoint."""
+    auth_manager._auth_info = {
+        "refresh_token": "refresh",
+        "client_id": "client_id",
+    }
+
+    response = AsyncMock()
+    response.status = 200
+    response.json.return_value = {
+        "access_token": "new_token",
+        "expires_in": 3600,
+    }
+    http_session.post.return_value.__aenter__.return_value = response
+
+    assert await auth_manager.refresh_token() is True
+    assert await auth_manager.refresh_token() is True
+    assert http_session.post.call_count == 1
+
+
 @patch("music_assistant.providers.tidal.auth_manager.pkce")
 @patch("music_assistant.providers.tidal.auth_manager.app_var")
 @pytest.mark.usefixtures("auth_manager")

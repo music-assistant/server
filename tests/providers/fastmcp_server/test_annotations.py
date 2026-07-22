@@ -35,6 +35,7 @@ _BUILDERS = [
 _DESTRUCTIVE_NAMES = {
     "queue_add_to_queue",
     "queue_clear_queue",
+    "queue_remove_item",
     "playlists_remove_tracks",
     "media_remove_from_favorites",
     "media_remove_from_library",

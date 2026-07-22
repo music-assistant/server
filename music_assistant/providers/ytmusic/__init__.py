@@ -1006,8 +1006,8 @@ class YoutubeMusicProvider(MusicProvider):
                 )
             },
             favorite=track_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
-            # Disc info is not available in YTM
-            disc_number=0,
+            # Disc info is not available in YTM, assume a single disc
+            disc_number=1,
             # Track number is "sometimes" available in the track object, otherwise approach
             # by counting album tracks when fetching full album details
             track_number=track_obj.get("trackNumber") or track_number or 0,

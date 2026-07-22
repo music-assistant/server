@@ -5,7 +5,7 @@
   "name": "AcoustID Lookup",
   "description": "Identifies local audio files using AcoustID/Chromaprint fingerprinting and fills in their MusicBrainz recording ID for subsequent metadata enrichment.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["pyacoustid==1.3.0"],
+  "requirements": ["pyacoustid==1.3.1"],
   "multi_instance": false,
   "builtin": false,
   "allow_disable": true,

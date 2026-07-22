@@ -38,11 +38,15 @@ class UGPStream:
         audio_source: AsyncGenerator[bytes],
         audio_format: AudioFormat,
         base_pcm_format: AudioFormat,
+        queue_id: str | None,
+        session_id: str | None,
     ) -> None:
         """Initialize UGP Stream."""
         self.audio_source = audio_source
         self.input_format = audio_format
         self.base_pcm_format = base_pcm_format
+        self.queue_id = queue_id
+        self.session_id = session_id
         self.subscribers: list[Callable[[bytes], Awaitable[None]]] = []
         self._task: asyncio.Task[None] | None = None
         self._done: asyncio.Event = asyncio.Event()

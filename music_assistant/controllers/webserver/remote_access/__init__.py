@@ -8,6 +8,7 @@ bridging them to the local WebSocket API.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -63,10 +64,12 @@ class RemoteAccessManager:
         self.mass = webserver.mass
         self.logger = webserver.logger.getChild("remote_access")
         self.gateway: WebRTCGateway | None = None
+        self._gateway_lock = asyncio.Lock()
         self._remote_id: str
         self._certificate: RTCCertificate
         self._enabled: bool = False
         self._using_ha_cloud: bool = False
+        self._target_using_ha_cloud: bool = False
         self._on_unload_callbacks: list[Callable[[], None]] = []
 
     async def setup(self) -> None:
@@ -80,20 +83,21 @@ class RemoteAccessManager:
         self._register_api_commands()
         self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED)
         if self._enabled:
-            await self._schedule_start()
+            self._schedule_start()
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        self.mass.cancel_timer(TASK_ID_START_GATEWAY)
+        self._enabled = False
         await self.stop()
         for unload_cb in self._on_unload_callbacks:
             unload_cb()
 
     async def stop(self) -> None:
         """Stop the remote access gateway."""
-        if self.gateway:
-            await self.gateway.stop()
-            self.gateway = None
+        self.mass.cancel_timer(TASK_ID_START_GATEWAY)
+        self.mass.cancel_task(TASK_ID_START_GATEWAY)
+        async with self._gateway_lock:
+            await self._stop_gateway_locked()
 
     async def get_ice_servers(self) -> list[dict[str, str]]:
         """
@@ -143,25 +147,49 @@ class RemoteAccessManager:
         """Return the persistent WebRTC DTLS certificate."""
         return self._certificate
 
-    async def _schedule_start(self) -> None:
-        """Schedule a debounced gateway start, cancelling any existing connection first."""
-        # Cancel any pending timer
+    def _schedule_start(self) -> None:
+        """Schedule a debounced gateway restart."""
         self.mass.cancel_timer(TASK_ID_START_GATEWAY)
-        # Stop any existing gateway
-        await self.stop()
-        # Schedule new start
         self.logger.debug("Scheduling remote access gateway start in %s seconds", STARTUP_DELAY)
         self.mass.call_later(
             STARTUP_DELAY,
-            self._start_gateway,
+            self._restart_gateway,
             task_id=TASK_ID_START_GATEWAY,
         )
 
+    def _can_start_gateway(self) -> bool:
+        """Return whether remote access currently allows a gateway start."""
+        return self._enabled
+
     async def _start_gateway(self) -> None:
-        """Start the remote access gateway (internal implementation)."""
-        if not self._enabled:
+        """Start the remote access gateway if it is not already running."""
+        self.mass.cancel_timer(TASK_ID_START_GATEWAY)
+        async with self._gateway_lock:
+            if self.is_running:
+                self.logger.debug("Remote access gateway is already running")
+                return
+            await self._start_gateway_locked()
+
+    async def _restart_gateway(self) -> None:
+        """Replace the remote access gateway with a freshly configured instance."""
+        async with self._gateway_lock:
+            if self.is_running:
+                ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
+                self._target_using_ha_cloud = bool(ha_cloud_available and ice_servers)
+                if self._target_using_ha_cloud == self._using_ha_cloud:
+                    self.logger.debug("Remote access mode settled before restart")
+                    return
+            await self._stop_gateway_locked()
+            await self._start_gateway_locked()
+
+    async def _start_gateway_locked(self) -> None:
+        """Start the remote access gateway while holding the lifecycle lock."""
+        if not self._can_start_gateway():
             self.logger.debug("Remote access disabled, skipping start")
             return
+
+        if self.gateway is not None:
+            await self._stop_gateway_locked()
 
         # imported here (and the certificate built here) so aiortc/PyAV is only
         # loaded when remote access is actually enabled, never at idle
@@ -178,14 +206,18 @@ class RemoteAccessManager:
         local_ws_url += "ws"
 
         ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
-        self._using_ha_cloud = bool(ha_cloud_available and ice_servers)
+        using_ha_cloud = bool(ha_cloud_available and ice_servers)
+        self._target_using_ha_cloud = using_ha_cloud
+        if not self._can_start_gateway():
+            self.logger.debug("Remote access disabled while preparing gateway")
+            return
 
-        mode = "optimized" if self._using_ha_cloud else "basic"
+        mode = "optimized" if using_ha_cloud else "basic"
         self.logger.info("Starting remote access in %s mode", mode)
 
         sendspin_url = f"ws://{format_ip_for_url(str(self.mass.streams.publish_ip))}:8927/sendspin"
 
-        self.gateway = WebRTCGateway(
+        gateway = WebRTCGateway(
             http_session=self.mass.http_session,
             remote_id=self._remote_id,
             certificate=self._certificate,
@@ -200,7 +232,24 @@ class RemoteAccessManager:
             set_sendspin_player_callback=self.webserver.set_sendspin_player_for_webrtc_session,
         )
 
-        await self.gateway.start()
+        try:
+            await gateway.start()
+        except BaseException:
+            await gateway.stop()
+            raise
+        if not self._can_start_gateway():
+            await gateway.stop()
+            return
+        self.gateway = gateway
+        self._using_ha_cloud = using_ha_cloud
+
+    async def _stop_gateway_locked(self) -> None:
+        """Stop the remote access gateway while holding the lifecycle lock."""
+        if self.gateway is None:
+            return
+        gateway = self.gateway
+        await gateway.stop()
+        self.gateway = None
 
     async def _on_providers_updated(self, event: MassEvent) -> None:
         """
@@ -215,9 +264,10 @@ class RemoteAccessManager:
         ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
         new_using_ha_cloud = bool(ha_cloud_available and ice_servers)
 
-        if new_using_ha_cloud != self._using_ha_cloud:
+        if new_using_ha_cloud != self._target_using_ha_cloud:
+            self._target_using_ha_cloud = new_using_ha_cloud
             self.logger.info("HA Cloud status changed, restarting remote access")
-            await self._schedule_start()
+            self._schedule_start()
 
     async def _get_ha_cloud_status(self) -> tuple[bool, list[dict[str, str]] | None]:
         """
@@ -279,7 +329,7 @@ class RemoteAccessManager:
             self.mass.config.set(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", enabled)
             if self._enabled and not self.is_running:
                 await self._start_gateway()
-            elif not self._enabled and self.is_running:
+            elif not self._enabled:
                 await self.stop()
             if changed:
                 self.mass.signal_event(

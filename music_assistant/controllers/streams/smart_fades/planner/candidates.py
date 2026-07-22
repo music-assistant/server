@@ -246,7 +246,7 @@ class ProtectiveAnchorGenerator(CandidateGenerator):
         """Emit every ladder rung at the nearest anchor that doesn't truncate A's last phrase."""
         if ctx.vocal_out_placement is None or not ctx.vocal_out_placement.windows:
             return
-        target = min(ctx.vocal_out_placement.last_end(), ctx.audio_end)
+        target = _outgoing_vocal_end(ctx)
         anchor = _nearest_protective_anchor(ctx, target)
         ladder = bars_ladder(ctx, ctx.tier)
         ideal = ladder[0]
@@ -313,6 +313,30 @@ class VocalOnsetEntryGenerator(CandidateGenerator):
             )
 
 
+class RescueAnchorGenerator(CandidateGenerator):
+    """Emits a modest, late-anchored rung as a last resort before the emergency handoff."""
+
+    name = "rescue-anchor"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit 1-2 bar rungs anchored as late as the tail allows, never past A's own vocal end."""
+        full_ladder = bars_ladder(ctx, ctx.tier)
+        bar_seconds = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        last_vocal_end = _outgoing_vocal_end(ctx)
+        for bars in [rung for rung in full_ladder if rung <= 2]:
+            target = min(ctx.audio_end, max(ctx.audio_end - bars * bar_seconds, last_vocal_end))
+            anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=False)
+            for entry in [None, *_entry_options(ctx, bars)]:
+                yield CandidateSpec(
+                    tier=ctx.tier,
+                    bars=bars,
+                    anchor_s=anchor,
+                    entry_s=entry,
+                    source=self.name,
+                    ideal_bars=full_ladder[0],
+                )
+
+
 def default_generators() -> tuple[CandidateGenerator, ...]:
     """Return the standard generator set, in preference order (best first)."""
     return (
@@ -360,6 +384,14 @@ class CandidateFactory:
             spec.entry_s if spec.entry_s is not None else self._choose_fadein_entry(tail, bars)
         )
         if bars > 1 and fadein_start_pos is None:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "dropping spec source=%s tier=%s bars=%d anchor=%s: no beat-aligned incoming entry",
+                spec.source,
+                tier,
+                bars,
+                spec.anchor_s,
+            )
             return None
         crossfade_duration = self._calculate_crossfade_duration(tail, bars)
 
@@ -368,6 +400,15 @@ class CandidateFactory:
             tail, crossfade_duration, fadein_start_pos, tempo_plan
         )
         if bars > 1 and fadein_start_pos is not None and fadein_trim_start is None:
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "dropping spec source=%s tier=%s bars=%d anchor=%s: "
+                "no legal timing lock for the pinned entry",
+                spec.source,
+                tier,
+                bars,
+                spec.anchor_s,
+            )
             return None
         # Rolling-intro alignment: on a full blend with no pinned entry, deepen B's
         # trim so its groove entry lands at the overlap END (B's intro runs under A,
@@ -379,6 +420,15 @@ class CandidateFactory:
             feasible, aligned = self._align_rolling_intro(crossfade_duration, fadein_trim_start)
             if not feasible:
                 if bars > 1:
+                    self._logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "dropping spec source=%s tier=%s bars=%d anchor=%s: "
+                        "rolling intro: no legal cut clears the sung run",
+                        spec.source,
+                        tier,
+                        bars,
+                        spec.anchor_s,
+                    )
                     return None
             else:
                 fadein_trim_start = aligned
@@ -771,26 +821,27 @@ class CandidateFactory:
         ctx = self._ctx
         audible_outgoing_trim = max(0.0, ctx.audio_end - plan.fade_out_window)
         anchor_on_downbeat = self._is_on_downbeat(plan.fade_out_window)
-        if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
-            # deliberate extension over the old planner (which never scored the
-            # energy-only path): policies need real trim/downbeat facts on every
-            # candidate; only the vocal-dependent fields keep their defaults
-            return PlanMetrics(
-                strategy=spec.strategy,
-                audible_outgoing_trim=audible_outgoing_trim,
-                anchor_on_downbeat=anchor_on_downbeat,
+        # deliberate extension over the old planner (which never scored the
+        # energy-only path): policies need real trim/downbeat facts on every
+        # candidate; each vocal-dependent field needs only its own deck's mask
+        outgoing_vocal_fade_seconds = 0.0
+        collision_seconds = weighted_collision = 0.0
+        if ctx.vocal_out_scoring is not None:
+            outgoing_windows = self._rendered_outgoing_windows(plan)
+            in_fade = [
+                (max(0.0, left), min(plan.crossfade_duration, right))
+                for left, right in outgoing_windows
+                if right > 0.0 and left < plan.crossfade_duration
+            ]
+            outgoing_vocal_fade_seconds = sum(
+                right - left for left, right in merge_windows(in_fade)
             )
-        outgoing_windows = self._rendered_outgoing_windows(plan)
-        incoming_windows = self._rendered_incoming_windows(plan)
-        collision_seconds, weighted_collision = collision_metrics(
-            outgoing_windows, incoming_windows, plan.crossfade_duration
-        )
-        in_fade = [
-            (max(0.0, left), min(plan.crossfade_duration, right))
-            for left, right in outgoing_windows
-            if right > 0.0 and left < plan.crossfade_duration
-        ]
-        outgoing_vocal_fade_seconds = sum(right - left for left, right in merge_windows(in_fade))
+            if ctx.vocal_in_scoring is not None:
+                collision_seconds, weighted_collision = collision_metrics(
+                    outgoing_windows,
+                    self._rendered_incoming_windows(plan),
+                    plan.crossfade_duration,
+                )
         return PlanMetrics(
             strategy=spec.strategy,
             audible_outgoing_trim=audible_outgoing_trim,
@@ -923,6 +974,14 @@ def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
     if ctx.natural_entry not in options:
         options.append(ctx.natural_entry)
     return options
+
+
+def _outgoing_vocal_end(ctx: TransitionContext) -> float:
+    """Return the last outgoing vocal end within the audible tail, or 0.0 without vocal data."""
+    mask = ctx.vocal_out_placement
+    if mask is None or not mask.windows:
+        return 0.0
+    return min(mask.last_end(), ctx.audio_end)
 
 
 def _nearest_protective_anchor(

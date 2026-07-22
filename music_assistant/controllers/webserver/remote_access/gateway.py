@@ -33,6 +33,9 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 logging.getLogger("aioice").setLevel(logging.WARNING)
 logging.getLogger("aiortc").setLevel(logging.WARNING)
 
+# Max concurrent proxied fetches, so a burst of album-art requests stays bounded
+HTTP_PROXY_CONCURRENCY = 6
+
 
 @dataclass
 class WebRTCSession:
@@ -44,15 +47,20 @@ class WebRTCSession:
     data_channel: Any = None
     local_ws: Any = None
     message_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
+    data_channel_setup_task: asyncio.Task[None] | None = None
     forward_to_local_task: asyncio.Task[None] | None = None
     forward_from_local_task: asyncio.Task[None] | None = None
+    proxy_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    data_channel_active: bool = False
     # Sendspin channel - bridges to internal sendspin server
     sendspin_channel: Any = None
     sendspin_ws: Any = None
     sendspin_queue: asyncio.Queue[str | bytes] = field(default_factory=asyncio.Queue)
     sendspin_player_id: str | None = None  # Extracted from first sendspin auth message
+    sendspin_setup_task: asyncio.Task[None] | None = None
     sendspin_to_local_task: asyncio.Task[None] | None = None
     sendspin_from_local_task: asyncio.Task[None] | None = None
+    sendspin_channel_active: bool = False
 
 
 class WebRTCGateway:
@@ -118,6 +126,8 @@ class WebRTCGateway:
 
         self.sessions: dict[str, WebRTCSession] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
+        # gateway-wide by design: normally a single remote client is connected
+        self._http_proxy_semaphore = asyncio.Semaphore(HTTP_PROXY_CONCURRENCY)
         self._signaling_ws: aiohttp.ClientWebSocketResponse | None = None
         self._running = False
         self._reconnect_delay = 10  # Wait 10 seconds before reconnecting
@@ -405,10 +415,28 @@ class WebRTCGateway:
         def on_datachannel(channel: Any) -> None:
             if channel.label == "sendspin":
                 session.sendspin_channel = channel
+                session.sendspin_channel_active = True
+                self._register_sendspin_channel_handlers(session)
                 task = asyncio.create_task(self._setup_sendspin_channel(session))
+                session.sendspin_setup_task = task
+
+                def clear_setup_task(completed_task: asyncio.Task[None]) -> None:
+                    if session.sendspin_setup_task is completed_task:
+                        session.sendspin_setup_task = None
+
+                task.add_done_callback(clear_setup_task)
             else:
                 session.data_channel = channel
+                session.data_channel_active = True
+                self._register_data_channel_handlers(session)
                 task = asyncio.create_task(self._setup_data_channel(session))
+                session.data_channel_setup_task = task
+
+                def clear_data_setup_task(completed_task: asyncio.Task[None]) -> None:
+                    if session.data_channel_setup_task is completed_task:
+                        session.data_channel_setup_task = None
+
+                task.add_done_callback(clear_data_setup_task)
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
 
@@ -557,26 +585,89 @@ class WebRTCGateway:
             # Include session_id in URL so server can track WebRTC sessions
             ws_url = f"{self.local_ws_url}?webrtc_session_id={session.session_id}"
             session.local_ws = await self.http_session.ws_connect(ws_url)
-            loop = asyncio.get_event_loop()
+            if not session.data_channel_active:
+                await self._close_data_channel_bridge(session)
+                return
 
             # Store task references for proper cleanup
             session.forward_to_local_task = asyncio.create_task(self._forward_to_local(session))
             session.forward_from_local_task = asyncio.create_task(self._forward_from_local(session))
-
-            @channel.on("message")  # type: ignore[untyped-decorator]
-            def on_message(message: str) -> None:
-                # Called from aiortc thread, use call_soon_threadsafe
-                # Only queue message if session is still active
-                if session.forward_to_local_task and not session.forward_to_local_task.done():
-                    loop.call_soon_threadsafe(session.message_queue.put_nowait, message)
-
-            @channel.on("close")  # type: ignore[untyped-decorator]
-            def on_close() -> None:
-                # Called from aiortc thread, use call_soon_threadsafe to schedule task
-                asyncio.run_coroutine_threadsafe(self._close_session(session.session_id), loop)
-
         except Exception:
             self.logger.exception("Failed to connect to local WebSocket")
+            await self._close_data_channel_bridge(session)
+            channel.close()
+
+    def _register_data_channel_handlers(self, session: WebRTCSession) -> None:
+        """
+        Register API handlers before the remote peer can send its first message.
+
+        :param session: The WebRTC session.
+        """
+        channel = session.data_channel
+        if channel is None:
+            return
+        loop = asyncio.get_running_loop()
+
+        @channel.on("message")  # type: ignore[untyped-decorator]
+        def on_message(message: str) -> None:
+            def enqueue_message() -> None:
+                if not session.data_channel_active:
+                    return
+                if (
+                    session.forward_to_local_task is None
+                    or not session.forward_to_local_task.done()
+                ):
+                    session.message_queue.put_nowait(message)
+
+            loop.call_soon_threadsafe(enqueue_message)
+
+        @channel.on("close")  # type: ignore[untyped-decorator]
+        def on_close() -> None:
+            session.data_channel_active = False
+
+            def schedule_close() -> None:
+                if session.session_id not in self.sessions:
+                    return
+                task = asyncio.create_task(self._close_session(session.session_id))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+
+            loop.call_soon_threadsafe(schedule_close)
+
+    async def _close_data_channel_bridge(self, session: WebRTCSession) -> None:
+        """
+        Close the local API bridge for a WebRTC session.
+
+        :param session: The WebRTC session.
+        """
+        session.data_channel_active = False
+        current_task = asyncio.current_task()
+        tasks = [
+            task
+            for task in (
+                session.data_channel_setup_task,
+                session.forward_to_local_task,
+                session.forward_from_local_task,
+            )
+            if task is not None and task is not current_task
+        ]
+        tasks += [task for task in session.proxy_tasks if task is not current_task]
+        local_ws = session.local_ws
+        session.data_channel_setup_task = None
+        session.forward_to_local_task = None
+        session.forward_from_local_task = None
+        session.proxy_tasks = set()
+        session.local_ws = None
+        session.message_queue = asyncio.Queue()
+
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if local_ws and not local_ws.closed:
+            await local_ws.close()
 
     async def _forward_to_local(self, session: WebRTCSession) -> None:
         """
@@ -592,8 +683,12 @@ class WebRTCGateway:
                 try:
                     msg_data = json.loads(message)
                     if isinstance(msg_data, dict) and msg_data.get("type") == "http-proxy-request":
-                        # Handle HTTP proxy request
-                        await self._handle_http_proxy_request(session, msg_data)
+                        # handle off the receive loop so a slow fetch never blocks API traffic
+                        task = asyncio.create_task(
+                            self._handle_http_proxy_request(session, msg_data)
+                        )
+                        session.proxy_tasks.add(task)
+                        task.add_done_callback(session.proxy_tasks.discard)
                         continue
                 except json.JSONDecodeError, ValueError:
                     pass
@@ -653,39 +748,40 @@ class WebRTCGateway:
 
         self.logger.debug("HTTP proxy request: %s %s", method, local_http_url)
 
-        try:
-            # Use shared HTTP session for this request
-            async with self.http_session.request(
-                method, local_http_url, headers=headers
-            ) as response:
-                # Read response body
-                body = await response.read()
+        async with self._http_proxy_semaphore:
+            try:
+                # Use shared HTTP session for this request
+                async with self.http_session.request(
+                    method, local_http_url, headers=headers
+                ) as response:
+                    # Read response body
+                    body = await response.read()
 
-                # Prepare response data
-                response_data = {
+                    # Prepare response data
+                    response_data = {
+                        "type": "http-proxy-response",
+                        "id": request_id,
+                        "status": response.status,
+                        "headers": dict(response.headers),
+                        "body": body.hex(),  # Send as hex string to avoid encoding issues
+                    }
+
+                    # Send response back through data channel
+                    if session.data_channel and session.data_channel.readyState == "open":
+                        session.data_channel.send(json.dumps(response_data))
+
+            except Exception as err:
+                self.logger.exception("Error handling HTTP proxy request")
+                # Send error response
+                error_response = {
                     "type": "http-proxy-response",
                     "id": request_id,
-                    "status": response.status,
-                    "headers": dict(response.headers),
-                    "body": body.hex(),  # Send as hex string to avoid encoding issues
+                    "status": 500,
+                    "headers": {"Content-Type": "text/plain"},
+                    "body": str(err).encode().hex(),
                 }
-
-                # Send response back through data channel
                 if session.data_channel and session.data_channel.readyState == "open":
-                    session.data_channel.send(json.dumps(response_data))
-
-        except Exception as err:
-            self.logger.exception("Error handling HTTP proxy request")
-            # Send error response
-            error_response = {
-                "type": "http-proxy-response",
-                "id": request_id,
-                "status": 500,
-                "headers": {"Content-Type": "text/plain"},
-                "body": str(err).encode().hex(),
-            }
-            if session.data_channel and session.data_channel.readyState == "open":
-                session.data_channel.send(json.dumps(error_response))
+                    session.data_channel.send(json.dumps(error_response))
 
     async def _close_session(self, session_id: str) -> None:
         """
@@ -697,33 +793,10 @@ class WebRTCGateway:
         if not session:
             return
 
-        # Cancel forwarding tasks first to prevent race conditions
-        if session.forward_to_local_task and not session.forward_to_local_task.done():
-            session.forward_to_local_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await session.forward_to_local_task
-
-        if session.forward_from_local_task and not session.forward_from_local_task.done():
-            session.forward_from_local_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await session.forward_from_local_task
-
-        # Cancel sendspin forwarding tasks
-        if session.sendspin_to_local_task and not session.sendspin_to_local_task.done():
-            session.sendspin_to_local_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await session.sendspin_to_local_task
-
-        if session.sendspin_from_local_task and not session.sendspin_from_local_task.done():
-            session.sendspin_from_local_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await session.sendspin_from_local_task
+        await self._close_data_channel_bridge(session)
+        await self._close_sendspin_bridge(session)
 
         # Close connections
-        if session.local_ws and not session.local_ws.closed:
-            await session.local_ws.close()
-        if session.sendspin_ws and not session.sendspin_ws.closed:
-            await session.sendspin_ws.close()
         if session.data_channel:
             session.data_channel.close()
         if session.sendspin_channel:
@@ -741,25 +814,11 @@ class WebRTCGateway:
             return
 
         try:
-            loop = asyncio.get_event_loop()
-
-            @channel.on("message")  # type: ignore[untyped-decorator]
-            def on_message(message: str | bytes) -> None:
-                # Queue if task not yet created (None) or still running.
-                # Only drop when task exists and is done (shutdown).
-                if (
-                    session.sendspin_to_local_task is None
-                    or not session.sendspin_to_local_task.done()
-                ):
-                    loop.call_soon_threadsafe(session.sendspin_queue.put_nowait, message)
-
-            @channel.on("close")  # type: ignore[untyped-decorator]
-            def on_close() -> None:
-                if session.sendspin_ws and not session.sendspin_ws.closed:
-                    asyncio.run_coroutine_threadsafe(session.sendspin_ws.close(), loop)
-
             session.sendspin_ws = await self.http_session.ws_connect(self.sendspin_url)
             self.logger.debug("Sendspin channel connected for session %s", session.session_id)
+            if not session.sendspin_channel_active:
+                await self._close_sendspin_bridge(session)
+                return
 
             # Start forwarding tasks - queued messages will be processed
             session.sendspin_to_local_task = asyncio.create_task(
@@ -774,13 +833,78 @@ class WebRTCGateway:
                 "Failed to connect sendspin channel to internal server for session %s",
                 session.session_id,
             )
-            # Clean up partial state on failure
-            if session.sendspin_to_local_task:
-                session.sendspin_to_local_task.cancel()
-            if session.sendspin_from_local_task:
-                session.sendspin_from_local_task.cancel()
-            if session.sendspin_ws and not session.sendspin_ws.closed:
-                await session.sendspin_ws.close()
+            await self._close_sendspin_bridge(session)
+            channel.close()
+
+    def _register_sendspin_channel_handlers(self, session: WebRTCSession) -> None:
+        """
+        Register Sendspin handlers before the remote peer can send its first message.
+
+        :param session: The WebRTC session.
+        """
+        channel = session.sendspin_channel
+        if channel is None:
+            return
+        loop = asyncio.get_running_loop()
+
+        @channel.on("message")  # type: ignore[untyped-decorator]
+        def on_message(message: str | bytes) -> None:
+            def enqueue_message() -> None:
+                if not session.sendspin_channel_active:
+                    return
+                if (
+                    session.sendspin_to_local_task is None
+                    or not session.sendspin_to_local_task.done()
+                ):
+                    session.sendspin_queue.put_nowait(message)
+
+            loop.call_soon_threadsafe(enqueue_message)
+
+        @channel.on("close")  # type: ignore[untyped-decorator]
+        def on_close() -> None:
+            session.sendspin_channel_active = False
+
+            def schedule_cleanup() -> None:
+                if session.session_id not in self.sessions:
+                    return
+                task = asyncio.create_task(self._close_sendspin_bridge(session))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+
+            loop.call_soon_threadsafe(schedule_cleanup)
+
+    async def _close_sendspin_bridge(self, session: WebRTCSession) -> None:
+        """
+        Close the internal Sendspin bridge for a WebRTC session.
+
+        :param session: The WebRTC session.
+        """
+        session.sendspin_channel_active = False
+        current_task = asyncio.current_task()
+        tasks = [
+            task
+            for task in (
+                session.sendspin_setup_task,
+                session.sendspin_to_local_task,
+                session.sendspin_from_local_task,
+            )
+            if task is not None and task is not current_task
+        ]
+        sendspin_ws = session.sendspin_ws
+        session.sendspin_setup_task = None
+        session.sendspin_to_local_task = None
+        session.sendspin_from_local_task = None
+        session.sendspin_ws = None
+        session.sendspin_queue = asyncio.Queue()
+
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if sendspin_ws and not sendspin_ws.closed:
+            await sendspin_ws.close()
 
     async def _forward_sendspin_to_local(self, session: WebRTCSession) -> None:
         """
