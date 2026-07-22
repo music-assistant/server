@@ -30,11 +30,11 @@ async def test_provider_icon_data_uri(mass_minimal: MusicAssistant) -> None:
         ProviderIconVariant.DEFAULT: ("image/svg+xml", b"<svg/>"),
     }
     expected = "data:image/svg+xml;base64," + base64.b64encode(b"<svg/>").decode()
-    assert mass_minimal.get_provider_icon_data_uri("dummy") == expected
+    assert mass_minimal.get_provider_icon_data("dummy") == expected
 
 
 async def test_provider_icon_data_uri_missing(mass_minimal: MusicAssistant) -> None:
     assert (
-        mass_minimal.get_provider_icon_data_uri("dummy", ProviderIconVariant.DARK)
+        mass_minimal.get_provider_icon_data("dummy", ProviderIconVariant.DARK)
         is None
     )
