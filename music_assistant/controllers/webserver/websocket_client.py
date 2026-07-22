@@ -165,15 +165,8 @@ class WebsocketClientHandler:
             # Unregister from webserver tracking
             self.webserver.unregister_websocket_client(self)
 
-            # Drop any dashboard registrations owned by this connection. Guarded since
-            # shutdown ordering may tear down the dashboard controller before connections close.
-            try:
-                if hasattr(self.mass, "dashboard"):
-                    self.mass.dashboard.handle_client_disconnected(self.client_id)
-            except Exception:
-                self._logger.debug(
-                    "Failed to clean up dashboard registrations on disconnect", exc_info=True
-                )
+            # Drop any dashboard registrations owned by this connection
+            self.mass.dashboard.handle_client_disconnected(self.client_id)
 
             try:
                 self._to_write.put_nowait(None)
